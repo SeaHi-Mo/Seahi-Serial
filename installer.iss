@@ -2,7 +2,7 @@
 ; 使用 Inno Setup Compiler (ISCC) 编译此脚本生成安装程序
 
 #define MyAppName "Seahi Serial"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.1.1"
 #define MyAppPublisher "SeaHi"
 #define MyAppExeName "seahi-serial.exe"
 #define MyAppDescription "串口调试器 - Tauri 2 桌面应用"
@@ -25,21 +25,20 @@ SetupIconFile=src-tauri\icons\icon.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=lowest
 
 ; 外观设置
 WizardSizePercent=120
 WizardImageFile=
 WizardSmallImageFile=
 
-; 权限 - 串口需要管理员权限才能访问，但先尝试普通权限
+; 权限 - 串口需要管理员权限才能访问
 PrivilegesRequired=admin
 
 [Languages]
 Name: "chinese_simplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式"; Flags: checked
+Name: "desktopicon"; Description: "创建桌面快捷方式"
 
 [Files]
 ; 主程序 - 使用 Tauri 内嵌的 WebView2，无需额外 DLL
