@@ -1,0 +1,35 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nickel-lang/json-schema-store/main/tauri.schema.json",
+  "productName": "Seahi Serial",
+  "version": "0.1.0",
+  "identifier": "com.seahi.seahi-serial",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Seahi Serial - 串口调试器",
+        "width": 1000,
+        "height": 650,
+        "minWidth": 600,
+        "minHeight": 400,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Node
+node_modules/
+
+# Tauri generated
+src-tauri/gen/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Build artifacts
+*.exe
+*.dmg
+*.deb
+*.app
+*.msi
+*.nsis
