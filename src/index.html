@@ -256,66 +256,85 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .btn-send:hover { background:var(--btn-ph); }
 .btn-send:disabled { background:#3a3a3a; color:#555; cursor:default; }
 
-/* ===== 快速指令面板 ===== */
-.quick-cmd-panel {
-    display:none; flex-direction:column;
-    background:var(--toolbar-bg); border-top:1px solid var(--border);
-    flex-shrink:0; max-height:200px; overflow-y:auto;
+/* ===== 快速指令下拉 ===== */
+.qcmd-wrap {
+    position:relative; flex-shrink:0;
+    display:inline-flex; align-items:center;
+    border-left:1px solid var(--border);
+    height:34px;
 }
-.quick-cmd-panel.open { display:flex; }
-.quick-cmd-panel::-webkit-scrollbar { width:8px; }
-.quick-cmd-panel::-webkit-scrollbar-track { background:transparent; }
-.quick-cmd-panel::-webkit-scrollbar-thumb { background:rgba(121,121,121,.4); border-radius:4px; }
-.qcmd-header {
+.qcmd-trigger {
+    height:24px; padding:0 8px 0 6px; border:none; border-radius:2px;
+    background:transparent; color:var(--text-d); font-size:12px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:4px; flex-shrink:0;
+    font-family:inherit; white-space:nowrap;
+}
+.qcmd-trigger:hover { background:rgba(255,255,255,.06); color:var(--text); }
+.qcmd-trigger.on { color:#4ec9b0; }
+.qcmd-trigger svg { flex-shrink:0; }
+.qcmd-arrow { font-size:8px; opacity:.6; }
+/* 下拉列表容器 */
+.qcmd-dropdown {
+    display:none; position:absolute;
+    bottom:calc(100% + 4px); right:0;
+    min-width:280px; max-width:420px;
+    background:#252526; border:1px solid var(--border-h);
+    border-radius:3px; box-shadow:0 -4px 16px rgba(0,0,0,.5);
+    z-index:9999; overflow:hidden;
+}
+.qcmd-dropdown.open { display:block; }
+/* 下拉头部 */
+.qcmd-dh {
     display:flex; align-items:center; justify-content:space-between;
-    padding:3px 8px; border-bottom:1px solid var(--border); flex-shrink:0;
-    font-size:11px; color:var(--text-d); background:var(--toolbar-bg); position:sticky; top:0; z-index:1;
+    padding:4px 8px; background:#1e1e1e; border-bottom:1px solid var(--border);
+    font-size:11px; color:var(--text-d); user-select:none;
 }
-.qcmd-add {
-    color:var(--link); font-size:11px; cursor:pointer; padding:1px 4px;
-    border-radius:2px; user-select:none; border:none; background:transparent;
-    font-family:inherit;
+.qcmd-dh-add {
+    background:transparent; border:none; color:var(--link); font-size:11px;
+    cursor:pointer; padding:1px 4px; border-radius:2px; font-family:inherit;
 }
-.qcmd-add:hover { background:rgba(55,148,255,.1); }
-.qcmd-row {
+.qcmd-dh-add:hover { background:rgba(55,148,255,.12); }
+/* 列表内容区 */
+.qcmd-list {
+    max-height:200px; overflow-y:auto;
+}
+.qcmd-list::-webkit-scrollbar { width:6px; }
+.qcmd-list::-webkit-scrollbar-track { background:transparent; }
+.qcmd-list::-webkit-scrollbar-thumb { background:rgba(121,121,121,.4); border-radius:3px; }
+/* 每一行 */
+.qcmd-item {
     display:flex; align-items:center; gap:4px;
-    padding:3px 8px; border-bottom:1px solid rgba(60,60,60,.5);
+    padding:3px 6px; border-bottom:1px solid rgba(60,60,60,.5);
+    cursor:pointer;
 }
-.qcmd-row:last-child { border-bottom:none; }
-.qcmd-row:hover { background:rgba(255,255,255,.03); }
-.qcmd-label {
-    width:80px; flex-shrink:0; font-size:11px; color:var(--text-d);
-    background:transparent; border:none; outline:none; padding:0 2px;
-    font-family:inherit; cursor:text;
+.qcmd-item:last-child { border-bottom:none; }
+.qcmd-item:hover { background:rgba(255,255,255,.04); }
+.qcmd-item-label {
+    width:72px; flex-shrink:0; font-size:11px; color:var(--text-d);
+    background:transparent; border:none; outline:none; padding:1px 3px;
+    font-family:inherit; cursor:text; border-radius:1px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
-.qcmd-label:focus { color:var(--text); border-bottom:1px solid #007acc; }
-.qcmd-input {
+.qcmd-item-label:focus { color:var(--text); background:rgba(255,255,255,.06); outline:1px solid #007acc; }
+.qcmd-item-val {
     flex:1; height:22px; background:var(--input-bg); border:1px solid transparent;
     border-radius:2px; color:var(--text); font-family:var(--font-mono); font-size:12px;
-    padding:0 6px; outline:none; min-width:0;
+    padding:0 5px; outline:none; min-width:0;
 }
-.qcmd-input:focus { border-color:#007acc; }
-.qcmd-send {
+.qcmd-item-val:focus { border-color:#007acc; }
+.qcmd-item-send {
     width:26px; height:22px; border:none; border-radius:2px;
     background:var(--btn-p); color:#fff; cursor:pointer; flex-shrink:0;
-    display:inline-flex; align-items:center; justify-content:center;
-    padding:0;
+    display:inline-flex; align-items:center; justify-content:center; padding:0;
 }
-.qcmd-send:hover { background:var(--btn-ph); }
-.qcmd-send:disabled { background:#3a3a3a; color:#555; cursor:default; }
-.qcmd-del {
-    width:18px; height:18px; border:none; background:transparent; color:#555;
-    cursor:pointer; border-radius:2px; font-size:14px; line-height:1;
+.qcmd-item-send:hover { background:var(--btn-ph); }
+.qcmd-item-send:disabled { background:#3a3a3a; color:#555; cursor:default; }
+.qcmd-item-del {
+    width:16px; height:16px; border:none; background:transparent; color:#555;
+    cursor:pointer; border-radius:2px; font-size:13px; line-height:1;
     display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;
 }
-.qcmd-del:hover { color:#f48771; background:rgba(244,135,113,.1); }
-.btn-qcmd {
-    width:30px; height:30px; border:none; border-radius:2px; background:transparent;
-    color:var(--text-d); cursor:pointer; flex-shrink:0;
-    display:inline-flex; align-items:center; justify-content:center;
-}
-.btn-qcmd:hover { background:rgba(255,255,255,.06); color:var(--text); }
-.btn-qcmd.on { color:#4ec9b0; }
+.qcmd-item-del:hover { color:#f48771; background:rgba(244,135,113,.1); }
 </style>
 </head>
 <body style="display:flex;flex-direction:column;height:100vh;">
@@ -455,12 +474,17 @@ function createMonitorPane(mid, title, closable) {
             '<button class="btn-send" id="' + mid + '-btnSend" onclick="sendData(\'' + mid + '\')" disabled>' +
                 '<span style="font-size:10px;">&#9654;</span> 发送' +
             '</button>' +
-            '<button class="btn-qcmd" id="' + mid + '-btnQcmd" onclick="toggleQuickCmd(\'' + mid + '\')" title="快速指令">' + ICONS.quickCmd + '</button>' +
-        '</div>' +
-        '<div class="quick-cmd-panel" id="' + mid + '-qcmdPanel">' +
-            '<div class="qcmd-header">' +
-                '<span>快速指令</span>' +
-                '<button class="qcmd-add" onclick="addQuickCmd(\'' + mid + '\')">＋ 添加指令</button>' +
+            '<div class="qcmd-wrap" id="' + mid + '-qcmdWrap">' +
+                '<button class="qcmd-trigger" id="' + mid + '-btnQcmd" onclick="toggleQcmdDropdown(\'' + mid + '\')" title="快速指令">' +
+                    ICONS.quickCmd + '<span class="qcmd-arrow">▲</span>' +
+                '</button>' +
+                '<div class="qcmd-dropdown" id="' + mid + '-qcmdDrop">' +
+                    '<div class="qcmd-dh">' +
+                        '<span>快速指令</span>' +
+                        '<button class="qcmd-dh-add" onclick="addQcmdItem(\'' + mid + '\')">＋ 添加</button>' +
+                    '</div>' +
+                    '<div class="qcmd-list" id="' + mid + '-qcmdList"></div>' +
+                '</div>' +
             '</div>' +
         '</div>';
 
@@ -470,10 +494,10 @@ function createMonitorPane(mid, title, closable) {
         {label:'指令4', value:''}, {label:'指令5', value:''}
     ]};
 
-    // 初始化快速指令行
-    var qpanel = document.getElementById(mid + '-qcmdPanel');
+    // 初始化快速指令下拉列表
+    var qlist = document.getElementById(mid + '-qcmdList');
     monitors[mid].quickCmds.forEach(function(cmd, idx) {
-        qpanel.appendChild(makeQcmdRow(mid, idx, cmd.label, cmd.value));
+        qlist.appendChild(makeQcmdItem(mid, idx, cmd.label, cmd.value));
     });
 
     // 绑定键盘：Enter 发送，上/下箭头浏览历史
@@ -826,112 +850,115 @@ function bytesToHex(arr) {
     return Array.from(arr).map(function(b) { return b.toString(16).padStart(2,'0').toUpperCase(); }).join(' ');
 }
 
-/* ===== 快速指令 ===== */
-function makeQcmdRow(mid, idx, label, value) {
-    var row = document.createElement('div');
-    row.className = 'qcmd-row';
-    row.id = mid + '-qcmd-' + idx;
+/* ===== 快速指令下拉 ===== */
+function makeQcmdItem(mid, idx, label, value) {
+    var item = document.createElement('div');
+    item.className = 'qcmd-item';
+    item.id = mid + '-qcmdi-' + idx;
 
     var labelInp = document.createElement('input');
-    labelInp.className = 'qcmd-label';
+    labelInp.className = 'qcmd-item-label';
     labelInp.type = 'text';
     labelInp.value = label;
     labelInp.placeholder = '名称';
     labelInp.title = '点击编辑名称';
+    labelInp.addEventListener('click', function(e) { e.stopPropagation(); });
     labelInp.addEventListener('change', function() {
         monitors[mid].quickCmds[idx].label = this.value;
     });
 
-    var cmdInp = document.createElement('input');
-    cmdInp.className = 'qcmd-input';
-    cmdInp.type = 'text';
-    cmdInp.value = value;
-    cmdInp.placeholder = '输入指令内容...';
-    cmdInp.setAttribute('autocomplete', 'off');
-    cmdInp.setAttribute('spellcheck', 'false');
-    cmdInp.addEventListener('change', function() {
+    var valInp = document.createElement('input');
+    valInp.className = 'qcmd-item-val';
+    valInp.type = 'text';
+    valInp.value = value;
+    valInp.placeholder = '指令内容...';
+    valInp.setAttribute('autocomplete', 'off');
+    valInp.setAttribute('spellcheck', 'false');
+    valInp.addEventListener('click', function(e) { e.stopPropagation(); });
+    valInp.addEventListener('change', function() {
         monitors[mid].quickCmds[idx].value = this.value;
     });
-    cmdInp.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') { e.preventDefault(); sendQuickCmd(mid, idx); }
+    valInp.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); sendQcmdItem(mid, idx); }
     });
 
     var sendBtn = document.createElement('button');
-    sendBtn.className = 'qcmd-send';
+    sendBtn.className = 'qcmd-item-send';
     sendBtn.innerHTML = ICONS.sendIcon;
     sendBtn.title = '发送';
-    sendBtn.disabled = true;
+    sendBtn.disabled = !monitors[mid].isConnected;
     sendBtn.setAttribute('data-qsend', '1');
-    sendBtn.addEventListener('click', function() { sendQuickCmd(mid, idx); });
+    sendBtn.addEventListener('click', function(e) { e.stopPropagation(); sendQcmdItem(mid, idx); });
 
     var delBtn = document.createElement('button');
-    delBtn.className = 'qcmd-del';
+    delBtn.className = 'qcmd-item-del';
     delBtn.title = '删除';
     delBtn.innerHTML = '&#xd7;';
-    delBtn.addEventListener('click', function() { removeQuickCmd(mid, idx); });
+    delBtn.addEventListener('click', function(e) { e.stopPropagation(); removeQcmdItem(mid, idx); });
 
-    row.appendChild(labelInp);
-    row.appendChild(cmdInp);
-    row.appendChild(sendBtn);
-    row.appendChild(delBtn);
-    return row;
+    item.appendChild(labelInp);
+    item.appendChild(valInp);
+    item.appendChild(sendBtn);
+    item.appendChild(delBtn);
+    return item;
 }
 
-function toggleQuickCmd(mid) {
+function toggleQcmdDropdown(mid) {
+    var drop = document.getElementById(mid + '-qcmdDrop');
     var btn = document.getElementById(mid + '-btnQcmd');
-    var panel = document.getElementById(mid + '-qcmdPanel');
-    var isOpen = panel.classList.contains('open');
+    var isOpen = drop.classList.contains('open');
+    // 关闭所有其它下拉
+    document.querySelectorAll('.qcmd-dropdown.open').forEach(function(d) {
+        if (d !== drop) d.classList.remove('open');
+    });
+    document.querySelectorAll('.qcmd-trigger.on').forEach(function(b) {
+        if (b !== btn) b.classList.remove('on');
+    });
     if (isOpen) {
-        panel.classList.remove('open');
+        drop.classList.remove('open');
         btn.classList.remove('on');
     } else {
-        panel.classList.add('open');
+        drop.classList.add('open');
         btn.classList.add('on');
     }
 }
 
-function addQuickCmd(mid) {
+// 点击空白关闭下拉
+document.addEventListener('click', function(e) {
+    if (!e.target.closest('.qcmd-wrap')) {
+        document.querySelectorAll('.qcmd-dropdown.open').forEach(function(d) { d.classList.remove('open'); });
+        document.querySelectorAll('.qcmd-trigger.on').forEach(function(b) { b.classList.remove('on'); });
+    }
+});
+
+function addQcmdItem(mid) {
     var cmds = monitors[mid].quickCmds;
     var idx = cmds.length;
     cmds.push({label: '指令' + (idx + 1), value: ''});
-    var panel = document.getElementById(mid + '-qcmdPanel');
-    var row = makeQcmdRow(mid, idx, cmds[idx].label, cmds[idx].value);
-    // 更新 send 按钮状态
-    var sendBtns = row.querySelectorAll('[data-qsend]');
-    sendBtns.forEach(function(b) {
-        b.disabled = !monitors[mid].isConnected;
-    });
-    panel.appendChild(row);
+    var qlist = document.getElementById(mid + '-qcmdList');
+    var item = makeQcmdItem(mid, idx, cmds[idx].label, cmds[idx].value);
+    qlist.appendChild(item);
 }
 
-function removeQuickCmd(mid, idx) {
-    var cmds = monitors[mid].quickCmds;
-    cmds.splice(idx, 1);
-    // 重建所有行
-    rebuildQuickCmds(mid);
+function removeQcmdItem(mid, idx) {
+    monitors[mid].quickCmds.splice(idx, 1);
+    rebuildQcmdList(mid);
 }
 
-function rebuildQuickCmds(mid) {
-    var panel = document.getElementById(mid + '-qcmdPanel');
-    // 保留 header（第一个子元素）
-    var header = panel.querySelector('.qcmd-header');
-    panel.innerHTML = '';
-    panel.appendChild(header);
-    monitors[mid].quickCmds.forEach(function(cmd, idx) {
-        var row = makeQcmdRow(mid, idx, cmd.label, cmd.value);
-        var sendBtns = row.querySelectorAll('[data-qsend]');
-        sendBtns.forEach(function(b) { b.disabled = !monitors[mid].isConnected; });
-        panel.appendChild(row);
+function rebuildQcmdList(mid) {
+    var qlist = document.getElementById(mid + '-qcmdList');
+    qlist.innerHTML = '';
+    monitors[mid].quickCmds.forEach(function(cmd, i) {
+        var item = makeQcmdItem(mid, i, cmd.label, cmd.value);
+        qlist.appendChild(item);
     });
 }
 
-async function sendQuickCmd(mid, idx) {
+async function sendQcmdItem(mid, idx) {
     if (!monitors[mid] || !monitors[mid].isConnected) return;
-    var panel = document.getElementById(mid + '-qcmdPanel');
-    var row = document.getElementById(mid + '-qcmd-' + idx);
-    if (!row) return;
-    var cmdInp = row.querySelector('.qcmd-input');
-    var text = cmdInp ? cmdInp.value : monitors[mid].quickCmds[idx].value;
+    var item = document.getElementById(mid + '-qcmdi-' + idx);
+    var valInp = item ? item.querySelector('.qcmd-item-val') : null;
+    var text = valInp ? valInp.value : monitors[mid].quickCmds[idx].value;
     if (!text) return;
     var addLE = document.getElementById(mid + '-btnSendLE').classList.contains('on');
     var sendText = text + (addLE ? leStr(mid) : '');
@@ -946,9 +973,9 @@ async function sendQuickCmd(mid, idx) {
 }
 
 function updateQcmdSendBtns(mid, connected) {
-    var panel = document.getElementById(mid + '-qcmdPanel');
-    if (!panel) return;
-    panel.querySelectorAll('[data-qsend]').forEach(function(b) {
+    var qlist = document.getElementById(mid + '-qcmdList');
+    if (!qlist) return;
+    qlist.querySelectorAll('[data-qsend]').forEach(function(b) {
         b.disabled = !connected;
     });
 }
