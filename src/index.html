@@ -256,85 +256,57 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .btn-send:hover { background:var(--btn-ph); }
 .btn-send:disabled { background:#3a3a3a; color:#555; cursor:default; }
 
-/* ===== 快速指令下拉 ===== */
-.qcmd-wrap {
-    position:relative; flex-shrink:0;
-    display:inline-flex; align-items:center;
-    border-left:1px solid var(--border);
-    height:34px;
+/* ===== WSL 映射模态框 ===== */
+.wsl-overlay {
+    display:none; position:fixed; inset:0;
+    background:rgba(0,0,0,.6); z-index:10000;
+    align-items:center; justify-content:center;
 }
-.qcmd-trigger {
-    height:24px; padding:0 8px 0 6px; border:none; border-radius:2px;
-    background:transparent; color:var(--text-d); font-size:12px; cursor:pointer;
-    display:inline-flex; align-items:center; gap:4px; flex-shrink:0;
-    font-family:inherit; white-space:nowrap;
+.wsl-overlay.open { display:flex; }
+.wsl-modal {
+    background:#252526; border:1px solid #454545;
+    border-radius:6px; width:480px; max-width:94vw;
+    box-shadow:0 8px 32px rgba(0,0,0,.7);
+    display:flex; flex-direction:column; overflow:hidden;
 }
-.qcmd-trigger:hover { background:rgba(255,255,255,.06); color:var(--text); }
-.qcmd-trigger.on { color:#4ec9b0; }
-.qcmd-trigger svg { flex-shrink:0; }
-.qcmd-arrow { font-size:8px; opacity:.6; }
-/* 下拉列表容器 */
-.qcmd-dropdown {
-    display:none; position:absolute;
-    bottom:calc(100% + 4px); right:0;
-    width:520px; max-width:90vw;
-    background:#252526; border:1px solid var(--border-h);
-    border-radius:3px; box-shadow:0 -4px 16px rgba(0,0,0,.5);
-    z-index:9999; overflow:hidden;
+.wsl-modal-hd {
+    padding:10px 14px; border-bottom:1px solid #333;
+    display:flex; align-items:center; gap:8px;
+    font-size:13px; font-weight:600; color:#ccc;
 }
-.qcmd-dropdown.open { display:block; }
-/* 下拉头部 */
-.qcmd-dh {
-    display:flex; align-items:center; justify-content:space-between;
-    padding:4px 8px; background:#1e1e1e; border-bottom:1px solid var(--border);
-    font-size:11px; color:var(--text-d); user-select:none;
+.wsl-modal-hd svg { flex-shrink:0; }
+.wsl-modal-body { padding:14px; font-size:12px; color:#bbb; line-height:1.6; }
+.wsl-log {
+    background:#1a1a1a; border:1px solid #333; border-radius:3px;
+    padding:8px; margin-top:10px; min-height:80px; max-height:200px;
+    overflow-y:auto; font-family:var(--font-mono); font-size:11px;
+    color:#9cdcfe; white-space:pre-wrap; word-break:break-all;
 }
-.qcmd-dh-add {
-    background:transparent; border:none; color:var(--link); font-size:11px;
-    cursor:pointer; padding:1px 4px; border-radius:2px; font-family:inherit;
+.wsl-log .wsl-ok  { color:#6a9955; }
+.wsl-log .wsl-err { color:#f44747; }
+.wsl-log .wsl-inf { color:#9cdcfe; }
+.wsl-log .wsl-warn{ color:#dcdcaa; }
+.wsl-modal-ft {
+    padding:10px 14px; border-top:1px solid #333;
+    display:flex; gap:8px; justify-content:flex-end;
 }
-.qcmd-dh-add:hover { background:rgba(55,148,255,.12); }
-/* 列表内容区 */
-.qcmd-list {
-    max-height:200px; overflow-y:auto;
+.wsl-btn {
+    height:26px; padding:0 14px; border:none; border-radius:3px;
+    font-size:12px; font-family:inherit; cursor:pointer;
+    display:inline-flex; align-items:center; gap:5px;
 }
-.qcmd-list::-webkit-scrollbar { width:6px; }
-.qcmd-list::-webkit-scrollbar-track { background:transparent; }
-.qcmd-list::-webkit-scrollbar-thumb { background:rgba(121,121,121,.4); border-radius:3px; }
-/* 每一行 */
-.qcmd-item {
-    display:flex; align-items:center; gap:4px;
-    padding:3px 6px; border-bottom:1px solid rgba(60,60,60,.5);
-    cursor:pointer;
+.wsl-btn-primary { background:#0e639c; color:#fff; }
+.wsl-btn-primary:hover { background:#1177bb; }
+.wsl-btn-primary:disabled { background:#3a3a3a; color:#555; cursor:default; }
+.wsl-btn-ghost { background:transparent; color:#aaa; border:1px solid #555; }
+.wsl-btn-ghost:hover { background:#333; color:#ccc; }
+.wsl-spinner {
+    display:inline-block; width:12px; height:12px;
+    border:2px solid #555; border-top-color:#3794ff;
+    border-radius:50%; animation:wsl-spin .7s linear infinite;
+    flex-shrink:0;
 }
-.qcmd-item:last-child { border-bottom:none; }
-.qcmd-item:hover { background:rgba(255,255,255,.04); }
-.qcmd-item-label {
-    width:72px; flex-shrink:0; font-size:11px; color:var(--text-d);
-    background:transparent; border:none; outline:none; padding:1px 3px;
-    font-family:inherit; cursor:text; border-radius:1px;
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-}
-.qcmd-item-label:focus { color:var(--text); background:rgba(255,255,255,.06); outline:1px solid #007acc; }
-.qcmd-item-val {
-    flex:1; height:22px; background:var(--input-bg); border:1px solid transparent;
-    border-radius:2px; color:var(--text); font-family:var(--font-mono); font-size:12px;
-    padding:0 5px; outline:none; min-width:0;
-}
-.qcmd-item-val:focus { border-color:#007acc; }
-.qcmd-item-send {
-    width:26px; height:22px; border:none; border-radius:2px;
-    background:var(--btn-p); color:#fff; cursor:pointer; flex-shrink:0;
-    display:inline-flex; align-items:center; justify-content:center; padding:0;
-}
-.qcmd-item-send:hover { background:var(--btn-ph); }
-.qcmd-item-send:disabled { background:#3a3a3a; color:#555; cursor:default; }
-.qcmd-item-del {
-    width:16px; height:16px; border:none; background:transparent; color:#555;
-    cursor:pointer; border-radius:2px; font-size:13px; line-height:1;
-    display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;
-}
-.qcmd-item-del:hover { color:#f48771; background:rgba(244,135,113,.1); }
+@keyframes wsl-spin { to { transform:rotate(360deg); } }
 </style>
 </head>
 <body style="display:flex;flex-direction:column;height:100vh;">
@@ -346,6 +318,24 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 
 <!-- 分栏容器 -->
 <div class="pane-container" id="paneContainer"></div>
+
+<!-- WSL 映射模态框 -->
+<div class="wsl-overlay" id="wslOverlay" onclick="wslOverlayClick(event)">
+  <div class="wsl-modal">
+    <div class="wsl-modal-hd">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3794ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      映射串口到 WSL
+    </div>
+    <div class="wsl-modal-body">
+      <div id="wslStatus" style="margin-bottom:6px;"></div>
+      <div class="wsl-log" id="wslLog"></div>
+    </div>
+    <div class="wsl-modal-ft">
+      <button class="wsl-btn wsl-btn-primary" id="wslActionBtn" onclick="wslAction()" style="display:none;">...</button>
+      <button class="wsl-btn wsl-btn-ghost" onclick="closeWslModal()">关闭</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const { invoke } = window.__TAURI__.core;
@@ -368,8 +358,7 @@ const ICONS = {
     rollback: '<svg width="19" height="19" viewBox="0 0 1024 1024" fill="currentColor"><path d="M825.6 129.5872c37.4272 0 68.1984 28.5696 71.68 65.0752l0.3072 6.9632v239.9744a24.0128 24.0128 0 0 1-47.616 4.3008l-0.3584-4.3008V201.5744a24.0128 24.0128 0 0 0-19.712-23.552l-4.3008-0.4096H201.5744a24.0128 24.0128 0 0 0-23.552 19.6608l-0.4096 4.3008v624.0256c0 11.776 8.4992 21.6064 19.6608 23.6032l4.3008 0.4096h192.8192a24.0128 24.0128 0 0 1 4.3008 47.616l-4.3008 0.3584H201.5744a71.9872 71.9872 0 0 1-71.68-65.024l-0.3072-6.9632V201.5744c0-37.376 28.5696-68.1472 65.0752-71.68l6.912-0.3072h624.0256z"/><path d="M873.6256 602.2144c11.776 0 21.5552 8.4992 23.552 19.712l0.4096 4.3008v227.328a43.008 43.008 0 0 1-37.5808 42.7008l-5.4272 0.3072h-227.2768a24.0128 24.0128 0 0 1-4.3008-47.616l4.3008-0.3584h222.208l0.1024-222.3616c0-11.776 8.4992-21.5552 19.6608-23.6032l4.3008-0.4096z"/><path d="M388.608 643.3792a24.0128 24.0128 0 0 1-2.7648-30.6176l2.7648-3.328 101.888-101.8368a24.0128 24.0128 0 0 1 36.6592 30.6176l-2.7648 3.328-84.8384 84.8896 84.8384 84.8384c8.3456 8.2944 9.216 21.248 2.7648 30.6176l-2.7648 3.328a24.0128 24.0128 0 0 1-30.6176 2.7648l-3.328-2.7648-101.8368-101.888z"/></svg>',
     saveLog: '<svg width="17" height="17" viewBox="0 0 1024 1024" fill="currentColor"><path d="M700.5 790.7H292c-13.3 0-24.1-11-24.1-24.7 0-13.6 10.8-24.7 24.1-24.7h408.5c13.3 0 24.1 11 24.1 24.7 0 13.6-10.8 24.7-24.1 24.7zM698.1 591.5H289.6c-13.3 0-24.1-11-24.1-24.7 0-13.6 10.8-24.7 24.1-24.7h408.5c13.3 0 24.1 11 24.1 24.7s-10.8 24.7-24.1 24.7zM535.2 329.4H292.7c-13.3 0-24.1-11-24.1-24.7s10.8-24.7 24.1-24.7h242.6c13.3 0 24.1 11 24.1 24.7s-10.8 24.7-24.2 24.7z"/><path d="M698 958H291c-93.1 0-168.9-77.4-168.9-172.6V236.8c0-95.2 75.8-172.6 168.9-172.6h407c93.1 0 168.9 77.4 168.9 172.6v548.6c0 95.2-75.7 172.6-168.9 172.6zM291.1 113.5c-66.5 0-120.6 55.3-120.6 123.3v548.6c0 68 54.1 123.3 120.6 123.3h407c66.5 0 120.6-55.3 120.6-123.3V236.8c0-68-54.1-123.3-120.6-123.3h-407z"/></svg>',
     copyAll: '<svg width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M96.1 575.7a32.2 32.1 0 1 0 64.4 0 32.2 32.1 0 1 0-64.4 0Z"/><path d="M742.1 450.7l-269.5-2.1c-14.3-0.1-26 13.8-26 31s11.7 31.3 26 31.4l269.5 2.1c14.3 0.1 26-13.8 26-31s-11.7-31.3-26-31.4zM742.1 577.7l-269.5-2.1c-14.3-0.1-26 13.8-26 31s11.7 31.3 26 31.4l269.5 2.1c14.3 0.2 26-13.8 26-31s-11.7-31.3-26-31.4z"/><path d="M736.1 63.9H417c-70.4 0-128 57.6-128 128h-64.9c-70.4 0-128 57.6-128 128v128c-0.1 17.7 14.4 32 32.2 32 17.8 0 32.2-14.4 32.2-32.1V320c0-35.2 28.8-64 64-64H289v447.8c0 70.4 57.6 128 128 128h255.1c-0.1 35.2-28.8 63.8-64 63.8H224.5c-35.2 0-64-28.8-64-64V703.5c0-17.7-14.4-32.1-32.2-32.1-17.8 0-32.3 14.4-32.3 32.1v128.3c0 70.4 57.6 128 128 128h384.1c70.4 0 128-57.6 128-128h65c70.4 0 128-57.6 128-128V255.9l-193-192z m0.1 63.4l127.7 128.3H800c-35.2 0-64-28.8-64-64v-64.3h0.2z m64 641H416.1c-35.2 0-64-28.8-64-64v-513c0-35.2 28.8-64 64-64H671V191c0 70.4 57.6 128 128 128h65.2v385.3c0 35.2-28.8 64-64 64z"/></svg>',
-    quickCmd: '<svg width="18" height="18" viewBox="0 0 1024 1024" fill="currentColor"><path d="M139.196222 0c22.672294 0 41.834039 7.606189 57.631508 22.818567 15.797469 15.212378 23.696204 34.008441 23.696204 56.461325v61.28833c0 22.379748-7.898735 41.39522-23.696204 57.046416a78.987346 78.987346 0 0 1-57.631508 23.403658h-58.582282a77.524617 77.524617 0 0 1-56.461325-23.403658A77.232072 77.232072 0 0 1 0.456411 140.568222v-61.28833C0.456411 56.827007 8.355146 38.030944 24.152615 22.818567 39.950084 7.606189 58.746147 0 80.61394 0h58.509146z m805.012703 0c21.867793 0 40.663856 7.606189 56.461325 22.818567 15.797469 15.212378 23.696204 34.008441 23.696204 56.461325v61.28833c0 22.379748-7.898735 41.39522-23.696204 57.046416a77.524617 77.524617 0 0 1-56.461325 23.403658H444.028869a78.987346 78.987346 0 0 1-57.704645-23.403658 77.232072 77.232072 0 0 1-23.623067-57.046416v-61.28833c0-22.452884 7.825598-41.248947 23.623067-56.461325 15.797469-15.212378 35.105487-22.818567 57.704645-22.818567h500.253192zM139.196222 400.787645c22.672294 0 41.834039 7.898735 57.631508 23.476795 15.797469 15.651196 23.696204 34.666669 23.696204 57.046416v61.28833c0 21.575247-7.898735 40.225037-23.696204 55.803097a78.987346 78.987346 0 0 1-57.631508 23.403658h-58.582282a77.524617 77.524617 0 0 1-56.461325-23.403658A75.84248 75.84248 0 0 1 0.456411 542.672322V481.23772c0-22.379748 7.898735-41.39522 23.696204-57.046417a77.524617 77.524617 0 0 1 56.461325-23.403658h58.509146z m805.012703 0c21.867793 0 40.663856 7.898735 56.461325 23.476795 15.797469 15.651196 23.696204 34.666669 23.696204 57.046416v61.28833c0 21.575247-7.898735 40.225037-23.696204 55.803097a77.524617 77.524617 0 0 1-56.461325 23.403658H444.028869a78.987346 78.987346 0 0 1-57.704645-23.403658 75.84248 75.84248 0 0 1-23.623067-55.803097V481.23772c0-22.379748 7.825598-41.39522 23.623067-57.046417a78.987346 78.987346 0 0 1 57.704645-23.403658h500.253192zM139.196222 802.964882c22.672294 0 41.834039 7.825598 57.631508 23.403658 15.797469 15.651196 23.696204 34.22785 23.696204 55.876234v61.28833c0 22.379748-7.898735 41.39522-23.696204 57.046417a78.987346 78.987346 0 0 1-57.631508 23.403658h-58.582282a77.524617 77.524617 0 0 1-56.461325-23.403658A77.232072 77.232072 0 0 1 0.456411 943.459967v-61.288329c0-21.648384 7.898735-40.225037 23.696204-55.876234a77.524617 77.524617 0 0 1 56.461325-23.403658h58.509146z m805.012703 0c21.867793 0 40.663856 7.825598 56.461325 23.403658 15.797469 15.651196 23.696204 34.22785 23.696204 55.876234v61.28833c0 22.379748-7.898735 41.39522-23.696204 57.046417a77.524617 77.524617 0 0 1-56.461325 23.403658H444.028869a78.987346 78.987346 0 0 1-57.704645-23.403658 77.232072 77.232072 0 0 1-23.623067-57.046417v-61.28833c0-21.648384 7.825598-40.225037 23.623067-55.876234a78.987346 78.987346 0 0 1 57.704645-23.403658h500.253192z</path></svg>',
-    sendIcon: '<svg width="14" height="14" viewBox="0 0 1480 1024" fill="currentColor"><path d="M773.375078 786.86048c4.071065 0 7.506026-4.579948 7.506025-10.304883v-20.609765c0-5.724935-3.30774-10.304883-7.506025-10.304883H429.62455c-4.071065 0-7.506026 4.579948-7.506026 10.304883V776.555597c0 5.724935 3.30774 10.304883 7.506026 10.304883h343.750528zM354.945956 863.447385v20.609765c0 5.724935 4.579948 10.304883 10.304883 10.304883h472.62517c5.724935 0 10.304883-4.579948 10.304883-10.304883v-20.609765c0-5.724935-4.579948-10.304883-10.304883-10.304883H365.123618c-5.597714 0-10.177662 4.579948-10.177662 10.304883zM993.339794 112.972046c-18.447012-15.520934-41.855634-24.044726-65.77314-24.044726h-83.838489c-12.340415 0-22.263635 9.92322-22.263635 22.263635s9.92322 22.263635 22.263635 22.263636H927.439433c13.485402 0 26.716362 4.834389 37.148466 13.612622C977.818859 158.262641 985.324885 174.292459 985.324885 191.340042v730.247236c0 31.932414-25.953038 57.885452-57.885452 57.885452H275.560194c-31.932414 0-57.885452-25.953038-57.885452-57.885452V191.340042c0-15.393714 6.106597-29.896882 17.047584-40.837868 10.940986-10.940986 25.444155-17.047584 40.837868-17.047583H367.668033c12.340415 0 22.263635-9.92322 22.263636-22.263636s-9.92322-22.263635-22.263636-22.263635h-92.23506c-27.225245 0-52.923841 10.686545-72.38862 30.151323-19.210337 19.337557-29.896882 45.036154-29.896881 72.261399v730.247236c0 56.486023 45.926699 102.412722 102.412722 102.412722H927.439433c56.486023 0 102.412722-45.926699 102.412723-102.412722V191.340042c0-30.151323-13.358181-58.648776-36.512362-78.367996zM381.789539 278.104609c3.689402 7.760467 11.57709 12.722077 20.100882 12.722078h93.88893v339.933904c0 12.340415 9.92322 22.263635 22.263636 22.263636h167.040874c12.340415 0 22.263635-9.92322 22.263636-22.263636V295.024972h93.761709c8.523792 0 16.41148-4.96161 20.100882-12.594856 3.689402-7.633246 2.671636-16.793142-2.671636-23.535843L618.92906 8.396571c-4.198286-5.343272-11.195428-7.378805-17.429246-8.396571-6.742701 0-13.10374 3.053299-17.302025 8.26935L384.588396 254.568766c-5.343272 6.61548-6.488259 15.775376-2.798857 23.535843zM601.372593 57.758231L754.800845 250.497702h-63.101503c-9.032675-2.926078-20.100882 1.144987-25.316934 8.905454-2.798857 3.689402-4.452727 8.396571-4.452727 13.358181 0 1.908312 0.254442 3.816623 0.763324 5.724935V608.624177h-122.513604V271.61635v-1.526649-1.52665c0-12.340415-9.92322-22.263635-22.263635-22.263635h-69.462542L601.372593 57.758231z"/></svg>',
+    wsl: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y1="17" x2="12" y2="21"/><text x="5" y="13" font-size="6" fill="currentColor" stroke="none" font-family="monospace" font-weight="bold">WSL</text></svg>'
 };
 
 /* ===== ANSI 颜色解析 ===== */
@@ -460,6 +449,7 @@ function createMonitorPane(mid, title, closable) {
             '<button class="btn-logdir" onclick="chooseLogDir()">&#128193; 选择日志目录</button>' +
             '<button class="ibtn" onclick="saveLogToFile()" title="保存日志">' + ICONS.saveLog + '</button>' +
             '<button class="ibtn" onclick="copyOutput(\'' + mid + '\')" title="复制全部">' + ICONS.copyAll + '</button>' +
+            '<button class="ibtn" onclick="openWslModal(\'' + mid + '\')" title="映射到 WSL" style="color:#3794ff;">' + ICONS.wsl + '</button>' +
         '</div>' +
         '<div class="output" id="' + mid + '-output"></div>' +
         '<div class="send-bar">' +
@@ -474,31 +464,10 @@ function createMonitorPane(mid, title, closable) {
             '<button class="btn-send" id="' + mid + '-btnSend" onclick="sendData(\'' + mid + '\')" disabled>' +
                 '<span style="font-size:10px;">&#9654;</span> 发送' +
             '</button>' +
-            '<div class="qcmd-wrap" id="' + mid + '-qcmdWrap">' +
-                '<button class="qcmd-trigger" id="' + mid + '-btnQcmd" onclick="toggleQcmdDropdown(\'' + mid + '\')" title="快速指令">' +
-                    ICONS.quickCmd + '<span class="qcmd-arrow">▲</span>' +
-                '</button>' +
-                '<div class="qcmd-dropdown" id="' + mid + '-qcmdDrop">' +
-                    '<div class="qcmd-dh">' +
-                        '<span>快速指令</span>' +
-                        '<button class="qcmd-dh-add" onclick="addQcmdItem(\'' + mid + '\')">＋ 添加</button>' +
-                    '</div>' +
-                    '<div class="qcmd-list" id="' + mid + '-qcmdList"></div>' +
-                '</div>' +
-            '</div>' +
         '</div>';
 
     document.getElementById('paneContainer').appendChild(pane);
-    monitors[mid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, quickCmds: [
-        {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
-        {label:'指令4', value:''}, {label:'指令5', value:''}
-    ]};
-
-    // 初始化快速指令下拉列表
-    var qlist = document.getElementById(mid + '-qcmdList');
-    monitors[mid].quickCmds.forEach(function(cmd, idx) {
-        qlist.appendChild(makeQcmdItem(mid, idx, cmd.label, cmd.value));
-    });
+    monitors[mid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1 };
 
     // 绑定键盘：Enter 发送，上/下箭头浏览历史
     var sendInput = document.getElementById(mid + '-sendInput');
@@ -671,7 +640,6 @@ function updateMonitorUI(mid, connected) {
         sendBtn.disabled = true;
         ps.disabled = false;
     }
-    updateQcmdSendBtns(mid, connected);
 }
 
 function startReading(mid) {
@@ -850,134 +818,158 @@ function bytesToHex(arr) {
     return Array.from(arr).map(function(b) { return b.toString(16).padStart(2,'0').toUpperCase(); }).join(' ');
 }
 
-/* ===== 快速指令下拉 ===== */
-function makeQcmdItem(mid, idx, label, value) {
-    var item = document.createElement('div');
-    item.className = 'qcmd-item';
-    item.id = mid + '-qcmdi-' + idx;
+/* ===== WSL 映射功能 ===== */
+var _wslCurrentMid = null;
+var _wslPhase = 'idle'; // 'idle' | 'checking' | 'need_install' | 'installing' | 'ready' | 'attaching'
 
-    var labelInp = document.createElement('input');
-    labelInp.className = 'qcmd-item-label';
-    labelInp.type = 'text';
-    labelInp.value = label;
-    labelInp.placeholder = '名称';
-    labelInp.title = '点击编辑名称';
-    labelInp.addEventListener('click', function(e) { e.stopPropagation(); });
-    labelInp.addEventListener('change', function() {
-        monitors[mid].quickCmds[idx].label = this.value;
-    });
-
-    var valInp = document.createElement('input');
-    valInp.className = 'qcmd-item-val';
-    valInp.type = 'text';
-    valInp.value = value;
-    valInp.placeholder = '指令内容...';
-    valInp.setAttribute('autocomplete', 'off');
-    valInp.setAttribute('spellcheck', 'false');
-    valInp.addEventListener('click', function(e) { e.stopPropagation(); });
-    valInp.addEventListener('change', function() {
-        monitors[mid].quickCmds[idx].value = this.value;
-    });
-    valInp.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); sendQcmdItem(mid, idx); }
-    });
-
-    var sendBtn = document.createElement('button');
-    sendBtn.className = 'qcmd-item-send';
-    sendBtn.innerHTML = ICONS.sendIcon;
-    sendBtn.title = '发送';
-    sendBtn.disabled = !monitors[mid].isConnected;
-    sendBtn.setAttribute('data-qsend', '1');
-    sendBtn.addEventListener('click', function(e) { e.stopPropagation(); sendQcmdItem(mid, idx); });
-
-    var delBtn = document.createElement('button');
-    delBtn.className = 'qcmd-item-del';
-    delBtn.title = '删除';
-    delBtn.innerHTML = '&#xd7;';
-    delBtn.addEventListener('click', function(e) { e.stopPropagation(); removeQcmdItem(mid, idx); });
-
-    item.appendChild(labelInp);
-    item.appendChild(valInp);
-    item.appendChild(sendBtn);
-    item.appendChild(delBtn);
-    return item;
+function wslLog(msg, cls) {
+    var log = document.getElementById('wslLog');
+    if (!log) return;
+    var line = document.createElement('div');
+    line.className = cls || 'wsl-inf';
+    line.textContent = msg;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
 }
 
-function toggleQcmdDropdown(mid) {
-    var drop = document.getElementById(mid + '-qcmdDrop');
-    var btn = document.getElementById(mid + '-btnQcmd');
-    var isOpen = drop.classList.contains('open');
-    // 关闭所有其它下拉
-    document.querySelectorAll('.qcmd-dropdown.open').forEach(function(d) {
-        if (d !== drop) d.classList.remove('open');
-    });
-    document.querySelectorAll('.qcmd-trigger.on').forEach(function(b) {
-        if (b !== btn) b.classList.remove('on');
-    });
-    if (isOpen) {
-        drop.classList.remove('open');
-        btn.classList.remove('on');
-    } else {
-        drop.classList.add('open');
-        btn.classList.add('on');
-    }
+function wslSetStatus(html) {
+    var el = document.getElementById('wslStatus');
+    if (el) el.innerHTML = html;
 }
 
-// 点击空白关闭下拉
-document.addEventListener('click', function(e) {
-    if (!e.target.closest('.qcmd-wrap')) {
-        document.querySelectorAll('.qcmd-dropdown.open').forEach(function(d) { d.classList.remove('open'); });
-        document.querySelectorAll('.qcmd-trigger.on').forEach(function(b) { b.classList.remove('on'); });
-    }
-});
-
-function addQcmdItem(mid) {
-    var cmds = monitors[mid].quickCmds;
-    var idx = cmds.length;
-    cmds.push({label: '指令' + (idx + 1), value: ''});
-    var qlist = document.getElementById(mid + '-qcmdList');
-    var item = makeQcmdItem(mid, idx, cmds[idx].label, cmds[idx].value);
-    qlist.appendChild(item);
+function wslSetBtn(show, label, disabled) {
+    var btn = document.getElementById('wslActionBtn');
+    if (!btn) return;
+    btn.style.display = show ? '' : 'none';
+    btn.disabled = !!disabled;
+    if (label !== undefined) btn.textContent = label;
 }
 
-function removeQcmdItem(mid, idx) {
-    monitors[mid].quickCmds.splice(idx, 1);
-    rebuildQcmdList(mid);
-}
+async function openWslModal(mid) {
+    _wslCurrentMid = mid;
+    _wslPhase = 'checking';
+    // 清空日志
+    document.getElementById('wslLog').innerHTML = '';
+    wslSetBtn(false);
+    wslSetStatus('<span style="color:#9cdcfe;">正在检查 usbipd-win...</span>');
+    document.getElementById('wslOverlay').classList.add('open');
 
-function rebuildQcmdList(mid) {
-    var qlist = document.getElementById(mid + '-qcmdList');
-    qlist.innerHTML = '';
-    monitors[mid].quickCmds.forEach(function(cmd, i) {
-        var item = makeQcmdItem(mid, i, cmd.label, cmd.value);
-        qlist.appendChild(item);
-    });
-}
-
-async function sendQcmdItem(mid, idx) {
-    if (!monitors[mid] || !monitors[mid].isConnected) return;
-    var item = document.getElementById(mid + '-qcmdi-' + idx);
-    var valInp = item ? item.querySelector('.qcmd-item-val') : null;
-    var text = valInp ? valInp.value : monitors[mid].quickCmds[idx].value;
-    if (!text) return;
-    var addLE = document.getElementById(mid + '-btnSendLE').classList.contains('on');
-    var sendText = text + (addLE ? leStr(mid) : '');
-    var bytes = new TextEncoder().encode(sendText);
+    wslLog('› 检查 usbipd-win 安装状态...', 'wsl-inf');
     try {
-        await invoke('send_data', { monitorId: mid, data: Array.from(bytes) });
-        var echoBtn = document.getElementById(mid + '-btnEcho');
-        if (echoBtn && echoBtn.classList.contains('on')) {
-            appendOutput(mid, 'send', decodeRaw(bytes));
+        var ver = await invoke('check_usbipd');
+        if (ver === 'not_found') {
+            _wslPhase = 'need_install';
+            wslLog('✗ 未找到 usbipd-win', 'wsl-err');
+            wslSetStatus('<span style="color:#f44747;">usbipd-win 未安装</span>');
+            wslLog('› 将从 GitHub 下载最新版本并安装（需要管理员权限）', 'wsl-warn');
+            wslSetBtn(true, '⬇ 自动安装 usbipd-win', false);
+        } else {
+            _wslPhase = 'ready';
+            wslLog('✓ usbipd-win 已安装：' + ver, 'wsl-ok');
+            await wslShowDevices(mid);
         }
-    } catch (e) { appendOutput(mid, 'err', '发送失败: ' + e); }
+    } catch (e) {
+        wslLog('✗ 检查失败: ' + e, 'wsl-err');
+        wslSetStatus('<span style="color:#f44747;">检查失败</span>');
+    }
 }
 
-function updateQcmdSendBtns(mid, connected) {
-    var qlist = document.getElementById(mid + '-qcmdList');
-    if (!qlist) return;
-    qlist.querySelectorAll('[data-qsend]').forEach(function(b) {
-        b.disabled = !connected;
-    });
+async function wslShowDevices(mid) {
+    var portName = '';
+    var portSel = document.getElementById(mid + '-portSelect');
+    if (portSel) portName = portSel.value;
+
+    wslLog('', 'wsl-inf');
+    wslLog('› 获取 USB 设备列表...', 'wsl-inf');
+    try {
+        var listOut = await invoke('list_usb_devices');
+        wslLog(listOut, 'wsl-inf');
+        if (portName) {
+            wslSetStatus('<span style="color:#dcdcaa;">准备映射 <b>' + portName + '</b> 到 WSL</span>');
+            wslSetBtn(true, '→ 映射 ' + portName + ' 到 WSL', false);
+            _wslPhase = 'ready';
+        } else {
+            wslSetStatus('<span style="color:#f44747;">请先选择串口端口</span>');
+            wslSetBtn(false);
+        }
+    } catch (e) {
+        wslLog('✗ 获取设备列表失败: ' + e, 'wsl-err');
+        wslSetStatus('<span style="color:#f44747;">获取设备列表失败</span>');
+    }
+}
+
+async function wslAction() {
+    if (_wslPhase === 'need_install') {
+        await wslInstall();
+    } else if (_wslPhase === 'ready') {
+        await wslAttach();
+    }
+}
+
+async function wslInstall() {
+    _wslPhase = 'installing';
+    wslSetBtn(true, '<span class="wsl-spinner"></span> 安装中...', true);
+    document.getElementById('wslActionBtn').innerHTML = '<span class="wsl-spinner"></span> 安装中...';
+    wslLog('', 'wsl-inf');
+    wslLog('› 正在从 GitHub 获取最新版本信息...', 'wsl-inf');
+    try {
+        var result = await invoke('install_usbipd');
+        wslLog('✓ ' + result, 'wsl-ok');
+        wslLog('', 'wsl-inf');
+        wslLog('› 验证安装...', 'wsl-inf');
+        var ver = await invoke('check_usbipd');
+        if (ver === 'not_found') {
+            wslLog('✗ 安装后仍未检测到 usbipd，请重启后重试', 'wsl-err');
+            wslSetStatus('<span style="color:#f44747;">安装可能需要重启</span>');
+            wslSetBtn(false);
+        } else {
+            wslLog('✓ usbipd-win 版本: ' + ver, 'wsl-ok');
+            _wslPhase = 'ready';
+            await wslShowDevices(_wslCurrentMid);
+        }
+    } catch (e) {
+        wslLog('✗ 安装失败: ' + e, 'wsl-err');
+        wslSetStatus('<span style="color:#f44747;">安装失败（是否以管理员身份运行？）</span>');
+        wslSetBtn(true, '重试安装', false);
+        _wslPhase = 'need_install';
+    }
+}
+
+async function wslAttach() {
+    var mid = _wslCurrentMid;
+    var portSel = document.getElementById(mid + '-portSelect');
+    var portName = portSel ? portSel.value : '';
+    if (!portName) {
+        wslLog('✗ 请先选择端口', 'wsl-err');
+        return;
+    }
+    _wslPhase = 'attaching';
+    wslSetBtn(true, '映射中...', true);
+    wslLog('', 'wsl-inf');
+    wslLog('› 正在将 ' + portName + ' 映射到 WSL...', 'wsl-inf');
+    wslLog('  （执行 usbipd bind + attach --wsl）', 'wsl-warn');
+    try {
+        var result = await invoke('attach_port_to_wsl', { portName: portName });
+        wslLog('✓ ' + result, 'wsl-ok');
+        wslSetStatus('<span style="color:#6a9955;">✓ 映射成功！WSL 中可以访问该设备。</span>');
+        wslSetBtn(true, '重新映射', false);
+        _wslPhase = 'ready';
+        if (monitors[mid]) appendOutput(mid, 'sys', '[WSL] ' + result);
+    } catch (e) {
+        wslLog('✗ 映射失败: ' + e, 'wsl-err');
+        wslSetStatus('<span style="color:#f44747;">映射失败</span>');
+        wslSetBtn(true, '重试映射', false);
+        _wslPhase = 'ready';
+    }
+}
+
+function closeWslModal() {
+    document.getElementById('wslOverlay').classList.remove('open');
+    _wslPhase = 'idle';
+}
+
+function wslOverlayClick(e) {
+    if (e.target === document.getElementById('wslOverlay')) closeWslModal();
 }
 
 /* ===== 初始化 ===== */
