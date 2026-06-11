@@ -5,6 +5,7 @@ use serialport::{ClearBuffer, DataBits, Parity, SerialPort, SerialPortInfo, Seri
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::Mutex;
+use tauri::Emitter;
 
 /// 全局状态：多个独立串口连接（key = monitor_id）
 struct PortState {
@@ -204,6 +205,7 @@ fn choose_log_directory() -> Result<Option<String>, String> {
 }
 
 /// 检查 usbipd-win 是否已安装，返回版本字符串或 "not_found"
+/// 仅供安装流程调用，正常映射操作不需要调用此函数
 #[tauri::command]
 fn check_usbipd() -> String {
     match std::process::Command::new("usbipd")
@@ -218,7 +220,7 @@ fn check_usbipd() -> String {
     }
 }
 
-/// 从 GitHub releases 获取最新 usbipd-win MSI 并静默安装
+/// 从 GitHub releases 获取最新 usbipd-win MSI，通过 PowerShell 以管理员权限安装
 #[tauri::command]
 fn install_usbipd() -> Result<String, String> {
     // 1. 查询 GitHub API 最新 release
@@ -266,21 +268,21 @@ fn install_usbipd() -> Result<String, String> {
     std::io::copy(&mut response, &mut file)
         .map_err(|e| format!("写入文件失败: {}", e))?;
 
-    // 4. 使用 msiexec 静默安装（/quiet /norestart 需要管理员权限）
-    let status = std::process::Command::new("msiexec")
-        .args([
-            "/i",
-            msi_path.to_str().unwrap_or(""),
-            "/quiet",
-            "/norestart",
-        ])
+    // 4. 通过 PowerShell Start-Process -Verb RunAs 触发 UAC，以管理员权限静默安装
+    let msi_str = msi_path.to_str().unwrap_or("").replace('\'', "''");
+    let ps_script = format!(
+        "Start-Process -FilePath 'msiexec' -ArgumentList '/i','{}','/quiet','/norestart' -Verb RunAs -Wait",
+        msi_str
+    );
+    let status = std::process::Command::new("powershell")
+        .args(["-NonInteractive", "-Command", &ps_script])
         .status()
         .map_err(|e| format!("安装启动失败: {}", e))?;
 
     if status.success() {
         Ok(format!("usbipd-win {} 安装成功", version))
     } else {
-        Err(format!("安装失败，退出码: {:?}（可能需要管理员权限）", status.code()))
+        Err(format!("安装失败，退出码: {:?}（用户取消或权限不足）", status.code()))
     }
 }
 
@@ -300,10 +302,13 @@ fn list_usb_devices() -> Result<String, String> {
 }
 
 /// 将指定串口对应的 USB 设备映射到 WSL
-/// port_name: 如 "COM3"，在 usbipd list 输出中匹配对应 busid
+/// 通过 PowerShell Start-Process -Verb RunAs 以管理员权限执行：
+///   1. 检查绑定状态，未绑定则先执行 bind
+///   2. 执行 attach --wsl
+/// UAC 弹窗会请求用户授权，授权后在提权进程中完成操作
 #[tauri::command]
 fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
-    // 1. 获取 usbipd list 输出，找到对应 busid
+    // 1. 普通权限获取设备列表，找到对应 busid
     let list_out = std::process::Command::new("usbipd")
         .args(["list"])
         .output()
@@ -324,32 +329,71 @@ fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
         .map(|s| s.to_string())
         .ok_or_else(|| format!("在 usbipd 设备列表中未找到 {}，请确认设备已连接", port_name))?;
 
-    // 2. bind（允许 WSL 访问，需要管理员权限）
-    let bind_out = std::process::Command::new("usbipd")
-        .args(["bind", "--busid", &busid])
-        .output()
-        .map_err(|e| format!("usbipd bind 失败: {}", e))?;
+    // 2. 检查当前绑定状态（查找该行是否包含 "Shared" 关键字，表示已绑定）
+    let already_bound = list_str.lines()
+        .find(|line| line.to_uppercase().contains(&port_name.to_uppercase()))
+        .map(|line| line.to_uppercase().contains("SHARED"))
+        .unwrap_or(false);
 
-    if !bind_out.status.success() {
-        let err = String::from_utf8_lossy(&bind_out.stderr);
-        // 忽略 "already bound" 错误
-        if !err.contains("already") && !err.is_empty() {
-            return Err(format!("bind 失败: {}", err));
-        }
-    }
+    // 3. 构建 PowerShell 提权脚本
+    //    - 若未绑定：先 bind，再 attach --wsl
+    //    - 若已绑定：直接 attach --wsl
+    //    使用临时文件传递执行结果，因为提权进程的 stdout 无法直接捕获
+    let tmp_result = std::env::temp_dir().join(format!("usbipd_result_{}.txt", std::process::id()));
+    let tmp_result_str = tmp_result.to_str().unwrap_or("C:\\Temp\\usbipd_result.txt").replace('\'', "''");
 
-    // 3. attach --wsl
-    let attach_out = std::process::Command::new("usbipd")
-        .args(["attach", "--wsl", "--busid", &busid])
-        .output()
-        .map_err(|e| format!("usbipd attach 失败: {}", e))?;
-
-    if attach_out.status.success() {
-        Ok(format!("已将 {} (busid: {}) 映射到 WSL", port_name, busid))
+    let ps_script = if already_bound {
+        format!(
+            "$out = & usbipd attach --wsl --busid '{}' 2>&1; \
+             $out | Out-File -FilePath '{}' -Encoding UTF8; \
+             if ($LASTEXITCODE -ne 0) {{ exit 1 }}",
+            busid, tmp_result_str
+        )
     } else {
-        let err = String::from_utf8_lossy(&attach_out.stderr);
-        let out = String::from_utf8_lossy(&attach_out.stdout);
-        Err(format!("attach 失败: {} {}", err, out))
+        format!(
+            "$bind = & usbipd bind --busid '{}' 2>&1; \
+             if ($LASTEXITCODE -ne 0 -and $bind -notmatch 'already') {{ \
+               $bind | Out-File -FilePath '{}' -Encoding UTF8; exit 1 \
+             }}; \
+             $out = & usbipd attach --wsl --busid '{}' 2>&1; \
+             $out | Out-File -FilePath '{}' -Encoding UTF8; \
+             if ($LASTEXITCODE -ne 0) {{ exit 1 }}",
+            busid, tmp_result_str, busid, tmp_result_str
+        )
+    };
+
+    // 4. 通过 PowerShell Start-Process -Verb RunAs 触发 UAC 提权
+    let launcher = format!(
+        "Start-Process -FilePath 'powershell' \
+         -ArgumentList '-NonInteractive','-Command',\"{}\" \
+         -Verb RunAs -Wait",
+        ps_script.replace('"', "`\"")
+    );
+
+    let status = std::process::Command::new("powershell")
+        .args(["-NonInteractive", "-Command", &launcher])
+        .status()
+        .map_err(|e| format!("提权启动失败: {}", e))?;
+
+    // 5. 读取提权进程写入的结果文件
+    let result_content = std::fs::read_to_string(&tmp_result)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let _ = std::fs::remove_file(&tmp_result);
+
+    if status.success() {
+        let bind_note = if already_bound { "（已绑定）" } else { "（已绑定并）" };
+        Ok(format!("已将 {} (busid: {}) {}映射到 WSL{}",
+            port_name, busid, bind_note,
+            if result_content.is_empty() { String::new() } else { format!("\n{}", result_content) }
+        ))
+    } else {
+        if result_content.is_empty() {
+            Err(format!("操作失败或用户取消了管理员权限请求（busid: {}）", busid))
+        } else {
+            Err(format!("映射失败: {}", result_content))
+        }
     }
 }
 
@@ -395,7 +439,24 @@ fn main() {
             list_usb_devices,
             attach_port_to_wsl,
         ])
-        .setup(|_app| Ok(()))
+        .setup(|app| {
+            // 程序启动时检查 usbipd-win 是否已安装
+            // 若未安装，向前端发送通知事件
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let installed = std::process::Command::new("usbipd")
+                    .args(["--version"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                if !installed {
+                    // 延迟 800ms，确保前端页面已加载完成
+                    std::thread::sleep(std::time::Duration::from_millis(800));
+                    let _ = app_handle.emit("usbipd-not-found", ());
+                }
+            });
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("启动应用失败");
 }
