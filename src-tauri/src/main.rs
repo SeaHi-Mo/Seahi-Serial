@@ -19,6 +19,92 @@ struct PortInfo {
     friendly_name: String,
 }
 
+/// Windows 下通过 SetupAPI 以 UTF-16 读取串口设备的 FriendlyName，
+/// 用于修复 serialport crate 读取 USB 描述符时中文乱码（U+FFFD）的问题。
+#[cfg(windows)]
+fn get_port_friendly_name_winapi(port_name: &str) -> Option<String> {
+    use std::ptr;
+    use winapi::shared::guiddef::GUID;
+    use winapi::um::setupapi::{
+        SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
+        SetupDiGetDeviceRegistryPropertyW, HDEVINFO, SPDRP_FRIENDLYNAME, SP_DEVINFO_DATA,
+        DIGCF_PRESENT,
+    };
+
+    // GUID_DEVCLASS_PORTS = {4D36E978-E325-11CE-BFC1-08002BE10318}
+    let guid_ports = GUID {
+        Data1: 0x4D36E978,
+        Data2: 0xE325,
+        Data3: 0x11CE,
+        Data4: [0xBF, 0xC1, 0x08, 0x00, 0x2B, 0xE1, 0x03, 0x18],
+    };
+
+    unsafe {
+        let h_dev_info: HDEVINFO = SetupDiGetClassDevsW(
+            &guid_ports,
+            ptr::null(),
+            ptr::null_mut(),
+            DIGCF_PRESENT,
+        );
+
+        if h_dev_info as usize == usize::MAX {
+            return None;
+        }
+
+        let mut dev_info_data: SP_DEVINFO_DATA = std::mem::zeroed();
+        dev_info_data.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
+
+        let mut index: u32 = 0;
+        while SetupDiEnumDeviceInfo(h_dev_info, index, &mut dev_info_data) != 0 {
+            index += 1;
+
+            // 第一次调用获取缓冲区大小
+            let mut required_size: u32 = 0;
+            let _ = SetupDiGetDeviceRegistryPropertyW(
+                h_dev_info,
+                &mut dev_info_data,
+                SPDRP_FRIENDLYNAME,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                0,
+                &mut required_size,
+            );
+
+            if required_size == 0 {
+                continue;
+            }
+
+            // 分配 UTF-16 缓冲区
+            let mut buffer: Vec<u16> = vec![0; (required_size / 2 + 1) as usize];
+            let mut actual_size: u32 = 0;
+
+            let success = SetupDiGetDeviceRegistryPropertyW(
+                h_dev_info,
+                &mut dev_info_data,
+                SPDRP_FRIENDLYNAME,
+                ptr::null_mut(),
+                buffer.as_mut_ptr() as *mut u8,
+                buffer.len() as u32 * 2,
+                &mut actual_size,
+            );
+
+            if success != 0 {
+                let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+                if let Ok(name) = String::from_utf16(&buffer[..len]) {
+                    if name.contains(port_name) {
+                        SetupDiDestroyDeviceInfoList(h_dev_info);
+                        return Some(name);
+                    }
+                }
+            }
+        }
+
+        SetupDiDestroyDeviceInfoList(h_dev_info);
+    }
+
+    None
+}
+
 impl From<SerialPortInfo> for PortInfo {
     fn from(info: SerialPortInfo) -> Self {
         // Windows: "COM3", macOS/Linux: "/dev/ttyUSB0" 取最后一段
@@ -29,7 +115,7 @@ impl From<SerialPortInfo> for PortInfo {
         };
 
         // 构建 "COMX (设备名称)" 格式
-        let friendly = match &info.port_type {
+        let mut friendly = match &info.port_type {
             SerialPortType::UsbPort(usb) => {
                 let dev_name = usb.product.as_deref()
                     .filter(|s| !s.is_empty())
@@ -42,6 +128,23 @@ impl From<SerialPortInfo> for PortInfo {
             SerialPortType::BluetoothPort => format!("{} - 蓝牙", port_short),
             _ => port_short.clone(),
         };
+
+        // 修复：如果名称中包含 Unicode 替换字符（U+FFFD，显示为 ◆），
+        // 说明 serialport crate 读取 USB 描述符时编码出错（常见于 CH340/CH341 中文设备名）。
+        // 此时通过 Windows SetupAPI 以 UTF-16 重新读取正确的 FriendlyName。
+        if friendly.contains('\u{FFFD}') {
+            #[cfg(windows)]
+            if let Some(fixed) = get_port_friendly_name_winapi(&port_short) {
+                friendly = fixed;
+            } else {
+                // 后备：去掉替换字符，避免显示成 ◆◆◆◆◆◆
+                friendly = friendly.replace('\u{FFFD}', "");
+            }
+            #[cfg(not(windows))]
+            {
+                friendly = friendly.replace('\u{FFFD}', "");
+            }
+        }
 
         PortInfo {
             port_name: info.port_name.clone(),
