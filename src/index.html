@@ -1054,7 +1054,7 @@ function updateQcmdSendBtns(mid, connected) {
 
 /* ===== WSL 映射功能 ===== */
 var _wslCurrentMid = null;
-// 'idle' | 'loading' | 'ready' | 'attaching' | 'need_install' | 'installing'
+// 'idle' | 'attaching'
 var _wslPhase = 'idle';
 
 function wslLog(msg, cls) {
@@ -1080,87 +1080,34 @@ function wslSetBtn(show, label, disabled) {
     if (label !== undefined) btn.innerHTML = label;
 }
 
-// 打开模态框：直接进入映射准备流程，不再检查安装状态
+// 打开模态框：直接映射，无需检查安装状态（安装由 Inno Setup 负责）
 async function openWslModal(mid) {
     _wslCurrentMid = mid;
-    _wslPhase = 'loading';
+    _wslPhase = 'idle';
     document.getElementById('wslLog').innerHTML = '';
-    wslSetBtn(false);
-    wslSetStatus('<span style="color:#9cdcfe;">正在获取设备列表...</span>');
-    document.getElementById('wslOverlay').classList.add('open');
 
-    await wslShowDevices(mid);
-}
-
-// 获取设备列表并准备映射按钮
-async function wslShowDevices(mid) {
-    var portName = '';
     var portSel = document.getElementById(mid + '-portSelect');
-    if (portSel) portName = portSel.value;
+    var portName = portSel ? portSel.value : '';
 
-    wslLog('› 获取 USB 设备列表...', 'wsl-inf');
-    try {
-        var listOut = await invoke('list_usb_devices');
-        wslLog(listOut, 'wsl-inf');
-        if (portName) {
-            wslSetStatus('<span style="color:#dcdcaa;">准备将 <b>' + portName + '</b> 映射到 WSL</span>');
-            wslSetBtn(true, '→ 映射 ' + portName + ' 到 WSL（需管理员权限）', false);
-            _wslPhase = 'ready';
-        } else {
-            wslSetStatus('<span style="color:#f44747;">请先在工具栏选择串口端口</span>');
-            wslSetBtn(false);
-            _wslPhase = 'idle';
-        }
-    } catch (e) {
-        wslLog('✗ 获取设备列表失败: ' + e, 'wsl-err');
-        wslSetStatus('<span style="color:#f44747;">获取设备列表失败（usbipd 是否已安装？）</span>');
+    if (!portName) {
+        wslSetStatus('<span style="color:#f44747;">请先在工具栏选择串口端口</span>');
         wslSetBtn(false);
-        _wslPhase = 'idle';
+        document.getElementById('wslOverlay').classList.add('open');
+        return;
     }
+
+    wslSetStatus('<span style="color:#dcdcaa;">准备将 <b>' + portName + '</b> 映射到 WSL</span>');
+    wslSetBtn(true, '→ 映射 ' + portName + ' 到 WSL（需管理员权限）', false);
+    document.getElementById('wslOverlay').classList.add('open');
+    wslLog('› 点击映射按钮将 ' + portName + ' 映射到 WSL', 'wsl-inf');
+    wslLog('  · 将自动检查绑定状态，未绑定则先执行 bind', 'wsl-warn');
+    wslLog('  · 将弹出 UAC 窗口请求管理员权限，请点击“是”', 'wsl-warn');
 }
 
-// 按钮点击路由
+// 按钮点击：执行映射
 async function wslAction() {
-    if (_wslPhase === 'ready') {
-        await wslAttach();
-    } else if (_wslPhase === 'need_install') {
-        await wslInstall();
-    }
-}
+    if (_wslPhase === 'attaching') return;
 
-// 安装 usbipd-win（通过 PowerShell UAC 提权）
-async function wslInstall() {
-    _wslPhase = 'installing';
-    wslSetBtn(true, '<span class="wsl-spinner"></span> 安装中...', true);
-    wslLog('', 'wsl-inf');
-    wslLog('› 正在从 GitHub 获取最新版本并安装...', 'wsl-inf');
-    wslLog('  （将弹出管理员权限请求窗口，请点击"是"）', 'wsl-warn');
-    try {
-        var result = await invoke('install_usbipd');
-        wslLog('✓ ' + result, 'wsl-ok');
-        wslLog('', 'wsl-inf');
-        wslLog('› 验证安装...', 'wsl-inf');
-        var ver = await invoke('check_usbipd');
-        if (ver === 'not_found') {
-            wslLog('✗ 安装后仍未检测到 usbipd，请重启后重试', 'wsl-err');
-            wslSetStatus('<span style="color:#f44747;">安装可能需要重启生效</span>');
-            wslSetBtn(true, '重试安装', false);
-            _wslPhase = 'need_install';
-        } else {
-            wslLog('✓ usbipd-win 版本: ' + ver, 'wsl-ok');
-            _wslPhase = 'ready';
-            await wslShowDevices(_wslCurrentMid);
-        }
-    } catch (e) {
-        wslLog('✗ 安装失败: ' + e, 'wsl-err');
-        wslSetStatus('<span style="color:#f44747;">安装失败或用户取消了权限请求</span>');
-        wslSetBtn(true, '重试安装', false);
-        _wslPhase = 'need_install';
-    }
-}
-
-// 执行映射（内部通过 PowerShell Start-Process -Verb RunAs 触发 UAC 提权）
-async function wslAttach() {
     var mid = _wslCurrentMid;
     var portSel = document.getElementById(mid + '-portSelect');
     var portName = portSel ? portSel.value : '';
@@ -1170,20 +1117,18 @@ async function wslAttach() {
     wslSetBtn(true, '<span class="wsl-spinner"></span> 申请管理员权限...', true);
     wslLog('', 'wsl-inf');
     wslLog('› 正在将 ' + portName + ' 映射到 WSL...', 'wsl-inf');
-    wslLog('  · 自动检查绑定状态，未绑定则先执行 bind', 'wsl-warn');
-    wslLog('  · 将弹出 UAC 窗口请求管理员权限，请点击"是"', 'wsl-warn');
     try {
         var result = await invoke('attach_port_to_wsl', { portName: portName });
         wslLog('✓ ' + result, 'wsl-ok');
         wslSetStatus('<span style="color:#6a9955;">✓ 映射成功！在 WSL 中执行 ls /dev/ttyUSB* 查看设备</span>');
         wslSetBtn(true, '重新映射', false);
-        _wslPhase = 'ready';
+        _wslPhase = 'idle';
         if (monitors[mid]) appendOutput(mid, 'sys', '[WSL] ' + result);
     } catch (e) {
         wslLog('✗ ' + e, 'wsl-err');
         wslSetStatus('<span style="color:#f44747;">映射失败</span>');
         wslSetBtn(true, '重试映射', false);
-        _wslPhase = 'ready';
+        _wslPhase = 'idle';
     }
 }
 
@@ -1195,26 +1140,13 @@ function closeWslModal() {
 function wslOverlayClick(e) {
     if (e.target === document.getElementById('wslOverlay')) closeWslModal();
 }
+
 /* ===== 初始化 ===== */
 document.addEventListener('DOMContentLoaded', function() {
     createMonitorPane('main', '主监视器', false);
     setInterval(function() { if (!monitors.main || !monitors.main.isConnected) refreshPorts('main'); }, 3000);
 
-    // 监听 usbipd-win 未安装事件（后端程序启动时检测并发送）
-    if (window.__TAURI__ && window.__TAURI__.event) {
-        window.__TAURI__.event.listen('usbipd-not-found', function() {
-            var bar = document.getElementById('globalBar');
-            if (bar && !bar.querySelector('.usbipd-warn')) {
-                var tip = document.createElement('span');
-                tip.className = 'usbipd-warn';
-                tip.style.cssText = 'margin-left:auto; color:#dcdcaa; font-size:11px; cursor:pointer; flex-shrink:0;';
-                tip.title = '点击关闭此提示。可通过工具栏 WSL 映射按鈕自动安装 usbipd-win';
-                tip.textContent = '⚠ usbipd-win 未安装（WSL 映射暂不可用，可通过 WSL 按鈕自动安装）';
-                tip.onclick = function() { tip.remove(); };
-                bar.appendChild(tip);
-            }
-        });
-    }
+
 });
 </script>
 </body>

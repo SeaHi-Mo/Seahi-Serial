@@ -47,7 +47,7 @@ chinese_simplified.UsbipdDownloadFailed=下载 usbipd-win 失败，请检查网�
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"
-Name: "install_usbipd"; Description: "安装 usbipd-win（WSL USB 串口映射支持）"; Flags: unchecked onceable
+Name: "install_usbipd"; Description: "安装 usbipd-win（WSL USB 串口映射支持）"; Flags: unchecked
 
 [Files]
 ; 主程序 - 使用 Tauri 内嵌的 WebView2，无需额外 DLL
