@@ -389,19 +389,57 @@ fn install_usbipd() -> Result<String, String> {
     }
 }
 
+/// 内部 helper：快速预检 usbipd 是否存在，然后带 3 秒超时执行 usbipd list
+fn run_usbipd_list_with_timeout() -> Result<String, String> {
+    // 1. 快速预检：usbipd 是否在 PATH 中
+    let quick_check = std::process::Command::new("usbipd")
+        .args(["--version"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match quick_check {
+        Ok(s) if s.success() => {}
+        _ => {
+            return Err(
+                "usbipd-win 未安装或不在 PATH 中\n"
+                    .to_string()
+                    + "可通过调试器工具栏的 WSL 映射按钮自动安装，"
+                    + "或访问 https://github.com/dorssel/usbipd-win/releases 手动下载安装包",
+            );
+        }
+    }
+
+    // 2. 主命令在独立线程中执行，带 3 秒超时
+    use std::sync::mpsc;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = std::process::Command::new("usbipd")
+            .args(["list"])
+            .output();
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        Ok(Ok(out)) => {
+            if out.status.success() {
+                Ok(String::from_utf8_lossy(&out.stdout).to_string())
+            } else {
+                Err(String::from_utf8_lossy(&out.stderr).to_string())
+            }
+        }
+        Ok(Err(e)) => Err(format!("执行 usbipd list 失败: {}", e)),
+        Err(_) => Err(
+            "usbipd list 执行超时（3 秒）\n".to_string()
+                + "可能原因：usbipd-win 未正确安装，或系统正在等待用户交互。",
+        ),
+    }
+}
+
 /// 列出 usbipd 管理的 USB 设备（原始输出）
 #[tauri::command]
 fn list_usb_devices() -> Result<String, String> {
-    let out = std::process::Command::new("usbipd")
-        .args(["list"])
-        .output()
-        .map_err(|e| format!("执行 usbipd list 失败: {}", e))?;
-
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).to_string())
-    }
+    run_usbipd_list_with_timeout()
 }
 
 /// 将指定串口对应的 USB 设备映射到 WSL
@@ -411,13 +449,8 @@ fn list_usb_devices() -> Result<String, String> {
 /// UAC 弹窗会请求用户授权，授权后在提权进程中完成操作
 #[tauri::command]
 fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
-    // 1. 普通权限获取设备列表，找到对应 busid
-    let list_out = std::process::Command::new("usbipd")
-        .args(["list"])
-        .output()
-        .map_err(|e| format!("usbipd list 失败: {}", e))?;
-
-    let list_str = String::from_utf8_lossy(&list_out.stdout).to_string();
+    // 1. 普通权限获取设备列表，找到对应 busid（带超时和预检）
+    let list_str = run_usbipd_list_with_timeout()?;
 
     // 在输出中寻找包含 port_name（如 COM3）的行，提取 busid（格式 x-y）
     let busid = list_str.lines()
