@@ -390,14 +390,17 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 
 /* ===== 更新按钮 ===== */
 .update-btn {
-    color: #4ec9b0;
+    background:#2d8cf0;
+    color:#fff;
     font-size:12px; cursor:pointer;
     display:inline-flex; align-items:center; gap:3px;
-    padding:1px 4px; border-radius:2px; margin-left:10px;
+    padding:3px 10px; border-radius:4px; margin-left:10px;
+    border:none; user-select:none;
+    transition:background .15s;
 }
-.update-btn:hover { text-decoration:underline; }
-.update-btn.disabled { color:#858585; cursor:default; }
-.update-btn.disabled:hover { text-decoration:none; }
+.update-btn:hover { background:#1a7ae8; }
+.update-btn.disabled { background:#3a5a7a; color:#aaa; cursor:default; }
+.update-btn.disabled:hover { background:#3a5a7a; }
 </style>
 </head>
 <body style="display:flex;flex-direction:column;height:100vh;">
