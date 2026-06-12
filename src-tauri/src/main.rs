@@ -551,12 +551,15 @@ fn check_update() -> Result<UpdateInfo, String> {
 
     let has_update = is_newer_version(&current, &release.tag_name);
 
-    // 查找 Windows 安装包（.exe 文件）
+    // 查找 Windows 安装包（优先 NSIS .exe，其次 .msi）
     let download_url = if has_update {
+        // 优先查找 NSIS 安装包（文件名含 -setup.exe）
         release
             .assets
             .iter()
-            .find(|a| a.name.ends_with(".exe") || a.name.ends_with(".msi"))
+            .find(|a| a.name.contains("-setup") && a.name.ends_with(".exe"))
+            .or_else(|| release.assets.iter().find(|a| a.name.ends_with(".exe")))
+            .or_else(|| release.assets.iter().find(|a| a.name.ends_with(".msi")))
             .map(|a| a.browser_download_url.clone())
             .unwrap_or_default()
     } else {
