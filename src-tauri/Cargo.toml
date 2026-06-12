@@ -1,6 +1,6 @@
 [package]
 name = "seahi-serial"
-version = "0.1.4"
+version = "0.1.5"
 description = "Seahi 串口调试器"
 authors = ["Seahi"]
 edition = "2021"
@@ -19,3 +19,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serialport = "3.3"
 winapi = { version = "0.3", features = ["setupapi", "guiddef"] }
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+tempfile = "3"

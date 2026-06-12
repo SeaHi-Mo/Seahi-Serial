@@ -486,6 +486,152 @@ fn save_log(content: String, path: String) -> Result<(), String> {
     Ok(())
 }
 
+// ===== 自动更新功能 =====
+
+/// GitHub Releases API 响应结构体（简化版）
+#[derive(Debug, serde::Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GitHubAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+/// 返回给前端的更新信息
+#[derive(Debug, serde::Serialize)]
+struct UpdateInfo {
+    has_update: bool,
+    latest_version: String,
+    current_version: String,
+    download_url: String,
+}
+
+/// 解析版本号字符串，返回 (major, minor, patch) 元组
+fn parse_version(ver: &str) -> (u32, u32, u32) {
+    let ver = ver.trim_start_matches('v').trim_start_matches('V');
+    let parts: Vec<&str> = ver.split('.').collect();
+    let major = parts.get(0).and_then(|p| p.parse().ok()).unwrap_or(0);
+    let minor = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(0);
+    let patch = parts.get(2).and_then(|p| p.parse().ok()).unwrap_or(0);
+    (major, minor, patch)
+}
+
+/// 比较版本号：如果 latest > current，返回 true
+fn is_newer_version(current: &str, latest: &str) -> bool {
+    parse_version(current) < parse_version(latest)
+}
+
+/// 获取当前程序版本号（从 Cargo.toml 的 version 字段编译时注入）
+fn get_current_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// 检查 GitHub Releases 是否有新版本
+#[tauri::command]
+fn check_update() -> Result<UpdateInfo, String> {
+    let current = get_current_version();
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .get("https://api.github.com/repos/SeaHi-Mo/Seahi-Serial/releases/latest")
+        .header("User-Agent", "seahi-serial-updater")
+        .send()
+        .map_err(|e| format!("请求 GitHub API 失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API 返回错误状态码: {}", resp.status()));
+    }
+
+    let release: GitHubRelease = resp
+        .json()
+        .map_err(|e| format!("解析 GitHub 响应失败: {}", e))?;
+
+    let has_update = is_newer_version(&current, &release.tag_name);
+
+    // 查找 Windows 安装包（.exe 文件）
+    let download_url = if has_update {
+        release
+            .assets
+            .iter()
+            .find(|a| a.name.ends_with(".exe") || a.name.ends_with(".msi"))
+            .map(|a| a.browser_download_url.clone())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    Ok(UpdateInfo {
+        has_update,
+        latest_version: release.tag_name,
+        current_version: current,
+        download_url,
+    })
+}
+
+/// 下载更新安装包到临时目录
+#[tauri::command]
+fn download_update(download_url: String) -> Result<String, String> {
+    use std::fs;
+    use std::io::copy;
+
+    let client = reqwest::blocking::Client::new();
+    let mut resp = client
+        .get(&download_url)
+        .header("User-Agent", "seahi-serial-updater")
+        .send()
+        .map_err(|e| format!("下载失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("下载失败，HTTP 状态码: {}", resp.status()));
+    }
+
+    // 获取文件名
+    let filename = download_url
+        .rsplit_once('/')
+        .map(|(_, name)| name)
+        .unwrap_or("update-setup.exe")
+        .to_string();
+
+    // 保存到临时目录
+    let temp_dir = std::env::temp_dir().join("seahi-serial-update");
+    fs::create_dir_all(&temp_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
+    let file_path = temp_dir.join(&filename);
+
+    let mut file = fs::File::create(&file_path).map_err(|e| format!("创建文件失败: {}", e))?;
+    copy(&mut resp, &mut file).map_err(|e| format!("写入安装包失败: {}", e))?;
+
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+/// 启动安装包并退出当前程序
+#[tauri::command]
+fn install_update(file_path: String) -> Result<(), String> {
+    use std::process::Command;
+
+    #[cfg(windows)]
+    {
+        // Windows: 启动安装包，不等待其完成
+        Command::new("cmd")
+            .args(["/c", "start", "", &file_path])
+            .spawn()
+            .map_err(|e| format!("启动安装程序失败: {}", e))?;
+    }
+
+    #[cfg(not(windows))]
+    {
+        Command::new(&file_path)
+            .spawn()
+            .map_err(|e| format!("启动安装程序失败: {}", e))?;
+    }
+
+    // 给安装程序一点时间启动，然后退出当前程序
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    std::process::exit(0);
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(PortState {
@@ -504,6 +650,9 @@ fn main() {
             attach_port_to_wsl,
             save_config,
             load_config,
+            check_update,
+            download_update,
+            install_update,
         ])
         .setup(|_app| Ok(()))
         .run(tauri::generate_context!())

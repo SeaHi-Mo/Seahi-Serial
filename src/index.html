@@ -387,6 +387,17 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     flex-shrink:0;
 }
 @keyframes wsl-spin { to { transform:rotate(360deg); } }
+
+/* ===== 更新按钮 ===== */
+.update-btn {
+    color: #4ec9b0;
+    font-size:12px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:3px;
+    padding:1px 4px; border-radius:2px; margin-left:10px;
+}
+.update-btn:hover { text-decoration:underline; }
+.update-btn.disabled { color:#858585; cursor:default; }
+.update-btn.disabled:hover { text-decoration:none; }
 </style>
 </head>
 <body style="display:flex;flex-direction:column;height:100vh;">
@@ -394,6 +405,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 <!-- 全局操作栏 -->
 <div class="global-bar">
     <span class="add-btn" onclick="addMonitor()">＋ 打开额外监视器</span>
+    <span id="updateBtn" class="update-btn" style="display:none;" onclick="downloadAndInstallUpdate()">更新</span>
 </div>
 
 <!-- 分栏容器 -->
@@ -1078,6 +1090,42 @@ function updateQcmdSendBtns(mid, connected) {
     });
 }
 
+
+/* ===== 自动更新 ===== */
+var _updateInfo = null;
+
+// 检查更新（启动时调用）
+async function checkForUpdate() {
+    try {
+        var result = await invoke('check_update');
+        if (result.has_update) {
+            _updateInfo = result;
+            var btn = document.getElementById('updateBtn');
+            btn.textContent = '更新 ' + result.latest_version;
+            btn.style.display = 'inline-flex';
+        }
+    } catch (e) {
+        console.warn('检查更新失败:', e);
+    }
+}
+
+// 下载并安装更新
+async function downloadAndInstallUpdate() {
+    if (!_updateInfo || !_updateInfo.download_url) return;
+    var btn = document.getElementById('updateBtn');
+    btn.classList.add('disabled');
+    btn.textContent = '正在下载...';
+    try {
+        var filePath = await invoke('download_update', { downloadUrl: _updateInfo.download_url });
+        btn.textContent = '正在安装...';
+        await invoke('install_update', { filePath: filePath });
+    } catch (e) {
+        alert('更新失败: ' + e);
+        btn.classList.remove('disabled');
+        btn.textContent = '更新 ' + _updateInfo.latest_version;
+    }
+}
+
 /* ===== 配置保存/恢复 ===== */
 // 收集所有监视器的当前配置，返回 JSON 对象
 function collectConfig() {
@@ -1308,6 +1356,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // 加载并恢复用户上次的配置
     loadAndApplyConfig();
+
+    // 检查更新
+    checkForUpdate();
 });
 </script>
 </body>
