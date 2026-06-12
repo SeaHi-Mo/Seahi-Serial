@@ -629,6 +629,20 @@ function createMonitorPane(mid, title, closable) {
     // 输入时重置历史导航索引
     sendInput.addEventListener('input', function() { monitors[mid].histNavIdx = -1; });
 
+    // 绑定 select 变化 → 自动保存
+    ['viewMode','portSelect','lineEnding','dataBits','stopBits','parity'].forEach(function(key) {
+        var el = document.getElementById(mid + '-' + key);
+        if (el) el.addEventListener('change', function() { scheduleConfigSave(); });
+    });
+    // 波特率手动输入 → 自动保存
+    var baudInput = document.getElementById(mid + '-baudRate');
+    if (baudInput) baudInput.addEventListener('change', function() { scheduleConfigSave(); });
+    // DTR/RTS checkbox → 自动保存
+    ['chkDTR','chkRTS'].forEach(function(key) {
+        var el = document.getElementById(mid + '-' + key);
+        if (el) el.addEventListener('change', function() { scheduleConfigSave(); });
+    });
+
     refreshPorts(mid);
 }
 
@@ -640,6 +654,7 @@ function toggleBaudDropdown(e, mid) {
 function setBaud(mid, val) {
     document.getElementById(mid + '-baudRate').value = val;
     document.getElementById(mid + '-baudDropdown').classList.remove('open');
+    scheduleConfigSave();
 }
 // 点击外部关闭所有波特率下拉和发送历史下拉
 document.addEventListener('click', function(e) {
@@ -659,7 +674,7 @@ async function refreshPorts(mid) {
         var ports = await invoke('list_ports');
         var sel = document.getElementById(mid + '-portSelect');
         if (!sel) return;
-        var prev = sel.value;
+        var prev = sel.value || (monitors[mid] && monitors[mid]._savedPort) || '';
         sel.innerHTML = '';
         if (!ports || ports.length === 0) { sel.innerHTML = '<option value="">无可用端口</option>'; return; }
         ports.forEach(function(p) {
@@ -668,7 +683,11 @@ async function refreshPorts(mid) {
             opt.textContent = p.friendly_name || p.port_name;
             sel.appendChild(opt);
         });
-        if (prev && [...sel.options].some(function(o) { return o.value === prev; })) sel.value = prev;
+        if (prev && [...sel.options].some(function(o) { return o.value === prev; })) {
+            sel.value = prev;
+        }
+        // 清除已恢复的端口标记
+        if (monitors[mid]) monitors[mid]._savedPort = '';
     } catch (e) { appendOutput(mid, 'err', '刷新端口失败: ' + e); }
 }
 
@@ -679,7 +698,7 @@ function toggleAdv(mid) {
     row.classList.toggle('vis');
     btn.classList.toggle('on', row.classList.contains('vis'));
 }
-function toggleIbtn(btn) { btn.classList.toggle('on'); }
+function toggleIbtn(btn) { btn.classList.toggle('on'); scheduleConfigSave(); }
 
 /* ===== DTR/RTS 实时切换 ===== */
 async function toggleDTR(mid, level) {
@@ -781,6 +800,7 @@ function stopReading(mid) {
 function addMonitor() {
     extraCount++;
     createMonitorPane('extra-' + extraCount, '监视器 ' + (extraCount + 1), true);
+    scheduleConfigSave();
 }
 
 function closeMonitor(mid) {
@@ -791,6 +811,7 @@ function closeMonitor(mid) {
     delete monitors[mid];
     var pane = document.getElementById('pane-' + mid);
     if (pane) pane.remove();
+    scheduleConfigSave();
 }
 
 /* ===== 发送数据 ===== */
@@ -821,6 +842,7 @@ async function sendData(mid) {
         monitors[mid].histNavIdx = -1;
         if (!hexMode) input.value = '';
         input.focus();
+        scheduleConfigSave();
     } catch (e) { appendOutput(mid, 'err', '发送失败: ' + e); }
 }
 
@@ -937,6 +959,7 @@ function makeQcmdItem(mid, idx, label, value) {
     labelInp.addEventListener('click', function(e) { e.stopPropagation(); });
     labelInp.addEventListener('change', function() {
         monitors[mid].quickCmds[idx].label = this.value;
+        scheduleConfigSave();
     });
 
     var valInp = document.createElement('input');
@@ -949,6 +972,7 @@ function makeQcmdItem(mid, idx, label, value) {
     valInp.addEventListener('click', function(e) { e.stopPropagation(); });
     valInp.addEventListener('change', function() {
         monitors[mid].quickCmds[idx].value = this.value;
+        scheduleConfigSave();
     });
     valInp.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); sendQcmdItem(mid, idx); }
@@ -1010,11 +1034,13 @@ function addQcmdItem(mid) {
     var qlist = document.getElementById(mid + '-qcmdList');
     var item = makeQcmdItem(mid, idx, cmds[idx].label, cmds[idx].value);
     qlist.appendChild(item);
+    scheduleConfigSave();
 }
 
 function removeQcmdItem(mid, idx) {
     monitors[mid].quickCmds.splice(idx, 1);
     rebuildQcmdList(mid);
+    scheduleConfigSave();
 }
 
 function rebuildQcmdList(mid) {
@@ -1050,6 +1076,140 @@ function updateQcmdSendBtns(mid, connected) {
     qlist.querySelectorAll('[data-qsend]').forEach(function(b) {
         b.disabled = !connected;
     });
+}
+
+/* ===== 配置保存/恢复 ===== */
+// 收集所有监视器的当前配置，返回 JSON 对象
+function collectConfig() {
+    var cfg = { version: 1, extraCount: extraCount, monitors: {}, logDir: logDirPath };
+    Object.keys(monitors).forEach(function(mid) {
+        var m = monitors[mid];
+        var portSel   = document.getElementById(mid + '-portSelect');
+        var baudInp   = document.getElementById(mid + '-baudRate');
+        var lineEnd   = document.getElementById(mid + '-lineEnding');
+        var viewMode  = document.getElementById(mid + '-viewMode');
+        var dataBits  = document.getElementById(mid + '-dataBits');
+        var stopBits  = document.getElementById(mid + '-stopBits');
+        var parity    = document.getElementById(mid + '-parity');
+        var chkDTR    = document.getElementById(mid + '-chkDTR');
+        var chkRTS    = document.getElementById(mid + '-chkRTS');
+        var advRow    = document.getElementById(mid + '-advRow');
+        function btnOn(id) { var el = document.getElementById(id); return el ? el.classList.contains('on') : true; }
+        cfg.monitors[mid] = {
+            port:         portSel  ? portSel.value  : '',
+            baud:         baudInp  ? baudInp.value  : '115200',
+            lineEnding:   lineEnd  ? lineEnd.value  : 'crlf',
+            viewMode:     viewMode ? viewMode.value : 'text',
+            dataBits:     dataBits ? dataBits.value : '8',
+            stopBits:     stopBits ? stopBits.value : '1',
+            parity:       parity   ? parity.value   : 'none',
+            dtr:          chkDTR   ? chkDTR.checked : false,
+            rts:          chkRTS   ? chkRTS.checked : true,
+            advOpen:      advRow   ? advRow.classList.contains('vis') : false,
+            btnScroll:    btnOn(mid + '-btnScroll'),
+            btnAutoReconnect: btnOn(mid + '-btnAutoReconnect'),
+            btnSendLE:    btnOn(mid + '-btnSendLE'),
+            btnTs:        btnOn(mid + '-btnTs'),
+            btnEcho:      btnOn(mid + '-btnEcho'),
+            quickCmds:    m.quickCmds ? JSON.parse(JSON.stringify(m.quickCmds)) : [],
+            sendHistory:  m.sendHistory ? m.sendHistory.slice(0, 20) : [],
+        };
+    });
+    return cfg;
+}
+
+// 将配置应用到指定监视器
+function applyMonitorConfig(mid, mc) {
+    if (!mc) return;
+    // 波特率
+    var baudInp = document.getElementById(mid + '-baudRate');
+    if (baudInp && mc.baud) baudInp.value = mc.baud;
+    // 行尾
+    var lineEnd = document.getElementById(mid + '-lineEnding');
+    if (lineEnd && mc.lineEnding) lineEnd.value = mc.lineEnding;
+    // 视图模式
+    var viewMode = document.getElementById(mid + '-viewMode');
+    if (viewMode && mc.viewMode) viewMode.value = mc.viewMode;
+    // 高级设置
+    var dataBits = document.getElementById(mid + '-dataBits');
+    if (dataBits && mc.dataBits) dataBits.value = mc.dataBits;
+    var stopBits = document.getElementById(mid + '-stopBits');
+    if (stopBits && mc.stopBits) stopBits.value = mc.stopBits;
+    var parity = document.getElementById(mid + '-parity');
+    if (parity && mc.parity) parity.value = mc.parity;
+    var chkDTR = document.getElementById(mid + '-chkDTR');
+    if (chkDTR && mc.dtr !== undefined) chkDTR.checked = mc.dtr;
+    var chkRTS = document.getElementById(mid + '-chkRTS');
+    if (chkRTS && mc.rts !== undefined) chkRTS.checked = mc.rts;
+    // 高级行是否展开
+    var advRow = document.getElementById(mid + '-advRow');
+    var btnAdv = document.getElementById(mid + '-btnAdv');
+    if (advRow && mc.advOpen) {
+        advRow.classList.add('vis');
+        if (btnAdv) btnAdv.classList.add('on');
+    }
+    // Toggle 按钮状态
+    function setBtn(id, on) {
+        var el = document.getElementById(id);
+        if (el) el.classList.toggle('on', !!on);
+    }
+    if (mc.btnScroll !== undefined)       setBtn(mid + '-btnScroll', mc.btnScroll);
+    if (mc.btnAutoReconnect !== undefined) setBtn(mid + '-btnAutoReconnect', mc.btnAutoReconnect);
+    if (mc.btnSendLE !== undefined)        setBtn(mid + '-btnSendLE', mc.btnSendLE);
+    if (mc.btnTs !== undefined)            setBtn(mid + '-btnTs', mc.btnTs);
+    if (mc.btnEcho !== undefined)          setBtn(mid + '-btnEcho', mc.btnEcho);
+    // 快速指令
+    if (mc.quickCmds && mc.quickCmds.length > 0 && monitors[mid]) {
+        monitors[mid].quickCmds = mc.quickCmds;
+        rebuildQcmdList(mid);
+    }
+    // 发送历史
+    if (mc.sendHistory && mc.sendHistory.length > 0 && monitors[mid]) {
+        monitors[mid].sendHistory = mc.sendHistory;
+    }
+    // 端口选择（在 refreshPorts 回调中设置，避免端口未加载时失效）
+    if (mc.port) {
+        monitors[mid]._savedPort = mc.port;
+    }
+}
+
+// 保存配置（防抖：500ms 后写入）
+var _saveConfigTimer = null;
+function scheduleConfigSave() {
+    if (_saveConfigTimer) clearTimeout(_saveConfigTimer);
+    _saveConfigTimer = setTimeout(function() {
+        var cfg = collectConfig();
+        invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) {
+            console.warn('保存配置失败:', e);
+        });
+    }, 500);
+}
+
+// 启动时加载配置
+async function loadAndApplyConfig() {
+    try {
+        var raw = await invoke('load_config');
+        if (!raw) return;
+        var cfg = JSON.parse(raw);
+        if (!cfg || cfg.version !== 1) return;
+        // 恢复日志目录
+        if (cfg.logDir) logDirPath = cfg.logDir;
+        // 恢复主监视器配置
+        if (cfg.monitors && cfg.monitors['main']) {
+            applyMonitorConfig('main', cfg.monitors['main']);
+        }
+        // 恢复额外监视器
+        var savedExtra = cfg.extraCount || 0;
+        for (var i = 1; i <= savedExtra; i++) {
+            var emid = 'extra-' + i;
+            addMonitor(); // 已经会递增 extraCount
+            if (cfg.monitors && cfg.monitors[emid]) {
+                applyMonitorConfig(emid, cfg.monitors[emid]);
+            }
+        }
+    } catch (e) {
+        console.warn('加载配置失败:', e);
+    }
 }
 
 /* ===== WSL 映射功能 ===== */
@@ -1146,7 +1306,8 @@ document.addEventListener('DOMContentLoaded', function() {
     createMonitorPane('main', '主监视器', false);
     setInterval(function() { if (!monitors.main || !monitors.main.isConnected) refreshPorts('main'); }, 3000);
 
-
+    // 加载并恢复用户上次的配置
+    loadAndApplyConfig();
 });
 </script>
 </body>

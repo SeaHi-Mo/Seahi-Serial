@@ -407,6 +407,63 @@ fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
     }
 }
 
+/// 保存用户配置到 AppData 目录
+#[tauri::command]
+fn save_config(config_json: String) -> Result<(), String> {
+    use std::fs;
+
+    let config_dir = dirs_config_path().ok_or("无法获取应用配置目录")?;
+    fs::create_dir_all(&config_dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
+    let config_file = config_dir.join("config.json");
+    fs::write(&config_file, &config_json).map_err(|e| format!("写入配置失败: {}", e))?;
+    Ok(())
+}
+
+/// 读取用户配置（不存在时返回空字符串）
+#[tauri::command]
+fn load_config() -> Result<String, String> {
+    use std::fs;
+
+    let config_dir = match dirs_config_path() {
+        Some(p) => p,
+        None => return Ok(String::new()),
+    };
+    let config_file = config_dir.join("config.json");
+    match fs::read_to_string(&config_file) {
+        Ok(s) => Ok(s),
+        Err(_) => Ok(String::new()),
+    }
+}
+
+/// 获取应用配置目录路径（跨平台）
+fn dirs_config_path() -> Option<std::path::PathBuf> {
+    // Windows: %APPDATA%\seahi-serial
+    // macOS:   ~/Library/Application Support/seahi-serial
+    // Linux:   ~/.config/seahi-serial
+    #[cfg(windows)]
+    {
+        std::env::var("APPDATA").ok().map(|p| std::path::PathBuf::from(p).join("seahi-serial"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        dirs_mac_config()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        std::env::var("HOME").ok().map(|p| std::path::PathBuf::from(p).join(".config").join("seahi-serial"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dirs_mac_config() -> Option<std::path::PathBuf> {
+    std::env::var("HOME").ok().map(|p|
+        std::path::PathBuf::from(p)
+            .join("Library")
+            .join("Application Support")
+            .join("seahi-serial")
+    )
+}
+
 /// 保存日志内容到文件
 #[tauri::command]
 fn save_log(content: String, path: String) -> Result<(), String> {
@@ -445,6 +502,8 @@ fn main() {
             choose_log_directory,
             save_log,
             attach_port_to_wsl,
+            save_config,
+            load_config,
         ])
         .setup(|_app| Ok(()))
         .run(tauri::generate_context!())
