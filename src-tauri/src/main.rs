@@ -176,7 +176,7 @@ fn open_port(
 ) -> Result<(), String> {
     // 关闭该监视器已有的连接
     {
-        let mut map = state.ports.lock().unwrap();
+        let mut map = state.ports.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(old) = map.remove(&monitor_id) {
             let _ = old.clear(ClearBuffer::All);
         }
@@ -228,7 +228,7 @@ fn open_port(
         eprintln!("RTS 设置失败: {}", e);
     }
 
-    let mut guard = state.ports.lock().unwrap();
+    let mut guard = state.ports.lock().unwrap_or_else(|e| e.into_inner());
     guard.insert(monitor_id, port);
 
     Ok(())
@@ -237,7 +237,7 @@ fn open_port(
 /// 关闭串口
 #[tauri::command]
 fn close_port(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<(), String> {
-    let mut map = state.ports.lock().unwrap();
+    let mut map = state.ports.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(port) = map.remove(&monitor_id) {
         let _ = port.clear(ClearBuffer::All);
     }
@@ -247,7 +247,7 @@ fn close_port(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<
 /// 发送数据
 #[tauri::command]
 fn send_data(state: tauri::State<'_, PortState>, monitor_id: String, data: Vec<u8>) -> Result<usize, String> {
-    let mut map = state.ports.lock().unwrap();
+    let mut map = state.ports.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref mut port) = map.get_mut(&monitor_id) {
         port.write_all(&data).map_err(|e| format!("发送失败: {}", e))?;
         Ok(data.len())
@@ -259,7 +259,7 @@ fn send_data(state: tauri::State<'_, PortState>, monitor_id: String, data: Vec<u
 /// 读取数据（非阻塞，返回可用字节）
 #[tauri::command]
 fn read_data(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<Vec<u8>, String> {
-    let mut map = state.ports.lock().unwrap();
+    let mut map = state.ports.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref mut port) = map.get_mut(&monitor_id) {
         let mut buf = [0u8; 4096];
         match port.read(&mut buf) {
@@ -277,7 +277,7 @@ fn read_data(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<V
 /// 实时设置 DTR 信号
 #[tauri::command]
 fn set_dtr(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) -> Result<(), String> {
-    let mut map = state.ports.lock().unwrap();
+    let mut map = state.ports.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref mut port) = map.get_mut(&monitor_id) {
         port.write_data_terminal_ready(level).map_err(|e| format!("DTR 设置失败: {}", e))
     } else {
@@ -288,7 +288,7 @@ fn set_dtr(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) 
 /// 实时设置 RTS 信号
 #[tauri::command]
 fn set_rts(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) -> Result<(), String> {
-    let mut map = state.ports.lock().unwrap();
+    let mut map = state.ports.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref mut port) = map.get_mut(&monitor_id) {
         port.write_request_to_send(level).map_err(|e| format!("RTS 设置失败: {}", e))
     } else {
@@ -477,8 +477,8 @@ fn save_log(content: String, path: String) -> Result<(), String> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default();
-    let secs = now.as_secs();
-    let filename = format!("serial-log-{}.txt", secs);
+    let millis = now.as_millis();
+    let filename = format!("serial-log-{}.txt", millis);
     let filepath = Path::new(&path).join(&filename);
 
     fs::write(&filepath, content).map_err(|e| format!("写入日志失败: {}", e))?;
@@ -630,7 +630,7 @@ fn install_update(file_path: String) -> Result<(), String> {
     }
 
     // 给安装程序一点时间启动，然后退出当前程序
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    std::thread::sleep(std::time::Duration::from_millis(500));
     std::process::exit(0);
 }
 

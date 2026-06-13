@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -805,7 +805,7 @@ function startReading(mid) {
                 appendOutput(mid, 'err', '连接中断: ' + e);
             }
         }
-    }, 50);
+    }, 100);
 }
 function stopReading(mid) {
     if (monitors[mid] && monitors[mid].readTimer) { clearInterval(monitors[mid].readTimer); monitors[mid].readTimer = null; }
@@ -935,6 +935,11 @@ function appendOutput(mid, type, text) {
         div.textContent = ts + text;
     }
     el.appendChild(div);
+    // 限制最大行数，防止内存溢出
+    var maxLines = 10000;
+    while (el.children.length > maxLines) {
+        el.removeChild(el.firstChild);
+    }
     var scrollBtn = document.getElementById(mid + '-btnScroll');
     if (scrollBtn && scrollBtn.classList.contains('on')) el.scrollTop = el.scrollHeight;
 }
@@ -1280,7 +1285,7 @@ function wslLog(msg, cls) {
 
 function wslSetStatus(html) {
     var el = document.getElementById('wslStatus');
-    if (el) el.innerHTML = html;
+    if (el) el.textContent = html;
 }
 
 function wslSetBtn(show, label, disabled) {
@@ -1288,7 +1293,7 @@ function wslSetBtn(show, label, disabled) {
     if (!btn) return;
     btn.style.display = show ? '' : 'none';
     btn.disabled = !!disabled;
-    if (label !== undefined) btn.innerHTML = label;
+    if (label !== undefined) btn.textContent = label;
 }
 
 // 打开模态框：直接映射，无需检查安装状态（安装由 Inno Setup 负责）
@@ -1301,13 +1306,13 @@ async function openWslModal(mid) {
     var portName = portSel ? portSel.value : '';
 
     if (!portName) {
-        wslSetStatus('<span style="color:#f44747;">请先在工具栏选择串口端口</span>');
+        wslSetStatus('请先在工具栏选择串口端口');
         wslSetBtn(false);
         document.getElementById('wslOverlay').classList.add('open');
         return;
     }
 
-    wslSetStatus('<span style="color:#dcdcaa;">准备将 <b>' + portName + '</b> 映射到 WSL</span>');
+    wslSetStatus('准备将 ' + portName + ' 映射到 WSL');
     wslSetBtn(true, '→ 映射 ' + portName + ' 到 WSL（需管理员权限）', false);
     document.getElementById('wslOverlay').classList.add('open');
     wslLog('› 点击映射按钮将 ' + portName + ' 映射到 WSL', 'wsl-inf');
@@ -1331,13 +1336,13 @@ async function wslAction() {
     try {
         var result = await invoke('attach_port_to_wsl', { portName: portName });
         wslLog('✓ ' + result, 'wsl-ok');
-        wslSetStatus('<span style="color:#6a9955;">✓ 映射成功！在 WSL 中执行 ls /dev/ttyUSB* 查看设备</span>');
+        wslSetStatus('✓ 映射成功！在 WSL 中执行 ls /dev/ttyUSB* 查看设备');
         wslSetBtn(true, '重新映射', false);
         _wslPhase = 'idle';
         if (monitors[mid]) appendOutput(mid, 'sys', '[WSL] ' + result);
     } catch (e) {
         wslLog('✗ ' + e, 'wsl-err');
-        wslSetStatus('<span style="color:#f44747;">映射失败</span>');
+        wslSetStatus('映射失败');
         wslSetBtn(true, '重试映射', false);
         _wslPhase = 'idle';
     }
@@ -1355,7 +1360,7 @@ function wslOverlayClick(e) {
 /* ===== 初始化 ===== */
 document.addEventListener('DOMContentLoaded', function() {
     createMonitorPane('main', '主监视器', false);
-    setInterval(function() { if (!monitors.main || !monitors.main.isConnected) refreshPorts('main'); }, 3000);
+    setInterval(function() { if (!monitors.main || !monitors.main.isConnected) refreshPorts('main'); }, 5000);
 
     // 加载并恢复用户上次的配置
     loadAndApplyConfig();
