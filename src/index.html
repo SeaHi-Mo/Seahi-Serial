@@ -422,6 +422,10 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 <!-- 全局操作栏 -->
 <div class="global-bar">
     <span class="add-btn" onclick="addMonitor()">＋ 打开额外监视器</span>
+    <span class="add-btn" onclick="openWslMapping()" style="margin-left:12px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y1="17" x2="12" y2="21"/><text x="5" y="13" font-size="6" fill="currentColor" stroke="none" font-family="monospace" font-weight="bold">WSL</text></svg>
+        WSL 串口映射
+    </span>
     <span id="updateBtn" class="update-btn" style="display:none;" onclick="downloadAndInstallUpdate()">更新</span>
 </div>
 
@@ -1387,6 +1391,32 @@ function closeWslModal() {
 
 function wslOverlayClick(e) {
     if (e.target === document.getElementById('wslOverlay')) closeWslModal();
+}
+
+/* ===== WSL 映射窗口 ===== */
+async function openWslMapping() {
+    try {
+        const { WebviewWindow } = window.__TAURI__.webview;
+        const existing = WebviewWindow.getByLabel('wsl-mapping');
+        if (existing) {
+            await existing.setFocus();
+            return;
+        }
+        const wslWindow = new WebviewWindow('wsl-mapping', {
+            url: 'wsl-mapping.html',
+            title: 'WSL 串口映射 - Seahi Serial',
+            width: 900,
+            height: 600,
+            minWidth: 700,
+            minHeight: 500,
+            center: true,
+        });
+        wslWindow.once('tauri://error', function(e) {
+            console.error('打开WSL窗口失败:', e);
+        });
+    } catch (e) {
+        console.error('打开WSL窗口失败:', e);
+    }
 }
 
 /* ===== 初始化 ===== */
