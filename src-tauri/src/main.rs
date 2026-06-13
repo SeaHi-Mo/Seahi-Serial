@@ -113,7 +113,7 @@ impl From<SerialPortInfo> for PortInfo {
             info.port_name.clone()
         };
 
-        // 构建 "COMX (设备名称)" 格式
+        // 构建 "COMX - 设备名称" 格式
         let mut friendly = match &info.port_type {
             SerialPortType::UsbPort(usb) => {
                 let dev_name = usb.product.as_deref()
@@ -128,15 +128,14 @@ impl From<SerialPortInfo> for PortInfo {
             _ => port_short.clone(),
         };
 
-        // 修复：如果名称中包含 Unicode 替换字符（U+FFFD，显示为 ◆），
-        // 说明 serialport crate 读取 USB 描述符时编码出错（常见于 CH340/CH341 中文设备名）。
-        // 此时通过 Windows SetupAPI 以 UTF-16 重新读取正确的 FriendlyName。
-        if friendly.contains('\u{FFFD}') {
+        // 如果名称中包含 Unicode 替换字符（U+FFFD），说明 serialport crate 编码出错，
+        // 或者没有获取到设备名（friendly 等于 port_short），都尝试通过 SetupAPI 获取。
+        let need_fix = friendly.contains('\u{FFFD}') || friendly == port_short;
+        if need_fix {
             #[cfg(windows)]
             if let Some(fixed) = get_port_friendly_name_winapi(&port_short) {
                 friendly = fixed;
-            } else {
-                // 后备：去掉替换字符，避免显示成 ◆◆◆◆◆◆
+            } else if friendly.contains('\u{FFFD}') {
                 friendly = friendly.replace('\u{FFFD}', "");
             }
             #[cfg(not(windows))]
