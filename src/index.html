@@ -401,6 +401,20 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .update-btn:hover { background:#1a7ae8; }
 .update-btn.disabled { background:#3a5a7a; color:#aaa; cursor:default; }
 .update-btn.disabled:hover { background:#3a5a7a; }
+
+/* ===== Toast 通知 ===== */
+.toast {
+    position:fixed; top:40px; right:20px; z-index:10001;
+    padding:12px 20px; border-radius:6px;
+    font-size:13px; color:#fff;
+    box-shadow:0 4px 12px rgba(0,0,0,.3);
+    transform:translateX(120%); transition:transform .3s ease;
+    max-width:400px; word-break:break-word;
+}
+.toast.show { transform:translateX(0); }
+.toast.toast-error { background:#f44747; }
+.toast.toast-success { background:#89d185; }
+.toast.toast-info { background:#2d8cf0; }
 </style>
 </head>
 <body style="display:flex;flex-direction:column;height:100vh;">
@@ -482,6 +496,24 @@ function parseAnsi(text) {
     return result;
 }
 function escapeHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+/* ===== Toast 通知 ===== */
+function showToast(message, type) {
+    type = type || 'info';
+    var toast = document.createElement('div');
+    toast.className = 'toast toast-' + type;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    // 触发动画
+    setTimeout(function() { toast.classList.add('show'); }, 10);
+    
+    // 自动关闭
+    setTimeout(function() {
+        toast.classList.remove('show');
+        setTimeout(function() { toast.remove(); }, 300);
+    }, 3000);
+}
 
 /* ===== 创建监视器窗格 ===== */
 function createMonitorPane(mid, title, closable) {
@@ -1128,7 +1160,7 @@ async function downloadAndInstallUpdate() {
         btn.textContent = '正在安装...';
         await invoke('install_update', { filePath: filePath });
     } catch (e) {
-        alert('更新失败: ' + e);
+        showToast('更新失败: ' + e, 'error');
         btn.classList.remove('disabled');
         btn.textContent = '更新 ' + _updateInfo.latest_version;
     }
