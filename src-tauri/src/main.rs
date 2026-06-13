@@ -519,6 +519,18 @@ fn parse_version(ver: &str) -> (u32, u32, u32) {
     (major, minor, patch)
 }
 
+/// 将 GitHub URL 转换为镜像 URL（用于国内网络环境）
+fn mirror_github_url(url: &str) -> String {
+    // 使用 GitHub 镜像加速
+    if url.starts_with("https://github.com/") {
+        return url.replace("https://github.com/", "https://mirror.ghproxy.com/");
+    }
+    if url.starts_with("https://api.github.com/") {
+        return url.replace("https://api.github.com/", "https://mirror.ghproxy.com/api.github.com/");
+    }
+    url.to_string()
+}
+
 /// 比较版本号：如果 latest > current，返回 true
 fn is_newer_version(current: &str, latest: &str) -> bool {
     parse_version(current) < parse_version(latest)
@@ -533,9 +545,16 @@ fn get_current_version() -> String {
 #[tauri::command]
 fn check_update() -> Result<UpdateInfo, String> {
     let current = get_current_version();
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+    
+    // 使用镜像 URL
+    let api_url = mirror_github_url("https://api.github.com/repos/SeaHi-Mo/Seahi-Serial/releases/latest");
+    
     let resp = client
-        .get("https://api.github.com/repos/SeaHi-Mo/Seahi-Serial/releases/latest")
+        .get(&api_url)
         .header("User-Agent", "seahi-serial-updater")
         .send()
         .map_err(|e| format!("请求 GitHub API 失败: {}", e))?;
@@ -553,14 +572,17 @@ fn check_update() -> Result<UpdateInfo, String> {
     // 查找 Windows 安装包（优先 NSIS .exe，其次 .msi）
     let download_url = if has_update {
         // 优先查找 NSIS 安装包（文件名含 -setup.exe）
-        release
+        let asset = release
             .assets
             .iter()
             .find(|a| a.name.contains("-setup") && a.name.ends_with(".exe"))
             .or_else(|| release.assets.iter().find(|a| a.name.ends_with(".exe")))
-            .or_else(|| release.assets.iter().find(|a| a.name.ends_with(".msi")))
-            .map(|a| a.browser_download_url.clone())
-            .unwrap_or_default()
+            .or_else(|| release.assets.iter().find(|a| a.name.ends_with(".msi")));
+        
+        match asset {
+            Some(a) => mirror_github_url(&a.browser_download_url),
+            None => String::new(),
+        }
     } else {
         String::new()
     };
@@ -579,7 +601,11 @@ fn download_update(download_url: String) -> Result<String, String> {
     use std::fs;
     use std::io::copy;
 
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(300)) // 5分钟超时
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+    
     let mut resp = client
         .get(&download_url)
         .header("User-Agent", "seahi-serial-updater")
