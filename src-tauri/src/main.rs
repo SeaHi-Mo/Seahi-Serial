@@ -521,12 +521,12 @@ fn parse_version(ver: &str) -> (u32, u32, u32) {
 
 /// 将 GitHub URL 转换为镜像 URL（用于国内网络环境）
 fn mirror_github_url(url: &str) -> String {
-    // 使用 GitHub 镜像加速
+    // 使用 GitHub 镜像加速（保留完整URL作为代理路径）
     if url.starts_with("https://github.com/") {
-        return url.replace("https://github.com/", "https://mirror.ghproxy.com/");
+        return format!("https://mirror.ghproxy.com/{}", url);
     }
     if url.starts_with("https://api.github.com/") {
-        return url.replace("https://api.github.com/", "https://mirror.ghproxy.com/api.github.com/");
+        return format!("https://mirror.ghproxy.com/{}", url);
     }
     url.to_string()
 }
