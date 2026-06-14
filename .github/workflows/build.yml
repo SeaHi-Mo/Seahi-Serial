@@ -43,3 +43,17 @@ jobs:
           releaseBody: "See the assets to download and install this version."
           releaseDraft: true
           prerelease: false
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Build Inno Setup installer
+        run: iscc installer.iss
+
+      - name: Upload Inno Setup installer
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: installer/Seahi-Serial-Setup-*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
