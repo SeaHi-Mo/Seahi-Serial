@@ -27,10 +27,10 @@ struct PortInfo {
     friendly_name: String,
 }
 
-/// Windows 下通过 SetupAPI 以 UTF-16 读取串口设备的 FriendlyName，
+/// Windows 下通过 SetupAPI 一次性遍历所有串口设备，返回 COM 口名 → FriendlyName 的映射表。
 /// 用于修复 serialport crate 读取 USB 描述符时中文乱码（U+FFFD）的问题。
 #[cfg(windows)]
-fn get_port_friendly_name_winapi(port_name: &str) -> Option<String> {
+fn build_friendly_name_map() -> HashMap<String, String> {
     use std::ptr;
     use winapi::shared::guiddef::GUID;
     use winapi::um::setupapi::{
@@ -39,7 +39,8 @@ fn get_port_friendly_name_winapi(port_name: &str) -> Option<String> {
         DIGCF_PRESENT,
     };
 
-    // GUID_DEVCLASS_PORTS = {4D36E978-E325-11CE-BFC1-08002BE10318}
+    let mut map = HashMap::new();
+
     let guid_ports = GUID {
         Data1: 0x4D36E978,
         Data2: 0xE325,
@@ -56,7 +57,7 @@ fn get_port_friendly_name_winapi(port_name: &str) -> Option<String> {
         );
 
         if h_dev_info as usize == usize::MAX {
-            return None;
+            return map;
         }
 
         let mut dev_info_data: SP_DEVINFO_DATA = std::mem::zeroed();
@@ -66,7 +67,6 @@ fn get_port_friendly_name_winapi(port_name: &str) -> Option<String> {
         while SetupDiEnumDeviceInfo(h_dev_info, index, &mut dev_info_data) != 0 {
             index += 1;
 
-            // 第一次调用获取缓冲区大小
             let mut required_size: u32 = 0;
             let _ = SetupDiGetDeviceRegistryPropertyW(
                 h_dev_info,
@@ -82,7 +82,6 @@ fn get_port_friendly_name_winapi(port_name: &str) -> Option<String> {
                 continue;
             }
 
-            // 分配 UTF-16 缓冲区
             let mut buffer: Vec<u16> = vec![0; (required_size / 2 + 1) as usize];
             let mut actual_size: u32 = 0;
 
@@ -99,9 +98,12 @@ fn get_port_friendly_name_winapi(port_name: &str) -> Option<String> {
             if success != 0 {
                 let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
                 if let Ok(name) = String::from_utf16(&buffer[..len]) {
-                    if name.contains(port_name) {
-                        SetupDiDestroyDeviceInfoList(h_dev_info);
-                        return Some(name);
+                    // 从 FriendlyName 中提取 COM 口名（如 "COM3"）
+                    if let Some(com_start) = name.find("COM") {
+                        let rest = &name[com_start..];
+                        let com_end = rest.find(|c: char| !c.is_alphanumeric()).unwrap_or(rest.len());
+                        let com_port = rest[..com_end].to_string();
+                        map.insert(com_port, name);
                     }
                 }
             }
@@ -110,63 +112,62 @@ fn get_port_friendly_name_winapi(port_name: &str) -> Option<String> {
         SetupDiDestroyDeviceInfoList(h_dev_info);
     }
 
-    None
+    map
 }
 
-impl From<SerialPortInfo> for PortInfo {
-    fn from(info: SerialPortInfo) -> Self {
-        // Windows: "COM3", macOS/Linux: "/dev/ttyUSB0" 取最后一段
-        let port_short = if info.port_name.starts_with("/dev/") {
-            info.port_name.rsplit('/').next().unwrap_or(&info.port_name).to_string()
-        } else {
-            info.port_name.clone()
-        };
+fn port_info_from(info: SerialPortInfo, friendly_map: &HashMap<String, String>) -> PortInfo {
+    let port_short = if info.port_name.starts_with("/dev/") {
+        info.port_name.rsplit('/').next().unwrap_or(&info.port_name).to_string()
+    } else {
+        info.port_name.clone()
+    };
 
-        // 构建 "COMX - 设备名称" 格式
-        let mut friendly = match &info.port_type {
-            SerialPortType::UsbPort(usb) => {
-                let dev_name = usb.product.as_deref()
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| usb.manufacturer.as_deref().filter(|s| !s.is_empty()));
-                match dev_name {
-                    Some(name) => format!("{} - {}", port_short, name),
-                    None => port_short.clone(),
-                }
-            },
-            SerialPortType::BluetoothPort => format!("{} - 蓝牙", port_short),
-            _ => port_short.clone(),
-        };
-
-        // 如果名称中包含 Unicode 替换字符（U+FFFD），说明 serialport crate 编码出错，
-        // 或者没有获取到设备名（friendly 等于 port_short），都尝试通过 SetupAPI 获取。
-        let need_fix = friendly.contains('\u{FFFD}') || friendly == port_short;
-        if need_fix {
-            #[cfg(windows)]
-            if let Some(fixed) = get_port_friendly_name_winapi(&port_short) {
-                friendly = fixed;
-            } else if friendly.contains('\u{FFFD}') {
-                friendly = friendly.replace('\u{FFFD}', "");
+    let mut friendly = match &info.port_type {
+        SerialPortType::UsbPort(usb) => {
+            let dev_name = usb.product.as_deref()
+                .filter(|s| !s.is_empty())
+                .or_else(|| usb.manufacturer.as_deref().filter(|s| !s.is_empty()));
+            match dev_name {
+                Some(name) => format!("{} - {}", port_short, name),
+                None => port_short.clone(),
             }
-            #[cfg(not(windows))]
-            {
-                friendly = friendly.replace('\u{FFFD}', "");
-            }
-        }
+        },
+        SerialPortType::BluetoothPort => format!("{} - 蓝牙", port_short),
+        _ => port_short.clone(),
+    };
 
-        PortInfo {
-            port_name: info.port_name.clone(),
-            friendly_name: friendly,
+    let need_fix = friendly.contains('\u{FFFD}') || friendly == port_short;
+    if need_fix {
+        #[cfg(windows)]
+        if let Some(fixed) = friendly_map.get(&port_short) {
+            friendly = fixed.clone();
+        } else if friendly.contains('\u{FFFD}') {
+            friendly = friendly.replace('\u{FFFD}', "");
         }
+        #[cfg(not(windows))]
+        {
+            friendly = friendly.replace('\u{FFFD}', "");
+        }
+    }
+
+    PortInfo {
+        port_name: info.port_name.clone(),
+        friendly_name: friendly,
     }
 }
 
 /// 获取所有可用串口列表
 #[tauri::command]
 fn list_ports() -> Vec<PortInfo> {
+    #[cfg(windows)]
+    let friendly_map = build_friendly_name_map();
+    #[cfg(not(windows))]
+    let friendly_map = HashMap::new();
+
     serialport::available_ports()
         .unwrap_or_default()
         .into_iter()
-        .map(|p| PortInfo::from(p))
+        .map(|p| port_info_from(p, &friendly_map))
         .collect()
 }
 
@@ -398,15 +399,18 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
     let ports = serialport::available_ports().unwrap_or_default();
     let mut devices: Vec<serde_json::Value> = Vec::new();
     
+    #[cfg(windows)]
+    let friendly_map = build_friendly_name_map();
+    
     for p in ports {
         let port_name = p.port_name.clone();
         if !port_name.starts_with("COM") {
             continue;
         }
         
-        // 统一使用SetupAPI获取友好名称（解决中文乱码问题）
+        // 使用预建映射表获取友好名称（一次性遍历，避免逐端口 O(N×M) 查询）
         #[cfg(windows)]
-        let friendly = get_port_friendly_name_winapi(&port_name).unwrap_or(port_name.clone());
+        let friendly = friendly_map.get(&port_name).cloned().unwrap_or(port_name.clone());
         #[cfg(not(windows))]
         let friendly = match &p.port_type {
             serialport::SerialPortType::UsbPort(usb) => {
@@ -788,9 +792,9 @@ fn get_current_version() -> String {
 
 /// 检查 GitHub Releases 是否有新版本
 #[tauri::command]
-fn check_update() -> Result<UpdateInfo, String> {
+async fn check_update() -> Result<UpdateInfo, String> {
     let current = get_current_version();
-    let client = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
@@ -802,6 +806,7 @@ fn check_update() -> Result<UpdateInfo, String> {
         .get(&api_url)
         .header("User-Agent", "seahi-serial-updater")
         .send()
+        .await
         .map_err(|e| format!("请求 GitHub API 失败: {}", e))?;
 
     if !resp.status().is_success() {
@@ -810,6 +815,7 @@ fn check_update() -> Result<UpdateInfo, String> {
 
     let release: GitHubRelease = resp
         .json()
+        .await
         .map_err(|e| format!("解析 GitHub 响应失败: {}", e))?;
 
     let has_update = is_newer_version(&current, &release.tag_name);
@@ -842,19 +848,19 @@ fn check_update() -> Result<UpdateInfo, String> {
 
 /// 下载更新安装包到临时目录
 #[tauri::command]
-fn download_update(download_url: String) -> Result<String, String> {
+async fn download_update(download_url: String) -> Result<String, String> {
     use std::fs;
-    use std::io::copy;
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(300)) // 5分钟超时
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
     
-    let mut resp = client
+    let resp = client
         .get(&download_url)
         .header("User-Agent", "seahi-serial-updater")
         .send()
+        .await
         .map_err(|e| format!("下载失败: {}", e))?;
 
     if !resp.status().is_success() {
@@ -873,8 +879,8 @@ fn download_update(download_url: String) -> Result<String, String> {
     fs::create_dir_all(&temp_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
     let file_path = temp_dir.join(&filename);
 
-    let mut file = fs::File::create(&file_path).map_err(|e| format!("创建文件失败: {}", e))?;
-    copy(&mut resp, &mut file).map_err(|e| format!("写入安装包失败: {}", e))?;
+    let bytes = resp.bytes().await.map_err(|e| format!("读取下载内容失败: {}", e))?;
+    fs::write(&file_path, &bytes).map_err(|e| format!("写入安装包失败: {}", e))?;
 
     Ok(file_path.to_string_lossy().to_string())
 }

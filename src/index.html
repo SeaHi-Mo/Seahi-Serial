@@ -431,6 +431,7 @@ const monitors = {}; // { mid: { isConnected, portName, readTimer, sendHistory: 
 let extraCount = 0;
 let logDirPath = '';
 const MAX_SEND_HISTORY = 50;
+var _loadingConfig = false; // 配置恢复期间跳过自动保存
 
 /* ===== SVG 图标 ===== */
 const ICONS = {
@@ -692,9 +693,19 @@ document.addEventListener('click', function(e) {
 });
 
 /* ===== 端口管理 ===== */
+var _portCache = { data: null, ts: 0 };
 async function refreshPorts(mid) {
     try {
-        var ports = await invoke('list_ports');
+        // 2 秒内共享缓存，避免启动时多个监视器重复调用 list_ports
+        var now = Date.now();
+        var ports;
+        if (_portCache.data && now - _portCache.ts < 2000) {
+            ports = _portCache.data;
+        } else {
+            ports = await invoke('list_ports');
+            _portCache.data = ports;
+            _portCache.ts = now;
+        }
         var sel = document.getElementById(mid + '-portSelect');
         if (!sel) return;
         var prev = sel.value || (monitors[mid] && monitors[mid]._savedPort) || '';
@@ -1240,6 +1251,7 @@ function applyMonitorConfig(mid, mc) {
 // 保存配置（防抖：500ms 后写入）
 var _saveConfigTimer = null;
 function scheduleConfigSave() {
+    if (_loadingConfig) return; // 配置恢复期间跳过
     if (_saveConfigTimer) clearTimeout(_saveConfigTimer);
     _saveConfigTimer = setTimeout(function() {
         var cfg = collectConfig();
@@ -1251,11 +1263,12 @@ function scheduleConfigSave() {
 
 // 启动时加载配置
 async function loadAndApplyConfig() {
+    _loadingConfig = true;
     try {
         var raw = await invoke('load_config');
-        if (!raw) return;
+        if (!raw) { _loadingConfig = false; return; }
         var cfg = JSON.parse(raw);
-        if (!cfg || cfg.version !== 1) return;
+        if (!cfg || cfg.version !== 1) { _loadingConfig = false; return; }
         // 恢复日志目录
         if (cfg.logDir) logDirPath = cfg.logDir;
         // 恢复主监视器配置
@@ -1274,6 +1287,7 @@ async function loadAndApplyConfig() {
     } catch (e) {
         console.warn('加载配置失败:', e);
     }
+    _loadingConfig = false;
 }
 
 /* ===== WSL 映射页面 ===== */
@@ -1480,13 +1494,13 @@ function refreshWslDevices() {
 /* ===== 初始化 ===== */
 document.addEventListener('DOMContentLoaded', function() {
     createMonitorPane('main', '主监视器', false);
-    setInterval(function() { if (!monitors.main || !monitors.main.isConnected) refreshPorts('main'); }, 5000);
+    setInterval(function() { if (!monitors.main || !monitors.main.isConnected) refreshPorts('main'); }, 10000);
 
     // 加载并恢复用户上次的配置
     loadAndApplyConfig();
 
-    // 检查更新
-    checkForUpdate();
+    // 延迟检查更新，避免与端口加载竞争网络和 CPU 资源
+    setTimeout(checkForUpdate, 2000);
 });
 </script>
 </body>
