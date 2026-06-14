@@ -1597,20 +1597,23 @@ async function autoMapCheck() {
     if (Object.keys(_wslAutoMap).length === 0) return;
     try {
         var devices = await invoke('list_wsl_devices');
+        // 收集需要映射的设备，并发执行
+        var tasks = [];
         for (var i = 0; i < devices.length; i++) {
             var d = devices[i];
             if (_wslAutoMap[d.busid] && d.status !== 'mapped' && !_wslBusy[d.busid]) {
-                var portName = d.port;
                 _wslBusy[d.busid] = true;
-                addWslLog('main', 'info', '[自动] 正在将 ' + portName + ' 映射到 WSL...');
-                try {
-                    var result = await invoke('attach_port_to_wsl', { portName: portName });
-                    addWslLog('main', 'success', '[自动] ' + result);
-                } catch (e) {
-                    addWslLog('main', 'error', '[自动] 映射失败: ' + e);
-                }
-                delete _wslBusy[d.busid];
+                addWslLog('main', 'info', '[自动] 正在将 ' + d.port + ' 映射到 WSL...');
+                tasks.push(
+                    invoke('attach_port_to_wsl', { portName: d.port })
+                        .then(function(result) { addWslLog('main', 'success', '[自动] ' + result); })
+                        .catch(function(e) { addWslLog('main', 'error', '[自动] 映射失败: ' + e); })
+                        .finally(function() { delete _wslBusy[d.busid]; })
+                );
             }
+        }
+        if (tasks.length > 0) {
+            await Promise.all(tasks);
         }
         // 如果 WSL 页面打开，刷新列表
         var pane = document.querySelector('.monitor-pane');
