@@ -305,12 +305,143 @@ fn choose_log_directory() -> Result<Option<String>, String> {
         .map(|path| path.to_string_lossy().to_string()))
 }
 
+/// 获取所有串口（包括已映射到WSL的）
+#[tauri::command]
+fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
+    // 1. 查询usbipd获取所有设备信息（包括busid和状态）
+    let mut usbipd_devices: Vec<(String, String, String, String)> = Vec::new(); // (busid, port, name, status)
+    
+    let output = std::process::Command::new("usbipd")
+        .args(["list"])
+        .output();
+    
+    if let Ok(out) = output {
+        if out.status.success() {
+            let list_str = String::from_utf8_lossy(&out.stdout).to_string();
+            
+            for line in list_str.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 3 && parts[0].contains('-') {
+                    // 这是一个设备行：BUSID DEVICE STATE ...
+                    let busid = parts[0].to_string();
+                    let line_upper = line.to_uppercase();
+                    
+                    // 判断状态
+                    let status = if line_upper.contains("ATTACHED") {
+                        "attached"
+                    } else if line_upper.contains("CONNECTED") || line_upper.contains("SHARED") {
+                        "connected"
+                    } else {
+                        "other"
+                    };
+                    
+                    // 只显示 Connected 和 Attached 状态的设备
+                    if status == "other" {
+                        continue;
+                    }
+                    
+                    // 提取设备名称（第4列到倒数第2列，排除状态列）
+                    let name = if parts.len() > 4 {
+                        parts[3..parts.len()-1].join(" ")
+                    } else if parts.len() > 3 {
+                        parts[3].to_string()
+                    } else {
+                        format!("USB Device ({})", busid)
+                    };
+                    
+                    // 提取COM端口（如果有）
+                    let port = if let Some(com_match) = line.find("COM") {
+                        let com_start = com_match;
+                        let rest = &line[com_start..];
+                        if let Some(end) = rest.find(|c: char| !c.is_alphanumeric()) {
+                            rest[..end].to_string()
+                        } else {
+                            rest.to_string()
+                        }
+                    } else {
+                        busid.clone()
+                    };
+                    
+                    usbipd_devices.push((busid, port, name, status.to_string()));
+                }
+            }
+        }
+    }
+    
+    // 2. 获取系统串口列表，过滤并关联usbipd信息
+    let ports = serialport::available_ports().unwrap_or_default();
+    let mut devices: Vec<serde_json::Value> = Vec::new();
+    
+    for p in ports {
+        let port_name = p.port_name.clone();
+        if !port_name.starts_with("COM") {
+            continue;
+        }
+        
+        // 统一使用SetupAPI获取友好名称（解决中文乱码问题）
+        #[cfg(windows)]
+        let friendly = get_port_friendly_name_winapi(&port_name).unwrap_or(port_name.clone());
+        #[cfg(not(windows))]
+        let friendly = match &p.port_type {
+            serialport::SerialPortType::UsbPort(usb) => {
+                usb.product.as_deref()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| usb.manufacturer.as_deref().filter(|s| !s.is_empty()))
+                    .unwrap_or(&port_name)
+                    .to_string()
+            },
+            _ => port_name.clone(),
+        };
+        
+        let name_lower = friendly.to_lowercase();
+        // 排除通讯端口（主板集成串口）
+        if name_lower.contains("通信端口") || name_lower.contains("通讯端口") || name_lower.contains("communications port") {
+            continue;
+        }
+        // 排除蓝牙串口
+        if name_lower.contains("蓝牙") || name_lower.contains("bluetooth") || name_lower.contains("标准串行") {
+            continue;
+        }
+        
+        // 在usbipd列表中查找对应的busid和状态
+        if let Some((busid, _, _, status)) = usbipd_devices.iter().find(|(_, port, _, _)| port == &port_name) {
+            devices.push(serde_json::json!({
+                "busid": busid,
+                "port": port_name,
+                "name": friendly,
+                "status": if status == "attached" { "mapped" } else { "unmapped" }
+            }));
+        }
+    }
+    
+    // 3. 添加已附加但不在系统串口列表中的设备（可能是WSL中的设备）
+    for (busid, port, name, status) in usbipd_devices {
+        if status != "attached" {
+            continue; // 只添加已附加的设备
+        }
+        
+        let already_listed = devices.iter().any(|d| {
+            d["port"].as_str().unwrap_or("") == port || d["busid"].as_str().unwrap_or("") == busid
+        });
+        
+        if !already_listed {
+            devices.push(serde_json::json!({
+                "busid": busid,
+                "port": port,
+                "name": name,
+                "status": "mapped"
+            }));
+        }
+    }
+    
+    Ok(devices)
+}
+
 /// 将指定串口对应的 USB 设备映射到 WSL
-/// 通过 PowerShell Start-Process -Verb RunAs 以管理员权限执行：
-///   1. usbipd list 找到目标端口的 busid（带 3s 超时）
-///   2. 检查绑定状态，未绑定则先执行 bind
-///   3. 执行 attach --wsl
-/// UAC 弹窗会请求用户授权，授权后在提权进程中完成操作
+/// 通过 usbipd 工具实现：
+///   1. usbipd list 找到目标端口的 busid
+///   2. 检查绑定状态，已绑定则直接 attach（无需管理员权限）
+///   3. 未绑定则通过 PowerShell 提权执行 bind + attach
 #[tauri::command]
 fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
     // 1. 获取设备列表（独立线程 + 3s 超时），只找目标端口
@@ -344,65 +475,153 @@ fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
         .map(|s| s.to_string())
         .ok_or_else(|| format!("无法解析 {} 的 busid", port_name))?;
 
-    // 3. 检查绑定状态（该行是否包含 "Shared"）
-    let already_bound = target_line.to_uppercase().contains("SHARED");
+    // 3. 检查绑定状态
+    // usbipd list 输出格式可能是：
+    // BUSID  DEVICE        STATE
+    // 2-3    USB Device    Shared
+    // 2-3    USB Device    Not shared
+    let already_bound = {
+        let line_upper = target_line.to_uppercase();
+        // 检查是否包含 "Shared" 但不包含 "Not shared"
+        line_upper.contains("SHARED") && !line_upper.contains("NOT SHARED")
+    };
+    println!("[DEBUG] Device {} bound status: {} (line: {})", busid, already_bound, target_line);
 
-    // 4. 构建 PowerShell 提权脚本
+    // 4. 如果已绑定，尝试直接 attach（无需管理员权限）
+    if already_bound {
+        println!("[DEBUG] Device {} already bound, trying direct attach", busid);
+        let output = std::process::Command::new("usbipd")
+            .args(["attach", "--wsl", "--busid", &busid])
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                println!("[DEBUG] Direct attach succeeded for {}", busid);
+                return Ok(format!("已将 {} (busid: {}) 映射到 WSL", port_name, busid));
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                println!("[DEBUG] Direct attach failed for {}: stderr={}, stdout={}", busid, stderr, stdout);
+                // 直接attach失败，需要用管理员权限
+            }
+            Err(e) => {
+                println!("[DEBUG] Direct attach command error for {}: {}", busid, e);
+                return Err(format!("执行 usbipd attach 失败: {}", e));
+            }
+        }
+    }
+
+    // 5. 未绑定 或 直接attach失败，需要管理员权限
     let tmp_result = std::env::temp_dir().join(format!("usbipd_result_{}.txt", std::process::id()));
     let tmp_result_str = tmp_result.to_str().unwrap_or("C:\\Temp\\usbipd_result.txt").replace('\'', "''");
 
     let ps_script = if already_bound {
+        // 已绑定但直接attach失败，用管理员权限attach
+        println!("[DEBUG] Using admin to attach {}", busid);
         format!(
-            "$out = & usbipd attach --wsl --busid '{}' 2>&1; \
-             $out | Out-File -FilePath '{}' -Encoding UTF8; \
-             if ($LASTEXITCODE -ne 0) {{ exit 1 }}",
-            busid, tmp_result_str
+            "try {{ \
+               $out = & usbipd.exe attach --wsl --busid {busid} 2>&1 | Out-String; \
+               $out | Out-File -FilePath '{result}' -Encoding UTF8; \
+               if ($LASTEXITCODE -ne 0) {{ exit 1 }} \
+             }} catch {{ \
+               $_.Exception.Message | Out-File -FilePath '{result}' -Encoding UTF8; \
+               exit 1 \
+             }}",
+            busid = busid,
+            result = tmp_result_str
         )
     } else {
+        // 未绑定，用管理员权限bind + attach
+        println!("[DEBUG] Using admin to bind and attach {}", busid);
         format!(
-            "$bind = & usbipd bind --busid '{}' 2>&1; \
-             if ($LASTEXITCODE -ne 0 -and $bind -notmatch 'already') {{ \
-               $bind | Out-File -FilePath '{}' -Encoding UTF8; exit 1 \
-             }}; \
-             $out = & usbipd attach --wsl --busid '{}' 2>&1; \
-             $out | Out-File -FilePath '{}' -Encoding UTF8; \
-             if ($LASTEXITCODE -ne 0) {{ exit 1 }}",
-            busid, tmp_result_str, busid, tmp_result_str
+            "try {{ \
+               '开始绑定设备 {busid}...' | Out-File -FilePath '{result}' -Encoding UTF8; \
+               $bindOut = & usbipd.exe bind --busid {busid} 2>&1 | Out-String; \
+               'bind输出: ' + $bindOut | Out-File -FilePath '{result}' -Encoding UTF8 -Append; \
+               if ($LASTEXITCODE -ne 0) {{ \
+                 'bind失败，退出码: ' + $LASTEXITCODE | Out-File -FilePath '{result}' -Encoding UTF8 -Append; \
+                 exit 1 \
+               }}; \
+               'bind成功，开始附加到WSL...' | Out-File -FilePath '{result}' -Encoding UTF8 -Append; \
+               $attachOut = & usbipd.exe attach --wsl --busid {busid} 2>&1 | Out-String; \
+               'attach输出: ' + $attachOut | Out-File -FilePath '{result}' -Encoding UTF8 -Append; \
+               if ($LASTEXITCODE -ne 0) {{ \
+                 'attach失败，退出码: ' + $LASTEXITCODE | Out-File -FilePath '{result}' -Encoding UTF8 -Append; \
+                 exit 1 \
+               }}; \
+               '操作成功' | Out-File -FilePath '{result}' -Encoding UTF8 -Append \
+             }} catch {{ \
+               '异常: ' + $_.Exception.Message | Out-File -FilePath '{result}' -Encoding UTF8; \
+               exit 1 \
+             }}",
+            busid = busid,
+            result = tmp_result_str
         )
     };
 
-    // 5. 通过 PowerShell Start-Process -Verb RunAs 触发 UAC 提权
+    // 6. 通过 PowerShell Start-Process -Verb RunAs 触发 UAC 提权
+    // 先删除旧的结果文件
+    let _ = std::fs::remove_file(&tmp_result);
+    
     let launcher = format!(
         "Start-Process -FilePath 'powershell' \
-         -ArgumentList '-NonInteractive','-Command',\"{}\" \
+         -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-Command',\"{script}\" \
          -Verb RunAs -Wait",
-        ps_script.replace('"', "`\"")
+        script = ps_script.replace('"', "`\"")
     );
+
+    println!("[DEBUG] PowerShell script: {}", ps_script);
+    println!("[DEBUG] Launcher: {}", launcher);
 
     let status = std::process::Command::new("powershell")
         .args(["-NonInteractive", "-Command", &launcher])
         .status()
         .map_err(|e| format!("提权启动失败: {}", e))?;
 
-    // 6. 读取提权进程写入的结果文件
+    // 等待一小段时间确保文件写入完成
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // 7. 读取提权进程写入的结果文件
+    println!("[DEBUG] Reading result file: {:?}", tmp_result);
     let result_content = std::fs::read_to_string(&tmp_result)
-        .unwrap_or_default()
+        .unwrap_or_else(|e| {
+            println!("[DEBUG] Failed to read result file: {}", e);
+            String::new()
+        })
         .trim()
         .to_string();
+    println!("[DEBUG] Result content: {}", result_content);
     let _ = std::fs::remove_file(&tmp_result);
 
-    if status.success() {
-        let bind_note = if already_bound { "（已绑定）" } else { "（新绑定并）" };
-        Ok(format!("已将 {} (busid: {}) {}映射到 WSL{}",
-            port_name, busid, bind_note,
-            if result_content.is_empty() { String::new() } else { format!("\n{}", result_content) }
+    // 检查是否成功 - 通过结果内容判断
+    if result_content.contains("操作成功") {
+        Ok(format!("已将 {} (busid: {}) 绑定并映射到 WSL",
+            port_name, busid
         ))
+    } else if result_content.contains("绑定失败") || result_content.contains("附加失败") {
+        Err(format!("映射失败: {}", result_content))
+    } else if !status.success() {
+        Err("操作失败或用户取消了管理员权限请求".to_string())
     } else {
-        if result_content.is_empty() {
-            Err(format!("操作失败或用户取消了管理员权限请求（busid: {}）", busid))
-        } else {
-            Err(format!("映射失败: {}", result_content))
-        }
+        // status.success() 但结果不明确，可能是用户取消了UAC
+        Err("操作未完成，可能用户取消了管理员权限请求".to_string())
+    }
+}
+
+/// 断开WSL串口映射
+#[tauri::command]
+fn detach_port_from_wsl(busid: String) -> Result<String, String> {
+    let output = std::process::Command::new("usbipd")
+        .args(["detach", "--busid", &busid])
+        .output()
+        .map_err(|e| format!("执行 usbipd detach 失败: {}", e))?;
+
+    if output.status.success() {
+        Ok(format!("已断开 {} 的WSL映射", busid))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        Err(format!("断开失败: {}", stderr))
     }
 }
 
@@ -660,33 +879,6 @@ fn install_update(file_path: String) -> Result<(), String> {
     std::process::exit(0);
 }
 
-/// 打开WSL映射窗口
-#[tauri::command]
-fn open_wsl_window(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Manager;
-    
-    // 检查窗口是否已存在
-    if let Some(window) = app.get_webview_window("wsl-mapping") {
-        window.set_focus().map_err(|e| format!("设置焦点失败: {}", e))?;
-        return Ok(());
-    }
-    
-    // 创建新窗口
-    let _window = tauri::WebviewWindowBuilder::new(
-        &app,
-        "wsl-mapping",
-        tauri::WebviewUrl::App("wsl-mapping.html".into())
-    )
-    .title("WSL 串口映射 - Seahi Serial")
-    .inner_size(900.0, 600.0)
-    .min_inner_size(700.0, 500.0)
-    .center()
-    .build()
-    .map_err(|e| format!("创建窗口失败: {}", e))?;
-    
-    Ok(())
-}
-
 fn main() {
     tauri::Builder::default()
         .manage(PortState {
@@ -694,6 +886,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             list_ports,
+            list_wsl_devices,
             open_port,
             close_port,
             send_data,
@@ -703,12 +896,12 @@ fn main() {
             choose_log_directory,
             save_log,
             attach_port_to_wsl,
+            detach_port_from_wsl,
             save_config,
             load_config,
             check_update,
             download_update,
             install_update,
-            open_wsl_window,
         ])
         .setup(|_app| Ok(()))
         .run(tauri::generate_context!())

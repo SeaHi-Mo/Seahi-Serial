@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "desktop-operator": {
+      "type": "local",
+      "command": ["D:\\Users\\Seahi\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe", "-m", "desktop_operator_mcp"],
+      "enabled": true,
+      "environment": {
+        "PYTHONPATH": "D:\\Users\\Seahi\\.workbuddy\\skills\\cua_desktop_operator_skill",
+        "DESKTOP_OPERATOR_ROOT": "D:\\Users\\Seahi\\.workbuddy\\skills\\cua_desktop_operator_skill"
+      }
+    }
+  }
+}

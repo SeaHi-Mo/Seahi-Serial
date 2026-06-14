@@ -18,17 +18,6 @@
         "minWidth": 600,
         "minHeight": 400,
         "center": true
-      },
-      {
-        "label": "wsl-mapping",
-        "title": "WSL 串口映射 - Seahi Serial",
-        "url": "wsl-mapping.html",
-        "width": 900,
-        "height": 600,
-        "minWidth": 700,
-        "minHeight": 500,
-        "center": true,
-        "visible": false
       }
     ],
     "security": {
