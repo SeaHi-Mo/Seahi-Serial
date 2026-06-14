@@ -4,11 +4,20 @@
 use serialport::{ClearBuffer, DataBits, Parity, SerialPort, SerialPortInfo, SerialPortType, StopBits};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::os::windows::process::CommandExt;
 use std::sync::Mutex;
 
 /// 全局状态：多个独立串口连接（key = monitor_id）
 struct PortState {
     ports: Mutex<HashMap<String, Box<dyn SerialPort>>>,
+}
+
+/// 创建不显示控制台窗口的 Command
+fn hidden_command(program: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    cmd
 }
 
 /// 串口信息（发给前端）
@@ -308,14 +317,31 @@ fn choose_log_directory() -> Result<Option<String>, String> {
 /// 获取所有串口（包括已映射到WSL的）
 #[tauri::command]
 fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
-    // 1. 查询usbipd获取所有设备信息（包括busid和状态）
+    // 1. 查询usbipd获取所有设备信息（使用超时机制）
     let mut usbipd_devices: Vec<(String, String, String, String)> = Vec::new(); // (busid, port, name, status)
     
-    let output = std::process::Command::new("usbipd")
-        .args(["list"])
-        .output();
+    use std::sync::mpsc;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = hidden_command("usbipd")
+            .args(["list"])
+            .output();
+        let _ = tx.send(result);
+    });
     
-    if let Ok(out) = output {
+    let output = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(Ok(out)) => Some(out),
+        Ok(Err(e)) => {
+            println!("[DEBUG] usbipd list 执行失败: {}", e);
+            None
+        }
+        Err(_) => {
+            println!("[DEBUG] usbipd list 执行超时");
+            None
+        }
+    };
+    
+    if let Some(out) = output {
         if out.status.success() {
             let list_str = String::from_utf8_lossy(&out.stdout).to_string();
             
@@ -448,7 +474,7 @@ fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
     use std::sync::mpsc;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let result = std::process::Command::new("usbipd")
+        let result = hidden_command("usbipd")
             .args(["list"])
             .output();
         let _ = tx.send(result);
@@ -490,7 +516,7 @@ fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
     // 4. 如果已绑定，尝试直接 attach（无需管理员权限）
     if already_bound {
         println!("[DEBUG] Device {} already bound, trying direct attach", busid);
-        let output = std::process::Command::new("usbipd")
+        let output = hidden_command("usbipd")
             .args(["attach", "--wsl", "--busid", &busid])
             .output();
 
@@ -574,7 +600,7 @@ fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
     println!("[DEBUG] PowerShell script: {}", ps_script);
     println!("[DEBUG] Launcher: {}", launcher);
 
-    let status = std::process::Command::new("powershell")
+    let status = hidden_command("powershell")
         .args(["-NonInteractive", "-Command", &launcher])
         .status()
         .map_err(|e| format!("提权启动失败: {}", e))?;
@@ -612,7 +638,7 @@ fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
 /// 断开WSL串口映射
 #[tauri::command]
 fn detach_port_from_wsl(busid: String) -> Result<String, String> {
-    let output = std::process::Command::new("usbipd")
+    let output = hidden_command("usbipd")
         .args(["detach", "--busid", &busid])
         .output()
         .map_err(|e| format!("执行 usbipd detach 失败: {}", e))?;
@@ -856,12 +882,10 @@ fn download_update(download_url: String) -> Result<String, String> {
 /// 启动安装包并退出当前程序
 #[tauri::command]
 fn install_update(file_path: String) -> Result<(), String> {
-    use std::process::Command;
-
     #[cfg(windows)]
     {
         // Windows: 启动安装包，不等待其完成
-        Command::new("cmd")
+        hidden_command("cmd")
             .args(["/c", "start", "", &file_path])
             .spawn()
             .map_err(|e| format!("启动安装程序失败: {}", e))?;
