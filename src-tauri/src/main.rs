@@ -473,7 +473,13 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
 ///   2. 检查绑定状态，已绑定则直接 attach（无需管理员权限）
 ///   3. 未绑定则通过 PowerShell 提权执行 bind + attach
 #[tauri::command]
-fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
+async fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || attach_port_to_wsl_blocking(port_name))
+        .await
+        .map_err(|e| format!("任务执行失败: {}", e))?
+}
+
+fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
     // 1. 获取设备列表（独立线程 + 3s 超时），只找目标端口
     use std::sync::mpsc;
     let (tx, rx) = mpsc::channel();
@@ -641,18 +647,22 @@ fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
 
 /// 断开WSL串口映射
 #[tauri::command]
-fn detach_port_from_wsl(busid: String) -> Result<String, String> {
-    let output = hidden_command("usbipd")
-        .args(["detach", "--busid", &busid])
-        .output()
-        .map_err(|e| format!("执行 usbipd detach 失败: {}", e))?;
+async fn detach_port_from_wsl(busid: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = hidden_command("usbipd")
+            .args(["detach", "--busid", &busid])
+            .output()
+            .map_err(|e| format!("执行 usbipd detach 失败: {}", e))?;
 
-    if output.status.success() {
-        Ok(format!("已断开 {} 的WSL映射", busid))
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        Err(format!("断开失败: {}", stderr))
-    }
+        if output.status.success() {
+            Ok(format!("已断开 {} 的WSL映射", busid))
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            Err(format!("断开失败: {}", stderr))
+        }
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 /// 保存用户配置到 AppData 目录
