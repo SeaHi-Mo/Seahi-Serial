@@ -660,6 +660,33 @@ fn install_update(file_path: String) -> Result<(), String> {
     std::process::exit(0);
 }
 
+/// 打开WSL映射窗口
+#[tauri::command]
+fn open_wsl_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    
+    // 检查窗口是否已存在
+    if let Some(window) = app.get_webview_window("wsl-mapping") {
+        window.set_focus().map_err(|e| format!("设置焦点失败: {}", e))?;
+        return Ok(());
+    }
+    
+    // 创建新窗口
+    let _window = tauri::WebviewWindowBuilder::new(
+        &app,
+        "wsl-mapping",
+        tauri::WebviewUrl::App("wsl-mapping.html".into())
+    )
+    .title("WSL 串口映射 - Seahi Serial")
+    .inner_size(900.0, 600.0)
+    .min_inner_size(700.0, 500.0)
+    .center()
+    .build()
+    .map_err(|e| format!("创建窗口失败: {}", e))?;
+    
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(PortState {
@@ -681,6 +708,7 @@ fn main() {
             check_update,
             download_update,
             install_update,
+            open_wsl_window,
         ])
         .setup(|_app| Ok(()))
         .run(tauri::generate_context!())

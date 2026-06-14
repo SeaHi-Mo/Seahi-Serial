@@ -1396,31 +1396,7 @@ function wslOverlayClick(e) {
 /* ===== WSL 映射窗口 ===== */
 async function openWslMapping() {
     try {
-        const { WebviewWindow } = window.__TAURI__.webview;
-        
-        // 检查窗口是否已存在
-        const existing = WebviewWindow.getByLabel('wsl-mapping');
-        if (existing) {
-            await existing.setFocus();
-            return;
-        }
-        
-        // 创建新窗口
-        const wslWindow = new WebviewWindow({
-            label: 'wsl-mapping',
-            url: 'wsl-mapping.html',
-            title: 'WSL 串口映射 - Seahi Serial',
-            width: 900,
-            height: 600,
-            minWidth: 700,
-            minHeight: 500,
-            center: true,
-        });
-        
-        // 监听错误事件
-        wslWindow.once('tauri://error', function(e) {
-            console.error('打开WSL窗口失败:', e);
-        });
+        await invoke('open_wsl_window');
     } catch (e) {
         console.error('打开WSL窗口失败:', e);
     }
