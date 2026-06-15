@@ -1,12 +1,24 @@
 // Release 模式下隐藏命令行窗口
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use serialport::{ClearBuffer, DataBits, Parity, SerialPort, SerialPortInfo, SerialPortType, StopBits};
+use serialport::{ClearBuffer, DataBits, Parity, SerialPort, StopBits};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
 use std::sync::Mutex;
 use tauri::Emitter;
+
+fn dbg_log(msg: &str) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let line = format!("[{}ms] {}\n", now, msg);
+    let _ = std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open(std::env::temp_dir().join("seahi-serial-debug.log"))
+        .and_then(|mut f| f.write_all(line.as_bytes()));
+}
 
 #[cfg(windows)]
 use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
@@ -42,9 +54,12 @@ fn start_device_watcher(app: tauri::AppHandle) {
             lpszClassName: class_name.as_ptr(),
         };
 
-        if RegisterClassW(&wnd) == 0 {
+        let atom = RegisterClassW(&wnd);
+        if atom == 0 {
+            dbg_log("watcher: RegisterClassW failed");
             return;
         }
+        dbg_log(&format!("watcher: RegisterClassW ok, atom={}", atom));
 
         let hwnd = CreateWindowExW(
             0,
@@ -59,9 +74,11 @@ fn start_device_watcher(app: tauri::AppHandle) {
         );
 
         if hwnd.is_null() {
+            dbg_log("watcher: CreateWindowExW failed");
             UnregisterClassW(class_name.as_ptr(), ptr::null_mut());
             return;
         }
+        dbg_log(&format!("watcher: CreateWindowExW ok, hwnd={:?}", hwnd));
 
         let guid_comport = winapi::shared::guiddef::GUID {
             Data1: 0x86E0D1E0,
@@ -75,21 +92,30 @@ fn start_device_watcher(app: tauri::AppHandle) {
         notify_filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
         notify_filter.dbcc_classguid = guid_comport;
 
-        RegisterDeviceNotificationW(
+        let reg_result = RegisterDeviceNotificationW(
             hwnd as _,
             &mut notify_filter as *mut _ as _,
             DEVICE_NOTIFY_WINDOW_HANDLE,
         );
+        if reg_result.is_null() {
+            dbg_log("watcher: RegisterDeviceNotificationW failed");
+        } else {
+            dbg_log("watcher: RegisterDeviceNotificationW ok");
+        }
 
+        dbg_log("watcher: entering message loop");
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
+            dbg_log(&format!("watcher: received msg={} (WM_DEVICECHANGE={})", msg.message, WM_DEVICECHANGE));
             if msg.message == WM_DEVICECHANGE {
                 let w = msg.wParam as UINT;
                 if w == DBT_DEVICEARRIVAL as UINT || w == DBT_DEVICEREMOVECOMPLETE as UINT || w == DBT_DEVNODES_CHANGED as UINT {
+                    dbg_log(&format!("WM_DEVICECHANGE wParam={}", w));
                     let _ = app.emit("device-changed", ());
                 }
             }
         }
+        dbg_log("watcher: message loop exited");
 
         UnregisterClassW(class_name.as_ptr(), ptr::null_mut());
     });
@@ -197,7 +223,6 @@ fn build_friendly_name_map() -> HashMap<String, String> {
             if success != 0 {
                 let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
                 if let Ok(name) = String::from_utf16(&buffer[..len]) {
-                    // 从 FriendlyName 中提取 COM 口名（如 "COM3"）
                     if let Some(com_start) = name.find("COM") {
                         let rest = &name[com_start..];
                         let com_end = rest.find(|c: char| !c.is_alphanumeric()).unwrap_or(rest.len());
@@ -214,59 +239,49 @@ fn build_friendly_name_map() -> HashMap<String, String> {
     map
 }
 
-fn port_info_from(info: SerialPortInfo, friendly_map: &HashMap<String, String>) -> PortInfo {
-    let port_short = if info.port_name.starts_with("/dev/") {
-        info.port_name.rsplit('/').next().unwrap_or(&info.port_name).to_string()
-    } else {
-        info.port_name.clone()
-    };
-
-    let mut friendly = match &info.port_type {
-        SerialPortType::UsbPort(usb) => {
-            let dev_name = usb.product.as_deref()
-                .filter(|s| !s.is_empty())
-                .or_else(|| usb.manufacturer.as_deref().filter(|s| !s.is_empty()));
-            match dev_name {
-                Some(name) => format!("{} - {}", port_short, name),
-                None => port_short.clone(),
-            }
-        },
-        SerialPortType::BluetoothPort => format!("{} - 蓝牙", port_short),
-        _ => port_short.clone(),
-    };
-
-    let need_fix = friendly.contains('\u{FFFD}') || friendly == port_short;
-    if need_fix {
-        #[cfg(windows)]
-        if let Some(fixed) = friendly_map.get(&port_short) {
-            friendly = fixed.clone();
-        } else if friendly.contains('\u{FFFD}') {
-            friendly = friendly.replace('\u{FFFD}', "");
-        }
-        #[cfg(not(windows))]
-        {
-            friendly = friendly.replace('\u{FFFD}', "");
-        }
-    }
-
-    PortInfo {
-        port_name: info.port_name.clone(),
-        friendly_name: friendly,
-    }
+/// 通过 SetupAPI 枚举所有 COM 端口，同时获取端口名和友好名称。
+/// 比 serialport::available_ports() 快得多，因为它不需要尝试打开每个端口。
+#[cfg(windows)]
+fn enumerate_ports() -> Vec<PortInfo> {
+    build_friendly_name_map()
+        .into_iter()
+        .map(|(port_name, friendly_name)| PortInfo { port_name, friendly_name })
+        .collect()
 }
 
 /// 获取所有可用串口列表
+#[cfg(windows)]
 #[tauri::command]
 fn list_ports() -> Vec<PortInfo> {
-    #[cfg(windows)]
-    let friendly_map = build_friendly_name_map();
-    #[cfg(not(windows))]
-    let friendly_map = HashMap::new();
+    let t0 = std::time::Instant::now();
+    let ports = enumerate_ports();
+    dbg_log(&format!("list_ports: {} ports, {:?}", ports.len(), t0.elapsed()));
+    ports
+}
 
+#[cfg(not(windows))]
+#[tauri::command]
+fn list_ports() -> Vec<PortInfo> {
+    use serialport::SerialPortType;
     serialport::available_ports()
         .unwrap_or_default()
         .into_iter()
-        .map(|p| port_info_from(p, &friendly_map))
+        .map(|p| {
+            let friendly = match &p.port_type {
+                SerialPortType::UsbPort(usb) => {
+                    let dev_name = usb.product.as_deref()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| usb.manufacturer.as_deref().filter(|s| !s.is_empty()));
+                    match dev_name {
+                        Some(name) => format!("{} - {}", p.port_name, name),
+                        None => p.port_name.clone(),
+                    }
+                },
+                SerialPortType::BluetoothPort => format!("{} - 蓝牙", p.port_name),
+                _ => p.port_name.clone(),
+            };
+            PortInfo { port_name: p.port_name.clone(), friendly_name: friendly }
+        })
         .collect()
 }
 

@@ -1708,13 +1708,15 @@ document.addEventListener('DOMContentLoaded', function() {
     // 延迟检查更新，避免与端口加载竞争网络和 CPU 资源
     setTimeout(checkForUpdate, 2000);
 
-    // 监听设备变更事件，自动刷新端口列表（防抖 300ms）
+    // 监听设备变更事件，自动刷新端口列表（防抖 150ms）
     if (window.__TAURI__ && window.__TAURI__.event) {
         var _deviceChangeTimer = null;
         window.__TAURI__.event.listen('device-changed', function() {
+            console.log('[device-changed] event received at', Date.now());
             if (_deviceChangeTimer) clearTimeout(_deviceChangeTimer);
             _deviceChangeTimer = setTimeout(function() {
                 _deviceChangeTimer = null;
+                console.log('[device-changed] refreshing ports at', Date.now());
                 document.querySelectorAll('.monitor-pane').forEach(function(pane) {
                     var mid = pane.id.replace('pane-', '');
                     if (!monitors[mid] || !monitors[mid].isConnected) refreshPorts(mid, true);
