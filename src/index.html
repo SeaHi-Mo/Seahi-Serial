@@ -750,12 +750,11 @@ document.addEventListener('click', function(e) {
 
 /* ===== 端口管理 ===== */
 var _portCache = { data: null, ts: 0 };
-async function refreshPorts(mid) {
+async function refreshPorts(mid, force) {
     try {
-        // 2 秒内共享缓存，避免启动时多个监视器重复调用 list_ports
         var now = Date.now();
         var ports;
-        if (_portCache.data && now - _portCache.ts < 2000) {
+        if (!force && _portCache.data && now - _portCache.ts < 2000) {
             ports = _portCache.data;
         } else {
             ports = await invoke('list_ports');
@@ -808,9 +807,9 @@ async function toggleConnection(mid) {
     else await connectPort(mid);
 }
 
-async function connectPort(mid) {
+async function connectPort(mid, silent) {
     var name = document.getElementById(mid + '-portSelect').value;
-    if (!name) { appendOutput(mid, 'err', '请先选择端口'); return; }
+    if (!name) { if (!silent) appendOutput(mid, 'err', '请先选择端口'); return; }
     var baud = parseInt(document.getElementById(mid + '-baudRate').value) || 115200;
     var dataBits = parseInt(document.getElementById(mid + '-dataBits').value) || 8;
     var stopBits = parseInt(document.getElementById(mid + '-stopBits').value) || 1;
@@ -823,7 +822,7 @@ async function connectPort(mid) {
         monitors[mid].portName = name;
         updateMonitorUI(mid, true);
         startReading(mid);
-    } catch (e) { appendOutput(mid, 'err', '连接失败: ' + e); }
+    } catch (e) { if (!silent) appendOutput(mid, 'err', '连接失败: ' + e); }
 }
 
 async function disconnectPort(mid) {
@@ -866,18 +865,28 @@ function startReading(mid) {
             // 读取失败：端口可能已断开
             var reconnectBtn = document.getElementById(mid + '-btnAutoReconnect');
             if (reconnectBtn && reconnectBtn.classList.contains('on')) {
-                appendOutput(mid, 'err', '连接中断，正在尝试重连...');
                 try {
                     await invoke('close_port', { monitorId: mid });
                 } catch (_) {}
                 monitors[mid].isConnected = false;
                 stopReading(mid);
-                await connectPort(mid);
+                updateMonitorUI(mid, false);
+                var savedPort = monitors[mid].portName;
+                for (var i = 0; i < 50; i++) {
+                    await refreshPorts(mid, true);
+                    var sel = document.getElementById(mid + '-portSelect');
+                    if (sel && [...sel.options].some(function(o) { return o.value === savedPort; })) {
+                        sel.value = savedPort;
+                        await connectPort(mid, true);
+                        if (monitors[mid].isConnected) return;
+                    }
+                    await new Promise(function(r) { setTimeout(r, 200); });
+                }
             } else {
                 monitors[mid].isConnected = false;
                 stopReading(mid);
                 updateMonitorUI(mid, false);
-                appendOutput(mid, 'err', '连接中断: ' + e);
+                refreshPorts(mid, true);
             }
         }
     }, 100);
@@ -1698,6 +1707,21 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // 延迟检查更新，避免与端口加载竞争网络和 CPU 资源
     setTimeout(checkForUpdate, 2000);
+
+    // 监听设备变更事件，自动刷新端口列表（防抖 300ms）
+    if (window.__TAURI__ && window.__TAURI__.event) {
+        var _deviceChangeTimer = null;
+        window.__TAURI__.event.listen('device-changed', function() {
+            if (_deviceChangeTimer) clearTimeout(_deviceChangeTimer);
+            _deviceChangeTimer = setTimeout(function() {
+                _deviceChangeTimer = null;
+                document.querySelectorAll('.monitor-pane').forEach(function(pane) {
+                    var mid = pane.id.replace('pane-', '');
+                    if (!monitors[mid] || !monitors[mid].isConnected) refreshPorts(mid, true);
+                });
+            }, 150);
+        });
+    }
 });
 </script>
 </body>

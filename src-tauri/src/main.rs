@@ -6,6 +6,105 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
 use std::sync::Mutex;
+use tauri::Emitter;
+
+#[cfg(windows)]
+use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
+#[cfg(windows)]
+use winapi::shared::windef::HWND;
+
+#[cfg(windows)]
+fn start_device_watcher(app: tauri::AppHandle) {
+    use std::ptr;
+    use winapi::um::dbt::{
+        DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE, DBT_DEVTYP_DEVICEINTERFACE,
+        DBT_DEVNODES_CHANGED, DEV_BROADCAST_DEVICEINTERFACE_W,
+    };
+    use winapi::um::winuser::{
+        CreateWindowExW, GetMessageW, RegisterClassW,
+        RegisterDeviceNotificationW, UnregisterClassW, MSG, WNDCLASSW,
+        HWND_MESSAGE, WM_DEVICECHANGE, DEVICE_NOTIFY_WINDOW_HANDLE,
+    };
+
+    std::thread::spawn(move || unsafe {
+        let class_name: Vec<u16> = "SeahiDeviceWatcher\0".encode_utf16().collect();
+
+        let wnd = WNDCLASSW {
+            style: 0,
+            lpfnWndProc: Some(wnd_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: ptr::null_mut(),
+            hIcon: ptr::null_mut(),
+            hCursor: ptr::null_mut(),
+            hbrBackground: ptr::null_mut(),
+            lpszMenuName: ptr::null(),
+            lpszClassName: class_name.as_ptr(),
+        };
+
+        if RegisterClassW(&wnd) == 0 {
+            return;
+        }
+
+        let hwnd = CreateWindowExW(
+            0,
+            class_name.as_ptr(),
+            ptr::null_mut(),
+            0,
+            0, 0, 0, 0,
+            HWND_MESSAGE,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        );
+
+        if hwnd.is_null() {
+            UnregisterClassW(class_name.as_ptr(), ptr::null_mut());
+            return;
+        }
+
+        let guid_comport = winapi::shared::guiddef::GUID {
+            Data1: 0x86E0D1E0,
+            Data2: 0x8089,
+            Data3: 0x11D0,
+            Data4: [0x9C, 0xE4, 0x08, 0x00, 0x3E, 0x30, 0x1F, 0x73],
+        };
+
+        let mut notify_filter: DEV_BROADCAST_DEVICEINTERFACE_W = std::mem::zeroed();
+        notify_filter.dbcc_size = std::mem::size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>() as u32;
+        notify_filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+        notify_filter.dbcc_classguid = guid_comport;
+
+        RegisterDeviceNotificationW(
+            hwnd as _,
+            &mut notify_filter as *mut _ as _,
+            DEVICE_NOTIFY_WINDOW_HANDLE,
+        );
+
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
+            if msg.message == WM_DEVICECHANGE {
+                let w = msg.wParam as UINT;
+                if w == DBT_DEVICEARRIVAL as UINT || w == DBT_DEVICEREMOVECOMPLETE as UINT || w == DBT_DEVNODES_CHANGED as UINT {
+                    let _ = app.emit("device-changed", ());
+                }
+            }
+        }
+
+        UnregisterClassW(class_name.as_ptr(), ptr::null_mut());
+    });
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn wnd_proc(
+    hwnd: HWND,
+    msg: UINT,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    use winapi::um::winuser::DefWindowProcW;
+    DefWindowProcW(hwnd, msg, wparam, lparam)
+}
 
 /// 全局状态：多个独立串口连接（key = monitor_id）
 struct PortState {
@@ -1037,7 +1136,11 @@ fn main() {
             download_update,
             install_update,
         ])
-        .setup(|_app| Ok(()))
+        .setup(|app| {
+            #[cfg(windows)]
+            start_device_watcher(app.handle().clone());
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("启动应用失败");
 }
