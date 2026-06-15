@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Seahi Serial - 串口调试器",
+        "title": "Seahi Serial",
         "url": "index.html",
         "width": 1000,
         "height": 650,

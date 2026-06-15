@@ -467,6 +467,49 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
     Ok(devices)
 }
 
+fn decode_wsl_output(raw: &[u8]) -> String {
+    // wsl.exe 输出 UTF-16LE（可能带 BOM），需要正确解码
+    if raw.len() >= 2 {
+        // 检测 BOM：FF FE = UTF-16LE, FE FF = UTF-16BE
+        if raw[0] == 0xFF && raw[1] == 0xFE {
+            let u16_vec: Vec<u16> = raw[2..]
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            return String::from_utf16_lossy(&u16_vec);
+        }
+        // 没有 BOM 时，如果奇数字节或包含大量 \0 字节，也按 UTF-16LE 处理
+        let null_count = raw.iter().enumerate().skip(1).step_by(2).filter(|(_, b)| **b == 0).count();
+        if raw.len() >= 4 && null_count as f64 / (raw.len() as f64 / 2.0) > 0.3 {
+            let u16_vec: Vec<u16> = raw
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            return String::from_utf16_lossy(&u16_vec);
+        }
+    }
+    String::from_utf8_lossy(raw).to_string()
+}
+
+/// 检查 WSL 运行状态，返回正在运行的发行版列表
+#[tauri::command]
+fn check_wsl_status() -> Vec<String> {
+    let output = hidden_command("wsl")
+        .args(["--list", "--running"])
+        .output();
+    match output {
+        Ok(out) => {
+            let text = decode_wsl_output(&out.stdout);
+            text.lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty() && !l.contains("Distributions") && !l.contains("分发"))
+                .map(|s| s.to_string())
+                .collect()
+        }
+        Err(_) => vec![],
+    }
+}
+
 /// 将指定串口对应的 USB 设备映射到 WSL
 /// 通过 usbipd 工具实现：
 ///   1. usbipd list 找到目标端口的 busid
@@ -480,6 +523,27 @@ async fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
 }
 
 fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
+    // 0. 检查是否有正在运行的 WSL 发行版
+    let wsl_check = hidden_command("wsl")
+        .args(["--list", "--running"])
+        .output();
+    match wsl_check {
+        Ok(out) => {
+            let text = decode_wsl_output(&out.stdout);
+            let has_running = text.lines()
+                .any(|line| {
+                    let l = line.trim();
+                    !l.is_empty() && !l.contains("Distributions") && !l.contains("分发")
+                });
+            if !has_running {
+                return Err("WSL 未运行，请先打开一个 WSL 终端窗口再进行映射".to_string());
+            }
+        }
+        Err(e) => {
+            return Err(format!("检测 WSL 状态失败: {}，请确认 WSL 已安装", e));
+        }
+    }
+
     // 1. 获取设备列表（独立线程 + 3s 超时），只找目标端口
     use std::sync::mpsc;
     let (tx, rx) = mpsc::channel();
@@ -502,14 +566,22 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
 
     let list_str = String::from_utf8_lossy(&list_out.stdout).to_string();
 
-    // 2. 在输出中只找包含目标端口名的行，提取 busid
+    // 2. 在输出中只找包含目标端口名的行，提取 busid（格式如 4-1, 2-3）
     let target_line = list_str.lines()
         .find(|line| line.to_uppercase().contains(&port_name.to_uppercase()))
         .ok_or_else(|| format!("在 usbipd 设备列表中未找到 {}，请确认设备已连接", port_name))?;
 
-    let busid = target_line.split_whitespace().next()
+    let busid = target_line.split_whitespace()
+        .find(|s| {
+            // busid 格式: 数字-数字，如 4-1, 2-3, 1-10
+            let mut parts = s.splitn(2, '-');
+            let a = parts.next().unwrap_or("");
+            let b = parts.next().unwrap_or("");
+            !a.is_empty() && a.chars().all(|c| c.is_ascii_digit())
+                && !b.is_empty() && b.chars().all(|c| c.is_ascii_digit())
+        })
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("无法解析 {} 的 busid", port_name))?;
+        .ok_or_else(|| format!("无法解析 {} 的 busid（行: {}）", port_name, target_line.trim()))?;
 
     // 3. 检查绑定状态
     // usbipd list 输出格式可能是：
@@ -549,7 +621,10 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
     }
 
     // 5. 未绑定 或 直接attach失败，需要管理员权限
-    let tmp_result = std::env::temp_dir().join(format!("usbipd_result_{}.txt", std::process::id()));
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let unique_id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_result = std::env::temp_dir().join(format!("usbipd_result_{}_{}.txt", std::process::id(), unique_id));
     let tmp_result_str = tmp_result.to_str().unwrap_or("C:\\Temp\\usbipd_result.txt").replace('\'', "''");
 
     let ps_script = if already_bound {
@@ -596,26 +671,25 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
         )
     };
 
-    // 6. 通过 PowerShell Start-Process -Verb RunAs 触发 UAC 提权
-    // 先删除旧的结果文件
+    // 6. 通过临时 .ps1 文件 + Start-Process -Verb RunAs 触发 UAC 提权
+    let tmp_script = std::env::temp_dir().join(format!("usbipd_script_{}_{}.ps1", std::process::id(), unique_id));
     let _ = std::fs::remove_file(&tmp_result);
-    
-    let launcher = format!(
-        "Start-Process -FilePath 'powershell' \
-         -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-Command',\"{script}\" \
-         -Verb RunAs -Wait",
-        script = ps_script.replace('"', "`\"")
-    );
+    let _ = std::fs::write(&tmp_script, &ps_script);
 
-    println!("[DEBUG] PowerShell script: {}", ps_script);
-    println!("[DEBUG] Launcher: {}", launcher);
+    let script_path_str = tmp_script.to_str().unwrap_or("");
+
+    println!("[DEBUG] PowerShell script file: {:?}", tmp_script);
 
     let status = hidden_command("powershell")
-        .args(["-NonInteractive", "-Command", &launcher])
+        .args(["-NonInteractive", "-Command"])
+        .arg({
+            let sp = script_path_str.replace('\'', "''");
+            format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-File','{}' -Verb RunAs -Wait", sp)
+        })
         .status()
         .map_err(|e| format!("提权启动失败: {}", e))?;
 
-    // 等待一小段时间确保文件写入完成
+    let _ = std::fs::remove_file(&tmp_script);
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // 7. 读取提权进程写入的结果文件
@@ -956,6 +1030,7 @@ fn main() {
             save_log,
             attach_port_to_wsl,
             detach_port_from_wsl,
+            check_wsl_status,
             save_config,
             load_config,
             check_update,

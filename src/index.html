@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Seahi Serial - 串口调试器</title>
+<title>Seahi Serial</title>
 <style>
 :root {
     --bg: #1e1e1e;
@@ -340,9 +340,9 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .update-btn {
     background:#2d8cf0;
     color:#fff;
-    font-size:12px; cursor:pointer;
+    font-size:11px; cursor:pointer;
     display:inline-flex; align-items:center; gap:3px;
-    padding:3px 10px; border-radius:4px; margin-left:10px;
+    padding:2px 8px; border-radius:3px; margin-left:8px;
     border:none; user-select:none;
     transition:background .15s;
 }
@@ -472,7 +472,6 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
         WSL 端口映射
     </span>
     <span style="flex:1;"></span>
-    <span id="appVersion" style="font-size:11px;color:#555;margin-right:8px;"></span>
     <span id="updateBtn" class="update-btn" style="display:none;" onclick="downloadAndInstallUpdate()">更新</span>
 </div>
 
@@ -1363,15 +1362,17 @@ function getWslMappingHtml(mid) {
         '<div style="padding:12px 16px;background:#252526;border-bottom:1px solid #3c3c3c;display:flex;align-items:center;justify-content:space-between;">' +
             '<div>' +
                 '<h1 style="font-size:16px;font-weight:600;color:#fff;margin-bottom:4px;">WSL 端口映射</h1>' +
-                '<p style="font-size:12px;color:#858585;">勾选设备即可映射到WSL，取消勾选则断开映射</p>' +
+                '<div style="display:flex;align-items:center;gap:6px;">' +
+                    '<span id="' + mid + '-wslDot" style="width:8px;height:8px;border-radius:50%;background:#555;flex-shrink:0;"></span>' +
+                    '<span id="' + mid + '-wslStatus" style="font-size:13px;color:#858585;">检测中...</span>' +
+                '</div>' +
             '</div>' +
-            '<button class="btn btn-outline" onclick="restoreMonitorPane(\'' + mid + '\')" style="height:26px;padding:0 10px;border:1px solid #454545;border-radius:3px;background:transparent;color:#ccc;font-size:12px;cursor:pointer;">返回监视器</button>' +
+            '<div style="display:flex;gap:8px;">' +
+                '<button class="btn btn-outline" onclick="refreshWslDevices()" style="height:26px;padding:0 10px;border:1px solid #454545;border-radius:3px;background:transparent;color:#ccc;font-size:12px;cursor:pointer;">刷新</button>' +
+                '<button class="btn btn-outline" onclick="restoreMonitorPane(\'' + mid + '\')" style="height:26px;padding:0 10px;border:1px solid #454545;border-radius:3px;background:transparent;color:#ccc;font-size:12px;cursor:pointer;">返回监视器</button>' +
+            '</div>' +
         '</div>' +
         '<div style="flex:1;overflow:hidden;display:flex;flex-direction:column;">' +
-            '<div style="padding:8px 12px;background:#252526;border-bottom:1px solid #3c3c3c;display:flex;align-items:center;justify-content:space-between;">' +
-                '<span style="font-size:13px;font-weight:500;color:#fff;">可用串口设备</span>' +
-                '<button class="btn btn-outline" onclick="refreshWslDevices()" style="height:26px;padding:0 10px;border:1px solid #454545;border-radius:3px;background:transparent;color:#ccc;font-size:12px;cursor:pointer;">刷新</button>' +
-            '</div>' +
             '<div style="flex:1;overflow-y:auto;" id="' + mid + '-wslDeviceList">' +
                 '<div style="color:#858585;text-align:center;padding:20px;">正在加载设备列表...</div>' +
             '</div>' +
@@ -1408,7 +1409,27 @@ function openWslMapping() {
     
     // 替换为WSL映射页面
     activePane.innerHTML = getWslMappingHtml(mid);
-    
+
+    // 检查 WSL 运行状态
+    invoke('check_wsl_status').then(function(dists) {
+        var el = document.getElementById(mid + '-wslStatus');
+        var dot = document.getElementById(mid + '-wslDot');
+        if (!el) return;
+        if (dists && dists.length > 0) {
+            el.textContent = dists.join(', ');
+            if (dot) dot.style.background = '#4fc1ff';
+        } else {
+            el.textContent = 'WSL 未运行';
+            el.style.color = '#f48771';
+            if (dot) dot.style.background = '#555';
+        }
+    }).catch(function() {
+        var el = document.getElementById(mid + '-wslStatus');
+        var dot = document.getElementById(mid + '-wslDot');
+        if (el) { el.textContent = '检测失败'; el.style.color = '#f48771'; }
+        if (dot) dot.style.background = '#555';
+    });
+
     // 加载设备列表
     loadWslDevices(mid);
 }
@@ -1669,20 +1690,6 @@ function refreshWslDevices() {
 
 /* ===== 初始化 ===== */
 document.addEventListener('DOMContentLoaded', function() {
-    // 显示版本号
-    try {
-        var app = window.__TAURI__.app;
-        if (app && app.getVersion) {
-            app.getVersion().then(function(v) {
-                document.getElementById('appVersion').textContent = 'v' + v;
-                var win = window.__TAURI__.window;
-                if (win && win.getCurrentWindow) {
-                    win.getCurrentWindow().setTitle('Seahi Serial v' + v + ' - 串口调试器');
-                }
-            });
-        }
-    } catch(e) {}
-
     createMonitorPane('main', '主监视器', false);
     setInterval(function() { if (!monitors.main || !monitors.main.isConnected) refreshPorts('main'); }, 10000);
 
