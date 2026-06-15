@@ -1212,7 +1212,12 @@ async function downloadAndInstallUpdate() {
 /* ===== 配置保存/恢复 ===== */
 // 收集所有监视器的当前配置，返回 JSON 对象
 function collectConfig() {
-    var cfg = { version: 1, extraCount: extraCount, monitors: {}, logDir: logDirPath, wslAutoMap: _wslAutoMap };
+    var maxExtra = 0;
+    Object.keys(monitors).forEach(function(mid) {
+        var m = mid.match(/^extra-(\d+)$/);
+        if (m) { var n = parseInt(m[1], 10); if (n > maxExtra) maxExtra = n; }
+    });
+    var cfg = { version: 1, extraCount: maxExtra, monitors: {}, logDir: logDirPath, wslAutoMap: _wslAutoMap };
     Object.keys(monitors).forEach(function(mid) {
         var m = monitors[mid];
         var portSel   = document.getElementById(mid + '-portSelect');
