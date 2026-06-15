@@ -472,6 +472,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
         WSL 端口映射
     </span>
     <span style="flex:1;"></span>
+    <span id="appVersion" style="font-size:11px;color:#555;margin-right:8px;"></span>
     <span id="updateBtn" class="update-btn" style="display:none;" onclick="downloadAndInstallUpdate()">更新</span>
 </div>
 
@@ -1668,6 +1669,20 @@ function refreshWslDevices() {
 
 /* ===== 初始化 ===== */
 document.addEventListener('DOMContentLoaded', function() {
+    // 显示版本号
+    try {
+        var app = window.__TAURI__.app;
+        if (app && app.getVersion) {
+            app.getVersion().then(function(v) {
+                document.getElementById('appVersion').textContent = 'v' + v;
+                var win = window.__TAURI__.window;
+                if (win && win.getCurrentWindow) {
+                    win.getCurrentWindow().setTitle('Seahi Serial v' + v + ' - 串口调试器');
+                }
+            });
+        }
+    } catch(e) {}
+
     createMonitorPane('main', '主监视器', false);
     setInterval(function() { if (!monitors.main || !monitors.main.isConnected) refreshPorts('main'); }, 10000);
 

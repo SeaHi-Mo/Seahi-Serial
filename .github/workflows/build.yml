@@ -39,8 +39,9 @@ jobs:
         run: |
           $body = Get-Content -Path "RELEASE_NOTES.md" -Raw
           $body = $body -replace '\{VERSION\}', '${{ github.ref_name }}'
-          $body = $body -replace "`n", "%0A"
-          echo "body=$body" >> $env:GITHUB_OUTPUT
+          echo "body<<EOF" >> $env:GITHUB_OUTPUT
+          echo "$body" >> $env:GITHUB_OUTPUT
+          echo "EOF" >> $env:GITHUB_OUTPUT
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -51,7 +52,7 @@ jobs:
           releaseName: ${{ github.ref_name }}
           releaseBody: "${{ steps.notes.outputs.body }}"
           releaseDraft: true
-          prerelease: false
+          prerelease: true
           args: "--bundles msi"
 
       - name: Install Inno Setup
