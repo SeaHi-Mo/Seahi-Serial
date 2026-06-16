@@ -21,65 +21,31 @@ fn dbg_log(msg: &str) {
 }
 
 #[cfg(windows)]
-use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
-#[cfg(windows)]
-use winapi::shared::windef::HWND;
-
-#[cfg(windows)]
 fn start_device_watcher(app: tauri::AppHandle) {
-    use std::ptr;
-    use winapi::um::dbt::{
-        DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE, DBT_DEVTYP_DEVICEINTERFACE,
-        DBT_DEVNODES_CHANGED, DEV_BROADCAST_DEVICEINTERFACE_W,
+    use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
+        CM_Register_Notification, CM_NOTIFY_FILTER, CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
+        CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL, CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL,
+        CM_NOTIFY_EVENT_DATA, CM_NOTIFY_ACTION,
     };
-    use winapi::um::winuser::{
-        CreateWindowExW, GetMessageW, RegisterClassW,
-        RegisterDeviceNotificationW, UnregisterClassW, MSG, WNDCLASSW,
-        HWND_MESSAGE, WM_DEVICECHANGE, DEVICE_NOTIFY_WINDOW_HANDLE,
-    };
+
+    unsafe extern "system" fn device_callback(
+        _hnotify: *mut std::ffi::c_void,
+        context: *const std::ffi::c_void,
+        action: CM_NOTIFY_ACTION,
+        _event_data: *const CM_NOTIFY_EVENT_DATA,
+        _event_data_size: u32,
+    ) -> u32 {
+        if action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL
+            || action == CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL
+        {
+            dbg_log(&format!("device_callback: action={}", action));
+            let app = &*(context as *const tauri::AppHandle);
+            let _ = app.emit("device-changed", ());
+        }
+        0
+    }
 
     std::thread::spawn(move || unsafe {
-        let class_name: Vec<u16> = "SeahiDeviceWatcher\0".encode_utf16().collect();
-
-        let wnd = WNDCLASSW {
-            style: 0,
-            lpfnWndProc: Some(wnd_proc),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: ptr::null_mut(),
-            hIcon: ptr::null_mut(),
-            hCursor: ptr::null_mut(),
-            hbrBackground: ptr::null_mut(),
-            lpszMenuName: ptr::null(),
-            lpszClassName: class_name.as_ptr(),
-        };
-
-        let atom = RegisterClassW(&wnd);
-        if atom == 0 {
-            dbg_log("watcher: RegisterClassW failed");
-            return;
-        }
-        dbg_log(&format!("watcher: RegisterClassW ok, atom={}", atom));
-
-        let hwnd = CreateWindowExW(
-            0,
-            class_name.as_ptr(),
-            ptr::null_mut(),
-            0,
-            0, 0, 0, 0,
-            HWND_MESSAGE,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-        );
-
-        if hwnd.is_null() {
-            dbg_log("watcher: CreateWindowExW failed");
-            UnregisterClassW(class_name.as_ptr(), ptr::null_mut());
-            return;
-        }
-        dbg_log(&format!("watcher: CreateWindowExW ok, hwnd={:?}", hwnd));
-
         let guid_comport = winapi::shared::guiddef::GUID {
             Data1: 0x86E0D1E0,
             Data2: 0x8089,
@@ -87,49 +53,34 @@ fn start_device_watcher(app: tauri::AppHandle) {
             Data4: [0x9C, 0xE4, 0x08, 0x00, 0x3E, 0x30, 0x1F, 0x73],
         };
 
-        let mut notify_filter: DEV_BROADCAST_DEVICEINTERFACE_W = std::mem::zeroed();
-        notify_filter.dbcc_size = std::mem::size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>() as u32;
-        notify_filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
-        notify_filter.dbcc_classguid = guid_comport;
+        let mut filter: CM_NOTIFY_FILTER = std::mem::zeroed();
+        filter.cbSize = std::mem::size_of::<CM_NOTIFY_FILTER>() as u32;
+        filter.FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE;
+        std::ptr::write(&mut filter.u as *mut _ as *mut winapi::shared::guiddef::GUID, guid_comport);
 
-        let reg_result = RegisterDeviceNotificationW(
-            hwnd as _,
-            &mut notify_filter as *mut _ as _,
-            DEVICE_NOTIFY_WINDOW_HANDLE,
+        dbg_log(&format!("CM_NOTIFY_FILTER size={}", filter.cbSize));
+
+        let mut notify_handle: *mut std::ffi::c_void = std::ptr::null_mut();
+        let app_handle = Box::new(app);
+        let context = Box::into_raw(app_handle) as *const std::ffi::c_void;
+
+        let result = CM_Register_Notification(
+            &filter,
+            context,
+            Some(device_callback),
+            &mut notify_handle,
         );
-        if reg_result.is_null() {
-            dbg_log("watcher: RegisterDeviceNotificationW failed");
+
+        if result == 0 {
+            dbg_log("CM_Register_Notification ok, waiting for events...");
         } else {
-            dbg_log("watcher: RegisterDeviceNotificationW ok");
+            dbg_log(&format!("CM_Register_Notification failed: {}", result));
         }
 
-        dbg_log("watcher: entering message loop");
-        let mut msg: MSG = std::mem::zeroed();
-        while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
-            dbg_log(&format!("watcher: received msg={} (WM_DEVICECHANGE={})", msg.message, WM_DEVICECHANGE));
-            if msg.message == WM_DEVICECHANGE {
-                let w = msg.wParam as UINT;
-                if w == DBT_DEVICEARRIVAL as UINT || w == DBT_DEVICEREMOVECOMPLETE as UINT || w == DBT_DEVNODES_CHANGED as UINT {
-                    dbg_log(&format!("WM_DEVICECHANGE wParam={}", w));
-                    let _ = app.emit("device-changed", ());
-                }
-            }
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3600));
         }
-        dbg_log("watcher: message loop exited");
-
-        UnregisterClassW(class_name.as_ptr(), ptr::null_mut());
     });
-}
-
-#[cfg(windows)]
-unsafe extern "system" fn wnd_proc(
-    hwnd: HWND,
-    msg: UINT,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    use winapi::um::winuser::DefWindowProcW;
-    DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
 /// 全局状态：多个独立串口连接（key = monitor_id）
