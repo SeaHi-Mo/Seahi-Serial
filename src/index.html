@@ -54,30 +54,30 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 }
 .lbl { color:var(--text); font-size:12px; white-space:nowrap; flex-shrink:0; }
 
-/* 端口下拉 */
-.sel-port {
-    background:var(--input-bg); border:1px solid transparent; border-radius:2px;
-    color:var(--text); font-size:12px; height:22px; padding:0 18px 0 5px;
-    outline:none; cursor:pointer; appearance:none; -webkit-appearance:none;
-    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%23808080' d='M2.5 3.5L5 6 7.5 3.5'/%3E%3C/svg%3E");
-    background-repeat:no-repeat; background-position:right 3px center;
-    font-family:inherit; min-width:160px; max-width:240px;
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-}
-.sel-port:hover { border-color:var(--border-h); }
-.sel-port:focus { border-color:#007acc; }
-
-/* 通用 select */
+/* 通用下拉选择 */
 .sel {
+    position:relative; display:inline-flex; align-items:center; justify-content:space-between;
     background:var(--input-bg); border:1px solid transparent; border-radius:2px;
-    color:var(--text); font-size:12px; height:22px; padding:0 18px 0 5px;
-    outline:none; cursor:pointer; appearance:none; -webkit-appearance:none;
-    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%23808080' d='M2.5 3.5L5 6 7.5 3.5'/%3E%3C/svg%3E");
-    background-repeat:no-repeat; background-position:right 3px center;
-    font-family:inherit; min-width:42px;
+    color:var(--text); font-size:12px; height:22px; padding:0 4px 0 6px;
+    outline:none; cursor:pointer; font-family:inherit; min-width:42px;
+    white-space:nowrap; gap:4px;
 }
 .sel:hover { border-color:var(--border-h); }
 .sel:focus { border-color:#007acc; }
+.sel-text { pointer-events:none; overflow:hidden; text-overflow:ellipsis; flex:1; min-width:0; }
+.sel-arrow { font-size:8px; opacity:.6; flex-shrink:0; }
+.sel-drop {
+    display:none; position:absolute; bottom:calc(100% + 2px); left:0; z-index:9999;
+    background:#2d2d2d; border:1px solid var(--border-h);
+    border-radius:2px; box-shadow:0 -4px 12px rgba(0,0,0,.5);
+    min-width:100%; overflow:hidden; max-height:200px; overflow-y:auto;
+}
+.sel-drop.open { display:block; }
+.sel-drop-down { bottom:auto; top:calc(100% + 2px); }
+.sel-opt { padding:4px 10px; font-size:12px; color:var(--text); cursor:pointer; white-space:nowrap; }
+.sel-opt:hover { background:rgba(255,255,255,.07); }
+.sel-opt.active { background:var(--btn-p); color:#fff; }
+.sel-port .sel-drop { min-width:260px; }
 
 /* 波特率 combo box */
 .baud-wrap { position:relative; display:inline-flex; align-items:center; flex-shrink:0; }
@@ -105,7 +105,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .baud-dropdown.open { display:block; }
 .baud-opt { padding:4px 10px; font-size:12px; color:var(--text); cursor:pointer; white-space:nowrap; }
 .baud-opt:hover { background:rgba(255,255,255,.07); }
-.baud-opt.active { color:var(--link); }
+.baud-opt.active { background:var(--btn-p); color:#fff; }
 
 /* 刷新按钮 */
 .btn-ref {
@@ -187,7 +187,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .output::-webkit-scrollbar-thumb:hover { background:rgba(121,121,121,.7); background-clip:content-box; }
 .ol { display:block; margin:0; padding:0; }
 .ol.recv { color:#cccccc; }
-.ol.send { color:#4ec9b0; }
+.ol.send { display:block; width:fit-content; max-width:100%; color:#fff; background:#1e3a5f; padding:2px 6px; border-radius:3px; margin:1px 0; word-break:break-all; white-space:pre-wrap; }
 .ol.err  { color:#f48771; }
 .ol.sys  { color:#666; }
 /* ANSI 颜色支持 */
@@ -239,13 +239,27 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .send-hist-item:hover { background:rgba(255,255,255,.07); }
 .send-hist-item.selected { background:rgba(0,122,204,.2); color:#fff; }
 .send-as {
+    position:relative; display:inline-flex; align-items:center;
     background:transparent; border:none; color:var(--text-d); font-size:12px;
     cursor:pointer; padding:0 4px; outline:none; height:24px; white-space:nowrap;
-    flex-shrink:0; font-family:inherit; appearance:none; -webkit-appearance:none;
-    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'%3E%3Cpath fill='%236e6e6e' d='M1.5 2.5L4 5 6.5 2.5'/%3E%3C/svg%3E");
-    background-repeat:no-repeat; background-position:right 2px center; padding-right:14px;
+    flex-shrink:0; font-family:inherit;
 }
 .send-as:hover { color:var(--text); }
+.send-as-text { pointer-events:none; }
+.send-as-arrow { font-size:8px; margin-left:2px; opacity:.6; }
+.send-as-drop {
+    display:none; position:absolute; bottom:28px; right:0; z-index:9999;
+    background:#2d2d2d; border:1px solid var(--border-h);
+    border-radius:2px; box-shadow:0 -4px 12px rgba(0,0,0,.5);
+    min-width:60px; overflow:hidden;
+}
+.send-as-drop.open { display:block; }
+.send-as-opt {
+    padding:4px 10px; font-size:12px; color:var(--text); cursor:pointer;
+    white-space:nowrap;
+}
+.send-as-opt:hover { background:rgba(255,255,255,.07); }
+.send-as-opt.active { background:var(--btn-p); color:#fff; }
 .ssep { color:var(--text-d); font-size:15px; padding:0 2px; flex-shrink:0; }
 .btn-send {
     height:24px; padding:0 12px; border:none; border-radius:2px 0 0 2px;
@@ -323,15 +337,15 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 }
 .qcmd-item-val:focus { border-color:#007acc; }
 .qcmd-item-send {
-    width:26px; height:22px; border:none; border-radius:2px;
-    background:var(--btn-p); color:#fff; cursor:pointer; flex-shrink:0;
+    width:28px; height:28px; border:none; border-radius:2px;
+    background:transparent; color:var(--btn-p); cursor:pointer; flex-shrink:0;
     display:inline-flex; align-items:center; justify-content:center; padding:0;
 }
-.qcmd-item-send:hover { background:var(--btn-ph); }
-.qcmd-item-send:disabled { background:#3a3a3a; color:#555; cursor:default; }
+.qcmd-item-send:hover { color:var(--btn-ph); background:rgba(14,99,156,.15); }
+.qcmd-item-send:disabled { color:#555; cursor:default; background:transparent; }
 .qcmd-item-del {
-    width:16px; height:16px; border:none; background:transparent; color:#555;
-    cursor:pointer; border-radius:2px; font-size:13px; line-height:1;
+    width:28px; height:28px; border:none; background:transparent; color:#555;
+    cursor:pointer; border-radius:2px; font-size:16px; line-height:1;
     display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;
 }
 .qcmd-item-del:hover { color:#f48771; background:rgba(244,135,113,.1); }
@@ -451,6 +465,10 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     transform: translateX(16px);
     background: #fff;
 }
+.wsl-auto-toggle input:disabled + .wsl-auto-slider {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
 
 /* 隐藏日志滚动条 */
 .no-scrollbar::-webkit-scrollbar {
@@ -467,9 +485,9 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 <!-- 全局操作栏 -->
 <div class="global-bar">
     <span class="add-btn" onclick="addMonitor()">＋ 打开额外监视器</span>
-    <span class="add-btn" onclick="openWslMapping()" style="margin-left:12px;">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y1="17" x2="12" y2="21"/><text x="5" y="13" font-size="6" fill="currentColor" stroke="none" font-family="monospace" font-weight="bold">WSL</text></svg>
-        WSL 端口映射
+    <span id="wslToggleBtn" class="add-btn" onclick="openWslMapping()" style="margin-left:12px;">
+        <svg id="wslToggleIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y="17" x2="12" y="21"/></svg>
+        <span id="wslToggleText">WSL 端口映射</span>
     </span>
     <span style="flex:1;"></span>
     <span id="updateBtn" class="update-btn" style="display:none;" onclick="downloadAndInstallUpdate()">更新</span>
@@ -502,8 +520,8 @@ const ICONS = {
     saveLog: '<svg width="17" height="17" viewBox="0 0 1024 1024" fill="currentColor"><path d="M700.5 790.7H292c-13.3 0-24.1-11-24.1-24.7 0-13.6 10.8-24.7 24.1-24.7h408.5c13.3 0 24.1 11 24.1 24.7 0 13.6-10.8 24.7-24.1 24.7zM698.1 591.5H289.6c-13.3 0-24.1-11-24.1-24.7 0-13.6 10.8-24.7 24.1-24.7h408.5c13.3 0 24.1 11 24.1 24.7s-10.8 24.7-24.1 24.7zM535.2 329.4H292.7c-13.3 0-24.1-11-24.1-24.7s10.8-24.7 24.1-24.7h242.6c13.3 0 24.1 11 24.1 24.7s-10.8 24.7-24.2 24.7z"/><path d="M698 958H291c-93.1 0-168.9-77.4-168.9-172.6V236.8c0-95.2 75.8-172.6 168.9-172.6h407c93.1 0 168.9 77.4 168.9 172.6v548.6c0 95.2-75.7 172.6-168.9 172.6zM291.1 113.5c-66.5 0-120.6 55.3-120.6 123.3v548.6c0 68 54.1 123.3 120.6 123.3h407c66.5 0 120.6-55.3 120.6-123.3V236.8c0-68-54.1-123.3-120.6-123.3h-407z"/></svg>',
     copyAll: '<svg width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M96.1 575.7a32.2 32.1 0 1 0 64.4 0 32.2 32.1 0 1 0-64.4 0Z"/><path d="M742.1 450.7l-269.5-2.1c-14.3-0.1-26 13.8-26 31s11.7 31.3 26 31.4l269.5 2.1c14.3 0.1 26-13.8 26-31s-11.7-31.3-26-31.4zM742.1 577.7l-269.5-2.1c-14.3-0.1-26 13.8-26 31s11.7 31.3 26 31.4l269.5 2.1c14.3 0.2 26-13.8 26-31s-11.7-31.3-26-31.4z"/><path d="M736.1 63.9H417c-70.4 0-128 57.6-128 128h-64.9c-70.4 0-128 57.6-128 128v128c-0.1 17.7 14.4 32 32.2 32 17.8 0 32.2-14.4 32.2-32.1V320c0-35.2 28.8-64 64-64H289v447.8c0 70.4 57.6 128 128 128h255.1c-0.1 35.2-28.8 63.8-64 63.8H224.5c-35.2 0-64-28.8-64-64V703.5c0-17.7-14.4-32.1-32.2-32.1-17.8 0-32.3 14.4-32.3 32.1v128.3c0 70.4 57.6 128 128 128h384.1c70.4 0 128-57.6 128-128h65c70.4 0 128-57.6 128-128V255.9l-193-192z m0.1 63.4l127.7 128.3H800c-35.2 0-64-28.8-64-64v-64.3h0.2z m64 641H416.1c-35.2 0-64-28.8-64-64v-513c0-35.2 28.8-64 64-64H671V191c0 70.4 57.6 128 128 128h65.2v385.3c0 35.2-28.8 64-64 64z"/></svg>',
     quickCmd: '<svg width="18" height="18" viewBox="0 0 1024 1024" fill="currentColor"><path d="M139.196222 0c22.672294 0 41.834039 7.606189 57.631508 22.818567 15.797469 15.212378 23.696204 34.008441 23.696204 56.461325v61.28833c0 22.379748-7.898735 41.39522-23.696204 57.046416a78.987346 78.987346 0 0 1-57.631508 23.403658h-58.582282a77.524617 77.524617 0 0 1-56.461325-23.403658A77.232072 77.232072 0 0 1 0.456411 140.568222v-61.28833C0.456411 56.827007 8.355146 38.030944 24.152615 22.818567 39.950084 7.606189 58.746147 0 80.61394 0h58.509146z m805.012703 0c21.867793 0 40.663856 7.606189 56.461325 22.818567 15.797469 15.212378 23.696204 34.008441 23.696204 56.461325v61.28833c0 22.379748-7.898735 41.39522-23.696204 57.046416a77.524617 77.524617 0 0 1-56.461325 23.403658H444.028869a78.987346 78.987346 0 0 1-57.704645-23.403658 77.232072 77.232072 0 0 1-23.623067-57.046416v-61.28833c0-22.452884 7.825598-41.248947 23.623067-56.461325 15.797469-15.212378 35.105487-22.818567 57.704645-22.818567h500.253192zM139.196222 400.787645c22.672294 0 41.834039 7.898735 57.631508 23.476795 15.797469 15.651196 23.696204 34.666669 23.696204 57.046416v61.28833c0 21.575247-7.898735 40.225037-23.696204 55.803097a78.987346 78.987346 0 0 1-57.631508 23.403658h-58.582282a77.524617 77.524617 0 0 1-56.461325-23.403658A75.84248 75.84248 0 0 1 0.456411 542.672322V481.23772c0-22.379748 7.898735-41.39522 23.696204-57.046417a77.524617 77.524617 0 0 1 56.461325-23.403658h58.509146z m805.012703 0c21.867793 0 40.663856 7.898735 56.461325 23.476795 15.797469 15.651196 23.696204 34.666669 23.696204 57.046416v61.28833c0 21.575247-7.898735 40.225037-23.696204 55.803097a77.524617 77.524617 0 0 1-56.461325 23.403658H444.028869a78.987346 78.987346 0 0 1-57.704645-23.403658 75.84248 75.84248 0 0 1-23.623067-55.803097V481.23772c0-22.379748 7.825598-41.39522 23.623067-57.046417a78.987346 78.987346 0 0 1 57.704645-23.403658h500.253192zM139.196222 802.964882c22.672294 0 41.834039 7.825598 57.631508 23.403658 15.797469 15.651196 23.696204 34.22785 23.696204 55.876234v61.28833c0 22.379748-7.898735 41.39522-23.696204 57.046417a78.987346 78.987346 0 0 1-57.631508 23.403658h-58.582282a77.524617 77.524617 0 0 1-56.461325-23.403658A77.232072 77.232072 0 0 1 0.456411 943.459967v-61.288329c0-21.648384 7.898735-40.225037 23.696204-55.876234a77.524617 77.524617 0 0 1 56.461325-23.403658h58.509146z m805.012703 0c21.867793 0 40.663856 7.825598 56.461325 23.403658 15.797469 15.651196 23.696204 34.22785 23.696204 55.876234v61.28833c0 22.379748-7.898735 41.39522-23.696204 57.046417a77.524617 77.524617 0 0 1-56.461325 23.403658H444.028869a78.987346 78.987346 0 0 1-57.704645-23.403658 77.232072 77.232072 0 0 1-23.623067-57.046417v-61.28833c0-21.648384 7.825598-40.225037 23.623067-55.876234a78.987346 78.987346 0 0 1 57.704645-23.403658h500.253192z</path></svg>',
-    sendIcon: '<svg width="14" height="14" viewBox="0 0 1480 1024" fill="currentColor"><path d="M773.375078 786.86048c4.071065 0 7.506026-4.579948 7.506025-10.304883v-20.609765c0-5.724935-3.30774-10.304883-7.506025-10.304883H429.62455c-4.071065 0-7.506026 4.579948-7.506026 10.304883V776.555597c0 5.724935 3.30774 10.304883 7.506026 10.304883h343.750528zM354.945956 863.447385v20.609765c0 5.724935 4.579948 10.304883 10.304883 10.304883h472.62517c5.724935 0 10.304883-4.579948 10.304883-10.304883v-20.609765c0-5.724935-4.579948-10.304883-10.304883-10.304883H365.123618c-5.597714 0-10.177662 4.579948-10.177662 10.304883zM993.339794 112.972046c-18.447012-15.520934-41.855634-24.044726-65.77314-24.044726h-83.838489c-12.340415 0-22.263635 9.92322-22.263635 22.263635s9.92322 22.263635 22.263635 22.263636H927.439433c13.485402 0 26.716362 4.834389 37.148466 13.612622C977.818859 158.262641 985.324885 174.292459 985.324885 191.340042v730.247236c0 31.932414-25.953038 57.885452-57.885452 57.885452H275.560194c-31.932414 0-57.885452-25.953038-57.885452-57.885452V191.340042c0-15.393714 6.106597-29.896882 17.047584-40.837868 10.940986-10.940986 25.444155-17.047584 40.837868-17.047583H367.668033c12.340415 0 22.263635-9.92322 22.263636-22.263636s-9.92322-22.263635-22.263636-22.263635h-92.23506c-27.225245 0-52.923841 10.686545-72.38862 30.151323-19.210337 19.337557-29.896882 45.036154-29.896881 72.261399v730.247236c0 56.486023 45.926699 102.412722 102.412722 102.412722H927.439433c56.486023 0 102.412722-45.926699 102.412723-102.412722V191.340042c0-30.151323-13.358181-58.648776-36.512362-78.367996zM381.789539 278.104609c3.689402 7.760467 11.57709 12.722077 20.100882 12.722078h93.88893v339.933904c0 12.340415 9.92322 22.263635 22.263636 22.263636h167.040874c12.340415 0 22.263635-9.92322 22.263636-22.263636V295.024972h93.761709c8.523792 0 16.41148-4.96161 20.100882-12.594856 3.689402-7.633246 2.671636-16.793142-2.671636-23.535843L618.92906 8.396571c-4.198286-5.343272-11.195428-7.378805-17.429246-8.396571-6.742701 0-13.10374 3.053299-17.302025 8.26935L384.588396 254.568766c-5.343272 6.61548-6.488259 15.775376-2.798857 23.535843zM601.372593 57.758231L754.800845 250.497702h-63.101503c-9.032675-2.926078-20.100882 1.144987-25.316934 8.905454-2.798857 3.689402-4.452727 8.396571-4.452727 13.358181 0 1.908312 0.254442 3.816623 0.763324 5.724935V608.624177h-122.513604V271.61635v-1.526649-1.52665c0-12.340415-9.92322-22.263635-22.263635-22.263635h-69.462542L601.372593 57.758231z"/></svg>',
-    wsl: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y1="17" x2="12" y2="21"/><text x="5" y="13" font-size="6" fill="currentColor" stroke="none" font-family="monospace" font-weight="bold">WSL</text></svg>',
+    sendIcon: '<svg width="16" height="16" viewBox="0 0 1024 1024" fill="currentColor"><path d="M341.333333 277.333333l115.2-115.2c8.533333-8.533333 17.066667-12.8 29.866667-17.066666v473.6c0 17.066667 12.8 29.866667 25.6 29.866666s25.6-12.8 25.6-29.866666V140.8c8.533333 4.266667 21.333333 8.533333 29.866667 17.066667L682.666667 277.333333c4.266667 4.266667 12.8 8.533333 21.333333 8.533334s12.8-4.266667 21.333333-8.533334c12.8-12.8 12.8-29.866667 0-38.4l-115.2-115.2C554.666667 68.266667 469.333333 68.266667 418.133333 119.466667L302.933333 234.666667c-12.8 12.8-12.8 29.866667 0 38.4s25.6 12.8 38.4 4.266666z"/><path d="M738.133333 435.2h-72.533333c-17.066667 0-29.866667 12.8-29.866667 25.6s12.8 25.6 29.866667 25.6h72.533333c42.666667 0 76.8 34.133333 76.8 76.8V810.666667c0 42.666667-34.133333 76.8-76.8 76.8H285.866667c-42.666667 0-76.8-34.133333-76.8-76.8v-243.2c0-42.666667 34.133333-76.8 76.8-76.8h72.533333c17.066667 0 25.6-12.8 25.6-25.6s-12.8-25.6-25.6-25.6H285.866667c-72.533333 0-132.266667 59.733333-132.266667 132.266666V810.666667c0 72.533333 59.733333 132.266667 132.266667 132.266666h456.533333c72.533333 0 132.266667-59.733333 132.266667-132.266666v-243.2c0-72.533333-59.733333-132.266667-136.533334-132.266667z"/></svg>',
+    wsl: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
 };
 
 /* ===== ANSI 颜色解析 ===== */
@@ -566,13 +584,18 @@ function createMonitorPane(mid, title, closable) {
         '</div>' +
         '<div class="toolbar">' +
             '<span class="lbl">查看</span>' +
-            '<select class="sel" id="' + mid + '-viewMode" style="min-width:60px;">' +
-                '<option value="text" selected>文本</option>' +
-                '<option value="hex">Hex</option>' +
-                '<option value="both">文本&amp;Hex</option>' +
-            '</select>' +
+            '<div class="sel" id="' + mid + '-viewMode" data-val="text" onclick="toggleSelDrop(this)">' +
+                '<span class="sel-text">文本</span><span class="sel-arrow">&#9660;</span>' +
+                '<div class="sel-drop sel-drop-down">' +
+                    '<div class="sel-opt active" data-val="text" onclick="setSel(this,\'text\',event)">文本</div>' +
+                    '<div class="sel-opt" data-val="hex" onclick="setSel(this,\'hex\',event)">HEX</div>' +
+                '</div>' +
+            '</div>' +
             '<span class="lbl">端口</span>' +
-            '<select class="sel-port" id="' + mid + '-portSelect"><option value="">加载中...</option></select>' +
+            '<div class="sel sel-port" id="' + mid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:220px;">' +
+                '<span class="sel-text">加载中...</span><span class="sel-arrow">&#9660;</span>' +
+                '<div class="sel-drop sel-drop-down" id="' + mid + '-portDrop"></div>' +
+            '</div>' +
             '<button class="btn-ref" onclick="refreshPorts(\'' + mid + '\')" title="刷新端口">' + ICONS.refresh + '</button>' +
             '<span class="lbl">波特率</span>' +
             '<div class="baud-wrap" id="' + mid + '-baudWrap">' +
@@ -581,9 +604,15 @@ function createMonitorPane(mid, title, closable) {
                 '<div class="baud-dropdown" id="' + mid + '-baudDropdown">' + baudOpts + '</div>' +
             '</div>' +
             '<span class="lbl">行尾</span>' +
-            '<select class="sel" id="' + mid + '-lineEnding" style="min-width:52px;">' +
-                '<option value="crlf" selected>CRLF</option><option value="lf">LF</option><option value="cr">CR</option><option value="none">无</option>' +
-            '</select>' +
+            '<div class="sel" id="' + mid + '-lineEnding" data-val="crlf" onclick="toggleSelDrop(this)">' +
+                '<span class="sel-text">CRLF</span><span class="sel-arrow">&#9660;</span>' +
+                '<div class="sel-drop sel-drop-down">' +
+                    '<div class="sel-opt active" data-val="crlf" onclick="setSel(this,\'crlf\',event)">CRLF</div>' +
+                    '<div class="sel-opt" data-val="lf" onclick="setSel(this,\'lf\',event)">LF</div>' +
+                    '<div class="sel-opt" data-val="cr" onclick="setSel(this,\'cr\',event)">CR</div>' +
+                    '<div class="sel-opt" data-val="none" onclick="setSel(this,\'none\',event)">无</div>' +
+                '</div>' +
+            '</div>' +
             '<button class="btn-main start" id="' + mid + '-btnStart" onclick="toggleConnection(\'' + mid + '\')">' +
                 '<span style="font-size:11px;">&#9654;</span> 开始监控' +
             '</button>' +
@@ -598,15 +627,32 @@ function createMonitorPane(mid, title, closable) {
         '</div>' +
         '<div class="adv-row" id="' + mid + '-advRow">' +
             '<span class="lbl">数据位</span>' +
-            '<select class="sel" id="' + mid + '-dataBits">' +
-                '<option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8" selected>8</option>' +
-            '</select>' +
+            '<div class="sel" id="' + mid + '-dataBits" onclick="toggleSelDrop(this)">' +
+                '<span class="sel-text">8</span><span class="sel-arrow">&#9660;</span>' +
+                '<div class="sel-drop sel-drop-down">' +
+                    '<div class="sel-opt" data-val="5" onclick="setSel(this,\'5\',event)">5</div>' +
+                    '<div class="sel-opt" data-val="6" onclick="setSel(this,\'6\',event)">6</div>' +
+                    '<div class="sel-opt" data-val="7" onclick="setSel(this,\'7\',event)">7</div>' +
+                    '<div class="sel-opt active" data-val="8" onclick="setSel(this,\'8\',event)">8</div>' +
+                '</div>' +
+            '</div>' +
             '<span class="lbl">停止位</span>' +
-            '<select class="sel" id="' + mid + '-stopBits"><option value="1" selected>1</option><option value="2">2</option></select>' +
+            '<div class="sel" id="' + mid + '-stopBits" onclick="toggleSelDrop(this)">' +
+                '<span class="sel-text">1</span><span class="sel-arrow">&#9660;</span>' +
+                '<div class="sel-drop sel-drop-down">' +
+                    '<div class="sel-opt active" data-val="1" onclick="setSel(this,\'1\',event)">1</div>' +
+                    '<div class="sel-opt" data-val="2" onclick="setSel(this,\'2\',event)">2</div>' +
+                '</div>' +
+            '</div>' +
             '<span class="lbl">校验位</span>' +
-            '<select class="sel" id="' + mid + '-parity">' +
-                '<option value="none" selected>无</option><option value="odd">奇校验</option><option value="even">偶校验</option>' +
-            '</select>' +
+            '<div class="sel" id="' + mid + '-parity" onclick="toggleSelDrop(this)">' +
+                '<span class="sel-text">无</span><span class="sel-arrow">&#9660;</span>' +
+                '<div class="sel-drop sel-drop-down">' +
+                    '<div class="sel-opt active" data-val="none" onclick="setSel(this,\'none\',event)">无</div>' +
+                    '<div class="sel-opt" data-val="odd" onclick="setSel(this,\'odd\',event)">奇校验</div>' +
+                    '<div class="sel-opt" data-val="even" onclick="setSel(this,\'even\',event)">偶校验</div>' +
+                '</div>' +
+            '</div>' +
             '<div class="chk-wrap"><input type="checkbox" id="' + mid + '-chkDTR" onchange="toggleDTR(\'' + mid + '\',this.checked)"><label for="' + mid + '-chkDTR">DTR</label></div>' +
             '<div class="chk-wrap"><input type="checkbox" id="' + mid + '-chkRTS" checked onchange="toggleRTS(\'' + mid + '\',this.checked)"><label for="' + mid + '-chkRTS">RTS</label></div>' +
             '<button class="btn-logdir" onclick="chooseLogDir()">&#128193; 选择日志目录</button>' +
@@ -619,9 +665,14 @@ function createMonitorPane(mid, title, closable) {
                 '<input class="send-inp" id="' + mid + '-sendInput" placeholder="输入要发送的内容，回车发送..." autocomplete="off" spellcheck="false">' +
                 '<div class="send-hist" id="' + mid + '-sendHist"></div>' +
             '</div>' +
-            '<select class="send-as" id="' + mid + '-sendAs">' +
-                '<option value="text">文本</option><option value="hex">Hex</option>' +
-            '</select>' +
+            '<div class="send-as" id="' + mid + '-sendAs" onclick="toggleSendAsDrop(\'' + mid + '\')">' +
+                '<span class="send-as-text" id="' + mid + '-sendAsText">文本</span>' +
+                '<span class="send-as-arrow">&#9660;</span>' +
+                '<div class="send-as-drop" id="' + mid + '-sendAsDrop">' +
+                    '<div class="send-as-opt active" data-val="text" onclick="setSendAs(\'' + mid + '\',\'text\',this,event)">文本</div>' +
+                    '<div class="send-as-opt" data-val="hex" onclick="setSendAs(\'' + mid + '\',\'hex\',this,event)">HEX</div>' +
+                '</div>' +
+            '</div>' +
             '<span class="ssep">|</span>' +
             '<button class="btn-send" id="' + mid + '-btnSend" onclick="sendData(\'' + mid + '\')" disabled>' +
                 '<span style="font-size:10px;">&#9654;</span> 发送' +
@@ -734,9 +785,13 @@ function toggleBaudDropdown(e, mid) {
 function setBaud(mid, val) {
     document.getElementById(mid + '-baudRate').value = val;
     document.getElementById(mid + '-baudDropdown').classList.remove('open');
+    var drop = document.getElementById(mid + '-baudDropdown');
+    drop.querySelectorAll('.baud-opt').forEach(function(o) {
+        o.classList.toggle('active', o.textContent.trim() === String(val));
+    });
     scheduleConfigSave();
 }
-// 点击外部关闭所有波特率下拉和发送历史下拉
+// 点击外部关闭所有波特率下拉、发送历史下拉和格式下拉
 document.addEventListener('click', function(e) {
     document.querySelectorAll('.baud-dropdown.open').forEach(function(dd) {
         var wrap = dd.closest('.baud-wrap');
@@ -746,7 +801,47 @@ document.addEventListener('click', function(e) {
         var wrap = h.closest('.send-wrap');
         if (wrap && !wrap.contains(e.target)) h.classList.remove('open');
     });
+    document.querySelectorAll('.send-as-drop.open').forEach(function(d) {
+        var wrap = d.closest('.send-as');
+        if (wrap && !wrap.contains(e.target)) d.classList.remove('open');
+    });
+    document.querySelectorAll('.sel-drop.open').forEach(function(d) {
+        var wrap = d.closest('.sel');
+        if (wrap && !wrap.contains(e.target)) d.classList.remove('open');
+    });
 });
+
+/* ===== 通用下拉选择 ===== */
+function toggleSelDrop(el) {
+    var drop = el.querySelector('.sel-drop');
+    if (drop) drop.classList.toggle('open');
+}
+function setSel(optEl, val, e) {
+    if (e) e.stopPropagation();
+    var sel = optEl.closest('.sel');
+    var drop = sel.querySelector('.sel-drop');
+    var text = sel.querySelector('.sel-text');
+    text.textContent = optEl.textContent;
+    drop.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
+    optEl.classList.add('active');
+    drop.classList.remove('open');
+    sel.setAttribute('data-val', val);
+    scheduleConfigSave();
+}
+
+/* ===== 格式选择下拉 ===== */
+function toggleSendAsDrop(mid) {
+    document.getElementById(mid + '-sendAsDrop').classList.toggle('open');
+}
+function setSendAs(mid, val, el, e) {
+    if (e) e.stopPropagation();
+    document.getElementById(mid + '-sendAsText').textContent = val === 'hex' ? 'HEX' : '文本';
+    var drop = document.getElementById(mid + '-sendAsDrop');
+    drop.querySelectorAll('.send-as-opt').forEach(function(o) { o.classList.remove('active'); });
+    el.classList.add('active');
+    drop.classList.remove('open');
+    scheduleConfigSave();
+}
 
 /* ===== 端口管理 ===== */
 var _portCache = { data: null, ts: 0 };
@@ -762,22 +857,48 @@ async function refreshPorts(mid, force) {
             _portCache.ts = now;
         }
         var sel = document.getElementById(mid + '-portSelect');
-        if (!sel) return;
-        var prev = sel.value || (monitors[mid] && monitors[mid]._savedPort) || '';
-        sel.innerHTML = '';
-        if (!ports || ports.length === 0) { sel.innerHTML = '<option value="">无可用端口</option>'; return; }
+        var drop = document.getElementById(mid + '-portDrop');
+        if (!sel || !drop) return;
+        var prev = (sel.getAttribute('data-val')) || (monitors[mid] && monitors[mid]._savedPort) || '';
+        drop.innerHTML = '';
+        if (!ports || ports.length === 0) {
+            sel.querySelector('.sel-text').textContent = '无可用端口';
+            sel.setAttribute('data-val', '');
+            return;
+        }
         ports.forEach(function(p) {
-            var opt = document.createElement('option');
-            opt.value = p.port_name;
+            var opt = document.createElement('div');
+            opt.className = 'sel-opt';
+            opt.setAttribute('data-val', p.port_name);
             opt.textContent = p.friendly_name || p.port_name;
-            sel.appendChild(opt);
+            opt.onclick = function(e) { e.stopPropagation(); setPortSel(mid, p.port_name, this); };
+            drop.appendChild(opt);
         });
-        if (prev && [...sel.options].some(function(o) { return o.value === prev; })) {
-            sel.value = prev;
+        // 恢复之前选中的端口
+        var matchPort = prev && ports.some(function(p) { return p.port_name === prev; }) ? prev : (ports[0] ? ports[0].port_name : '');
+        if (matchPort) {
+            var matchEl = drop.querySelector('.sel-opt[data-val="' + matchPort + '"]');
+            if (matchEl) {
+                sel.querySelector('.sel-text').textContent = matchEl.textContent;
+                sel.setAttribute('data-val', matchPort);
+                drop.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
+                matchEl.classList.add('active');
+            }
         }
         // 清除已恢复的端口标记
         if (monitors[mid]) monitors[mid]._savedPort = '';
     } catch (e) { appendOutput(mid, 'err', '刷新端口失败: ' + e); }
+}
+
+function setPortSel(mid, val, el) {
+    var sel = document.getElementById(mid + '-portSelect');
+    var drop = document.getElementById(mid + '-portDrop');
+    sel.querySelector('.sel-text').textContent = el.textContent;
+    sel.setAttribute('data-val', val);
+    drop.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
+    el.classList.add('active');
+    drop.classList.remove('open');
+    scheduleConfigSave();
 }
 
 /* ===== 更多设置 ===== */
@@ -786,6 +907,7 @@ function toggleAdv(mid) {
     var btn = document.getElementById(mid + '-btnAdv');
     row.classList.toggle('vis');
     btn.classList.toggle('on', row.classList.contains('vis'));
+    scheduleConfigSave();
 }
 function toggleIbtn(btn) { btn.classList.toggle('on'); scheduleConfigSave(); }
 
@@ -808,12 +930,12 @@ async function toggleConnection(mid) {
 }
 
 async function connectPort(mid, silent) {
-    var name = document.getElementById(mid + '-portSelect').value;
+    var name = document.getElementById(mid + '-portSelect').getAttribute('data-val') || '';
     if (!name) { if (!silent) appendOutput(mid, 'err', '请先选择端口'); return; }
     var baud = parseInt(document.getElementById(mid + '-baudRate').value) || 115200;
-    var dataBits = parseInt(document.getElementById(mid + '-dataBits').value) || 8;
-    var stopBits = parseInt(document.getElementById(mid + '-stopBits').value) || 1;
-    var parity = document.getElementById(mid + '-parity').value || 'none';
+    var dataBits = parseInt((document.getElementById(mid + '-dataBits').getAttribute('data-val'))) || 8;
+    var stopBits = parseInt((document.getElementById(mid + '-stopBits').getAttribute('data-val'))) || 1;
+    var parity = document.getElementById(mid + '-parity').getAttribute('data-val') || 'none';
     var dtr = document.getElementById(mid + '-chkDTR').checked;
     var rts = document.getElementById(mid + '-chkRTS').checked;
     try {
@@ -919,7 +1041,7 @@ async function sendData(mid) {
     var input = document.getElementById(mid + '-sendInput');
     var text = input.value;
     if (!text) return;
-    var hexMode = document.getElementById(mid + '-sendAs').value === 'hex';
+    var hexMode = document.getElementById(mid + '-sendAsText').textContent === 'HEX';
     var addLE = document.getElementById(mid + '-btnSendLE').classList.contains('on');
     var bytes;
     try {
@@ -930,7 +1052,7 @@ async function sendData(mid) {
         await invoke('send_data', { monitorId: mid, data: Array.from(bytes) });
         var echoBtn = document.getElementById(mid + '-btnEcho');
         if (echoBtn && echoBtn.classList.contains('on')) {
-            appendOutput(mid, 'send', decodeRaw(bytes));
+            appendOutput(mid, 'send', hexMode ? '<span style="color:var(--text-d);">HEX:</span>' + bytesToHex(bytes) : decodeRaw(bytes));
         }
         // 保存到发送历史（去重：不存连续重复）
         var hist = monitors[mid].sendHistory;
@@ -966,7 +1088,8 @@ function showSendHistory(mid) {
 }
 
 function leStr(mid) {
-    var v = document.getElementById(mid + '-lineEnding').value;
+    var el = document.getElementById(mid + '-lineEnding');
+    var v = el ? (el.getAttribute('data-val') || 'crlf') : 'crlf';
     return v==='crlf'?'\r\n': v==='lf'?'\n': v==='cr'?'\r':'';
 }
 
@@ -995,14 +1118,15 @@ function getOutputText(mid) {
 }
 
 /* ===== 输出区 ===== */
-function decodeData(mid, bytes) { return decodeRaw(bytes, document.getElementById(mid + '-viewMode').value); }
+function decodeData(mid, bytes) { 
+    var vm = document.getElementById(mid + '-viewMode');
+    return decodeRaw(bytes, vm ? (vm.getAttribute('data-val') || 'text') : 'text'); 
+}
 function decodeRaw(bytes, mode) {
     mode = mode || 'text';
     var arr = new Uint8Array(bytes);
-    if (mode === 'hex') return bytesToHex(arr);
-    var text = new TextDecoder().decode(arr);
-    if (mode === 'both') return text.trimEnd() + '  [' + bytesToHex(arr) + ']';
-    return text;
+    if (mode === 'hex') return '<span style="color:var(--text-d);">HEX:</span>' + bytesToHex(arr);
+    return new TextDecoder().decode(arr);
 }
 
 function appendOutput(mid, type, text) {
@@ -1015,6 +1139,8 @@ function appendOutput(mid, type, text) {
     div.className = 'ol ' + type;
     if (type === 'recv') {
         div.innerHTML = escapeHtml(ts) + parseAnsi(text);
+    } else if (type === 'send') {
+        div.innerHTML = escapeHtml(ts) + text;
     } else {
         div.textContent = ts + text;
     }
@@ -1162,15 +1288,21 @@ async function sendQcmdItem(mid, idx) {
     var valInp = item ? item.querySelector('.qcmd-item-val') : null;
     var text = valInp ? valInp.value : monitors[mid].quickCmds[idx].value;
     if (!text) return;
+    var hexMode = document.getElementById(mid + '-sendAsText').textContent === 'HEX';
     var addLE = document.getElementById(mid + '-btnSendLE').classList.contains('on');
-    var sendText = text + (addLE ? leStr(mid) : '');
-    var bytes = new TextEncoder().encode(sendText);
+    var bytes;
+    try {
+        if (hexMode) { bytes = hexToBytes(text); }
+        else { if (addLE) text += leStr(mid); bytes = new TextEncoder().encode(text); }
+    } catch (e) { appendOutput(mid, 'err', '格式错误: ' + e); return; }
     try {
         await invoke('send_data', { monitorId: mid, data: Array.from(bytes) });
         var echoBtn = document.getElementById(mid + '-btnEcho');
         if (echoBtn && echoBtn.classList.contains('on')) {
-            appendOutput(mid, 'send', decodeRaw(bytes));
+            appendOutput(mid, 'send', hexMode ? '<span style="color:var(--text-d);">HEX:</span>' + bytesToHex(bytes) : decodeRaw(bytes));
         }
+        monitors[mid].histNavIdx = -1;
+        scheduleConfigSave();
     } catch (e) { appendOutput(mid, 'err', '发送失败: ' + e); }
 }
 
@@ -1227,6 +1359,15 @@ function collectConfig() {
         if (m) { var n = parseInt(m[1], 10); if (n > maxExtra) maxExtra = n; }
     });
     var cfg = { version: 1, extraCount: maxExtra, monitors: {}, logDir: logDirPath, wslAutoMap: _wslAutoMap };
+    // 保存窗口大小
+    try {
+        var w = window.__TAURI__ && window.__TAURI__.window;
+        if (w) {
+            var size = w.appWindow.innerSize();
+            cfg.windowWidth = size.width;
+            cfg.windowHeight = size.height;
+        }
+    } catch (e) { console.warn('获取窗口大小失败:', e); }
     Object.keys(monitors).forEach(function(mid) {
         var m = monitors[mid];
         var portSel   = document.getElementById(mid + '-portSelect');
@@ -1239,15 +1380,17 @@ function collectConfig() {
         var chkDTR    = document.getElementById(mid + '-chkDTR');
         var chkRTS    = document.getElementById(mid + '-chkRTS');
         var advRow    = document.getElementById(mid + '-advRow');
+        var sendAsText = document.getElementById(mid + '-sendAsText');
         function btnOn(id) { var el = document.getElementById(id); return el ? el.classList.contains('on') : true; }
         cfg.monitors[mid] = {
-            port:         portSel  ? portSel.value  : '',
+            port:         portSel  ? (portSel.getAttribute('data-val') || '') : '',
             baud:         baudInp  ? baudInp.value  : '115200',
-            lineEnding:   lineEnd  ? lineEnd.value  : 'crlf',
-            viewMode:     viewMode ? viewMode.value : 'text',
-            dataBits:     dataBits ? dataBits.value : '8',
-            stopBits:     stopBits ? stopBits.value : '1',
-            parity:       parity   ? parity.value   : 'none',
+            lineEnding:   lineEnd  ? (lineEnd.getAttribute('data-val') || 'crlf') : 'crlf',
+            viewMode:     viewMode ? (viewMode.getAttribute('data-val') || 'text') : 'text',
+            sendAs:       sendAsText ? (sendAsText.textContent === 'HEX' ? 'hex' : 'text') : 'text',
+            dataBits:     dataBits ? (dataBits.getAttribute('data-val') || '8') : '8',
+            stopBits:     stopBits ? (stopBits.getAttribute('data-val') || '1') : '1',
+            parity:       parity   ? (parity.getAttribute('data-val') || 'none')   : 'none',
             dtr:          chkDTR   ? chkDTR.checked : false,
             rts:          chkRTS   ? chkRTS.checked : true,
             advOpen:      advRow   ? advRow.classList.contains('vis') : false,
@@ -1270,18 +1413,79 @@ function applyMonitorConfig(mid, mc) {
     var baudInp = document.getElementById(mid + '-baudRate');
     if (baudInp && mc.baud) baudInp.value = mc.baud;
     // 行尾
-    var lineEnd = document.getElementById(mid + '-lineEnding');
-    if (lineEnd && mc.lineEnding) lineEnd.value = mc.lineEnding;
+    if (mc.lineEnding) {
+        var lineEnd = document.getElementById(mid + '-lineEnding');
+        if (lineEnd) {
+            lineEnd.setAttribute('data-val', mc.lineEnding);
+            var lineEndOpt = lineEnd.querySelector('.sel-opt[data-val="' + mc.lineEnding + '"]');
+            if (lineEndOpt) {
+                lineEnd.querySelector('.sel-text').textContent = lineEndOpt.textContent;
+                lineEnd.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
+                lineEndOpt.classList.add('active');
+            }
+        }
+    }
     // 视图模式
-    var viewMode = document.getElementById(mid + '-viewMode');
-    if (viewMode && mc.viewMode) viewMode.value = mc.viewMode;
+    if (mc.viewMode) {
+        var viewMode = document.getElementById(mid + '-viewMode');
+        if (viewMode) {
+            viewMode.setAttribute('data-val', mc.viewMode);
+            var vmOpt = viewMode.querySelector('.sel-opt[data-val="' + mc.viewMode + '"]');
+            if (vmOpt) {
+                viewMode.querySelector('.sel-text').textContent = vmOpt.textContent;
+                viewMode.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
+                vmOpt.classList.add('active');
+            }
+        }
+    }
+    // 格式选择
+    if (mc.sendAs) {
+        var sendAsText = document.getElementById(mid + '-sendAsText');
+        var sendAsDrop = document.getElementById(mid + '-sendAsDrop');
+        if (sendAsText) sendAsText.textContent = mc.sendAs === 'hex' ? 'HEX' : '文本';
+        if (sendAsDrop) {
+            sendAsDrop.querySelectorAll('.send-as-opt').forEach(function(o) {
+                o.classList.toggle('active', o.getAttribute('data-val') === mc.sendAs);
+            });
+        }
+    }
     // 高级设置
-    var dataBits = document.getElementById(mid + '-dataBits');
-    if (dataBits && mc.dataBits) dataBits.value = mc.dataBits;
-    var stopBits = document.getElementById(mid + '-stopBits');
-    if (stopBits && mc.stopBits) stopBits.value = mc.stopBits;
-    var parity = document.getElementById(mid + '-parity');
-    if (parity && mc.parity) parity.value = mc.parity;
+    if (mc.dataBits) {
+        var dataBits = document.getElementById(mid + '-dataBits');
+        if (dataBits) {
+            dataBits.setAttribute('data-val', mc.dataBits);
+            var dbOpt = dataBits.querySelector('.sel-opt[data-val="' + mc.dataBits + '"]');
+            if (dbOpt) {
+                dataBits.querySelector('.sel-text').textContent = dbOpt.textContent;
+                dataBits.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
+                dbOpt.classList.add('active');
+            }
+        }
+    }
+    if (mc.stopBits) {
+        var stopBits = document.getElementById(mid + '-stopBits');
+        if (stopBits) {
+            stopBits.setAttribute('data-val', mc.stopBits);
+            var sbOpt = stopBits.querySelector('.sel-opt[data-val="' + mc.stopBits + '"]');
+            if (sbOpt) {
+                stopBits.querySelector('.sel-text').textContent = sbOpt.textContent;
+                stopBits.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
+                sbOpt.classList.add('active');
+            }
+        }
+    }
+    if (mc.parity) {
+        var parity = document.getElementById(mid + '-parity');
+        if (parity) {
+            parity.setAttribute('data-val', mc.parity);
+            var parOpt = parity.querySelector('.sel-opt[data-val="' + mc.parity + '"]');
+            if (parOpt) {
+                parity.querySelector('.sel-text').textContent = parOpt.textContent;
+                parity.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
+                parOpt.classList.add('active');
+            }
+        }
+    }
     var chkDTR = document.getElementById(mid + '-chkDTR');
     if (chkDTR && mc.dtr !== undefined) chkDTR.checked = mc.dtr;
     var chkRTS = document.getElementById(mid + '-chkRTS');
@@ -1346,6 +1550,15 @@ async function loadAndApplyConfig() {
             _wslAutoMap = cfg.wslAutoMap;
             updateAutoMapPolling();
         }
+        // 恢复窗口大小
+        if (cfg.windowWidth && cfg.windowHeight) {
+            try {
+                var w = window.__TAURI__ && window.__TAURI__.window;
+                if (w) {
+                    w.appWindow.setSize({ type: 'Logical', width: cfg.windowWidth, height: cfg.windowHeight });
+                }
+            } catch (e) { console.warn('恢复窗口大小失败:', e); }
+        }
         // 恢复主监视器配置
         if (cfg.monitors && cfg.monitors['main']) {
             applyMonitorConfig('main', cfg.monitors['main']);
@@ -1378,7 +1591,6 @@ function getWslMappingHtml(mid) {
             '</div>' +
             '<div style="display:flex;gap:8px;">' +
                 '<button class="btn btn-outline" onclick="refreshWslDevices()" style="height:26px;padding:0 10px;border:1px solid #454545;border-radius:3px;background:transparent;color:#ccc;font-size:12px;cursor:pointer;">刷新</button>' +
-                '<button class="btn btn-outline" onclick="restoreMonitorPane(\'' + mid + '\')" style="height:26px;padding:0 10px;border:1px solid #454545;border-radius:3px;background:transparent;color:#ccc;font-size:12px;cursor:pointer;">返回监视器</button>' +
             '</div>' +
         '</div>' +
         '<div style="flex:1;overflow:hidden;display:flex;flex-direction:column;">' +
@@ -1419,6 +1631,16 @@ function openWslMapping() {
     // 替换为WSL映射页面
     activePane.innerHTML = getWslMappingHtml(mid);
 
+    // 更新顶部栏按钮为"返回监视器"
+    var btn = document.getElementById('wslToggleBtn');
+    var text = document.getElementById('wslToggleText');
+    var icon = document.getElementById('wslToggleIcon');
+    if (btn && text) {
+        text.textContent = '返回监视器';
+        btn.setAttribute('onclick', "restoreMonitorPane('" + mid + "')");
+        if (icon) icon.innerHTML = '<rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><polyline points="9 3 9 21" fill="none" stroke="currentColor" stroke-width="2"/><line x1="3" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="2"/>';
+    }
+
     // 检查 WSL 运行状态
     invoke('check_wsl_status').then(function(dists) {
         var el = document.getElementById(mid + '-wslStatus');
@@ -1449,6 +1671,16 @@ function restoreMonitorPane(mid) {
     if (pane && monitors[mid] && monitors[mid]._originalHtml) {
         pane.innerHTML = monitors[mid]._originalHtml;
         delete monitors[mid]._originalHtml;
+        
+        // 恢复顶部栏按钮为"WSL 端口映射"
+        var btn = document.getElementById('wslToggleBtn');
+        var text = document.getElementById('wslToggleText');
+        var icon = document.getElementById('wslToggleIcon');
+        if (btn && text) {
+            text.textContent = 'WSL 端口映射';
+            btn.setAttribute('onclick', 'openWslMapping()');
+            if (icon) icon.innerHTML = '<rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y="17" x2="12" y="21"/>';
+        }
         
         // 自动刷新端口列表
         refreshPorts(mid);
@@ -1541,7 +1773,7 @@ function renderWslDeviceList(mid) {
         // 自动映射列
         var autoOn = !!_wslAutoMap[device.busid];
         html += '<td style="padding:14px 16px;text-align:center;">';
-        html += '<label class="wsl-auto-toggle"><input type="checkbox" ' + (autoOn ? 'checked' : '') + ' onchange="toggleAutoMap(\'' + device.busid + '\', \'' + device.port + '\', this.checked)"><span class="wsl-auto-slider"></span></label>';
+        html += '<label class="wsl-auto-toggle"><input type="checkbox" ' + (autoOn ? 'checked' : '') + ' ' + (isMapped ? 'disabled' : '') + ' onchange="toggleAutoMap(\'' + device.busid + '\', \'' + device.port + '\', this.checked)"><span class="wsl-auto-slider"></span></label>';
         html += '</td>';
         // 映射列
         html += '<td style="padding:14px 16px;text-align:center;">';
@@ -1570,6 +1802,7 @@ async function toggleWslMapping(mid, idx, checked) {
             device.status = 'mapped';
         } catch (e) {
             addWslLog(mid, 'error', '映射失败: ' + e);
+            // 失败时保持原状态
         }
     } else {
         addWslLog(mid, 'info', '正在断开 ' + device.port + ' 的映射...');
@@ -1579,6 +1812,7 @@ async function toggleWslMapping(mid, idx, checked) {
             device.status = 'unmapped';
         } catch (e) {
             addWslLog(mid, 'error', '断开失败: ' + e);
+            // 失败时保持原状态
         }
     }
     
@@ -1614,9 +1848,17 @@ function toggleAutoMap(busid, portName, on) {
         _wslAutoMap[busid] = portName;
     } else {
         delete _wslAutoMap[busid];
+        // 清除该设备的忙碌状态
+        delete _wslBusy[busid];
     }
     scheduleConfigSave();
     updateAutoMapPolling();
+    // 刷新当前显示的设备列表
+    var pane = document.querySelector('.monitor-pane');
+    if (pane) {
+        var mid = pane.id.replace('pane-', '');
+        renderWslDeviceList(mid);
+    }
 }
 
 function updateAutoMapPolling() {
@@ -1640,12 +1882,21 @@ async function autoMapCheck() {
             if (_wslAutoMap[d.busid] && d.status !== 'mapped' && !_wslBusy[d.busid]) {
                 _wslBusy[d.busid] = true;
                 addWslLog('main', 'info', '[自动] 正在将 ' + d.port + ' 映射到 WSL...');
-                tasks.push(
-                    invoke('attach_port_to_wsl', { portName: d.port })
-                        .then(function(result) { addWslLog('main', 'success', '[自动] ' + result); })
-                        .catch(function(e) { addWslLog('main', 'error', '[自动] 映射失败: ' + e); })
-                        .finally(function() { delete _wslBusy[d.busid]; })
-                );
+                (function(device) {
+                    tasks.push(
+                        invoke('attach_port_to_wsl', { portName: device.port })
+                            .then(function(result) { 
+                                addWslLog('main', 'success', '[自动] ' + result); 
+                                device.status = 'mapped';
+                            })
+                            .catch(function(e) { 
+                                addWslLog('main', 'error', '[自动] 映射失败: ' + e); 
+                            })
+                            .finally(function() { 
+                                delete _wslBusy[device.busid]; 
+                            })
+                    );
+                })(d);
             }
         }
         if (tasks.length > 0) {
@@ -1657,7 +1908,21 @@ async function autoMapCheck() {
             var mid = pane.id.replace('pane-', '');
             var listEl = document.getElementById(mid + '-wslDeviceList');
             if (listEl) {
-                _wslDevices = devices;
+                // 合并状态，保留 _wslBusy 状态
+                var freshMap = {};
+                devices.forEach(function(d) { freshMap[d.busid] = d; });
+                _wslDevices.forEach(function(d) {
+                    if (freshMap[d.busid]) {
+                        d.status = freshMap[d.busid].status;
+                        d.port = freshMap[d.busid].port;
+                        d.name = freshMap[d.busid].name;
+                    }
+                });
+                var existBusids = {};
+                _wslDevices.forEach(function(d) { existBusids[d.busid] = true; });
+                devices.forEach(function(d) {
+                    if (!existBusids[d.busid]) _wslDevices.push(d);
+                });
                 sortWslDevices();
                 renderWslDeviceList(mid);
             }
@@ -1724,6 +1989,16 @@ document.addEventListener('DOMContentLoaded', function() {
             }, 150);
         });
     }
+
+    // 监听窗口大小变化，保存到配置（防抖 500ms）
+    var _resizeTimer = null;
+    window.addEventListener('resize', function() {
+        if (_resizeTimer) clearTimeout(_resizeTimer);
+        _resizeTimer = setTimeout(function() {
+            _resizeTimer = null;
+            scheduleConfigSave();
+        }, 500);
+    });
 });
 </script>
 </body>
