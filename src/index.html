@@ -1409,16 +1409,10 @@ function collectConfig() {
         if (m) { var n = parseInt(m[1], 10); if (n > maxExtra) maxExtra = n; }
     });
     var cfg = { version: 1, extraCount: maxExtra, monitors: {}, logDir: logDirPath, wslAutoMap: _wslAutoMap };
-    // 保存窗口大小
-    var sizePromise = Promise.resolve();
+    // 保存窗口大小（使用浏览器 API）
     try {
-        var w = window.__TAURI__ && window.__TAURI__.window;
-        if (w && w.appWindow) {
-            sizePromise = w.appWindow.innerSize().then(function(size) {
-                cfg.windowWidth = size.width;
-                cfg.windowHeight = size.height;
-            }).catch(function(e) { console.warn('获取窗口大小失败:', e); });
-        }
+        cfg.windowWidth = window.innerWidth;
+        cfg.windowHeight = window.innerHeight;
     } catch (e) { console.warn('获取窗口大小失败:', e); }
     Object.keys(monitors).forEach(function(mid) {
         var m = monitors[mid];
@@ -1456,7 +1450,7 @@ function collectConfig() {
             sendHistory:  m.sendHistory ? m.sendHistory.slice(0, 20) : [],
         };
     });
-    return sizePromise.then(function() { return cfg; });
+    return cfg;
 }
 
 // 将配置应用到指定监视器
@@ -1586,10 +1580,9 @@ function scheduleConfigSave() {
     if (_loadingConfig) return; // 配置恢复期间跳过
     if (_saveConfigTimer) clearTimeout(_saveConfigTimer);
     _saveConfigTimer = setTimeout(function() {
-        collectConfig().then(function(cfg) {
-            invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) {
-                console.warn('保存配置失败:', e);
-            });
+        var cfg = collectConfig();
+        invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) {
+            console.warn('保存配置失败:', e);
         });
     }, 500);
 }
@@ -1613,8 +1606,13 @@ async function loadAndApplyConfig() {
         if (cfg.windowWidth && cfg.windowHeight) {
             try {
                 var w = window.__TAURI__ && window.__TAURI__.window;
-                if (w) {
-                    w.appWindow.setSize({ type: 'Logical', width: cfg.windowWidth, height: cfg.windowHeight });
+                if (w && w.appWindow) {
+                    w.appWindow.setSize({ type: 'Logical', width: cfg.windowWidth, height: cfg.windowHeight }).catch(function(e) {
+                        console.warn('Tauri setSize 失败，尝试 resizeTo:', e);
+                        window.resizeTo(cfg.windowWidth, cfg.windowHeight);
+                    });
+                } else {
+                    window.resizeTo(cfg.windowWidth, cfg.windowHeight);
                 }
             } catch (e) { console.warn('恢复窗口大小失败:', e); }
         }
@@ -1784,7 +1782,7 @@ function bindMonitorEvents(mid) {
     }
 }
 
-async function restoreMonitorPane(mid) {
+function restoreMonitorPane(mid) {
     console.log('[WSL] 返回监视器页面:', mid);
     var pane = document.getElementById('pane-' + mid);
     if (pane && monitors[mid] && monitors[mid]._originalHtml) {
@@ -1814,7 +1812,7 @@ async function restoreMonitorPane(mid) {
         }
         
         // 应用保存的配置
-        var cfg = await collectConfig();
+        var cfg = collectConfig();
         if (cfg.monitors && cfg.monitors[mid]) {
             applyMonitorConfig(mid, cfg.monitors[mid]);
         }
