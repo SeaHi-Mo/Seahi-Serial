@@ -1410,10 +1410,11 @@ function collectConfig() {
     });
     var cfg = { version: 1, extraCount: maxExtra, monitors: {}, logDir: logDirPath, wslAutoMap: _wslAutoMap };
     // 保存窗口大小
+    var sizePromise = Promise.resolve();
     try {
         var w = window.__TAURI__ && window.__TAURI__.window;
         if (w && w.appWindow) {
-            w.appWindow.innerSize().then(function(size) {
+            sizePromise = w.appWindow.innerSize().then(function(size) {
                 cfg.windowWidth = size.width;
                 cfg.windowHeight = size.height;
             }).catch(function(e) { console.warn('获取窗口大小失败:', e); });
@@ -1455,7 +1456,7 @@ function collectConfig() {
             sendHistory:  m.sendHistory ? m.sendHistory.slice(0, 20) : [],
         };
     });
-    return cfg;
+    return sizePromise.then(function() { return cfg; });
 }
 
 // 将配置应用到指定监视器
@@ -1585,9 +1586,10 @@ function scheduleConfigSave() {
     if (_loadingConfig) return; // 配置恢复期间跳过
     if (_saveConfigTimer) clearTimeout(_saveConfigTimer);
     _saveConfigTimer = setTimeout(function() {
-        var cfg = collectConfig();
-        invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) {
-            console.warn('保存配置失败:', e);
+        collectConfig().then(function(cfg) {
+            invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) {
+                console.warn('保存配置失败:', e);
+            });
         });
     }, 500);
 }
@@ -1782,7 +1784,7 @@ function bindMonitorEvents(mid) {
     }
 }
 
-function restoreMonitorPane(mid) {
+async function restoreMonitorPane(mid) {
     console.log('[WSL] 返回监视器页面:', mid);
     var pane = document.getElementById('pane-' + mid);
     if (pane && monitors[mid] && monitors[mid]._originalHtml) {
@@ -1812,7 +1814,7 @@ function restoreMonitorPane(mid) {
         }
         
         // 应用保存的配置
-        var cfg = collectConfig();
+        var cfg = await collectConfig();
         if (cfg.monitors && cfg.monitors[mid]) {
             applyMonitorConfig(mid, cfg.monitors[mid]);
         }
