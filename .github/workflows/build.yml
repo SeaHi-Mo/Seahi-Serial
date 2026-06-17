@@ -52,7 +52,7 @@ jobs:
           releaseName: ${{ github.ref_name }}
           releaseBody: "${{ steps.notes.outputs.body }}"
           releaseDraft: false
-          prerelease: true
+          prerelease: false
           args: "--bundles msi"
 
       - name: Install Inno Setup
