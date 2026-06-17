@@ -187,13 +187,14 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .output::-webkit-scrollbar-thumb:hover { background:rgba(121,121,121,.7); background-clip:content-box; }
 .ol { display:block; margin:0; padding:0; }
 .ol .ln { display:none; }
-.output.with-line-num .ol { display:flex; align-items:baseline; }
-.output.with-line-num .ln { display:inline-block; color:#858585; user-select:none; width:auto; text-align:right; margin-right:8px; font-family:var(--font-mono); font-size:14px; padding-right:2px; }
-.ol .lc { display:inline; }
+.output.with-line-num .ol { display:flex; align-items:flex-start; }
+.output.with-line-num .ln { display:inline-block; color:#858585; user-select:none; width:auto; text-align:right; margin-right:8px; font-family:var(--font-mono); font-size:14px; padding-right:2px; flex-shrink:0; }
+.ol .lc { flex:1; min-width:0; }
 .ol.recv { color:#cccccc; }
 .ol.send { display:block; width:fit-content; max-width:100%; color:#fff; background:#1e3a5f; padding:2px 6px; border-radius:3px; margin:1px 0; word-break:break-all; white-space:pre-wrap; }
 .ol.err  { color:#f48771; }
 .ol.sys  { color:#666; }
+.ol.empty-line { height:1.6em; }
 /* ANSI 颜色支持 */
 .ansi-0 { color:#cccccc; }
 .ansi-1 { color:#cccccc; font-weight:bold; }
@@ -223,7 +224,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 /* ===== 底部发送栏 ===== */
 .send-bar { display:flex; align-items:center; height:34px; background:var(--toolbar-bg); border-top:1px solid var(--border); flex-shrink:0; padding:0 4px; }
 .send-wrap { flex:1; display:flex; align-items:center; padding:0 4px; min-width:0; position:relative; }
-.send-inp { width:100%; height:24px; background:var(--input-bg); border:1px solid transparent; border-radius:2px; color:var(--text); font-family:var(--font-mono); font-size:13px; padding:0 7px; outline:none; }
+.send-inp { width:100%; height:24px; background:var(--editor-bg); border:1px solid transparent; border-radius:2px; color:var(--text); font-family:var(--font-mono); font-size:13px; padding:0 7px; outline:none; }
 .send-inp::placeholder { color:#555; }
 .send-inp:focus { border-color:#007acc; }
 /* 发送历史下拉 */
@@ -474,7 +475,9 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     cursor: not-allowed;
 }
 
-/* 隐藏日志滚动条 */
+/* 终端模式光标 */
+.terminal-cursor { display:inline-block; width:8px; height:16px; background:var(--text); animation:blink 1s step-end infinite; vertical-align:text-bottom; margin-left:1px; }
+@keyframes blink { 50% { opacity:0; } }
 .no-scrollbar::-webkit-scrollbar {
     display: none;
 }
@@ -625,7 +628,8 @@ function createMonitorPane(mid, title, closable) {
             '<button class="ibtn" onclick="clearLog(\'' + mid + '\')" title="清除内容">' + ICONS.clear + '</button>' +
             '<button class="ibtn on" id="' + mid + '-btnScroll" onclick="toggleIbtn(this)" title="自动回滚">' + ICONS.rollback + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnAutoReconnect" onclick="toggleIbtn(this)" title="自动重连">' + ICONS.reconnect + '</button>' +
-            '<button class="ibtn on" id="' + mid + '-btnSendLE" onclick="toggleIbtn(this)" title="终端模式">' + ICONS.terminal + '</button>' +
+            '<button class="ibtn on" id="' + mid + '-btnSendLE" onclick="toggleTerminalMode(this,\'' + mid + '\')" title="终端模式">' + ICONS.terminal + '</button>' +
+            '<button class="ibtn" id="' + mid + '-btnLineNum" onclick="toggleLineNum(this,\'' + mid + '\')" title="显示行号">' + ICONS.lineNum + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnTs" onclick="toggleIbtn(this)" title="开启时间戳">' + ICONS.timestamp + '</button>' +
             '<button class="ibtn on" id="' + mid + '-btnEcho" onclick="toggleIbtn(this)" title="启动消息回显">' + ICONS.copy + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnAdv" onclick="toggleAdv(\'' + mid + '\')" title="更多设置">' + ICONS.settings + '</button>' +
@@ -660,13 +664,12 @@ function createMonitorPane(mid, title, closable) {
             '</div>' +
             '<div class="chk-wrap"><input type="checkbox" id="' + mid + '-chkDTR" onchange="toggleDTR(\'' + mid + '\',this.checked)"><label for="' + mid + '-chkDTR">DTR</label></div>' +
             '<div class="chk-wrap"><input type="checkbox" id="' + mid + '-chkRTS" checked onchange="toggleRTS(\'' + mid + '\',this.checked)"><label for="' + mid + '-chkRTS">RTS</label></div>' +
-            '<button class="ibtn" id="' + mid + '-btnLineNum" onclick="toggleLineNum(this,\'' + mid + '\')" title="显示行号">' + ICONS.lineNum + '</button>' +
             '<button class="btn-logdir" onclick="chooseLogDir()">&#128193; 选择日志目录</button>' +
             '<button class="ibtn" onclick="saveLogToFile()" title="保存日志">' + ICONS.saveLog + '</button>' +
             '<button class="ibtn" onclick="copyOutput(\'' + mid + '\')" title="复制全部">' + ICONS.copyAll + '</button>' +
         '</div>' +
         '<div class="output" id="' + mid + '-output"></div>' +
-        '<div class="send-bar">' +
+        '<div class="send-bar" id="' + mid + '-sendBar">' +
             '<div class="send-wrap" id="' + mid + '-sendWrap">' +
                 '<input class="send-inp" id="' + mid + '-sendInput" placeholder="输入要发送的内容，回车发送..." autocomplete="off" spellcheck="false">' +
                 '<div class="send-hist" id="' + mid + '-sendHist"></div>' +
@@ -781,6 +784,9 @@ function createMonitorPane(mid, title, closable) {
     });
 
     refreshPorts(mid);
+    
+    // 初始化终端模式
+    initTerminalMode(mid);
 }
 
 /* ===== 波特率下拉 ===== */
@@ -933,10 +939,128 @@ function updateLineNumbers(mid) {
     var output = document.getElementById(mid + '-output');
     if (!output) return;
     var lines = output.querySelectorAll('.ol');
-    lines.forEach(function(line, idx) {
+    var lineNum = 1;
+    lines.forEach(function(line) {
         var ln = line.querySelector('.ln');
-        if (ln) ln.textContent = String(idx + 1);
+        if (line.classList.contains('empty-line')) {
+            if (ln) ln.textContent = '';
+        } else {
+            if (ln) ln.textContent = String(lineNum);
+            lineNum++;
+        }
     });
+}
+
+/* ===== 终端模式 ===== */
+var _terminalBuffers = {}; // { mid: { line: '', lineEl: null, cursorEl: null } }
+
+function initTerminalMode(mid) {
+    var output = document.getElementById(mid + '-output');
+    if (!output) return;
+    
+    // 让输出区可以获得焦点
+    output.setAttribute('tabindex', '0');
+    output.style.outline = 'none';
+    
+    output.addEventListener('keydown', function(e) {
+        var btn = document.getElementById(mid + '-btnSendLE');
+        if (!btn || !btn.classList.contains('on')) return;
+        if (!monitors[mid] || !monitors[mid].isConnected) return;
+        
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            var buf = _terminalBuffers[mid];
+            if (buf && buf.line) {
+                var text = buf.line + leStr(mid);
+                var bytes = new TextEncoder().encode(text);
+                invoke('send_data', { monitorId: mid, data: Array.from(bytes) }).catch(function(err) {
+                    appendOutput(mid, 'err', '发送失败: ' + err);
+                });
+                // 清除当前输入行和光标
+                if (buf.cursorEl) buf.cursorEl.remove();
+                if (buf.lineEl) buf.lineEl.remove();
+                delete _terminalBuffers[mid];
+            }
+        } else if (e.key === 'Backspace') {
+            e.preventDefault();
+            var buf = _terminalBuffers[mid];
+            if (buf && buf.line.length > 0) {
+                buf.line = buf.line.slice(0, -1);
+                if (buf.lineEl) {
+                    var lc = buf.lineEl.querySelector('.lc');
+                    if (lc) lc.textContent = buf.line;
+                }
+            }
+        } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+            e.preventDefault();
+            var buf = _terminalBuffers[mid];
+            if (!buf) {
+                buf = { line: '', lineEl: null, cursorEl: null };
+                _terminalBuffers[mid] = buf;
+            }
+            buf.line += e.key;
+            if (!buf.lineEl) {
+                buf.lineEl = document.createElement('div');
+                buf.lineEl.className = 'ol recv';
+                var lnSpan = document.createElement('span');
+                lnSpan.className = 'ln';
+                buf.lineEl.appendChild(lnSpan);
+                var contentSpan = document.createElement('span');
+                contentSpan.className = 'lc';
+                contentSpan.style.color = '#4ec9b0';
+                buf.lineEl.appendChild(contentSpan);
+                output.appendChild(buf.lineEl);
+                // 添加光标
+                buf.cursorEl = document.createElement('span');
+                buf.cursorEl.className = 'terminal-cursor';
+                output.appendChild(buf.cursorEl);
+            }
+            var lc = buf.lineEl.querySelector('.lc');
+            if (lc) lc.textContent = buf.line;
+            
+            var scrollBtn = document.getElementById(mid + '-btnScroll');
+            if (scrollBtn && scrollBtn.classList.contains('on')) output.scrollTop = output.scrollHeight;
+        }
+    });
+    
+    output.addEventListener('click', function() {
+        var btn = document.getElementById(mid + '-btnSendLE');
+        if (btn && btn.classList.contains('on')) {
+            output.focus();
+        }
+    });
+}
+
+function toggleTerminalMode(btn, mid) {
+    btn.classList.toggle('on');
+    var output = document.getElementById(mid + '-output');
+    var sendBar = document.querySelector('#pane-' + mid + ' .send-bar');
+    if (output) {
+        if (btn.classList.contains('on')) {
+            output.focus();
+            output.style.cursor = 'text';
+            if (sendBar) sendBar.style.display = 'none';
+            // 立即显示光标
+            var buf = { line: '', lineEl: null, cursorEl: null };
+            _terminalBuffers[mid] = buf;
+            buf.cursorEl = document.createElement('span');
+            buf.cursorEl.className = 'terminal-cursor';
+            output.appendChild(buf.cursorEl);
+            var scrollBtn = document.getElementById(mid + '-btnScroll');
+            if (scrollBtn && scrollBtn.classList.contains('on')) output.scrollTop = output.scrollHeight;
+        } else {
+            output.style.cursor = 'default';
+            if (sendBar) sendBar.style.display = '';
+            // 清除光标和输入行
+            var buf = _terminalBuffers[mid];
+            if (buf) {
+                if (buf.cursorEl) buf.cursorEl.remove();
+                if (buf.lineEl) buf.lineEl.remove();
+                delete _terminalBuffers[mid];
+            }
+        }
+    }
+    scheduleConfigSave();
 }
 
 /* ===== DTR/RTS 实时切换 ===== */
@@ -1010,7 +1134,17 @@ function startReading(mid) {
         if (!monitors[mid] || !monitors[mid].isConnected) { stopReading(mid); return; }
         try {
             var data = await invoke('read_data', { monitorId: mid });
-            if (data && data.length > 0) appendOutput(mid, 'recv', decodeData(mid, data));
+            if (data && data.length > 0) {
+                var decoded = decodeData(mid, data);
+                // 去除末尾的换行符，然后按换行符拆分
+                decoded = decoded.replace(/[\r\n]+$/, '');
+                if (decoded) {
+                    var lines = decoded.split(/\r?\n/);
+                    for (var i = 0; i < lines.length; i++) {
+                        appendOutput(mid, 'recv', lines[i]);
+                    }
+                }
+            }
         } catch (e) {
             // 读取失败：端口可能已断开
             var reconnectBtn = document.getElementById(mid + '-btnAutoReconnect');
@@ -1070,11 +1204,10 @@ async function sendData(mid) {
     var text = input.value;
     if (!text) return;
     var hexMode = document.getElementById(mid + '-sendAsText').textContent === 'HEX';
-    var addLE = document.getElementById(mid + '-btnSendLE').classList.contains('on');
     var bytes;
     try {
         if (hexMode) { bytes = hexToBytes(text); }
-        else { if (addLE) text += leStr(mid); bytes = new TextEncoder().encode(text); }
+        else { text += leStr(mid); bytes = new TextEncoder().encode(text); }
     } catch (e) { appendOutput(mid, 'err', '格式错误: ' + e); return; }
     try {
         await invoke('send_data', { monitorId: mid, data: Array.from(bytes) });
@@ -1144,12 +1277,17 @@ function getOutputText(mid) {
     var output = document.getElementById(mid + '-output');
     if (!output) return '';
     var withLineNum = output.classList.contains('with-line-num');
+    var lineNum = 1;
     return Array.from(output.querySelectorAll('.ol'))
-        .map(function(l, idx) {
+        .map(function(l) {
+            var text = l.querySelector('.lc').textContent;
             if (withLineNum) {
-                return (idx + 1) + '  ' + l.querySelector('.lc').textContent;
+                if (l.classList.contains('empty-line')) {
+                    return text;
+                }
+                return (lineNum++) + '  ' + text;
             }
-            return l.querySelector('.lc').textContent;
+            return text;
         }).join('\n');
 }
 
@@ -1173,12 +1311,16 @@ function appendOutput(mid, type, text) {
     var ts = showTs ? '[' + new Date().toTimeString().slice(0,8) + '] ' : '';
     var div = document.createElement('div');
     div.className = 'ol ' + type;
-    // 添加行号元素
-    var lineNum = el.children.length + 1;
+    // 添加行号元素（空行不显示行号）
+    var isEmpty = !text || text.trim() === '';
     var lnSpan = document.createElement('span');
     lnSpan.className = 'ln';
-    lnSpan.textContent = String(lineNum);
+    if (!isEmpty) {
+        var lineNum = el.querySelectorAll('.ol:not(.empty-line)').length + 1;
+        lnSpan.textContent = String(lineNum);
+    }
     div.appendChild(lnSpan);
+    if (isEmpty) div.classList.add('empty-line');
     // 添加内容
     var contentSpan = document.createElement('span');
     contentSpan.className = 'lc';
@@ -1339,11 +1481,10 @@ async function sendQcmdItem(mid, idx) {
     var text = valInp ? valInp.value : monitors[mid].quickCmds[idx].value;
     if (!text) return;
     var hexMode = document.getElementById(mid + '-sendAsText').textContent === 'HEX';
-    var addLE = document.getElementById(mid + '-btnSendLE').classList.contains('on');
     var bytes;
     try {
         if (hexMode) { bytes = hexToBytes(text); }
-        else { if (addLE) text += leStr(mid); bytes = new TextEncoder().encode(text); }
+        else { text += leStr(mid); bytes = new TextEncoder().encode(text); }
     } catch (e) { appendOutput(mid, 'err', '格式错误: ' + e); return; }
     try {
         await invoke('send_data', { monitorId: mid, data: Array.from(bytes) });
@@ -1409,11 +1550,11 @@ function collectConfig() {
         if (m) { var n = parseInt(m[1], 10); if (n > maxExtra) maxExtra = n; }
     });
     var cfg = { version: 1, extraCount: maxExtra, monitors: {}, logDir: logDirPath, wslAutoMap: _wslAutoMap };
-    // 保存窗口大小（使用浏览器 API）
-    try {
-        cfg.windowWidth = window.innerWidth;
-        cfg.windowHeight = window.innerHeight;
-    } catch (e) { console.warn('获取窗口大小失败:', e); }
+    // 窗口大小将在异步调用后设置
+    cfg._windowSizePromise = invoke('get_window_size').then(function(size) {
+        cfg.windowWidth = size[0];
+        cfg.windowHeight = size[1];
+    }).catch(function(e) { console.warn('获取窗口大小失败:', e); });
     Object.keys(monitors).forEach(function(mid) {
         var m = monitors[mid];
         var portSel   = document.getElementById(mid + '-portSelect');
@@ -1450,7 +1591,50 @@ function collectConfig() {
             sendHistory:  m.sendHistory ? m.sendHistory.slice(0, 20) : [],
         };
     });
-    return cfg;
+    // 等待窗口大小获取完成后返回配置
+    return cfg._windowSizePromise.then(function() {
+        delete cfg._windowSizePromise;
+        return cfg;
+    });
+}
+
+// 收集单个监视器的配置
+function collectConfigForMonitor(mid) {
+    var m = monitors[mid];
+    if (!m) return null;
+    var portSel   = document.getElementById(mid + '-portSelect');
+    var baudInp   = document.getElementById(mid + '-baudRate');
+    var lineEnd   = document.getElementById(mid + '-lineEnding');
+    var viewMode  = document.getElementById(mid + '-viewMode');
+    var dataBits  = document.getElementById(mid + '-dataBits');
+    var stopBits  = document.getElementById(mid + '-stopBits');
+    var parity    = document.getElementById(mid + '-parity');
+    var chkDTR    = document.getElementById(mid + '-chkDTR');
+    var chkRTS    = document.getElementById(mid + '-chkRTS');
+    var advRow    = document.getElementById(mid + '-advRow');
+    var sendAsText = document.getElementById(mid + '-sendAsText');
+    function btnOn(id) { var el = document.getElementById(id); return el ? el.classList.contains('on') : true; }
+    return {
+        port:         portSel  ? (portSel.getAttribute('data-val') || '') : '',
+        baud:         baudInp  ? baudInp.value  : '115200',
+        lineEnding:   lineEnd  ? (lineEnd.getAttribute('data-val') || 'crlf') : 'crlf',
+        viewMode:     viewMode ? (viewMode.getAttribute('data-val') || 'text') : 'text',
+        sendAs:       sendAsText ? (sendAsText.textContent === 'HEX' ? 'hex' : 'text') : 'text',
+        dataBits:     dataBits ? (dataBits.getAttribute('data-val') || '8') : '8',
+        stopBits:     stopBits ? (stopBits.getAttribute('data-val') || '1') : '1',
+        parity:       parity   ? (parity.getAttribute('data-val') || 'none')   : 'none',
+        dtr:          chkDTR   ? chkDTR.checked : false,
+        rts:          chkRTS   ? chkRTS.checked : true,
+        advOpen:      advRow   ? advRow.classList.contains('vis') : false,
+        btnScroll:    btnOn(mid + '-btnScroll'),
+        btnAutoReconnect: btnOn(mid + '-btnAutoReconnect'),
+        btnSendLE:    btnOn(mid + '-btnSendLE'),
+        btnTs:        btnOn(mid + '-btnTs'),
+        btnEcho:      btnOn(mid + '-btnEcho'),
+        btnLineNum:   btnOn(mid + '-btnLineNum'),
+        quickCmds:    m.quickCmds ? JSON.parse(JSON.stringify(m.quickCmds)) : [],
+        sendHistory:  m.sendHistory ? m.sendHistory.slice(0, 20) : [],
+    };
 }
 
 // 将配置应用到指定监视器
@@ -1580,9 +1764,10 @@ function scheduleConfigSave() {
     if (_loadingConfig) return; // 配置恢复期间跳过
     if (_saveConfigTimer) clearTimeout(_saveConfigTimer);
     _saveConfigTimer = setTimeout(function() {
-        var cfg = collectConfig();
-        invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) {
-            console.warn('保存配置失败:', e);
+        collectConfig().then(function(cfg) {
+            invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) {
+                console.warn('保存配置失败:', e);
+            });
         });
     }, 500);
 }
@@ -1604,17 +1789,9 @@ async function loadAndApplyConfig() {
         }
         // 恢复窗口大小
         if (cfg.windowWidth && cfg.windowHeight) {
-            try {
-                var w = window.__TAURI__ && window.__TAURI__.window;
-                if (w && w.appWindow) {
-                    w.appWindow.setSize({ type: 'Logical', width: cfg.windowWidth, height: cfg.windowHeight }).catch(function(e) {
-                        console.warn('Tauri setSize 失败，尝试 resizeTo:', e);
-                        window.resizeTo(cfg.windowWidth, cfg.windowHeight);
-                    });
-                } else {
-                    window.resizeTo(cfg.windowWidth, cfg.windowHeight);
-                }
-            } catch (e) { console.warn('恢复窗口大小失败:', e); }
+            invoke('set_window_size', { width: cfg.windowWidth, height: cfg.windowHeight }).catch(function(e) {
+                console.warn('恢复窗口大小失败:', e);
+            });
         }
         // 恢复主监视器配置
         if (cfg.monitors && cfg.monitors['main']) {
@@ -1679,6 +1856,9 @@ function openWslMapping() {
     
     var mid = activePane.id.replace('pane-', '');
     console.log('[WSL] 目标窗格:', mid);
+    
+    // 保存当前配置状态（在替换HTML之前）
+    monitors[mid]._savedConfig = collectConfigForMonitor(mid);
     
     // 保存原始HTML内容
     if (!monitors[mid]._originalHtml) {
@@ -1811,10 +1991,10 @@ function restoreMonitorPane(mid) {
             });
         }
         
-        // 应用保存的配置
-        var cfg = collectConfig();
-        if (cfg.monitors && cfg.monitors[mid]) {
-            applyMonitorConfig(mid, cfg.monitors[mid]);
+        // 应用进入WSL页面前保存的配置
+        if (monitors[mid]._savedConfig) {
+            applyMonitorConfig(mid, monitors[mid]._savedConfig);
+            delete monitors[mid]._savedConfig;
         }
         
         // 自动刷新端口列表

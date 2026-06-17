@@ -1077,6 +1077,20 @@ fn install_update(file_path: String) -> Result<(), String> {
     std::process::exit(0);
 }
 
+/// 获取窗口大小
+#[tauri::command]
+fn get_window_size(window: tauri::Window) -> Result<(u32, u32), String> {
+    let size = window.inner_size().map_err(|e| format!("获取窗口大小失败: {}", e))?;
+    Ok((size.width, size.height))
+}
+
+/// 设置窗口大小
+#[tauri::command]
+fn set_window_size(window: tauri::Window, width: u32, height: u32) -> Result<(), String> {
+    window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height }))
+        .map_err(|e| format!("设置窗口大小失败: {}", e))
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(PortState {
@@ -1101,6 +1115,8 @@ fn main() {
             check_update,
             download_update,
             install_update,
+            get_window_size,
+            set_window_size,
         ])
         .setup(|app| {
             #[cfg(windows)]
