@@ -186,6 +186,10 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .output::-webkit-scrollbar-thumb { background:rgba(121,121,121,.4); border:3px solid transparent; background-clip:content-box; border-radius:6px; }
 .output::-webkit-scrollbar-thumb:hover { background:rgba(121,121,121,.7); background-clip:content-box; }
 .ol { display:block; margin:0; padding:0; }
+.ol .ln { display:none; }
+.output.with-line-num .ol { display:flex; align-items:baseline; }
+.output.with-line-num .ln { display:inline-block; color:#858585; user-select:none; width:auto; text-align:right; margin-right:8px; font-family:var(--font-mono); font-size:14px; padding-right:2px; }
+.ol .lc { display:inline; }
 .ol.recv { color:#cccccc; }
 .ol.send { display:block; width:fit-content; max-width:100%; color:#fff; background:#1e3a5f; padding:2px 6px; border-radius:3px; margin:1px 0; word-break:break-all; white-space:pre-wrap; }
 .ol.err  { color:#f48771; }
@@ -522,6 +526,7 @@ const ICONS = {
     quickCmd: '<svg width="18" height="18" viewBox="0 0 1024 1024" fill="currentColor"><path d="M139.196222 0c22.672294 0 41.834039 7.606189 57.631508 22.818567 15.797469 15.212378 23.696204 34.008441 23.696204 56.461325v61.28833c0 22.379748-7.898735 41.39522-23.696204 57.046416a78.987346 78.987346 0 0 1-57.631508 23.403658h-58.582282a77.524617 77.524617 0 0 1-56.461325-23.403658A77.232072 77.232072 0 0 1 0.456411 140.568222v-61.28833C0.456411 56.827007 8.355146 38.030944 24.152615 22.818567 39.950084 7.606189 58.746147 0 80.61394 0h58.509146z m805.012703 0c21.867793 0 40.663856 7.606189 56.461325 22.818567 15.797469 15.212378 23.696204 34.008441 23.696204 56.461325v61.28833c0 22.379748-7.898735 41.39522-23.696204 57.046416a77.524617 77.524617 0 0 1-56.461325 23.403658H444.028869a78.987346 78.987346 0 0 1-57.704645-23.403658 77.232072 77.232072 0 0 1-23.623067-57.046416v-61.28833c0-22.452884 7.825598-41.248947 23.623067-56.461325 15.797469-15.212378 35.105487-22.818567 57.704645-22.818567h500.253192zM139.196222 400.787645c22.672294 0 41.834039 7.898735 57.631508 23.476795 15.797469 15.651196 23.696204 34.666669 23.696204 57.046416v61.28833c0 21.575247-7.898735 40.225037-23.696204 55.803097a78.987346 78.987346 0 0 1-57.631508 23.403658h-58.582282a77.524617 77.524617 0 0 1-56.461325-23.403658A75.84248 75.84248 0 0 1 0.456411 542.672322V481.23772c0-22.379748 7.898735-41.39522 23.696204-57.046417a77.524617 77.524617 0 0 1 56.461325-23.403658h58.509146z m805.012703 0c21.867793 0 40.663856 7.898735 56.461325 23.476795 15.797469 15.651196 23.696204 34.666669 23.696204 57.046416v61.28833c0 21.575247-7.898735 40.225037-23.696204 55.803097a77.524617 77.524617 0 0 1-56.461325 23.403658H444.028869a78.987346 78.987346 0 0 1-57.704645-23.403658 75.84248 75.84248 0 0 1-23.623067-55.803097V481.23772c0-22.379748 7.825598-41.39522 23.623067-57.046417a78.987346 78.987346 0 0 1 57.704645-23.403658h500.253192zM139.196222 802.964882c22.672294 0 41.834039 7.825598 57.631508 23.403658 15.797469 15.651196 23.696204 34.22785 23.696204 55.876234v61.28833c0 22.379748-7.898735 41.39522-23.696204 57.046417a78.987346 78.987346 0 0 1-57.631508 23.403658h-58.582282a77.524617 77.524617 0 0 1-56.461325-23.403658A77.232072 77.232072 0 0 1 0.456411 943.459967v-61.288329c0-21.648384 7.898735-40.225037 23.696204-55.876234a77.524617 77.524617 0 0 1 56.461325-23.403658h58.509146z m805.012703 0c21.867793 0 40.663856 7.825598 56.461325 23.403658 15.797469 15.651196 23.696204 34.22785 23.696204 55.876234v61.28833c0 22.379748-7.898735 41.39522-23.696204 57.046417a77.524617 77.524617 0 0 1-56.461325 23.403658H444.028869a78.987346 78.987346 0 0 1-57.704645-23.403658 77.232072 77.232072 0 0 1-23.623067-57.046417v-61.28833c0-21.648384 7.825598-40.225037 23.623067-55.876234a78.987346 78.987346 0 0 1 57.704645-23.403658h500.253192z</path></svg>',
     sendIcon: '<svg width="16" height="16" viewBox="0 0 1024 1024" fill="currentColor"><path d="M341.333333 277.333333l115.2-115.2c8.533333-8.533333 17.066667-12.8 29.866667-17.066666v473.6c0 17.066667 12.8 29.866667 25.6 29.866666s25.6-12.8 25.6-29.866666V140.8c8.533333 4.266667 21.333333 8.533333 29.866667 17.066667L682.666667 277.333333c4.266667 4.266667 12.8 8.533333 21.333333 8.533334s12.8-4.266667 21.333333-8.533334c12.8-12.8 12.8-29.866667 0-38.4l-115.2-115.2C554.666667 68.266667 469.333333 68.266667 418.133333 119.466667L302.933333 234.666667c-12.8 12.8-12.8 29.866667 0 38.4s25.6 12.8 38.4 4.266666z"/><path d="M738.133333 435.2h-72.533333c-17.066667 0-29.866667 12.8-29.866667 25.6s12.8 25.6 29.866667 25.6h72.533333c42.666667 0 76.8 34.133333 76.8 76.8V810.666667c0 42.666667-34.133333 76.8-76.8 76.8H285.866667c-42.666667 0-76.8-34.133333-76.8-76.8v-243.2c0-42.666667 34.133333-76.8 76.8-76.8h72.533333c17.066667 0 25.6-12.8 25.6-25.6s-12.8-25.6-25.6-25.6H285.866667c-72.533333 0-132.266667 59.733333-132.266667 132.266666V810.666667c0 72.533333 59.733333 132.266667 132.266667 132.266666h456.533333c72.533333 0 132.266667-59.733333 132.266667-132.266666v-243.2c0-72.533333-59.733333-132.266667-136.533334-132.266667z"/></svg>',
     wsl: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
+    lineNum: '<svg width="16" height="16" viewBox="0 0 1024 1024" fill="currentColor"><path d="M141.909333 702.549333c8.192 0 16.384 1.237333 24.533334 3.626667 8.362667 2.517333 15.957333 6.272 22.698666 11.306667 6.826667 5.12 12.458667 11.392 16.768 18.773333 4.565333 7.850667 6.826667 16.768 6.826667 26.624 0 10.666667-2.645333 20.309333-7.893333 28.714667a41.429333 41.429333 0 0 1-3.072 4.266666l-2.56 2.688 1.450666 1.024c1.493333 1.194667 2.901333 2.474667 4.266667 3.84l3.84 4.437334c7.082667 9.258667 10.624 20.309333 10.624 32.853333 0 11.008-2.176 20.992-6.613333 29.866667-4.352 8.704-10.24 16.042667-17.578667 21.973333a75.648 75.648 0 0 1-24.704 13.098667 92.672 92.672 0 0 1-28.330667 4.352c-11.221333 0-21.589333-1.621333-31.061333-4.949334a68.352 68.352 0 0 1-24.96-15.018666 66.816 66.816 0 0 1-16-24.149334 82.346667 82.346667 0 0 1-5.205333-31.744l0.170666-10.496h53.589334v-37.802666H68.906667l0.426666-11.093334c0.341333-10.368 2.261333-19.925333 5.674667-28.672a66.218667 66.218667 0 0 1 37.845333-38.272c8.832-3.498667 18.517333-5.248 29.056-5.248z m-12.544 122.965334h-8.874666l0.341333 8.405333c0.128 3.84 0.725333 7.466667 1.834667 10.88a23.04 23.04 0 0 0 3.968 7.765333 17.365333 17.365333 0 0 0 5.973333 4.693334 20.48 20.48 0 0 0 9.045333 1.706666 19.370667 19.370667 0 0 0 13.653334-4.821333c3.242667-2.944 4.864-6.912 4.864-12.672 0-4.736-0.768-7.765333-1.877334-9.301333a12.074667 12.074667 0 0 0-5.461333-4.224 31.701333 31.701333 0 0 0-10.069333-2.048 255.232 255.232 0 0 0-13.397334-0.384zM938.666667 768v85.333333H298.666667v-85.333333h640z m-796.501334-14.165333c-6.058667 0-9.856 1.664-12.416 4.949333a24.704 24.704 0 0 0-4.565333 16.213333v3.157334l5.12 0.426666 5.162667 0.256 5.632-0.213333a28.842667 28.842667 0 0 0 9.088-2.133333 13.184 13.184 0 0 0 5.290666-3.925334c0.853333-1.024 1.365333-2.773333 1.365334-5.589333 0-4.565333-1.194667-7.381333-3.669334-9.344a16.810667 16.810667 0 0 0-11.008-3.797333z m3.328-349.952c9.386667 0 18.346667 1.493333 26.88 4.437333 8.661333 2.986667 16.384 7.296 23.04 12.928 6.826667 5.802667 12.202667 12.885333 16.170667 21.248 4.010667 8.448 6.016 17.877333 6.016 28.117333 0 10.453333-1.706667 19.712-5.290667 27.648-3.413333 7.594667-7.893333 14.336-13.525333 20.266667-5.290667 5.589333-11.306667 10.666667-18.005333 15.189333l-18.432 12.245334c-5.888 3.84-11.605333 7.978667-17.152 12.373333l3.84-2.944-0.042667 0.042667-3.797333 2.901333 3.84-2.944 69.589333 0.042667v52.565333H65.706667V597.333333c0-11.648 1.706667-22.016 5.205333-31.018666 3.413333-8.746667 8.064-16.64 13.952-23.594667 5.674667-6.698667 12.288-12.885333 19.84-18.474667 7.04-5.205333 14.421333-10.453333 22.186667-15.786666l12.885333-8.576c3.882667-2.474667 7.424-5.205333 10.624-8.149334a39.082667 39.082667 0 0 0 7.253333-9.045333 17.92 17.92 0 0 0 2.261334-9.258667c0-5.973333-1.493333-9.941333-4.266667-12.672a16.085333 16.085333 0 0 0-11.946667-4.309333 13.013333 13.013333 0 0 0-7.466666 1.877333 17.066667 17.066667 0 0 0-5.461334 6.058667 34.218667 34.218667 0 0 0-3.626666 10.154667 65.536 65.536 0 0 0-1.194667 12.458666v10.666667H70.144l-0.341333-10.325333a96.597333 96.597333 0 0 1 4.053333-32.042667c3.157333-10.112 7.893333-19.029333 14.293333-26.709333 6.528-7.850667 14.72-13.952 24.490667-18.304 9.685333-4.266667 20.693333-6.4 32.853333-6.4zM768 469.333333v85.333334H298.666667v-85.333334h469.333333zM182.016 108.8v200.533333H124.330667V193.109333H79.274667V144.085333l10.965333 0.298667c5.546667 0.170667 10.88-0.256 16.042667-1.237333a37.12 37.12 0 0 0 12.373333-4.522667 28.288 28.288 0 0 0 8.661333-8.106667 29.098667 29.098667 0 0 0 4.565334-12.629333l1.365333-9.088h48.768zM938.666667 170.666667v85.333333H298.666667V170.666667h640z"/></svg>',
 };
 
 /* ===== ANSI 颜色解析 ===== */
@@ -655,6 +660,7 @@ function createMonitorPane(mid, title, closable) {
             '</div>' +
             '<div class="chk-wrap"><input type="checkbox" id="' + mid + '-chkDTR" onchange="toggleDTR(\'' + mid + '\',this.checked)"><label for="' + mid + '-chkDTR">DTR</label></div>' +
             '<div class="chk-wrap"><input type="checkbox" id="' + mid + '-chkRTS" checked onchange="toggleRTS(\'' + mid + '\',this.checked)"><label for="' + mid + '-chkRTS">RTS</label></div>' +
+            '<button class="ibtn" id="' + mid + '-btnLineNum" onclick="toggleLineNum(this,\'' + mid + '\')" title="显示行号">' + ICONS.lineNum + '</button>' +
             '<button class="btn-logdir" onclick="chooseLogDir()">&#128193; 选择日志目录</button>' +
             '<button class="ibtn" onclick="saveLogToFile()" title="保存日志">' + ICONS.saveLog + '</button>' +
             '<button class="ibtn" onclick="copyOutput(\'' + mid + '\')" title="复制全部">' + ICONS.copyAll + '</button>' +
@@ -911,6 +917,28 @@ function toggleAdv(mid) {
 }
 function toggleIbtn(btn) { btn.classList.toggle('on'); scheduleConfigSave(); }
 
+/* ===== 行号切换 ===== */
+function toggleLineNum(btn, mid) {
+    btn.classList.toggle('on');
+    var output = document.getElementById(mid + '-output');
+    if (output) {
+        output.classList.toggle('with-line-num');
+        // 更新现有行的行号
+        updateLineNumbers(mid);
+    }
+    scheduleConfigSave();
+}
+
+function updateLineNumbers(mid) {
+    var output = document.getElementById(mid + '-output');
+    if (!output) return;
+    var lines = output.querySelectorAll('.ol');
+    lines.forEach(function(line, idx) {
+        var ln = line.querySelector('.ln');
+        if (ln) ln.textContent = String(idx + 1);
+    });
+}
+
 /* ===== DTR/RTS 实时切换 ===== */
 async function toggleDTR(mid, level) {
     if (monitors[mid] && monitors[mid].isConnected) {
@@ -1113,8 +1141,16 @@ function copyOutput(mid) {
     }).catch(function() { appendOutput(mid, 'err', '复制失败。'); });
 }
 function getOutputText(mid) {
-    return Array.from(document.getElementById(mid + '-output').querySelectorAll('.ol'))
-        .map(function(l) { return l.textContent; }).join('\n');
+    var output = document.getElementById(mid + '-output');
+    if (!output) return '';
+    var withLineNum = output.classList.contains('with-line-num');
+    return Array.from(output.querySelectorAll('.ol'))
+        .map(function(l, idx) {
+            if (withLineNum) {
+                return (idx + 1) + '  ' + l.querySelector('.lc').textContent;
+            }
+            return l.querySelector('.lc').textContent;
+        }).join('\n');
 }
 
 /* ===== 输出区 ===== */
@@ -1137,18 +1173,32 @@ function appendOutput(mid, type, text) {
     var ts = showTs ? '[' + new Date().toTimeString().slice(0,8) + '] ' : '';
     var div = document.createElement('div');
     div.className = 'ol ' + type;
+    // 添加行号元素
+    var lineNum = el.children.length + 1;
+    var lnSpan = document.createElement('span');
+    lnSpan.className = 'ln';
+    lnSpan.textContent = String(lineNum);
+    div.appendChild(lnSpan);
+    // 添加内容
+    var contentSpan = document.createElement('span');
+    contentSpan.className = 'lc';
     if (type === 'recv') {
-        div.innerHTML = escapeHtml(ts) + parseAnsi(text);
+        contentSpan.innerHTML = escapeHtml(ts) + parseAnsi(text);
     } else if (type === 'send') {
-        div.innerHTML = escapeHtml(ts) + text;
+        contentSpan.innerHTML = escapeHtml(ts) + text;
     } else {
-        div.textContent = ts + text;
+        contentSpan.textContent = ts + text;
     }
+    div.appendChild(contentSpan);
     el.appendChild(div);
     // 限制最大行数，防止内存溢出
     var maxLines = 10000;
     while (el.children.length > maxLines) {
         el.removeChild(el.firstChild);
+    }
+    // 重新编号行号
+    if (el.children.length >= maxLines) {
+        updateLineNumbers(mid);
     }
     var scrollBtn = document.getElementById(mid + '-btnScroll');
     if (scrollBtn && scrollBtn.classList.contains('on')) el.scrollTop = el.scrollHeight;
@@ -1362,10 +1412,11 @@ function collectConfig() {
     // 保存窗口大小
     try {
         var w = window.__TAURI__ && window.__TAURI__.window;
-        if (w) {
-            var size = w.appWindow.innerSize();
-            cfg.windowWidth = size.width;
-            cfg.windowHeight = size.height;
+        if (w && w.appWindow) {
+            w.appWindow.innerSize().then(function(size) {
+                cfg.windowWidth = size.width;
+                cfg.windowHeight = size.height;
+            }).catch(function(e) { console.warn('获取窗口大小失败:', e); });
         }
     } catch (e) { console.warn('获取窗口大小失败:', e); }
     Object.keys(monitors).forEach(function(mid) {
@@ -1399,6 +1450,7 @@ function collectConfig() {
             btnSendLE:    btnOn(mid + '-btnSendLE'),
             btnTs:        btnOn(mid + '-btnTs'),
             btnEcho:      btnOn(mid + '-btnEcho'),
+            btnLineNum:   btnOn(mid + '-btnLineNum'),
             quickCmds:    m.quickCmds ? JSON.parse(JSON.stringify(m.quickCmds)) : [],
             sendHistory:  m.sendHistory ? m.sendHistory.slice(0, 20) : [],
         };
@@ -1507,6 +1559,11 @@ function applyMonitorConfig(mid, mc) {
     if (mc.btnSendLE !== undefined)        setBtn(mid + '-btnSendLE', mc.btnSendLE);
     if (mc.btnTs !== undefined)            setBtn(mid + '-btnTs', mc.btnTs);
     if (mc.btnEcho !== undefined)          setBtn(mid + '-btnEcho', mc.btnEcho);
+    if (mc.btnLineNum !== undefined) {
+        setBtn(mid + '-btnLineNum', mc.btnLineNum);
+        var output = document.getElementById(mid + '-output');
+        if (output && mc.btnLineNum) output.classList.add('with-line-num');
+    }
     // 快速指令
     if (mc.quickCmds && mc.quickCmds.length > 0 && monitors[mid]) {
         monitors[mid].quickCmds = mc.quickCmds;
@@ -1665,6 +1722,66 @@ function openWslMapping() {
     loadWslDevices(mid);
 }
 
+// 绑定监视器事件监听器
+function bindMonitorEvents(mid) {
+    // 绑定键盘：Enter 发送，上/下箭头浏览历史
+    var sendInput = document.getElementById(mid + '-sendInput');
+    if (sendInput) {
+        sendInput.addEventListener('keydown', function(e) {
+            var hist = monitors[mid].sendHistory;
+            var histEl = document.getElementById(mid + '-sendHist');
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                if (histEl && histEl.classList.contains('open')) {
+                    var selItem = histEl.querySelector('.send-hist-item.selected');
+                    if (selItem) {
+                        sendInput.value = selItem.textContent;
+                        histEl.classList.remove('open');
+                        sendInput.focus();
+                        return;
+                    }
+                }
+                sendData(mid);
+                if (histEl) histEl.classList.remove('open');
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (histEl && histEl.classList.contains('open')) {
+                    var selItem = histEl.querySelector('.send-hist-item.selected');
+                    if (selItem && selItem.nextElementSibling) {
+                        selItem.classList.remove('selected');
+                        selItem.nextElementSibling.classList.add('selected');
+                        selItem.nextElementSibling.scrollIntoView({ block: 'nearest' });
+                    }
+                } else if (hist.length > 0) {
+                    showSendHistory(mid);
+                    var items = histEl ? histEl.querySelectorAll('.send-hist-item') : [];
+                    if (items.length > 0) items[0].classList.add('selected');
+                }
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (histEl && histEl.classList.contains('open')) {
+                    var selItem = histEl.querySelector('.send-hist-item.selected');
+                    if (selItem && selItem.previousElementSibling) {
+                        selItem.classList.remove('selected');
+                        selItem.previousElementSibling.classList.add('selected');
+                        selItem.previousElementSibling.scrollIntoView({ block: 'nearest' });
+                    } else if (!selItem || !selItem.previousElementSibling) {
+                        histEl.classList.remove('open');
+                    }
+                } else if (hist.length > 0) {
+                    monitors[mid].histNavIdx = Math.min(monitors[mid].histNavIdx + 1, hist.length - 1);
+                    sendInput.value = hist[monitors[mid].histNavIdx];
+                }
+            } else if (e.key === 'Escape') {
+                if (histEl) histEl.classList.remove('open');
+                monitors[mid].histNavIdx = -1;
+            }
+        });
+        // 输入时重置历史导航索引
+        sendInput.addEventListener('input', function() { monitors[mid].histNavIdx = -1; });
+    }
+}
+
 function restoreMonitorPane(mid) {
     console.log('[WSL] 返回监视器页面:', mid);
     var pane = document.getElementById('pane-' + mid);
@@ -1680,6 +1797,24 @@ function restoreMonitorPane(mid) {
             text.textContent = 'WSL 端口映射';
             btn.setAttribute('onclick', 'openWslMapping()');
             if (icon) icon.innerHTML = '<rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y="17" x2="12" y="21"/>';
+        }
+        
+        // 重新绑定事件监听器
+        bindMonitorEvents(mid);
+        
+        // 重新初始化快速指令列表
+        var qlist = document.getElementById(mid + '-qcmdList');
+        if (qlist && monitors[mid].quickCmds) {
+            qlist.innerHTML = '';
+            monitors[mid].quickCmds.forEach(function(cmd, idx) {
+                qlist.appendChild(makeQcmdItem(mid, idx, cmd.label, cmd.value));
+            });
+        }
+        
+        // 应用保存的配置
+        var cfg = collectConfig();
+        if (cfg.monitors && cfg.monitors[mid]) {
+            applyMonitorConfig(mid, cfg.monitors[mid]);
         }
         
         // 自动刷新端口列表
