@@ -88,6 +88,11 @@ struct PortState {
     ports: Mutex<HashMap<String, Box<dyn SerialPort>>>,
 }
 
+/// WSL 设备路径缓存（Arc 共享给后台线程）
+struct WslPathCache {
+    paths: std::sync::Arc<Mutex<HashMap<String, String>>>,
+}
+
 /// 创建不显示控制台窗口的 Command
 fn hidden_command(program: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new(program);
@@ -383,7 +388,7 @@ fn choose_log_directory() -> Result<Option<String>, String> {
 
 /// 获取所有串口（包括已映射到WSL的）
 #[tauri::command]
-fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
+fn list_wsl_devices(cache: tauri::State<'_, WslPathCache>) -> Result<Vec<serde_json::Value>, String> {
     // 1. 查询usbipd获取所有设备信息（使用超时机制）
     let mut usbipd_devices: Vec<(String, String, String, String, String)> = Vec::new(); // (busid, port, name, status, vid_pid)
     
@@ -462,8 +467,8 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
         }
     }
     
-    // 2. 批量查询 WSL 内所有串口设备路径（只调用一次 WSL）
-    let wsl_paths = get_all_wsl_device_paths();
+    // 2. 从缓存读取 WSL 设备路径（毫秒级）
+    let wsl_paths = cache.paths.lock().unwrap_or_else(|e| e.into_inner()).clone();
     
     // 3. 获取系统串口列表，过滤并关联usbipd信息
     let ports = serialport::available_ports().unwrap_or_default();
@@ -551,14 +556,45 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
     Ok(devices)
 }
 
-/// 通过 VID:PID 查询 WSL 内对应的设备路径（如 /dev/ttyACM0）
-fn get_wsl_device_path(vid_pid: &str) -> Option<String> {
-    let paths = get_all_wsl_device_paths();
-    paths.get(vid_pid).cloned()
+/// 直接查询单个 VID:PID 的 WSL 设备路径（用于 attach 后立即查询）
+fn query_wsl_device_path(vid_pid: &str) -> Option<String> {
+    let script = format!(
+        "for dev in /dev/ttyACM* /dev/ttyUSB*; do\n\
+          [ -c \"$dev\" ] || continue\n\
+          info=$(udevadm info \"$dev\" 2>/dev/null)\n\
+          vid=$(echo \"$info\" | sed -n 's/.*ID_VENDOR_ID=\\(.*\\)/\\1/p')\n\
+          pid=$(echo \"$info\" | sed -n 's/.*ID_MODEL_ID=\\(.*\\)/\\1/p')\n\
+          if [ \"$vid\" = \"{}\" ] && [ \"$pid\" = \"{}\" ]; then\n\
+            echo \"$(basename \"$dev\")\"\n\
+            exit 0\n\
+          fi\n\
+        done\n",
+        &vid_pid[..4], &vid_pid[5..]
+    );
+    let tmp = std::env::temp_dir().join("wsl_tty_single.sh");
+    let _ = std::fs::write(&tmp, &script);
+    let tmp_wsl = if let Some(s) = tmp.to_str() {
+        if s.len() >= 2 && s.as_bytes()[1] == b':' {
+            let drive = (s.as_bytes()[0] as char).to_ascii_lowercase();
+            format!("/mnt/{}/{}", drive, &s[3..].replace("\\", "/"))
+        } else {
+            s.replace("\\", "/")
+        }
+    } else {
+        return None;
+    };
+    let output = hidden_command("wsl")
+        .args(["bash", &tmp_wsl])
+        .output();
+    let _ = std::fs::remove_file(&tmp);
+    let output = output.ok()?;
+    let text = decode_wsl_output(&output.stdout);
+    let first = text.trim().lines().next().unwrap_or("");
+    if first.is_empty() { None } else { Some(format!("/dev/{}", first)) }
 }
 
-/// 一次性查询 WSL 内所有串口设备的 VID:PID → 设备路径映射
-fn get_all_wsl_device_paths() -> HashMap<String, String> {
+/// 从 WSL 查询所有串口设备路径（阻塞，用于后台刷新）
+fn refresh_wsl_path_cache(cache: &std::sync::Arc<Mutex<HashMap<String, String>>>) {
     let script = "for dev in /dev/ttyACM* /dev/ttyUSB*; do\n\
       [ -c \"$dev\" ] || continue\n\
       info=$(udevadm info \"$dev\" 2>/dev/null)\n\
@@ -578,23 +614,23 @@ fn get_all_wsl_device_paths() -> HashMap<String, String> {
             s.replace("\\", "/")
         }
     } else {
-        return HashMap::new();
+        return;
     };
     let output = hidden_command("wsl")
         .args(["bash", &tmp_wsl])
         .output();
     let _ = std::fs::remove_file(&tmp);
-    let mut map = HashMap::new();
     if let Ok(out) = output {
         let text = decode_wsl_output(&out.stdout);
+        let mut map = HashMap::new();
         for line in text.trim().lines() {
-            // 格式: "1a86:8010 ttyACM1"
             if let Some((vid_pid, dev_name)) = line.trim().split_once(' ') {
                 map.insert(vid_pid.to_string(), format!("/dev/{}", dev_name.trim()));
             }
         }
+        let mut cached = cache.lock().unwrap_or_else(|e| e.into_inner());
+        *cached = map;
     }
-    map
 }
 
 fn decode_wsl_output(raw: &[u8]) -> String {
@@ -749,7 +785,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
             Ok(out) if out.status.success() => {
                 println!("[DEBUG] Direct attach succeeded for {}", busid);
                 std::thread::sleep(std::time::Duration::from_millis(200));
-                let wsl_path = get_wsl_device_path(&vid_pid);
+                let wsl_path = query_wsl_device_path(&vid_pid);
                 let msg = match wsl_path {
                     Some(ref p) => format!("已将 {} (busid: {}) 映射到 WSL → {}", port_name, busid, p),
                     None => format!("已将 {} (busid: {}) 映射到 WSL", port_name, busid),
@@ -856,7 +892,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
     // 检查是否成功 - 通过结果内容判断
     if result_content.contains("操作成功") {
         std::thread::sleep(std::time::Duration::from_millis(200));
-        let wsl_path = get_wsl_device_path(&vid_pid);
+        let wsl_path = query_wsl_device_path(&vid_pid);
         let msg = match wsl_path {
             Some(ref p) => format!("已将 {} (busid: {}) 绑定并映射到 WSL → {}", port_name, busid, p),
             None => format!("已将 {} (busid: {}) 绑定并映射到 WSL", port_name, busid),
@@ -1180,10 +1216,27 @@ fn set_window_size(window: tauri::Window, width: u32, height: u32) -> Result<(),
 }
 
 fn main() {
+    let shared_paths = std::sync::Arc::new(Mutex::new(HashMap::new()));
+
+    // 初始加载 WSL 设备路径
+    refresh_wsl_path_cache(&shared_paths);
+
+    // 后台定时刷新（每 10 秒）
+    {
+        let cache = shared_paths.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                refresh_wsl_path_cache(&cache);
+            }
+        });
+    }
+
     tauri::Builder::default()
         .manage(PortState {
             ports: Mutex::new(HashMap::new()),
         })
+        .manage(WslPathCache { paths: shared_paths })
         .invoke_handler(tauri::generate_handler![
             list_ports,
             list_wsl_devices,
