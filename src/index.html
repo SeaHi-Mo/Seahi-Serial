@@ -77,6 +77,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .sel-opt { padding:4px 10px; font-size:12px; color:var(--text); cursor:pointer; white-space:nowrap; }
 .sel-opt:hover { background:rgba(255,255,255,.07); }
 .sel-opt.active { background:var(--btn-p); color:#fff; }
+.sel-opt-header { padding:6px 10px 2px; font-size:11px; color:#858585; cursor:default; font-weight:600; letter-spacing:0.5px; }
 .sel-port .sel-drop { min-width:260px; }
 
 /* 波特率 combo box */
@@ -873,29 +874,59 @@ async function refreshPorts(mid, force) {
         if (!sel || !drop) return;
         var prev = (sel.getAttribute('data-val')) || (monitors[mid] && monitors[mid]._savedPort) || '';
         drop.innerHTML = '';
-        if (!ports || ports.length === 0) {
+
+        var hasPorts = (ports && ports.length > 0);
+        var wslDevices = (_wslDevices || []).filter(function(d) { return d.status === 'mapped' && d.wslPath; });
+        if (!hasPorts && wslDevices.length === 0) {
             sel.querySelector('.sel-text').textContent = '无可用端口';
             sel.setAttribute('data-val', '');
             return;
         }
-        ports.forEach(function(p) {
-            var opt = document.createElement('div');
-            opt.className = 'sel-opt';
-            opt.setAttribute('data-val', p.port_name);
-            opt.textContent = p.friendly_name || p.port_name;
-            opt.onclick = function(e) { e.stopPropagation(); setPortSel(mid, p.port_name, this); };
-            drop.appendChild(opt);
-        });
+
+        // Windows 端口分组
+        if (hasPorts) {
+            var header = document.createElement('div');
+            header.className = 'sel-opt-header';
+            header.textContent = '▼ Windows';
+            drop.appendChild(header);
+            ports.forEach(function(p) {
+                var opt = document.createElement('div');
+                opt.className = 'sel-opt';
+                opt.setAttribute('data-val', p.port_name);
+                opt.textContent = p.friendly_name || p.port_name;
+                opt.onclick = function(e) { e.stopPropagation(); setPortSel(mid, p.port_name, this); };
+                drop.appendChild(opt);
+            });
+        }
+
+        // WSL 设备分组
+        if (wslDevices.length > 0) {
+            var header = document.createElement('div');
+            header.className = 'sel-opt-header';
+            header.textContent = '▼ WSL';
+            drop.appendChild(header);
+            wslDevices.forEach(function(d) {
+                var opt = document.createElement('div');
+                opt.className = 'sel-opt';
+                opt.setAttribute('data-val', d.wslPath);
+                opt.textContent = d.wslPath + '  ' + d.port;
+                opt.onclick = function(e) { e.stopPropagation(); setPortSel(mid, d.wslPath, this); };
+                drop.appendChild(opt);
+            });
+        }
+
         // 恢复之前选中的端口
-        var matchPort = prev && ports.some(function(p) { return p.port_name === prev; }) ? prev : (ports[0] ? ports[0].port_name : '');
-        if (matchPort) {
-            var matchEl = drop.querySelector('.sel-opt[data-val="' + matchPort + '"]');
-            if (matchEl) {
-                sel.querySelector('.sel-text').textContent = matchEl.textContent;
-                sel.setAttribute('data-val', matchPort);
-                drop.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
-                matchEl.classList.add('active');
-            }
+        var allOpts = drop.querySelectorAll('.sel-opt');
+        var matchEl = null;
+        allOpts.forEach(function(o) {
+            if (o.getAttribute('data-val') === prev) matchEl = o;
+        });
+        if (!matchEl && allOpts.length > 0) matchEl = allOpts[0];
+        if (matchEl) {
+            sel.querySelector('.sel-text').textContent = matchEl.textContent;
+            sel.setAttribute('data-val', matchEl.getAttribute('data-val'));
+            drop.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
+            matchEl.classList.add('active');
         }
         // 清除已恢复的端口标记
         if (monitors[mid]) monitors[mid]._savedPort = '';
@@ -973,7 +1004,7 @@ function initTerminalMode(mid) {
             if (buf && buf.line) {
                 var text = buf.line + leStr(mid);
                 var bytes = new TextEncoder().encode(text);
-                invoke('send_data', { monitorId: mid, data: Array.from(bytes) }).catch(function(err) {
+                sendMonitorData(mid, bytes).catch(function(err) {
                     appendOutput(mid, 'err', '发送失败: ' + err);
                 });
                 // 清除当前输入行和光标
@@ -1090,10 +1121,16 @@ async function connectPort(mid, silent) {
     var parity = document.getElementById(mid + '-parity').getAttribute('data-val') || 'none';
     var dtr = document.getElementById(mid + '-chkDTR').checked;
     var rts = document.getElementById(mid + '-chkRTS').checked;
+    var isWsl = name.startsWith('/dev/');
     try {
-        await invoke('open_port', { monitorId:mid, portName:name, baudRate:baud, dataBits:dataBits, stopBits:stopBits, parity:parity, dtr:dtr, rts:rts });
+        if (isWsl) {
+            await invoke('open_wsl_serial', { monitorId:mid, portPath:name, baudRate:baud, dataBits:dataBits, stopBits:stopBits, parity:parity });
+        } else {
+            await invoke('open_port', { monitorId:mid, portName:name, baudRate:baud, dataBits:dataBits, stopBits:stopBits, parity:parity, dtr:dtr, rts:rts });
+        }
         monitors[mid].isConnected = true;
         monitors[mid].portName = name;
+        monitors[mid].isWsl = isWsl;
         updateMonitorUI(mid, true);
         startReading(mid);
     } catch (e) { if (!silent) appendOutput(mid, 'err', '连接失败: ' + e); }
@@ -1101,9 +1138,14 @@ async function connectPort(mid, silent) {
 
 async function disconnectPort(mid) {
     try {
-        await invoke('close_port', { monitorId: mid });
+        if (monitors[mid] && monitors[mid].isWsl) {
+            await invoke('close_wsl_serial', { monitorId: mid });
+        } else {
+            await invoke('close_port', { monitorId: mid });
+        }
         monitors[mid].isConnected = false;
         monitors[mid].portName = '';
+        monitors[mid].isWsl = false;
         stopReading(mid);
         updateMonitorUI(mid, false);
     } catch (e) { appendOutput(mid, 'err', '断开失败: ' + e); }
@@ -1128,12 +1170,18 @@ function updateMonitorUI(mid, connected) {
     updateQcmdSendBtns(mid, connected);
 }
 
+function sendMonitorData(mid, bytes) {
+    var cmd = (monitors[mid] && monitors[mid].isWsl) ? 'send_wsl_serial' : 'send_data';
+    return invoke(cmd, { monitorId: mid, data: Array.from(bytes) });
+}
+
 function startReading(mid) {
     stopReading(mid);
     monitors[mid].readTimer = setInterval(async function() {
         if (!monitors[mid] || !monitors[mid].isConnected) { stopReading(mid); return; }
         try {
-            var data = await invoke('read_data', { monitorId: mid });
+            var readCmd = monitors[mid].isWsl ? 'read_wsl_serial' : 'read_data';
+            var data = await invoke(readCmd, { monitorId: mid });
             if (data && data.length > 0) {
                 var decoded = decodeData(mid, data);
                 // 去除末尾的换行符，然后按换行符拆分
@@ -1150,7 +1198,11 @@ function startReading(mid) {
             var reconnectBtn = document.getElementById(mid + '-btnAutoReconnect');
             if (reconnectBtn && reconnectBtn.classList.contains('on')) {
                 try {
-                    await invoke('close_port', { monitorId: mid });
+                    if (monitors[mid] && monitors[mid].isWsl) {
+                        await invoke('close_wsl_serial', { monitorId: mid });
+                    } else {
+                        await invoke('close_port', { monitorId: mid });
+                    }
                 } catch (_) {}
                 monitors[mid].isConnected = false;
                 stopReading(mid);
@@ -1159,8 +1211,7 @@ function startReading(mid) {
                 for (var i = 0; i < 50; i++) {
                     await refreshPorts(mid, true);
                     var sel = document.getElementById(mid + '-portSelect');
-                    if (sel && [...sel.options].some(function(o) { return o.value === savedPort; })) {
-                        sel.value = savedPort;
+                    if (sel && sel.getAttribute('data-val') === savedPort) {
                         await connectPort(mid, true);
                         if (monitors[mid].isConnected) return;
                     }
@@ -1210,7 +1261,7 @@ async function sendData(mid) {
         else { text += leStr(mid); bytes = new TextEncoder().encode(text); }
     } catch (e) { appendOutput(mid, 'err', '格式错误: ' + e); return; }
     try {
-        await invoke('send_data', { monitorId: mid, data: Array.from(bytes) });
+        await sendMonitorData(mid, bytes);
         var echoBtn = document.getElementById(mid + '-btnEcho');
         if (echoBtn && echoBtn.classList.contains('on')) {
             appendOutput(mid, 'send', hexMode ? '<span style="color:var(--text-d);">HEX:</span>' + bytesToHex(bytes) : decodeRaw(bytes));
@@ -1487,7 +1538,7 @@ async function sendQcmdItem(mid, idx) {
         else { text += leStr(mid); bytes = new TextEncoder().encode(text); }
     } catch (e) { appendOutput(mid, 'err', '格式错误: ' + e); return; }
     try {
-        await invoke('send_data', { monitorId: mid, data: Array.from(bytes) });
+        await sendMonitorData(mid, bytes);
         var echoBtn = document.getElementById(mid + '-btnEcho');
         if (echoBtn && echoBtn.classList.contains('on')) {
             appendOutput(mid, 'send', hexMode ? '<span style="color:var(--text-d);">HEX:</span>' + bytesToHex(bytes) : decodeRaw(bytes));
