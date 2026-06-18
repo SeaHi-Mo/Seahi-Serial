@@ -909,7 +909,7 @@ async function refreshPorts(mid, force) {
                 var opt = document.createElement('div');
                 opt.className = 'sel-opt';
                 opt.setAttribute('data-val', d.wslPath);
-                opt.textContent = d.wslPath + '  ' + d.port;
+                opt.textContent = d.wslPath + '  (' + d.name + ')';
                 opt.onclick = function(e) { e.stopPropagation(); setPortSel(mid, d.wslPath, this); };
                 drop.appendChild(opt);
             });
