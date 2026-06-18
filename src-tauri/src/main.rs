@@ -549,22 +549,22 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
 
 /// 通过 VID:PID 查询 WSL 内对应的设备路径（如 /dev/ttyACM0）
 fn get_wsl_device_path(vid_pid: &str) -> Option<String> {
-    // 写临时脚本，遍历 sysfs 所有 tty 设备匹配 VID:PID
+    // 写临时脚本，用 udevadm 遍历所有串口设备匹配 VID:PID
     let script = format!(
-        "target=\"{vp}\"\n\
-         for d in /sys/bus/usb/devices/*/tty/*/; do\n\
-           [ -d \"$d\" ] || continue\n\
-           t=$(basename \"$d\")\n\
-           iface=$(basename $(dirname $(dirname \"$d\")))\n\
-           devbusid=$(echo \"$iface\" | sed 's/:[0-9.]*$//')\n\
-           vid=$(cat \"/sys/bus/usb/devices/$devbusid/idVendor\" 2>/dev/null)\n\
-           pid=$(cat \"/sys/bus/usb/devices/$devbusid/idProduct\" 2>/dev/null)\n\
-           if [ \"$vid:$pid\" = \"$target\" ]; then\n\
-             echo \"$t\"\n\
+        "target_vid=\"{vv}\"\n\
+         target_pid=\"{pp}\"\n\
+         for dev in /dev/ttyACM* /dev/ttyUSB*; do\n\
+           [ -c \"$dev\" ] || continue\n\
+           info=$(udevadm info \"$dev\" 2>/dev/null)\n\
+           vid=$(echo \"$info\" | sed -n 's/.*ID_VENDOR_ID=\\(.*\\)/\\1/p')\n\
+           pid=$(echo \"$info\" | sed -n 's/.*ID_MODEL_ID=\\(.*\\)/\\1/p')\n\
+           if [ \"$vid\" = \"$target_vid\" ] && [ \"$pid\" = \"$target_pid\" ]; then\n\
+             basename \"$dev\"\n\
              exit 0\n\
            fi\n\
          done\n",
-        vp = vid_pid
+        vv = &vid_pid[..4],
+        pp = &vid_pid[5..],
     );
     let tmp = std::env::temp_dir().join("wsl_tty_lookup.sh");
     let _ = std::fs::write(&tmp, &script);
