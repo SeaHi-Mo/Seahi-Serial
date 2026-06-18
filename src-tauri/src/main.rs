@@ -532,6 +532,24 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
     Ok(devices)
 }
 
+/// 通过 busid 查询 WSL 内对应的设备路径（如 /dev/ttyACM0）
+fn get_wsl_device_path(busid: &str) -> Option<String> {
+    // /sys/bus/usb/devices/{busid}/tty/ 下有设备名（如 ttyACM0）
+    let output = hidden_command("wsl")
+        .args(["bash", "-c", &format!("ls /sys/bus/usb/devices/{}/tty/ 2>/dev/null", busid)])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = decode_wsl_output(&output.stdout);
+    let name = text.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(format!("/dev/{}", name))
+}
+
 fn decode_wsl_output(raw: &[u8]) -> String {
     // wsl.exe 输出 UTF-16LE（可能带 BOM），需要正确解码
     if raw.len() >= 2 {
@@ -670,7 +688,13 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
         match output {
             Ok(out) if out.status.success() => {
                 println!("[DEBUG] Direct attach succeeded for {}", busid);
-                return Ok(format!("已将 {} (busid: {}) 映射到 WSL", port_name, busid));
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let wsl_path = get_wsl_device_path(&busid);
+                let msg = match wsl_path {
+                    Some(ref p) => format!("已将 {} (busid: {}) 映射到 WSL → {}", port_name, busid, p),
+                    None => format!("已将 {} (busid: {}) 映射到 WSL", port_name, busid),
+                };
+                return Ok(msg);
             }
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -771,9 +795,13 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
 
     // 检查是否成功 - 通过结果内容判断
     if result_content.contains("操作成功") {
-        Ok(format!("已将 {} (busid: {}) 绑定并映射到 WSL",
-            port_name, busid
-        ))
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let wsl_path = get_wsl_device_path(&busid);
+        let msg = match wsl_path {
+            Some(ref p) => format!("已将 {} (busid: {}) 绑定并映射到 WSL → {}", port_name, busid, p),
+            None => format!("已将 {} (busid: {}) 绑定并映射到 WSL", port_name, busid),
+        };
+        Ok(msg)
     } else if result_content.contains("绑定失败") || result_content.contains("附加失败") {
         Err(format!("映射失败: {}", result_content))
     } else if !status.success() {
