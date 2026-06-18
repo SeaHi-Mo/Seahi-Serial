@@ -2028,8 +2028,8 @@ async function loadWslDevices(mid) {
         var newBusids = {};
         devices.forEach(function(d) { newBusids[d.busid] = true; });
         _wslDevices.forEach(function(d) {
-            if (existMap[d.busid]) {
-                // 设备已存在，保留
+            if (_wslBusy[d.busid] && !newBusids[d.busid]) {
+                devices.push(d);
             }
         });
         
