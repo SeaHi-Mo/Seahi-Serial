@@ -2075,15 +2075,15 @@ function renderWslDeviceList(mid) {
         var isBusy = _wslBusy[device.busid];
         
         html += '<tr style="border-bottom:1px solid rgba(60,60,60,0.5);transition:background 0.2s;' + (isBusy ? 'opacity:0.7;' : '') + '" onmouseover="this.style.background=\'rgba(255,255,255,0.03)\'" onmouseout="this.style.background=\'transparent\'">';
-        html += '<td style="padding:14px 16px;font-family:monospace;font-size:13px;color:#858585;">' + (device.busid || '-') + '</td>';
+        html += '<td style="padding:14px 16px;font-family:monospace;font-size:13px;color:#555;">' + (device.busid || '-') + '</td>';
         // 端口列：忙碌时显示加载动画 + 方向
         if (isBusy) {
             var direction = isMapped ? 'WSL → ' + device.port : device.port + ' → WSL';
             html += '<td style="padding:14px 16px;font-family:monospace;font-size:13px;"><span class="wsl-loading-cell"><span class="wsl-spinner"></span>' + direction + '</span></td>';
         } else {
-            html += '<td style="padding:14px 16px;font-family:monospace;font-weight:600;font-size:14px;color:' + (isMapped ? '#4ec9b0' : '#fff') + ';">' + (isMapped ? 'WSL' : device.port) + '</td>';
+            html += '<td style="padding:14px 16px;font-family:monospace;font-weight:600;font-size:14px;color:' + (isMapped ? '#4ec9b0' : '#9cdcfe') + ';">' + (isMapped ? 'WSL' : device.port) + '</td>';
         }
-        html += '<td style="padding:14px 16px;font-size:13px;color:#aaa;">' + device.name + '</td>';
+        html += '<td style="padding:14px 16px;font-size:13px;color:#666;">' + device.name + '</td>';
         // 自动映射列
         var autoOn = !!_wslAutoMap[device.busid];
         html += '<td style="padding:14px 16px;text-align:center;">';
