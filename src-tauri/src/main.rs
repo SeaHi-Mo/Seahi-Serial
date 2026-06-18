@@ -88,11 +88,6 @@ struct PortState {
     ports: Mutex<HashMap<String, Box<dyn SerialPort>>>,
 }
 
-/// WSL 设备路径缓存（Arc 共享给后台线程）
-struct WslPathCache {
-    paths: std::sync::Arc<Mutex<HashMap<String, String>>>,
-}
-
 /// 创建不显示控制台窗口的 Command
 fn hidden_command(program: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new(program);
@@ -388,9 +383,9 @@ fn choose_log_directory() -> Result<Option<String>, String> {
 
 /// 获取所有串口（包括已映射到WSL的）
 #[tauri::command]
-fn list_wsl_devices(cache: tauri::State<'_, WslPathCache>) -> Result<Vec<serde_json::Value>, String> {
+fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
     // 1. 查询usbipd获取所有设备信息（使用超时机制）
-    let mut usbipd_devices: Vec<(String, String, String, String, String)> = Vec::new(); // (busid, port, name, status, vid_pid)
+    let mut usbipd_devices: Vec<(String, String, String, String)> = Vec::new(); // (busid, port, name, status)
     
     use std::sync::mpsc;
     let (tx, rx) = mpsc::channel();
@@ -420,12 +415,9 @@ fn list_wsl_devices(cache: tauri::State<'_, WslPathCache>) -> Result<Vec<serde_j
             for line in list_str.lines() {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 3 && parts[0].contains('-') {
-                    // 这是一个设备行：BUSID VID:PID DEVICE STATE ...
                     let busid = parts[0].to_string();
-                    let vid_pid = parts[1].to_string();
                     let line_upper = line.to_uppercase();
                     
-                    // 判断状态
                     let status = if line_upper.contains("ATTACHED") {
                         "attached"
                     } else if line_upper.contains("CONNECTED") || line_upper.contains("SHARED") {
@@ -434,12 +426,10 @@ fn list_wsl_devices(cache: tauri::State<'_, WslPathCache>) -> Result<Vec<serde_j
                         "other"
                     };
                     
-                    // 只显示 Connected 和 Attached 状态的设备
                     if status == "other" {
                         continue;
                     }
                     
-                    // 提取设备名称（第4列到倒数第2列，排除状态列）
                     let name = if parts.len() > 4 {
                         parts[3..parts.len()-1].join(" ")
                     } else if parts.len() > 3 {
@@ -448,10 +438,8 @@ fn list_wsl_devices(cache: tauri::State<'_, WslPathCache>) -> Result<Vec<serde_j
                         format!("USB Device ({})", busid)
                     };
                     
-                    // 提取COM端口（如果有）
                     let port = if let Some(com_match) = line.find("COM") {
-                        let com_start = com_match;
-                        let rest = &line[com_start..];
+                        let rest = &line[com_match..];
                         if let Some(end) = rest.find(|c: char| !c.is_alphanumeric()) {
                             rest[..end].to_string()
                         } else {
@@ -461,16 +449,13 @@ fn list_wsl_devices(cache: tauri::State<'_, WslPathCache>) -> Result<Vec<serde_j
                         busid.clone()
                     };
                     
-                    usbipd_devices.push((busid, port, name, status.to_string(), vid_pid));
+                    usbipd_devices.push((busid, port, name, status.to_string()));
                 }
             }
         }
     }
     
-    // 2. 从缓存读取 WSL 设备路径（毫秒级）
-    let wsl_paths = cache.paths.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    
-    // 3. 获取系统串口列表，过滤并关联usbipd信息
+    // 2. 获取系统串口列表，过滤并关联usbipd信息
     let ports = serialport::available_ports().unwrap_or_default();
     let mut devices: Vec<serde_json::Value> = Vec::new();
     
@@ -483,7 +468,6 @@ fn list_wsl_devices(cache: tauri::State<'_, WslPathCache>) -> Result<Vec<serde_j
             continue;
         }
         
-        // 使用预建映射表获取友好名称（一次性遍历，避免逐端口 O(N×M) 查询）
         #[cfg(windows)]
         let friendly = friendly_map.get(&port_name).cloned().unwrap_or(port_name.clone());
         #[cfg(not(windows))]
@@ -499,37 +483,27 @@ fn list_wsl_devices(cache: tauri::State<'_, WslPathCache>) -> Result<Vec<serde_j
         };
         
         let name_lower = friendly.to_lowercase();
-        // 排除通讯端口（主板集成串口）
         if name_lower.contains("通信端口") || name_lower.contains("通讯端口") || name_lower.contains("communications port") {
             continue;
         }
-        // 排除蓝牙串口
         if name_lower.contains("蓝牙") || name_lower.contains("bluetooth") || name_lower.contains("标准串行") {
             continue;
         }
         
-        // 在usbipd列表中查找对应的busid、vid_pid和状态
-        if let Some((busid, _, _, status, vid_pid)) = usbipd_devices.iter().find(|(_, port, _, _, _)| port == &port_name) {
-            let mut obj = serde_json::json!({
+        if let Some((busid, _, _, status)) = usbipd_devices.iter().find(|(_, port, _, _)| port == &port_name) {
+            devices.push(serde_json::json!({
                 "busid": busid,
                 "port": port_name,
                 "name": friendly,
-                "vidPid": vid_pid,
                 "status": if status == "attached" { "mapped" } else { "unmapped" }
-            });
-            if status == "attached" && !vid_pid.is_empty() {
-                if let Some(wsl_path) = wsl_paths.get(vid_pid) {
-                    obj["wslPath"] = serde_json::Value::String(wsl_path.clone());
-                }
-            }
-            devices.push(obj);
+            }));
         }
     }
     
-    // 4. 添加已附加但不在系统串口列表中的设备（可能是WSL中的设备）
-    for (busid, port, name, status, vid_pid) in usbipd_devices {
+    // 3. 添加已附加但不在系统串口列表中的设备
+    for (busid, port, name, status) in usbipd_devices {
         if status != "attached" {
-            continue; // 只添加已附加的设备
+            continue;
         }
         
         let already_listed = devices.iter().any(|d| {
@@ -537,100 +511,16 @@ fn list_wsl_devices(cache: tauri::State<'_, WslPathCache>) -> Result<Vec<serde_j
         });
         
         if !already_listed {
-            let mut obj = serde_json::json!({
+            devices.push(serde_json::json!({
                 "busid": busid,
                 "port": port,
                 "name": name,
-                "vidPid": vid_pid,
                 "status": "mapped"
-            });
-            if !vid_pid.is_empty() {
-                if let Some(wsl_path) = wsl_paths.get(&vid_pid) {
-                    obj["wslPath"] = serde_json::Value::String(wsl_path.clone());
-                }
-            }
-            devices.push(obj);
+            }));
         }
     }
     
     Ok(devices)
-}
-
-/// 直接查询单个 VID:PID 的 WSL 设备路径（用于 attach 后立即查询）
-fn query_wsl_device_path(vid_pid: &str) -> Option<String> {
-    let script = format!(
-        "for dev in /dev/ttyACM* /dev/ttyUSB*; do\n\
-          [ -c \"$dev\" ] || continue\n\
-          info=$(udevadm info \"$dev\" 2>/dev/null)\n\
-          vid=$(echo \"$info\" | sed -n 's/.*ID_VENDOR_ID=\\(.*\\)/\\1/p')\n\
-          pid=$(echo \"$info\" | sed -n 's/.*ID_MODEL_ID=\\(.*\\)/\\1/p')\n\
-          if [ \"$vid\" = \"{}\" ] && [ \"$pid\" = \"{}\" ]; then\n\
-            echo \"$(basename \"$dev\")\"\n\
-            exit 0\n\
-          fi\n\
-        done\n",
-        &vid_pid[..4], &vid_pid[5..]
-    );
-    let tmp = std::env::temp_dir().join("wsl_tty_single.sh");
-    let _ = std::fs::write(&tmp, &script);
-    let tmp_wsl = if let Some(s) = tmp.to_str() {
-        if s.len() >= 2 && s.as_bytes()[1] == b':' {
-            let drive = (s.as_bytes()[0] as char).to_ascii_lowercase();
-            format!("/mnt/{}/{}", drive, &s[3..].replace("\\", "/"))
-        } else {
-            s.replace("\\", "/")
-        }
-    } else {
-        return None;
-    };
-    let output = hidden_command("wsl")
-        .args(["bash", &tmp_wsl])
-        .output();
-    let _ = std::fs::remove_file(&tmp);
-    let output = output.ok()?;
-    let text = decode_wsl_output(&output.stdout);
-    let first = text.trim().lines().next().unwrap_or("");
-    if first.is_empty() { None } else { Some(format!("/dev/{}", first)) }
-}
-
-/// 从 WSL 查询所有串口设备路径（阻塞，用于后台刷新）
-fn refresh_wsl_path_cache(cache: &std::sync::Arc<Mutex<HashMap<String, String>>>) {
-    let script = "for dev in /dev/ttyACM* /dev/ttyUSB*; do\n\
-      [ -c \"$dev\" ] || continue\n\
-      info=$(udevadm info \"$dev\" 2>/dev/null)\n\
-      vid=$(echo \"$info\" | sed -n 's/.*ID_VENDOR_ID=\\(.*\\)/\\1/p')\n\
-      pid=$(echo \"$info\" | sed -n 's/.*ID_MODEL_ID=\\(.*\\)/\\1/p')\n\
-      if [ -n \"$vid\" ] && [ -n \"$pid\" ]; then\n\
-        echo \"$vid:$pid $(basename \"$dev\")\"\n\
-      fi\n\
-    done\n";
-    let tmp = std::env::temp_dir().join("wsl_tty_batch.sh");
-    let _ = std::fs::write(&tmp, script);
-    let tmp_wsl = if let Some(s) = tmp.to_str() {
-        if s.len() >= 2 && s.as_bytes()[1] == b':' {
-            let drive = (s.as_bytes()[0] as char).to_ascii_lowercase();
-            format!("/mnt/{}/{}", drive, &s[3..].replace("\\", "/"))
-        } else {
-            s.replace("\\", "/")
-        }
-    } else {
-        return;
-    };
-    let output = hidden_command("wsl")
-        .args(["bash", &tmp_wsl])
-        .output();
-    let _ = std::fs::remove_file(&tmp);
-    if let Ok(out) = output {
-        let text = decode_wsl_output(&out.stdout);
-        let mut map = HashMap::new();
-        for line in text.trim().lines() {
-            if let Some((vid_pid, dev_name)) = line.trim().split_once(' ') {
-                map.insert(vid_pid.to_string(), format!("/dev/{}", dev_name.trim()));
-            }
-        }
-        let mut cached = cache.lock().unwrap_or_else(|e| e.into_inner());
-        *cached = map;
-    }
 }
 
 fn decode_wsl_output(raw: &[u8]) -> String {
@@ -749,19 +639,6 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
         .map(|s| s.to_string())
         .ok_or_else(|| format!("无法解析 {} 的 busid（行: {}）", port_name, target_line.trim()))?;
 
-    // 提取 VID:PID（第二列，格式如 1a86:8010）
-    let vid_pid = target_line.split_whitespace()
-        .find(|s| {
-            let mut parts = s.splitn(2, ':');
-            let a = parts.next().unwrap_or("");
-            let b = parts.next().unwrap_or("");
-            a.len() == 4 && b.len() == 4
-                && a.chars().all(|c| c.is_ascii_hexdigit())
-                && b.chars().all(|c| c.is_ascii_hexdigit())
-        })
-        .unwrap_or("")
-        .to_string();
-
     // 3. 检查绑定状态
     // usbipd list 输出格式可能是：
     // BUSID  DEVICE        STATE
@@ -784,13 +661,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
         match output {
             Ok(out) if out.status.success() => {
                 println!("[DEBUG] Direct attach succeeded for {}", busid);
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                let wsl_path = query_wsl_device_path(&vid_pid);
-                let msg = match wsl_path {
-                    Some(ref p) => format!("已将 {} (busid: {}) 映射到 WSL → {}", port_name, busid, p),
-                    None => format!("已将 {} (busid: {}) 映射到 WSL", port_name, busid),
-                };
-                return Ok(msg);
+                return Ok(format!("已将 {} (busid: {}) 映射到 WSL", port_name, busid));
             }
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -891,13 +762,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
 
     // 检查是否成功 - 通过结果内容判断
     if result_content.contains("操作成功") {
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        let wsl_path = query_wsl_device_path(&vid_pid);
-        let msg = match wsl_path {
-            Some(ref p) => format!("已将 {} (busid: {}) 绑定并映射到 WSL → {}", port_name, busid, p),
-            None => format!("已将 {} (busid: {}) 绑定并映射到 WSL", port_name, busid),
-        };
-        Ok(msg)
+        Ok(format!("已将 {} (busid: {}) 绑定并映射到 WSL", port_name, busid))
     } else if result_content.contains("绑定失败") || result_content.contains("附加失败") {
         Err(format!("映射失败: {}", result_content))
     } else if !status.success() {
@@ -1216,27 +1081,10 @@ fn set_window_size(window: tauri::Window, width: u32, height: u32) -> Result<(),
 }
 
 fn main() {
-    let shared_paths = std::sync::Arc::new(Mutex::new(HashMap::new()));
-
-    // 初始加载 WSL 设备路径
-    refresh_wsl_path_cache(&shared_paths);
-
-    // 后台定时刷新（每 10 秒）
-    {
-        let cache = shared_paths.clone();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(10));
-                refresh_wsl_path_cache(&cache);
-            }
-        });
-    }
-
     tauri::Builder::default()
         .manage(PortState {
             ports: Mutex::new(HashMap::new()),
         })
-        .manage(WslPathCache { paths: shared_paths })
         .invoke_handler(tauri::generate_handler![
             list_ports,
             list_wsl_devices,

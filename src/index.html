@@ -2028,17 +2028,8 @@ async function loadWslDevices(mid) {
         var newBusids = {};
         devices.forEach(function(d) { newBusids[d.busid] = true; });
         _wslDevices.forEach(function(d) {
-            if (_wslBusy[d.busid] && !newBusids[d.busid]) {
-                devices.push(d);
-            }
-        });
-        
-        // 合并已有设备的 wslPath（防止丢失已解析的路径）
-        var existMap = {};
-        _wslDevices.forEach(function(d) { existMap[d.busid] = d; });
-        devices.forEach(function(d) {
-            if (existMap[d.busid] && existMap[d.busid].wslPath && !d.wslPath) {
-                d.wslPath = existMap[d.busid].wslPath;
+            if (existMap[d.busid]) {
+                // 设备已存在，保留
             }
         });
         
@@ -2090,7 +2081,7 @@ function renderWslDeviceList(mid) {
             var direction = isMapped ? 'WSL → ' + device.port : device.port + ' → WSL';
             html += '<td style="padding:14px 16px;font-family:monospace;font-size:13px;"><span class="wsl-loading-cell"><span class="wsl-spinner"></span>' + direction + '</span></td>';
         } else {
-            html += '<td style="padding:14px 16px;font-family:monospace;font-weight:600;font-size:14px;color:#fff;">' + (isMapped ? (device.wslPath ? device.wslPath : 'WSL') : device.port) + '</td>';
+            html += '<td style="padding:14px 16px;font-family:monospace;font-weight:600;font-size:14px;color:#fff;">' + (isMapped ? 'WSL' : device.port) + '</td>';
         }
         html += '<td style="padding:14px 16px;font-size:13px;color:#aaa;">' + device.name + '</td>';
         // 自动映射列
@@ -2122,8 +2113,6 @@ async function toggleWslMapping(mid, idx, checked) {
         try {
             var result = await invoke('attach_port_to_wsl', { portName: device.port });
             addWslLog(mid, 'success', result);
-            var wslMatch = result.match(/→ (\/dev\/\S+)/);
-            if (wslMatch) device.wslPath = wslMatch[1];
             device.status = 'mapped';
         } catch (e) {
             addWslLog(mid, 'error', '映射失败: ' + e);
@@ -2134,7 +2123,6 @@ async function toggleWslMapping(mid, idx, checked) {
             var result = await invoke('detach_port_from_wsl', { busid: device.busid });
             addWslLog(mid, 'success', result);
             device.status = 'unmapped';
-            delete device.wslPath;
         } catch (e) {
             addWslLog(mid, 'error', '断开失败: ' + e);
         }
@@ -2212,8 +2200,6 @@ async function autoMapCheck() {
                         invoke('attach_port_to_wsl', { portName: device.port })
                             .then(function(result) { 
                                 addWslLog('main', 'success', '[自动] ' + result); 
-                                var wslMatch = result.match(/→ (\/dev\/\S+)/);
-                                if (wslMatch) device.wslPath = wslMatch[1];
                                 device.status = 'mapped';
                             })
                             .catch(function(e) { 
@@ -2243,7 +2229,6 @@ async function autoMapCheck() {
                         d.status = freshMap[d.busid].status;
                         d.port = freshMap[d.busid].port;
                         d.name = freshMap[d.busid].name;
-                        if (freshMap[d.busid].wslPath) d.wslPath = freshMap[d.busid].wslPath;
                     }
                 });
                 var existBusids = {};
