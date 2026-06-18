@@ -384,9 +384,6 @@ fn choose_log_directory() -> Result<Option<String>, String> {
 /// 获取所有串口（包括已映射到WSL的）
 #[tauri::command]
 fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
-    // 1. 查询usbipd获取所有设备信息（使用超时机制）
-    let mut usbipd_devices: Vec<(String, String, String, String)> = Vec::new(); // (busid, port, name, status)
-    
     use std::sync::mpsc;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -407,6 +404,8 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
             None
         }
     };
+    
+    let mut devices: Vec<serde_json::Value> = Vec::new();
     
     if let Some(out) = output {
         if out.status.success() {
@@ -430,14 +429,40 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                         continue;
                     }
                     
-                    let name = if parts.len() > 4 {
-                        parts[3..parts.len()-1].join(" ")
-                    } else if parts.len() > 3 {
-                        parts[3].to_string()
-                    } else {
-                        format!("USB Device ({})", busid)
+                    // usbipd list 格式: BUSID VID:PID DEVICE... STATE
+                    // STATE 可能是 "Shared" / "Attached" / "Connected" / "Not shared"
+                    let name = {
+                        let name_parts = &parts[2..];
+                        let end = if name_parts.last().map(|s| s.to_lowercase()) == Some("shared".into()) {
+                            let last2 = name_parts.len();
+                            if last2 >= 2 && name_parts[last2-2].to_lowercase() == "not" {
+                                last2 - 2
+                            } else {
+                                last2 - 1
+                            }
+                        } else if name_parts.last().map(|s| matches!(s.to_lowercase().as_str(), "attached" | "connected")) == Some(true) {
+                            name_parts.len() - 1
+                        } else {
+                            name_parts.len()
+                        };
+                        if end > 0 {
+                            name_parts[..end].join(" ")
+                        } else {
+                            format!("USB Device ({})", busid)
+                        }
                     };
                     
+                    static FILTERS: &[&str] = &[
+                        "通信端口", "通讯端口", "communicationsport",
+                        "蓝牙", "bluetooth",
+                        "usb输入设备", "usb-baseddslinstrument",
+                    ];
+                    let name_lower = name.to_lowercase().replace(" ", "");
+                    if FILTERS.iter().any(|f| name_lower.contains(f)) {
+                        continue;
+                    }
+                    
+                    let has_com = line.find("COM").is_some();
                     let port = if let Some(com_match) = line.find("COM") {
                         let rest = &line[com_match..];
                         if let Some(end) = rest.find(|c: char| !c.is_alphanumeric()) {
@@ -446,77 +471,18 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                             rest.to_string()
                         }
                     } else {
-                        busid.clone()
+                        String::from("-")
                     };
                     
-                    usbipd_devices.push((busid, port, name, status.to_string()));
+                    devices.push(serde_json::json!({
+                        "busid": busid,
+                        "port": port,
+                        "name": name,
+                        "hasCom": has_com,
+                        "status": if status == "attached" { "mapped" } else { "unmapped" }
+                    }));
                 }
             }
-        }
-    }
-    
-    // 2. 获取系统串口列表，过滤并关联usbipd信息
-    let ports = serialport::available_ports().unwrap_or_default();
-    let mut devices: Vec<serde_json::Value> = Vec::new();
-    
-    #[cfg(windows)]
-    let friendly_map = build_friendly_name_map();
-    
-    for p in ports {
-        let port_name = p.port_name.clone();
-        if !port_name.starts_with("COM") {
-            continue;
-        }
-        
-        #[cfg(windows)]
-        let friendly = friendly_map.get(&port_name).cloned().unwrap_or(port_name.clone());
-        #[cfg(not(windows))]
-        let friendly = match &p.port_type {
-            serialport::SerialPortType::UsbPort(usb) => {
-                usb.product.as_deref()
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| usb.manufacturer.as_deref().filter(|s| !s.is_empty()))
-                    .unwrap_or(&port_name)
-                    .to_string()
-            },
-            _ => port_name.clone(),
-        };
-        
-        let name_lower = friendly.to_lowercase();
-        if name_lower.contains("通信端口") || name_lower.contains("通讯端口") || name_lower.contains("communications port") {
-            continue;
-        }
-        if name_lower.contains("蓝牙") || name_lower.contains("bluetooth") || name_lower.contains("标准串行") {
-            continue;
-        }
-        
-        if let Some((busid, _, _, status)) = usbipd_devices.iter().find(|(_, port, _, _)| port == &port_name) {
-            devices.push(serde_json::json!({
-                "busid": busid,
-                "port": port_name,
-                "name": friendly,
-                "status": if status == "attached" { "mapped" } else { "unmapped" }
-            }));
-        }
-    }
-    
-    // 3. 添加已附加但不在系统串口列表中的设备
-    for (busid, port, name, status) in usbipd_devices {
-        if status != "attached" {
-            continue;
-        }
-        
-        let already_listed = devices.iter().any(|d| {
-            d["port"].as_str().unwrap_or("") == port || d["busid"].as_str().unwrap_or("") == busid
-        });
-        
-        if !already_listed {
-            devices.push(serde_json::json!({
-                "busid": busid,
-                "port": port,
-                "name": name,
-                "status": "mapped"
-            }));
         }
     }
     
@@ -524,9 +490,9 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
 }
 
 fn decode_wsl_output(raw: &[u8]) -> String {
-    // wsl.exe 输出 UTF-16LE（可能带 BOM），需要正确解码
+    // wsl.exe 总是输出 UTF-16LE
     if raw.len() >= 2 {
-        // 检测 BOM：FF FE = UTF-16LE, FE FF = UTF-16BE
+        // 检测 BOM：FF FE = UTF-16LE
         if raw[0] == 0xFF && raw[1] == 0xFE {
             let u16_vec: Vec<u16> = raw[2..]
                 .chunks_exact(2)
@@ -534,14 +500,26 @@ fn decode_wsl_output(raw: &[u8]) -> String {
                 .collect();
             return String::from_utf16_lossy(&u16_vec);
         }
-        // 没有 BOM 时，如果奇数字节或包含大量 \0 字节，也按 UTF-16LE 处理
-        let null_count = raw.iter().enumerate().skip(1).step_by(2).filter(|(_, b)| **b == 0).count();
-        if raw.len() >= 4 && null_count as f64 / (raw.len() as f64 / 2.0) > 0.3 {
-            let u16_vec: Vec<u16> = raw
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect();
-            return String::from_utf16_lossy(&u16_vec);
+        // 无 BOM：检查是否含有 UTF-16LE 的 CRLF (\r\0\n\0) 或 \n\0 模式
+        if raw.len() >= 4 && raw.len() % 2 == 0 {
+            let has_utf16_crlf = raw.windows(4).any(|w| w == [0x0D, 0x00, 0x0A, 0x00]);
+            let has_utf16_lf = raw.windows(2).any(|w| w == [0x0A, 0x00]);
+            if has_utf16_crlf || has_utf16_lf {
+                let u16_vec: Vec<u16> = raw
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                return String::from_utf16_lossy(&u16_vec);
+            }
+            // 兜底：偶数字节且奇数字节有 \0，按 UTF-16LE 处理
+            let null_count = raw.iter().enumerate().skip(1).step_by(2).filter(|(_, b)| **b == 0).count();
+            if null_count > 0 {
+                let u16_vec: Vec<u16> = raw
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                return String::from_utf16_lossy(&u16_vec);
+            }
         }
     }
     String::from_utf8_lossy(raw).to_string()
@@ -550,20 +528,193 @@ fn decode_wsl_output(raw: &[u8]) -> String {
 /// 检查 WSL 运行状态，返回正在运行的发行版列表
 #[tauri::command]
 fn check_wsl_status() -> Vec<String> {
-    let output = hidden_command("wsl")
-        .args(["--list", "--running"])
-        .output();
-    match output {
-        Ok(out) => {
+    check_wsl_running().unwrap_or_default()
+}
+
+fn check_wsl_running() -> Option<Vec<String>> {
+    use std::sync::mpsc;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = hidden_command("wsl")
+            .args(["--list", "--running"])
+            .output();
+        let _ = tx.send(result);
+    });
+    let output = match rx.recv_timeout(std::time::Duration::from_secs(8)) {
+        Ok(Ok(out)) => Some(out),
+        _ => return None, // 超时或失败，返回 None 表示检测失败
+    };
+    let dists: Vec<String> = match output {
+        Some(out) => {
             let text = decode_wsl_output(&out.stdout);
             text.lines()
                 .map(|l| l.trim())
-                .filter(|l| !l.is_empty() && !l.contains("Distributions") && !l.contains("分发"))
+                .filter(|l| {
+                    if l.is_empty() { return false; }
+                    let lower = l.to_lowercase();
+                    if lower.contains("distributions") || lower.contains("分发") { return false; }
+                    if lower.contains("没有") || lower.contains("there are no") { return false; }
+                    true
+                })
                 .map(|s| s.to_string())
                 .collect()
         }
-        Err(_) => vec![],
+        None => vec![],
+    };
+    Some(dists)
+}
+
+fn start_wsl_watcher(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let mut last_running = false;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            match check_wsl_running() {
+                Some(dists) => {
+                    let running = !dists.is_empty();
+                    if running != last_running {
+                        last_running = running;
+                        dbg_log(&format!("wsl_watcher: status changed, running={}", running));
+                        let _ = app.emit("wsl-status-changed", running);
+                    }
+                }
+                None => {
+                    // 超时，不更新状态，下次重试
+                    dbg_log("wsl_watcher: check timed out, retrying");
+                }
+            }
+        }
+    });
+}
+
+/// 检查 LxssManager 服务是否正在运行（不 spawn 进程）
+fn is_lxss_running() -> bool {
+    use std::process::Command;
+    let out = Command::new("sc")
+        .args(["query", "LxssManager"])
+        .creation_flags(0x08000000)
+        .output();
+    match out {
+        Ok(o) => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            text.contains("RUNNING")
+        }
+        Err(_) => false,
     }
+}
+
+/// 启动 WSL 终端（可指定分发版）
+#[tauri::command]
+fn launch_wsl(dist: Option<String>) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoExit", "-Command"]);
+    if let Some(ref d) = dist {
+        cmd.args(["wsl", "-d", d, "--cd", "/home/seahi"]);
+    } else {
+        cmd.args(["wsl", "--cd", "/home/seahi"]);
+    }
+    cmd.spawn().map_err(|e| format!("{}", e))?;
+    Ok(())
+}
+
+/// 关闭指定 WSL 分发版
+#[tauri::command]
+fn shutdown_wsl(dist: String) -> Result<(), String> {
+    hidden_command("wsl")
+        .args(["-t", &dist])
+        .output()
+        .map_err(|e| format!("{}", e))?;
+    Ok(())
+}
+
+/// 获取所有 WSL 分发版信息
+#[tauri::command]
+fn get_wsl_distributions() -> Result<Vec<serde_json::Value>, String> {
+    let output = hidden_command("wsl")
+        .args(["--list", "--verbose"])
+        .output()
+        .map_err(|e| format!("{}", e))?;
+
+    let text = decode_wsl_output(&output.stdout);
+    let mut distros: Vec<serde_json::Value> = Vec::new();
+
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        let lower = line.to_lowercase();
+        if lower.contains("name") || lower.contains("名称") || lower.contains("version") || lower.contains("版本") {
+            continue;
+        }
+
+        let is_default = line.starts_with('*');
+        let trimmed = if is_default { line[1..].trim_start() } else { line };
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() < 2 { continue; }
+
+        let name = parts[0].to_string();
+        let state_str = parts[1].to_lowercase();
+        let running = state_str.contains("running") || state_str.contains("运行");
+
+        let (uptime, mem_used, mem_total) = if running {
+            let uptime_out = hidden_command("wsl")
+                .args(["-d", &name, "--", "cat", "/proc/uptime"])
+                .output();
+            let uptime = match uptime_out {
+                Ok(o) => {
+                    let raw = decode_wsl_output(&o.stdout);
+                    parse_uptime_hms(&raw)
+                }
+                Err(_) => String::new(),
+            };
+            let free_out = hidden_command("wsl")
+                .args(["-d", &name, "--", "free", "-m"])
+                .output();
+            let (total, used) = match free_out {
+                Ok(o) => parse_free_output(&decode_wsl_output(&o.stdout)),
+                Err(_) => (0, 0),
+            };
+            (uptime, used, total)
+        } else {
+            (String::new(), 0u64, 0u64)
+        };
+
+        distros.push(serde_json::json!({
+            "name": name,
+            "isDefault": is_default,
+            "running": running,
+            "uptime": uptime,
+            "memUsedMB": mem_used,
+            "memTotalMB": mem_total,
+        }));
+    }
+
+    Ok(distros)
+}
+
+fn parse_free_output(text: &str) -> (u64, u64) {
+    for line in text.lines() {
+        if line.starts_with("Mem:") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3 {
+                let total = parts[1].parse::<u64>().unwrap_or(0);
+                let used = parts[2].parse::<u64>().unwrap_or(0);
+                return (total, used);
+            }
+        }
+    }
+    (0, 0)
+}
+
+fn parse_uptime_hms(text: &str) -> String {
+    // /proc/uptime 格式: "12345.67 56789.01"
+    let secs = text.split_whitespace()
+        .next()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0) as u64;
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    format!("{:02}:{:02}:{:02}", h, m, s)
 }
 
 /// 将指定串口对应的 USB 设备映射到 WSL
@@ -600,7 +751,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
         }
     }
 
-    // 1. 获取设备列表（独立线程 + 3s 超时），只找目标端口
+    // 1. 获取设备列表
     use std::sync::mpsc;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -622,31 +773,45 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
 
     let list_str = String::from_utf8_lossy(&list_out.stdout).to_string();
 
-    // 2. 在输出中只找包含目标端口名的行，提取 busid（格式如 4-1, 2-3）
-    let target_line = list_str.lines()
-        .find(|line| line.to_uppercase().contains(&port_name.to_uppercase()))
-        .ok_or_else(|| format!("在 usbipd 设备列表中未找到 {}，请确认设备已连接", port_name))?;
+    // 2. 找到目标行：如果传入的是 busid 格式则按 busid 匹配，否则按 COM 口名匹配
+    let is_busid = port_name.contains('-') && {
+        let mut parts = port_name.splitn(2, '-');
+        let a = parts.next().unwrap_or("");
+        let b = parts.next().unwrap_or("");
+        !a.is_empty() && a.chars().all(|c| c.is_ascii_digit())
+            && !b.is_empty() && b.chars().all(|c| c.is_ascii_digit())
+    };
 
-    let busid = target_line.split_whitespace()
-        .find(|s| {
-            // busid 格式: 数字-数字，如 4-1, 2-3, 1-10
-            let mut parts = s.splitn(2, '-');
-            let a = parts.next().unwrap_or("");
-            let b = parts.next().unwrap_or("");
-            !a.is_empty() && a.chars().all(|c| c.is_ascii_digit())
-                && !b.is_empty() && b.chars().all(|c| c.is_ascii_digit())
-        })
-        .map(|s| s.to_string())
-        .ok_or_else(|| format!("无法解析 {} 的 busid（行: {}）", port_name, target_line.trim()))?;
+    let target_line = if is_busid {
+        list_str.lines()
+            .find(|line| {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                parts.first().map(|s| *s == port_name).unwrap_or(false)
+            })
+            .ok_or_else(|| format!("在 usbipd 设备列表中未找到 busid {}", port_name))?
+    } else {
+        list_str.lines()
+            .find(|line| line.to_uppercase().contains(&port_name.to_uppercase()))
+            .ok_or_else(|| format!("在 usbipd 设备列表中未找到 {}，请确认设备已连接", port_name))?
+    };
 
-    // 3. 检查绑定状态
-    // usbipd list 输出格式可能是：
-    // BUSID  DEVICE        STATE
-    // 2-3    USB Device    Shared
-    // 2-3    USB Device    Not shared
+    let busid = if is_busid {
+        port_name.clone()
+    } else {
+        target_line.split_whitespace()
+            .find(|s| {
+                let mut parts = s.splitn(2, '-');
+                let a = parts.next().unwrap_or("");
+                let b = parts.next().unwrap_or("");
+                !a.is_empty() && a.chars().all(|c| c.is_ascii_digit())
+                    && !b.is_empty() && b.chars().all(|c| c.is_ascii_digit())
+            })
+            .ok_or_else(|| format!("无法解析 {} 的 busid（行: {}）", port_name, target_line.trim()))?
+            .to_string()
+    };
+
     let already_bound = {
         let line_upper = target_line.to_uppercase();
-        // 检查是否包含 "Shared" 但不包含 "Not shared"
         line_upper.contains("SHARED") && !line_upper.contains("NOT SHARED")
     };
     println!("[DEBUG] Device {} bound status: {} (line: {})", busid, already_bound, target_line);
@@ -1104,6 +1269,9 @@ fn main() {
             attach_port_to_wsl,
             detach_port_from_wsl,
             check_wsl_status,
+            launch_wsl,
+            shutdown_wsl,
+            get_wsl_distributions,
             save_config,
             load_config,
             check_update,
@@ -1115,6 +1283,7 @@ fn main() {
         .setup(|app| {
             #[cfg(windows)]
             start_device_watcher(app.handle().clone());
+            start_wsl_watcher(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

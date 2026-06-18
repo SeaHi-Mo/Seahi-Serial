@@ -1814,17 +1814,9 @@ async function loadAndApplyConfig() {
 /* ===== WSL 映射页面 ===== */
 function getWslMappingHtml(mid) {
     return '<div style="display:flex;flex-direction:column;height:100%;background:#1e1e1e;">' +
-        '<div style="padding:12px 16px;background:#252526;border-bottom:1px solid #3c3c3c;display:flex;align-items:center;justify-content:space-between;">' +
-            '<div>' +
-                '<h1 style="font-size:16px;font-weight:600;color:#fff;margin-bottom:4px;">WSL 端口映射</h1>' +
-                '<div style="display:flex;align-items:center;gap:6px;">' +
-                    '<span id="' + mid + '-wslDot" style="width:8px;height:8px;border-radius:50%;background:#555;flex-shrink:0;"></span>' +
-                    '<span id="' + mid + '-wslStatus" style="font-size:13px;color:#858585;">检测中...</span>' +
-                '</div>' +
-            '</div>' +
-            '<div style="display:flex;gap:8px;">' +
-                '<button class="btn btn-outline" onclick="refreshWslDevices()" style="height:26px;padding:0 10px;border:1px solid #454545;border-radius:3px;background:transparent;color:#ccc;font-size:12px;cursor:pointer;">刷新</button>' +
-            '</div>' +
+        '<div style="background:#252526;border-bottom:1px solid #3c3c3c;padding:12px 16px;display:flex;align-items:flex-start;gap:20px;">' +
+            '<h1 style="font-size:15px;font-weight:600;color:#e0e0e0;padding-top:2px;white-space:nowrap;">WSL 端口映射</h1>' +
+            '<div id="' + mid + '-wslDistroList" style="flex:1;min-width:0;"></div>' +
         '</div>' +
         '<div style="flex:1;overflow:hidden;display:flex;flex-direction:column;">' +
             '<div style="flex:1;overflow-y:auto;" id="' + mid + '-wslDeviceList">' +
@@ -1878,27 +1870,85 @@ function openWslMapping() {
     }
 
     // 检查 WSL 运行状态
+    function loadWslDistros() {
+        invoke('get_wsl_distributions').then(function(distros) {
+            renderWslDistroCards(mid, distros);
+        }).catch(function() {
+            var container = document.getElementById(mid + '-wslDistroList');
+            if (container) container.innerHTML = '';
+        });
+    }
+    function updateWslStatusUI(running) {
+        _wslRunning = running;
+        loadWslDistros();
+        renderWslDeviceList(mid);
+    }
+    // 初始检查
     invoke('check_wsl_status').then(function(dists) {
-        var el = document.getElementById(mid + '-wslStatus');
-        var dot = document.getElementById(mid + '-wslDot');
-        if (!el) return;
-        if (dists && dists.length > 0) {
-            el.textContent = dists.join(', ');
-            if (dot) dot.style.background = '#4fc1ff';
-        } else {
-            el.textContent = 'WSL 未运行';
-            el.style.color = '#f48771';
-            if (dot) dot.style.background = '#555';
-        }
+        _wslRunning = dists && dists.length > 0;
+        updateWslStatusUI(_wslRunning);
     }).catch(function() {
-        var el = document.getElementById(mid + '-wslStatus');
-        var dot = document.getElementById(mid + '-wslDot');
-        if (el) { el.textContent = '检测失败'; el.style.color = '#f48771'; }
-        if (dot) dot.style.background = '#555';
+        _wslRunning = false;
+        updateWslStatusUI(false);
     });
+    // 监听状态变化事件
+    if (_wslStatusUnlisten) _wslStatusUnlisten();
+    if (window.__TAURI__ && window.__TAURI__.event) {
+        window.__TAURI__.event.listen('wsl-status-changed', function(event) {
+            updateWslStatusUI(event.payload);
+        }).then(function(unlisten) {
+            _wslStatusUnlisten = unlisten;
+        });
+    }
 
     // 加载设备列表
     loadWslDevices(mid);
+}
+
+function renderWslDistroCards(mid, distros) {
+    var container = document.getElementById(mid + '-wslDistroList');
+    if (!container) return;
+    if (!distros || distros.length === 0) {
+        container.innerHTML = '<div style="color:#585858;font-size:12px;padding:2px 0;">未检测到 WSL 分发版</div>';
+        return;
+    }
+    var html = '<div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;">';
+    distros.forEach(function(d) {
+        var running = d.running;
+        var borderColor = running ? 'rgba(78,201,176,0.3)' : 'rgba(255,255,255,0.06)';
+        var bgGrad = running ? 'linear-gradient(135deg,#1a2a25 0%,#1e1e1e 100%)' : '#252526';
+        var dotColor = running ? '#4ec9b0' : '#484848';
+        var uptime = running && d.uptime ? d.uptime : '00:00:00';
+        var mem = running && d.memTotalMB > 0 ? d.memUsedMB + ' / ' + d.memTotalMB + ' MB' : '—';
+        var btnText = running ? '关闭' : '启动';
+        var btnBg = running ? 'rgba(244,135,113,0.1)' : 'rgba(66,133,244,0.12)';
+        var btnBorder = running ? 'rgba(244,135,113,0.3)' : 'rgba(66,133,244,0.4)';
+        var btnColor = running ? '#f48771' : '#4fc1ff';
+        var btnAction = running
+            ? "wslDistAction('shutdown_wsl','" + d.name.replace(/'/g, "\\'") + "')"
+            : "wslDistAction('launch_wsl','" + d.name.replace(/'/g, "\\'") + "')";
+        var hoverBg = running ? '#f48771' : '#4fc1ff';
+
+        html += '<div style="padding:10px 16px;background:' + bgGrad + ';border:1px solid ' + borderColor + ';border-radius:6px;display:flex;align-items:center;gap:14px;">';
+        html += '<div style="display:flex;align-items:center;gap:7px;min-width:90px;">';
+        html += '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';flex-shrink:0;' + (running ? 'box-shadow:0 0 6px rgba(78,201,176,0.6);' : '') + '"></span>';
+        html += '<span style="font-size:13px;font-weight:600;color:#e0e0e0;white-space:nowrap;" title="' + d.name + '">' + d.name + '</span>';
+        html += '</div>';
+        html += '<span style="width:1px;height:22px;background:#3c3c3c;flex-shrink:0;"></span>';
+        html += '<div style="display:flex;flex-direction:column;min-width:80px;">';
+        html += '<span style="font-size:10px;color:#585858;line-height:1;">UPTIME</span>';
+        html += '<span style="font-size:12px;color:#b0b0b0;font-family:monospace;">' + uptime + '</span>';
+        html += '</div>';
+        html += '<span style="width:1px;height:22px;background:#3c3c3c;flex-shrink:0;"></span>';
+        html += '<div style="display:flex;flex-direction:column;min-width:110px;">';
+        html += '<span style="font-size:10px;color:#585858;line-height:1;">MEMORY</span>';
+        html += '<span style="font-size:12px;color:#b0b0b0;font-family:monospace;">' + mem + '</span>';
+        html += '</div>';
+        html += '<button onclick="' + btnAction + '" style="flex-shrink:0;height:26px;padding:0 14px;border:1px solid ' + btnBorder + ';border-radius:4px;background:' + btnBg + ';color:' + btnColor + ';font-size:12px;cursor:pointer;transition:all 0.15s;letter-spacing:0.5px;" onmouseover="this.style.background=\'' + hoverBg + '\';this.style.color=\'#1e1e1e\';" onmouseout="this.style.background=\'' + btnBg + '\';this.style.color=\'' + btnColor + '\';">' + btnText + '</button>';
+        html += '</div>';
+    });
+    html += '</div>';
+    container.innerHTML = html;
 }
 
 // 绑定监视器事件监听器
@@ -1963,6 +2013,7 @@ function bindMonitorEvents(mid) {
 
 function restoreMonitorPane(mid) {
     console.log('[WSL] 返回监视器页面:', mid);
+    if (_wslStatusUnlisten) { _wslStatusUnlisten(); _wslStatusUnlisten = null; }
     var pane = document.getElementById('pane-' + mid);
     if (pane && monitors[mid] && monitors[mid]._originalHtml) {
         pane.innerHTML = monitors[mid]._originalHtml;
@@ -2001,11 +2052,35 @@ function restoreMonitorPane(mid) {
     }
 }
 
+// WSL 发行版启动/关闭，操作后延迟刷新 UI
+function wslDistAction(cmd, dist) {
+    invoke(cmd, {dist: dist}).then(function() {
+        // 操作完成后延迟刷新，等待 WSL 状态稳定
+        setTimeout(function() {
+            document.querySelectorAll('[id$="-wslDistroList"]').forEach(function(el) {
+                var mid = el.id.replace('-wslDistroList', '');
+                var fn = el.closest('.monitor-pane');
+                if (fn) {
+                    invoke('get_wsl_distributions').then(function(distros) {
+                        renderWslDistroCards(mid, distros);
+                    });
+                    invoke('check_wsl_status').then(function(dists) {
+                        _wslRunning = dists && dists.length > 0;
+                        renderWslDeviceList(mid);
+                    });
+                }
+            });
+        }, 1500);
+    });
+}
+
 // WSL设备数据
 var _wslDevices = [];
 var _wslBusy = {}; // { busid: true } 正在操作中的设备
 var _wslAutoMap = {}; // { busid: portName } 开启自动映射的设备
 var _wslAutoMapTimer = null;
+var _wslStatusUnlisten = null; // WSL 状态事件监听取消函数
+var _wslRunning = false; // WSL 是否正在运行
 
 function sortWslDevices() {
     _wslDevices.sort(function(a, b) {
@@ -2053,72 +2128,90 @@ function renderWslDeviceList(mid) {
     if (!container) return;
     
     if (_wslDevices.length === 0) {
-        container.innerHTML = '<div style="color:#858585;text-align:center;padding:40px 20px;">' +
-            '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#858585" stroke-width="1.5" style="margin-bottom:12px;opacity:0.5;"><path d="M12 2v20M2 12h20"/></svg>' +
-            '<div>未发现可用的USB串口设备</div>' +
-            '<div style="font-size:12px;margin-top:8px;">请连接USB串口设备后点击刷新</div>' +
+        container.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:#484848;">' +
+            '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#484848" stroke-width="1.5" style="margin-bottom:10px;"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y="17" x2="12" y="21"/></svg>' +
+            '<div style="font-size:13px;">未发现可用的 USB 设备</div>' +
+            '<div style="font-size:11px;margin-top:4px;color:#383838;">连接设备后将自动刷新</div>' +
         '</div>';
         return;
     }
     
-    var html = '<table style="width:100%;border-collapse:collapse;">';
-    html += '<thead><tr style="background:#252526;">';
-    html += '<th style="padding:10px 16px;text-align:left;font-size:12px;font-weight:500;color:#858585;border-bottom:1px solid #3c3c3c;">BUSID</th>';
-    html += '<th style="padding:10px 16px;text-align:left;font-size:12px;font-weight:500;color:#858585;border-bottom:1px solid #3c3c3c;">端口</th>';
-    html += '<th style="padding:10px 16px;text-align:left;font-size:12px;font-weight:500;color:#858585;border-bottom:1px solid #3c3c3c;">设备名称</th>';
-    html += '<th style="padding:10px 16px;text-align:center;font-size:12px;font-weight:500;color:#858585;border-bottom:1px solid #3c3c3c;width:90px;">自动映射</th>';
-    html += '<th style="padding:10px 16px;text-align:center;font-size:12px;font-weight:500;color:#858585;border-bottom:1px solid #3c3c3c;width:80px;">映射</th>';
-    html += '</tr></thead><tbody>';
+    var html = '<div style="padding:8px 12px;display:flex;flex-direction:column;gap:4px;">';
+    
+    // 表头
+    html += '<div style="display:flex;align-items:center;padding:6px 12px;gap:12px;font-size:11px;color:#585858;text-transform:uppercase;letter-spacing:0.5px;">';
+    html += '<span style="width:70px;flex-shrink:0;">BUSID</span>';
+    html += '<span style="width:80px;flex-shrink:0;">端口</span>';
+    html += '<span style="flex:1;min-width:0;">设备名称</span>';
+    html += '<span style="width:60px;flex-shrink:0;text-align:center;">自动</span>';
+    html += '<span style="width:50px;flex-shrink:0;text-align:center;">映射</span>';
+    html += '</div>';
+    // 分隔线
+    html += '<div style="height:1px;background:#2a2a2a;margin:0 4px;"></div>';
     
     _wslDevices.forEach(function(device, idx) {
         var isMapped = device.status === 'mapped';
         var isBusy = _wslBusy[device.busid];
+        var rowBg = isMapped ? 'rgba(78,201,176,0.04)' : 'transparent';
+        var rowBorder = isMapped ? 'rgba(78,201,176,0.15)' : 'rgba(255,255,255,0.03)';
+        var safeName = (device.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        var safeBusid = device.busid || '';
+        var safePort = device.port || '';
         
-        html += '<tr style="border-bottom:1px solid rgba(60,60,60,0.5);transition:background 0.2s;' + (isBusy ? 'opacity:0.7;' : '') + '" onmouseover="this.style.background=\'rgba(255,255,255,0.03)\'" onmouseout="this.style.background=\'transparent\'">';
-        html += '<td style="padding:14px 16px;font-family:monospace;font-size:13px;color:#555;">' + (device.busid || '-') + '</td>';
-        // 端口列：忙碌时显示加载动画 + 方向
+        html += '<div style="display:flex;align-items:center;padding:8px 12px;gap:12px;border-radius:4px;background:' + rowBg + ';border:1px solid ' + rowBorder + ';transition:all 0.15s;cursor:default;' + (isBusy ? 'opacity:0.6;' : '') + '" onmouseover="this.style.background=\'rgba(255,255,255,0.04)\'" onmouseout="this.style.background=\'' + rowBg + '\'">';
+        // BUSID
+        html += '<span style="width:70px;flex-shrink:0;font-family:monospace;font-size:12px;color:#484848;">' + safeBusid + '</span>';
+        // 端口
         if (isBusy) {
-            var direction = isMapped ? 'WSL → ' + device.port : device.port + ' → WSL';
-            html += '<td style="padding:14px 16px;font-family:monospace;font-size:13px;"><span class="wsl-loading-cell"><span class="wsl-spinner"></span>' + direction + '</span></td>';
+            var direction = isMapped ? '← WSL' : '→ WSL';
+            html += '<span style="width:80px;flex-shrink:0;font-family:monospace;font-size:12px;"><span class="wsl-loading-cell"><span class="wsl-spinner"></span>' + direction + '</span></span>';
         } else {
-            html += '<td style="padding:14px 16px;font-family:monospace;font-weight:600;font-size:14px;color:' + (isMapped ? '#4ec9b0' : '#9cdcfe') + ';">' + (isMapped ? 'WSL' : device.port) + '</td>';
+            var portColor = isMapped ? '#4ec9b0' : '#9cdcfe';
+            var portText = isMapped ? 'WSL' : safePort;
+            html += '<span style="width:80px;flex-shrink:0;font-family:monospace;font-size:12px;font-weight:500;color:' + portColor + ';">' + portText + '</span>';
         }
-        html += '<td style="padding:14px 16px;font-size:13px;color:#666;">' + device.name + '</td>';
-        // 自动映射列
-        var autoOn = !!_wslAutoMap[device.busid];
-        html += '<td style="padding:14px 16px;text-align:center;">';
-        html += '<label class="wsl-auto-toggle"><input type="checkbox" ' + (autoOn ? 'checked' : '') + ' ' + (isMapped ? 'disabled' : '') + ' onchange="toggleAutoMap(\'' + device.busid + '\', \'' + device.port + '\', this.checked)"><span class="wsl-auto-slider"></span></label>';
-        html += '</td>';
-        // 映射列
-        html += '<td style="padding:14px 16px;text-align:center;">';
-        html += '<input type="checkbox" class="wsl-checkbox" ' + (isMapped ? 'checked' : '') + ' ' + (isBusy ? 'disabled' : '') + ' onchange="toggleWslMapping(\'' + mid + '\', ' + idx + ', this.checked)">';
-        html += '</td>';
-        html += '</tr>';
+        // 设备名称
+        html += '<span style="flex:1;min-width:0;font-size:12px;color:#808080;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + safeName + '">' + safeName + '</span>';
+        // 自动映射
+        var autoOn = !!_wslAutoMap[safeBusid];
+        var autoDisabled = isMapped || !_wslRunning;
+        html += '<span style="width:60px;flex-shrink:0;text-align:center;">';
+        html += '<label class="wsl-auto-toggle"><input type="checkbox" ' + (autoOn ? 'checked' : '') + ' ' + (autoDisabled ? 'disabled' : '') + ' onchange="toggleAutoMap(\'' + safeBusid.replace(/'/g,"\\'") + '\', \'' + safePort.replace(/'/g,"\\'") + '\', this.checked)"><span class="wsl-auto-slider"></span></label>';
+        html += '</span>';
+        // 映射
+        var mapDisabled = isBusy || !_wslRunning;
+        html += '<span style="width:50px;flex-shrink:0;text-align:center;">';
+        html += '<input type="checkbox" class="wsl-checkbox" ' + (isMapped ? 'checked' : '') + ' ' + (mapDisabled ? 'disabled' : '') + ' onchange="toggleWslMapping(\'' + mid + '\', ' + idx + ', this.checked)">';
+        html += '</span>';
+        html += '</div>';
     });
     
-    html += '</tbody></table>';
+    html += '</div>';
     container.innerHTML = html;
 }
 
 // 切换映射状态
 async function toggleWslMapping(mid, idx, checked) {
+    if (!_wslRunning) return;
     var device = _wslDevices[idx];
     if (!device || _wslBusy[device.busid]) return;
     
     _wslBusy[device.busid] = true;
     renderWslDeviceList(mid);
     
+    var attachId = device.hasCom ? device.port : device.busid;
+    
     if (checked) {
-        addWslLog(mid, 'info', '正在将 ' + device.port + ' 映射到 WSL...');
+        addWslLog(mid, 'info', '正在将 ' + device.name + ' 映射到 WSL...');
         try {
-            var result = await invoke('attach_port_to_wsl', { portName: device.port });
+            var result = await invoke('attach_port_to_wsl', { portName: attachId });
             addWslLog(mid, 'success', result);
             device.status = 'mapped';
         } catch (e) {
             addWslLog(mid, 'error', '映射失败: ' + e);
         }
     } else {
-        addWslLog(mid, 'info', '正在断开 ' + device.port + ' 的映射...');
+        addWslLog(mid, 'info', '正在断开 ' + device.name + ' 的映射...');
         try {
             var result = await invoke('detach_port_from_wsl', { busid: device.busid });
             addWslLog(mid, 'success', result);
@@ -2157,6 +2250,7 @@ async function toggleWslMapping(mid, idx, checked) {
 
 /* ===== 自动映射 ===== */
 function toggleAutoMap(busid, portName, on) {
+    if (!_wslRunning) return;
     if (on) {
         _wslAutoMap[busid] = portName;
     } else {
@@ -2194,10 +2288,11 @@ async function autoMapCheck() {
             var d = devices[i];
             if (_wslAutoMap[d.busid] && d.status !== 'mapped' && !_wslBusy[d.busid]) {
                 _wslBusy[d.busid] = true;
-                addWslLog('main', 'info', '[自动] 正在将 ' + d.port + ' 映射到 WSL...');
-                (function(device) {
+                var autoAttachId = d.hasCom ? d.port : d.busid;
+                addWslLog('main', 'info', '[自动] 正在将 ' + d.name + ' 映射到 WSL...');
+                (function(device, attachId) {
                     tasks.push(
-                        invoke('attach_port_to_wsl', { portName: device.port })
+                        invoke('attach_port_to_wsl', { portName: attachId })
                             .then(function(result) { 
                                 addWslLog('main', 'success', '[自动] ' + result); 
                                 device.status = 'mapped';
@@ -2209,7 +2304,7 @@ async function autoMapCheck() {
                                 delete _wslBusy[device.busid]; 
                             })
                     );
-                })(d);
+                })(d, autoAttachId);
             }
         }
         if (tasks.length > 0) {
