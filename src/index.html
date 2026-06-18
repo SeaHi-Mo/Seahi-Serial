@@ -2081,7 +2081,7 @@ function renderWslDeviceList(mid) {
             var direction = isMapped ? 'WSL → ' + device.port : device.port + ' → WSL';
             html += '<td style="padding:14px 16px;font-family:monospace;font-size:13px;"><span class="wsl-loading-cell"><span class="wsl-spinner"></span>' + direction + '</span></td>';
         } else {
-            html += '<td style="padding:14px 16px;font-family:monospace;font-weight:600;font-size:14px;color:#fff;">' + (isMapped ? 'WSL' : device.port) + '</td>';
+            html += '<td style="padding:14px 16px;font-family:monospace;font-weight:600;font-size:14px;color:' + (isMapped ? '#4ec9b0' : '#fff') + ';">' + (isMapped ? 'WSL' : device.port) + '</td>';
         }
         html += '<td style="padding:14px 16px;font-size:13px;color:#aaa;">' + device.name + '</td>';
         // 自动映射列
