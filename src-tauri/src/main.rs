@@ -384,7 +384,7 @@ fn choose_log_directory() -> Result<Option<String>, String> {
 #[tauri::command]
 fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
     // 1. 查询usbipd获取所有设备信息（使用超时机制）
-    let mut usbipd_devices: Vec<(String, String, String, String)> = Vec::new(); // (busid, port, name, status)
+    let mut usbipd_devices: Vec<(String, String, String, String, String)> = Vec::new(); // (busid, port, name, status, vid_pid)
     
     use std::sync::mpsc;
     let (tx, rx) = mpsc::channel();
@@ -414,8 +414,9 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
             for line in list_str.lines() {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 3 && parts[0].contains('-') {
-                    // 这是一个设备行：BUSID DEVICE STATE ...
+                    // 这是一个设备行：BUSID VID:PID DEVICE STATE ...
                     let busid = parts[0].to_string();
+                    let vid_pid = parts[1].to_string();
                     let line_upper = line.to_uppercase();
                     
                     // 判断状态
@@ -454,7 +455,7 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                         busid.clone()
                     };
                     
-                    usbipd_devices.push((busid, port, name, status.to_string()));
+                    usbipd_devices.push((busid, port, name, status.to_string(), vid_pid));
                 }
             }
         }
@@ -498,19 +499,26 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
             continue;
         }
         
-        // 在usbipd列表中查找对应的busid和状态
-        if let Some((busid, _, _, status)) = usbipd_devices.iter().find(|(_, port, _, _)| port == &port_name) {
-            devices.push(serde_json::json!({
+        // 在usbipd列表中查找对应的busid、vid_pid和状态
+        if let Some((busid, _, _, status, vid_pid)) = usbipd_devices.iter().find(|(_, port, _, _, _)| port == &port_name) {
+            let mut obj = serde_json::json!({
                 "busid": busid,
                 "port": port_name,
                 "name": friendly,
+                "vidPid": vid_pid,
                 "status": if status == "attached" { "mapped" } else { "unmapped" }
-            }));
+            });
+            if status == "attached" && !vid_pid.is_empty() {
+                if let Some(wsl_path) = get_wsl_device_path(vid_pid) {
+                    obj["wslPath"] = serde_json::Value::String(wsl_path);
+                }
+            }
+            devices.push(obj);
         }
     }
     
     // 3. 添加已附加但不在系统串口列表中的设备（可能是WSL中的设备）
-    for (busid, port, name, status) in usbipd_devices {
+    for (busid, port, name, status, vid_pid) in usbipd_devices {
         if status != "attached" {
             continue; // 只添加已附加的设备
         }
@@ -520,34 +528,54 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
         });
         
         if !already_listed {
-            devices.push(serde_json::json!({
+            let mut obj = serde_json::json!({
                 "busid": busid,
                 "port": port,
                 "name": name,
+                "vidPid": vid_pid,
                 "status": "mapped"
-            }));
+            });
+            if !vid_pid.is_empty() {
+                if let Some(wsl_path) = get_wsl_device_path(&vid_pid) {
+                    obj["wslPath"] = serde_json::Value::String(wsl_path);
+                }
+            }
+            devices.push(obj);
         }
     }
     
     Ok(devices)
 }
 
-/// 通过 busid 查询 WSL 内对应的设备路径（如 /dev/ttyACM0）
-fn get_wsl_device_path(busid: &str) -> Option<String> {
-    // /sys/bus/usb/devices/{busid}/tty/ 下有设备名（如 ttyACM0）
+/// 通过 VID:PID 查询 WSL 内对应的设备路径（如 /dev/ttyACM0）
+fn get_wsl_device_path(vid_pid: &str) -> Option<String> {
+    // 遍历 WSL sysfs 中所有 tty 设备，匹配 VID:PID
+    let script = format!(
+        "for tty in /sys/bus/usb/devices/*/tty/*; do \
+           [ -d \"$tty\" ] || continue; \
+           dev=$(dirname $(dirname \"$tty\")); \
+           vid=$(cat \"$dev/idVendor\" 2>/dev/null); \
+           pid=$(cat \"$dev/idProduct\" 2>/dev/null); \
+           if [ \"${{vid}}:${{pid}}\" = \"{}\" ]; then \
+             basename \"$tty\"; \
+             break; \
+           fi; \
+         done",
+        vid_pid
+    );
     let output = hidden_command("wsl")
-        .args(["bash", "-c", &format!("ls /sys/bus/usb/devices/{}/tty/ 2>/dev/null", busid)])
+        .args(["bash", "-c", &script])
         .output()
         .ok()?;
     if !output.status.success() {
         return None;
     }
     let text = decode_wsl_output(&output.stdout);
-    let name = text.trim();
-    if name.is_empty() {
+    let first = text.trim().lines().next().unwrap_or("");
+    if first.is_empty() {
         return None;
     }
-    Some(format!("/dev/{}", name))
+    Some(format!("/dev/{}", first))
 }
 
 fn decode_wsl_output(raw: &[u8]) -> String {
@@ -666,6 +694,19 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
         .map(|s| s.to_string())
         .ok_or_else(|| format!("无法解析 {} 的 busid（行: {}）", port_name, target_line.trim()))?;
 
+    // 提取 VID:PID（第二列，格式如 1a86:8010）
+    let vid_pid = target_line.split_whitespace()
+        .find(|s| {
+            let mut parts = s.splitn(2, ':');
+            let a = parts.next().unwrap_or("");
+            let b = parts.next().unwrap_or("");
+            a.len() == 4 && b.len() == 4
+                && a.chars().all(|c| c.is_ascii_hexdigit())
+                && b.chars().all(|c| c.is_ascii_hexdigit())
+        })
+        .unwrap_or("")
+        .to_string();
+
     // 3. 检查绑定状态
     // usbipd list 输出格式可能是：
     // BUSID  DEVICE        STATE
@@ -689,7 +730,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
             Ok(out) if out.status.success() => {
                 println!("[DEBUG] Direct attach succeeded for {}", busid);
                 std::thread::sleep(std::time::Duration::from_millis(200));
-                let wsl_path = get_wsl_device_path(&busid);
+                let wsl_path = get_wsl_device_path(&vid_pid);
                 let msg = match wsl_path {
                     Some(ref p) => format!("已将 {} (busid: {}) 映射到 WSL → {}", port_name, busid, p),
                     None => format!("已将 {} (busid: {}) 映射到 WSL", port_name, busid),
@@ -796,7 +837,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
     // 检查是否成功 - 通过结果内容判断
     if result_content.contains("操作成功") {
         std::thread::sleep(std::time::Duration::from_millis(200));
-        let wsl_path = get_wsl_device_path(&busid);
+        let wsl_path = get_wsl_device_path(&vid_pid);
         let msg = match wsl_path {
             Some(ref p) => format!("已将 {} (busid: {}) 绑定并映射到 WSL → {}", port_name, busid, p),
             None => format!("已将 {} (busid: {}) 绑定并映射到 WSL", port_name, busid),

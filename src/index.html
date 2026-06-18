@@ -2145,6 +2145,7 @@ async function toggleWslMapping(mid, idx, checked) {
                 d.status = freshMap[d.busid].status;
                 d.port = freshMap[d.busid].port;
                 d.name = freshMap[d.busid].name;
+                if (freshMap[d.busid].wslPath) d.wslPath = freshMap[d.busid].wslPath;
             }
         });
         // 添加 fresh 中新出现的设备
@@ -2234,6 +2235,7 @@ async function autoMapCheck() {
                         d.status = freshMap[d.busid].status;
                         d.port = freshMap[d.busid].port;
                         d.name = freshMap[d.busid].name;
+                        if (freshMap[d.busid].wslPath) d.wslPath = freshMap[d.busid].wslPath;
                     }
                 });
                 var existBusids = {};
