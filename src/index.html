@@ -2301,6 +2301,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     var mid = pane.id.replace('pane-', '');
                     if (!monitors[mid] || !monitors[mid].isConnected) refreshPorts(mid, true);
                 });
+                // WSL 页面打开时也刷新设备列表
+                var wslList = document.querySelector('[id$="-wslDeviceList"]');
+                if (wslList) {
+                    var wslMid = wslList.id.replace('-wslDeviceList', '');
+                    loadWslDevices(wslMid);
+                }
             }, 150);
         });
     }
