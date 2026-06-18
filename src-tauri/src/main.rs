@@ -651,6 +651,11 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
     };
     println!("[DEBUG] Device {} bound status: {} (line: {})", busid, already_bound, target_line);
 
+    // 已经映射到WSL，直接返回成功
+    if target_line.to_uppercase().contains("ATTACHED") {
+        return Ok(format!("已将 {} (busid: {}) 映射到 WSL", port_name, busid));
+    }
+
     // 4. 如果已绑定，尝试直接 attach（无需管理员权限）
     if already_bound {
         println!("[DEBUG] Device {} already bound, trying direct attach", busid);
