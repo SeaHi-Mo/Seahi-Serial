@@ -549,28 +549,44 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
 
 /// 通过 VID:PID 查询 WSL 内对应的设备路径（如 /dev/ttyACM0）
 fn get_wsl_device_path(vid_pid: &str) -> Option<String> {
-    // 遍历 WSL sysfs 中所有 tty 设备，匹配 VID:PID
+    // 写临时脚本，遍历 sysfs 所有 tty 设备匹配 VID:PID
     let script = format!(
-        "for tty in /sys/bus/usb/devices/*/tty/*; do \
-           [ -d \"$tty\" ] || continue; \
-           dev=$(dirname $(dirname \"$tty\")); \
-           vid=$(cat \"$dev/idVendor\" 2>/dev/null); \
-           pid=$(cat \"$dev/idProduct\" 2>/dev/null); \
-           if [ \"${{vid}}:${{pid}}\" = \"{}\" ]; then \
-             basename \"$tty\"; \
-             break; \
-           fi; \
-         done",
-        vid_pid
+        "target=\"{vp}\"\n\
+         for d in /sys/bus/usb/devices/*/tty/*/; do\n\
+           [ -d \"$d\" ] || continue\n\
+           t=$(basename \"$d\")\n\
+           iface=$(basename $(dirname $(dirname \"$d\")))\n\
+           devbusid=$(echo \"$iface\" | sed 's/:[0-9.]*$//')\n\
+           vid=$(cat \"/sys/bus/usb/devices/$devbusid/idVendor\" 2>/dev/null)\n\
+           pid=$(cat \"/sys/bus/usb/devices/$devbusid/idProduct\" 2>/dev/null)\n\
+           if [ \"$vid:$pid\" = \"$target\" ]; then\n\
+             echo \"$t\"\n\
+             exit 0\n\
+           fi\n\
+         done\n",
+        vp = vid_pid
     );
-    let output = hidden_command("wsl")
-        .args(["bash", "-c", &script])
-        .output()
-        .ok()?;
-    if !output.status.success() {
+    let tmp = std::env::temp_dir().join("wsl_tty_lookup.sh");
+    let _ = std::fs::write(&tmp, &script);
+    // 将 Windows 路径转为 WSL 路径（如 C:\Users\... -> /mnt/c/Users/...）
+    let tmp_wsl = if let Some(s) = tmp.to_str() {
+        if s.len() >= 2 && s.as_bytes()[1] == b':' {
+            let drive = (s.as_bytes()[0] as char).to_ascii_lowercase();
+            format!("/mnt/{}/{}", drive, &s[3..].replace("\\", "/"))
+        } else {
+            s.replace("\\", "/")
+        }
+    } else {
         return None;
-    }
+    };
+    let output = hidden_command("wsl")
+        .args(["bash", &tmp_wsl])
+        .output();
+    let _ = std::fs::remove_file(&tmp);
+    let output = output.ok()?;
     let text = decode_wsl_output(&output.stdout);
+    let stderr = decode_wsl_output(&output.stderr);
+    println!("[DEBUG] get_wsl_device_path vid_pid={} stdout=[{}] stderr=[{}] success={}", vid_pid, text.trim(), stderr.trim(), output.status.success());
     let first = text.trim().lines().next().unwrap_or("");
     if first.is_empty() {
         return None;
