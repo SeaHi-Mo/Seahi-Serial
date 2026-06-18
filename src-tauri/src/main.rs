@@ -88,17 +88,6 @@ struct PortState {
     ports: Mutex<HashMap<String, Box<dyn SerialPort>>>,
 }
 
-/// WSL 串口子进程状态
-struct WslPortState {
-    processes: Mutex<HashMap<String, WslSerialHandle>>,
-}
-
-struct WslSerialHandle {
-    child: std::process::Child,
-    stdin: std::process::ChildStdin,
-    rx: std::sync::mpsc::Receiver<Vec<u8>>,
-}
-
 /// 创建不显示控制台窗口的 Command
 fn hidden_command(program: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new(program);
@@ -382,145 +371,6 @@ fn set_rts(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) 
     }
 }
 
-// ===== WSL 串口连接 =====
-
-/// stty 参数构建
-fn build_stty_args(baud: u32, data_bits: u8, stop_bits: u8, parity: &str) -> Vec<String> {
-    let mut args = vec![
-        "stty".to_string(),
-        "-F".to_string(),
-        "/dev/ttyACM0".to_string(), // 占位，调用时替换
-        baud.to_string(),
-        "raw".to_string(),
-        "-echo".to_string(),
-        "-echoe".to_string(),
-        "-echok".to_string(),
-    ];
-    // 数据位
-    match data_bits {
-        5 => args.push("cs5".into()),
-        6 => args.push("cs6".into()),
-        7 => args.push("cs7".into()),
-        _ => args.push("cs8".into()),
-    }
-    // 停止位
-    if stop_bits == 2 {
-        args.push("cstopb".into());
-    } else {
-        args.push("-cstopb".into());
-    }
-    // 校验
-    match parity {
-        "even" => { args.push("parenb".into()); args.push("-parodd".into()); }
-        "odd" => { args.push("parenb".into()); args.push("parodd".into()); }
-        _ => { args.push("-parenb".into()); }
-    }
-    args
-}
-
-/// 打开 WSL 串口设备
-#[tauri::command]
-fn open_wsl_serial(
-    state: tauri::State<'_, WslPortState>,
-    monitor_id: String,
-    port_path: String,
-    baud_rate: u32,
-    data_bits: u8,
-    stop_bits: u8,
-    parity: String,
-) -> Result<(), String> {
-    // 关闭已有连接
-    {
-        let mut map = state.processes.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(mut handle) = map.remove(&monitor_id) {
-            let _ = handle.child.kill();
-        }
-    }
-
-    // 1. 用 stty 配置串口参数
-    let mut stty_args = build_stty_args(baud_rate, data_bits, stop_bits, &parity);
-    stty_args[2] = port_path.clone(); // 替换占位的设备路径
-
-    let stty_output = hidden_command("wsl")
-        .args(&stty_args)
-        .output()
-        .map_err(|e| format!("stty 执行失败: {}", e))?;
-
-    if !stty_output.status.success() {
-        let stderr = decode_wsl_output(&stty_output.stderr);
-        return Err(format!("stty 配置失败: {}", stderr.trim()));
-    }
-
-    // 2. 启动 cat 子进程持续读取
-    let mut child = hidden_command("wsl")
-        .args(["cat", &port_path])
-        .stdout(std::process::Stdio::piped())
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("启动 WSL 读取失败: {}", e))?;
-
-    let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
-    let stdin = child.stdin.take().ok_or("无法获取 stdin")?;
-
-    // 3. 启动读取线程，通过 channel 发送数据
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        use std::io::Read;
-        let mut reader = stdout;
-        let mut buf = [0u8; 4096];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => { let _ = tx.send(buf[..n].to_vec()); }
-                Err(_) => break,
-            }
-        }
-    });
-
-    let mut map = state.processes.lock().unwrap_or_else(|e| e.into_inner());
-    map.insert(monitor_id, WslSerialHandle { child, stdin, rx });
-
-    Ok(())
-}
-
-/// 读取 WSL 串口数据（非阻塞）
-#[tauri::command]
-fn read_wsl_serial(state: tauri::State<'_, WslPortState>, monitor_id: String) -> Result<Vec<u8>, String> {
-    let map = state.processes.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(handle) = map.get(&monitor_id) {
-        let mut data = Vec::new();
-        while let Ok(chunk) = handle.rx.try_recv() {
-            data.extend_from_slice(&chunk);
-        }
-        Ok(data)
-    } else {
-        Err("未连接 WSL 串口".into())
-    }
-}
-
-/// 向 WSL 串口发送数据
-#[tauri::command]
-fn send_wsl_serial(state: tauri::State<'_, WslPortState>, monitor_id: String, data: Vec<u8>) -> Result<usize, String> {
-    let mut map = state.processes.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(handle) = map.get_mut(&monitor_id) {
-        use std::io::Write;
-        handle.stdin.write_all(&data).map_err(|e| format!("发送失败: {}", e))?;
-        handle.stdin.flush().map_err(|e| format!("刷新失败: {}", e))?;
-        Ok(data.len())
-    } else {
-        Err("未连接 WSL 串口".into())
-    }
-}
-
-/// 关闭 WSL 串口连接
-#[tauri::command]
-fn close_wsl_serial(state: tauri::State<'_, WslPortState>, monitor_id: String) -> Result<(), String> {
-    let mut map = state.processes.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(mut handle) = map.remove(&monitor_id) {
-        let _ = handle.child.kill();
-    }
-    Ok(())
-}
 
 /// 选择日志文件目录（使用原生对话框）
 #[tauri::command]
@@ -1332,9 +1182,6 @@ fn main() {
         .manage(PortState {
             ports: Mutex::new(HashMap::new()),
         })
-        .manage(WslPortState {
-            processes: Mutex::new(HashMap::new()),
-        })
         .invoke_handler(tauri::generate_handler![
             list_ports,
             list_wsl_devices,
@@ -1344,10 +1191,6 @@ fn main() {
             read_data,
             set_dtr,
             set_rts,
-            open_wsl_serial,
-            read_wsl_serial,
-            send_wsl_serial,
-            close_wsl_serial,
             choose_log_directory,
             save_log,
             attach_port_to_wsl,
