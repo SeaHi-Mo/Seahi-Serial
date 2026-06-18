@@ -462,7 +462,10 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
         }
     }
     
-    // 2. 获取系统串口列表，过滤并关联usbipd信息
+    // 2. 批量查询 WSL 内所有串口设备路径（只调用一次 WSL）
+    let wsl_paths = get_all_wsl_device_paths();
+    
+    // 3. 获取系统串口列表，过滤并关联usbipd信息
     let ports = serialport::available_ports().unwrap_or_default();
     let mut devices: Vec<serde_json::Value> = Vec::new();
     
@@ -510,15 +513,15 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                 "status": if status == "attached" { "mapped" } else { "unmapped" }
             });
             if status == "attached" && !vid_pid.is_empty() {
-                if let Some(wsl_path) = get_wsl_device_path(vid_pid) {
-                    obj["wslPath"] = serde_json::Value::String(wsl_path);
+                if let Some(wsl_path) = wsl_paths.get(vid_pid) {
+                    obj["wslPath"] = serde_json::Value::String(wsl_path.clone());
                 }
             }
             devices.push(obj);
         }
     }
     
-    // 3. 添加已附加但不在系统串口列表中的设备（可能是WSL中的设备）
+    // 4. 添加已附加但不在系统串口列表中的设备（可能是WSL中的设备）
     for (busid, port, name, status, vid_pid) in usbipd_devices {
         if status != "attached" {
             continue; // 只添加已附加的设备
@@ -537,8 +540,8 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                 "status": "mapped"
             });
             if !vid_pid.is_empty() {
-                if let Some(wsl_path) = get_wsl_device_path(&vid_pid) {
-                    obj["wslPath"] = serde_json::Value::String(wsl_path);
+                if let Some(wsl_path) = wsl_paths.get(&vid_pid) {
+                    obj["wslPath"] = serde_json::Value::String(wsl_path.clone());
                 }
             }
             devices.push(obj);
@@ -550,26 +553,23 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
 
 /// 通过 VID:PID 查询 WSL 内对应的设备路径（如 /dev/ttyACM0）
 fn get_wsl_device_path(vid_pid: &str) -> Option<String> {
-    // 写临时脚本，用 udevadm 遍历所有串口设备匹配 VID:PID
-    let script = format!(
-        "target_vid=\"{vv}\"\n\
-         target_pid=\"{pp}\"\n\
-         for dev in /dev/ttyACM* /dev/ttyUSB*; do\n\
-           [ -c \"$dev\" ] || continue\n\
-           info=$(udevadm info \"$dev\" 2>/dev/null)\n\
-           vid=$(echo \"$info\" | sed -n 's/.*ID_VENDOR_ID=\\(.*\\)/\\1/p')\n\
-           pid=$(echo \"$info\" | sed -n 's/.*ID_MODEL_ID=\\(.*\\)/\\1/p')\n\
-           if [ \"$vid\" = \"$target_vid\" ] && [ \"$pid\" = \"$target_pid\" ]; then\n\
-             basename \"$dev\"\n\
-             exit 0\n\
-           fi\n\
-         done\n",
-        vv = &vid_pid[..4],
-        pp = &vid_pid[5..],
-    );
-    let tmp = std::env::temp_dir().join("wsl_tty_lookup.sh");
-    let _ = std::fs::write(&tmp, &script);
-    // 将 Windows 路径转为 WSL 路径（如 C:\Users\... -> /mnt/c/Users/...）
+    let paths = get_all_wsl_device_paths();
+    paths.get(vid_pid).cloned()
+}
+
+/// 一次性查询 WSL 内所有串口设备的 VID:PID → 设备路径映射
+fn get_all_wsl_device_paths() -> HashMap<String, String> {
+    let script = "for dev in /dev/ttyACM* /dev/ttyUSB*; do\n\
+      [ -c \"$dev\" ] || continue\n\
+      info=$(udevadm info \"$dev\" 2>/dev/null)\n\
+      vid=$(echo \"$info\" | sed -n 's/.*ID_VENDOR_ID=\\(.*\\)/\\1/p')\n\
+      pid=$(echo \"$info\" | sed -n 's/.*ID_MODEL_ID=\\(.*\\)/\\1/p')\n\
+      if [ -n \"$vid\" ] && [ -n \"$pid\" ]; then\n\
+        echo \"$vid:$pid $(basename \"$dev\")\"\n\
+      fi\n\
+    done\n";
+    let tmp = std::env::temp_dir().join("wsl_tty_batch.sh");
+    let _ = std::fs::write(&tmp, script);
     let tmp_wsl = if let Some(s) = tmp.to_str() {
         if s.len() >= 2 && s.as_bytes()[1] == b':' {
             let drive = (s.as_bytes()[0] as char).to_ascii_lowercase();
@@ -578,21 +578,23 @@ fn get_wsl_device_path(vid_pid: &str) -> Option<String> {
             s.replace("\\", "/")
         }
     } else {
-        return None;
+        return HashMap::new();
     };
     let output = hidden_command("wsl")
         .args(["bash", &tmp_wsl])
         .output();
     let _ = std::fs::remove_file(&tmp);
-    let output = output.ok()?;
-    let text = decode_wsl_output(&output.stdout);
-    let stderr = decode_wsl_output(&output.stderr);
-    println!("[DEBUG] get_wsl_device_path vid_pid={} stdout=[{}] stderr=[{}] success={}", vid_pid, text.trim(), stderr.trim(), output.status.success());
-    let first = text.trim().lines().next().unwrap_or("");
-    if first.is_empty() {
-        return None;
+    let mut map = HashMap::new();
+    if let Ok(out) = output {
+        let text = decode_wsl_output(&out.stdout);
+        for line in text.trim().lines() {
+            // 格式: "1a86:8010 ttyACM1"
+            if let Some((vid_pid, dev_name)) = line.trim().split_once(' ') {
+                map.insert(vid_pid.to_string(), format!("/dev/{}", dev_name.trim()));
+            }
+        }
     }
-    Some(format!("/dev/{}", first))
+    map
 }
 
 fn decode_wsl_output(raw: &[u8]) -> String {
