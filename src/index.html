@@ -1849,9 +1849,9 @@ function getWslMappingHtml(mid) {
         return '<div class="baud-opt' + (v===115200?' active':'') + '" onclick="setBaud(\'' + wmid + '\',' + v + ')">' + v + '</div>';
     }).join('');
     return '<div style="display:flex;flex-direction:column;height:100%;background:#1e1e1e;">' +
-        '<div style="background:#252526;border-bottom:1px solid #3c3c3c;padding:12px 16px;display:flex;align-items:flex-start;gap:20px;">' +
-            '<h1 style="font-size:15px;font-weight:600;color:#e0e0e0;padding-top:2px;white-space:nowrap;">WSL 端口映射</h1>' +
-            '<div id="' + mid + '-wslDistroList" style="flex:1;min-width:0;"></div>' +
+        '<div style="background:#252526;border-bottom:1px solid #3c3c3c;padding:8px 16px;display:flex;align-items:center;gap:12px;">' +
+            '<div style="font-size:13px;font-weight:600;color:#e0e0e0;white-space:nowrap;flex-shrink:0;">WSL 端口映射</div>' +
+            '<div id="' + mid + '-wslDistroList" style="display:flex;flex-wrap:wrap;gap:6px;flex:1;min-width:0;"></div>' +
         '</div>' +
         '<div style="flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0;" id="' + mid + '-wslTop">' +
             '<div style="flex:1;overflow-y:auto;min-height:0;" id="' + mid + '-wslDeviceList">' +
@@ -2375,10 +2375,10 @@ function renderWslDistroCards(mid, distros) {
     var container = document.getElementById(mid + '-wslDistroList');
     if (!container) return;
     if (!distros || distros.length === 0) {
-        container.innerHTML = '<div style="color:#585858;font-size:12px;padding:2px 0;">未检测到 WSL 分发版</div>';
+        container.innerHTML = '<div style="color:#585858;font-size:12px;">未检测到 WSL 分发版</div>';
         return;
     }
-    var html = '<div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;">';
+    var html = '';
     distros.forEach(function(d) {
         var running = d.running;
         var borderColor = running ? 'rgba(78,201,176,0.3)' : 'rgba(255,255,255,0.06)';
@@ -2393,27 +2393,19 @@ function renderWslDistroCards(mid, distros) {
         var btnAction = running
             ? "wslDistAction('shutdown_wsl','" + d.name.replace(/'/g, "\\'") + "')"
             : "wslDistAction('launch_wsl','" + d.name.replace(/'/g, "\\'") + "')";
-        var hoverBg = running ? '#f48771' : '#4fc1ff';
 
-        html += '<div style="padding:10px 16px;background:' + bgGrad + ';border:1px solid ' + borderColor + ';border-radius:6px;display:flex;align-items:center;gap:14px;">';
-        html += '<div style="display:flex;align-items:center;gap:7px;min-width:90px;">';
-        html += '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';flex-shrink:0;' + (running ? 'box-shadow:0 0 6px rgba(78,201,176,0.6);' : '') + '"></span>';
-        html += '<span style="font-size:13px;font-weight:600;color:#e0e0e0;white-space:nowrap;" title="' + d.name + '">' + d.name + '</span>';
-        html += '</div>';
-        html += '<span style="width:1px;height:22px;background:#3c3c3c;flex-shrink:0;"></span>';
-        html += '<div style="display:flex;flex-direction:column;min-width:80px;">';
-        html += '<span style="font-size:10px;color:#585858;line-height:1;">UPTIME</span>';
-        html += '<span style="font-size:12px;color:#b0b0b0;font-family:monospace;">' + uptime + '</span>';
-        html += '</div>';
-        html += '<span style="width:1px;height:22px;background:#3c3c3c;flex-shrink:0;"></span>';
-        html += '<div style="display:flex;flex-direction:column;min-width:110px;">';
-        html += '<span style="font-size:10px;color:#585858;line-height:1;">MEMORY</span>';
-        html += '<span style="font-size:12px;color:#b0b0b0;font-family:monospace;">' + mem + '</span>';
-        html += '</div>';
-        html += '<button onclick="' + btnAction + '" style="flex-shrink:0;height:26px;padding:0 14px;border:1px solid ' + btnBorder + ';border-radius:4px;background:' + btnBg + ';color:' + btnColor + ';font-size:12px;cursor:pointer;transition:all 0.15s;letter-spacing:0.5px;" onmouseover="this.style.background=\'' + hoverBg + '\';this.style.color=\'#1e1e1e\';" onmouseout="this.style.background=\'' + btnBg + '\';this.style.color=\'' + btnColor + '\';">' + btnText + '</button>';
+        html += '<div style="padding:6px 12px;background:' + bgGrad + ';border:1px solid ' + borderColor + ';border-radius:6px;display:flex;align-items:center;gap:10px;">';
+        html += '<span style="width:7px;height:7px;border-radius:50%;background:' + dotColor + ';flex-shrink:0;' + (running ? 'box-shadow:0 0 5px rgba(78,201,176,0.6);' : '') + '"></span>';
+        html += '<span style="font-size:12px;font-weight:600;color:#e0e0e0;white-space:nowrap;" title="' + d.name + '">' + d.name + '</span>';
+        html += '<span style="width:1px;height:16px;background:#3c3c3c;flex-shrink:0;"></span>';
+        html += '<span style="font-size:10px;color:#585858;">UP</span>';
+        html += '<span style="font-size:11px;color:#b0b0b0;font-family:monospace;">' + uptime + '</span>';
+        html += '<span style="width:1px;height:16px;background:#3c3c3c;flex-shrink:0;"></span>';
+        html += '<span style="font-size:10px;color:#585858;">MEM</span>';
+        html += '<span style="font-size:11px;color:#b0b0b0;font-family:monospace;">' + mem + '</span>';
+        html += '<button onclick="' + btnAction + '" style="flex-shrink:0;height:22px;padding:0 10px;border:1px solid ' + btnBorder + ';border-radius:4px;background:' + btnBg + ';color:' + btnColor + ';font-size:11px;cursor:pointer;">' + btnText + '</button>';
         html += '</div>';
     });
-    html += '</div>';
     container.innerHTML = html;
 }
 
