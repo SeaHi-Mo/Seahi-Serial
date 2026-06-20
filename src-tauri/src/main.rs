@@ -795,34 +795,33 @@ fn validate_device_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 获取默认 WSL 发行版名称（如果未运行则自动启动）
+/// 获取 WSL 发行版名称：优先已运行的，其次默认发行版
 fn get_or_start_wsl_distro() -> Result<String, String> {
-    // 先检查是否有运行中的发行版
+    // 优先选择已在运行的发行版
     let running = check_wsl_running().unwrap_or_default();
     if let Some(name) = running.first() {
         return Ok(name.clone());
     }
-    // 没有运行中的，获取默认发行版名称
+    // 没有运行中的，选择默认发行版并启动
     let out = hidden_command("wsl")
         .args(["--list", "--verbose"])
         .output()
         .map_err(|e| format!("获取 WSL 列表失败: {}", e))?;
     let text = decode_wsl_output(&out.stdout);
+    // 优先找带 * 的默认发行版
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with('*') {
             let name = line[1..].trim().split_whitespace().next()
                 .ok_or("无法解析默认发行版名称")?;
-            // 启动默认发行版
             let _ = hidden_command("wsl")
                 .args(["-d", name, "-e", "echo", "ok"])
                 .output();
-            // 等待启动完成
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            std::thread::sleep(std::time::Duration::from_secs(1));
             return Ok(name.to_string());
         }
     }
-    // 没找到带 * 的，取第一个
+    // 取第一个发行版
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() { continue; }
@@ -833,7 +832,7 @@ fn get_or_start_wsl_distro() -> Result<String, String> {
         let _ = hidden_command("wsl")
             .args(["-d", name, "-e", "echo", "ok"])
             .output();
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         return Ok(name.to_string());
     }
     Err("没有可用的 WSL 发行版".into())
@@ -858,33 +857,6 @@ fn deploy_bridge(distro: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("部署 bridge 失败: {}", String::from_utf8_lossy(&out.stderr)))
-    }
-}
-
-/// 修复串口设备权限（通过 pkexec 弹出图形密码对话框）
-fn fix_device_permissions(distro: &str, device_path: &str) -> Result<(), String> {
-    // 先尝试普通 chmod（不需要密码，如果设备属于当前用户的话）
-    let _ = hidden_command("wsl")
-        .args(["-d", distro, "-e", "chmod", "666", device_path])
-        .output();
-    // 验证是否成功
-    let check = hidden_command("wsl")
-        .args(["-d", distro, "-e", "test", "-r", device_path, "-a", "-w", device_path])
-        .output();
-    if let Ok(o) = check {
-        if o.status.success() {
-            return Ok(());
-        }
-    }
-    // chmod 失败，用 pkexec 弹出密码对话框
-    let out = hidden_command("wsl")
-        .args(["-d", distro, "-e", "pkexec", "chmod", "666", device_path])
-        .output()
-        .map_err(|e| format!("pkexec 失败: {}", e))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(format!("无权访问 {}，请在 WSL 终端执行:\nsudo chmod 666 {}\nsudo usermod -aG dialout $(whoami)", device_path, device_path))
     }
 }
 

@@ -2296,6 +2296,9 @@ async function refreshWslMonPorts() {
     var wmid = 'wsl';
     var drop = document.getElementById(wmid + '-portDrop');
     if (!drop) return;
+    // 记住当前选中的端口
+    var ps = document.getElementById(wmid + '-portSelect');
+    var prevVal = ps ? ps.getAttribute('data-val') : '';
     // 从 WSL 内部获取串口设备列表
     var ports = [];
     try {
@@ -2307,26 +2310,26 @@ async function refreshWslMonPorts() {
     drop.innerHTML = '';
     if (ports.length === 0) {
         drop.innerHTML = '<div class="sel-opt" style="color:#585858;">无可用端口</div>';
-        var ps = document.getElementById(wmid + '-portSelect');
         if (ps) {
             ps.setAttribute('data-val', '');
             ps.querySelector('.sel-text').textContent = '无可用端口';
         }
         return;
     }
+    // 查找之前选中的端口是否还在列表中
+    var matchIdx = ports.findIndex(function(p) { return p.name === prevVal; });
+    if (matchIdx < 0) matchIdx = 0;
     ports.forEach(function(p, i) {
         var div = document.createElement('div');
-        div.className = 'sel-opt' + (i === 0 ? ' active' : '');
+        div.className = 'sel-opt' + (i === matchIdx ? ' active' : '');
         div.setAttribute('data-val', p.name);
         div.textContent = p.label;
         div.addEventListener('click', function(e) { e.stopPropagation(); setSel(div, p.name, e); });
         drop.appendChild(div);
     });
-    // 默认选中第一个
-    var ps = document.getElementById(wmid + '-portSelect');
     if (ps && ports.length > 0) {
-        ps.setAttribute('data-val', ports[0].name);
-        ps.querySelector('.sel-text').textContent = ports[0].label;
+        ps.setAttribute('data-val', ports[matchIdx].name);
+        ps.querySelector('.sel-text').textContent = ports[matchIdx].label;
     }
 }
 
