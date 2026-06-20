@@ -91,6 +91,81 @@ fn start_device_watcher(app: tauri::AppHandle) {
     });
 }
 
+/// 持久化 WSL shell：保持一个 WSL 进程存活，通过管道发送命令
+/// 避免每次调用都 fork 新进程（WSL2 进程创建 ~300ms）
+struct WslShell {
+    writer: std::sync::Mutex<std::io::BufWriter<std::process::ChildStdin>>,
+    reader: std::sync::Mutex<std::io::BufReader<std::process::ChildStdout>>,
+    child: std::process::Child,
+}
+
+static WSL_SHELL: Mutex<Option<WslShell>> = Mutex::new(None);
+
+/// 获取或创建持久化 WSL shell
+fn get_wsl_shell(distro: &str) -> Result<&'static Mutex<Option<WslShell>>, String> {
+    {
+        let shell = WSL_SHELL.lock().unwrap();
+        if shell.is_some() {
+            return Ok(&WSL_SHELL);
+        }
+    }
+    // 创建新的 shell
+    let mut child = hidden_command("wsl")
+        .args(["-d", distro, "-e", "bash", "--norc", "--noprofile"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("创建 WSL shell 失败: {}", e))?;
+    let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
+    let stdin = child.stdin.take().ok_or("无法获取 stdin")?;
+    let shell = WslShell {
+        writer: std::sync::Mutex::new(std::io::BufWriter::new(stdin)),
+        reader: std::sync::Mutex::new(std::io::BufReader::new(stdout)),
+        child,
+    };
+    *WSL_SHELL.lock().unwrap() = Some(shell);
+    Ok(&WSL_SHELL)
+}
+
+/// 通过持久化 shell 执行命令并返回输出
+fn wsl_shell_exec(distro: &str, cmd: &str, timeout_ms: u64) -> Result<String, String> {
+    use std::io::{BufRead, Write};
+    let shell_ref = get_wsl_shell(distro)?;
+    let shell = shell_ref.lock().unwrap();
+    let shell = shell.as_ref().ok_or("WSL shell 未初始化")?;
+
+    // 发送命令（用特殊标记包裹输出，方便提取）
+    let marker_start = "___SEAHI_START___";
+    let marker_end = "___SEAHI_END___";
+    let full_cmd = format!("echo {}; {} 2>&1; echo {}", marker_start, cmd, marker_end);
+    {
+        let mut w = shell.writer.lock().map_err(|e| format!("锁失败: {}", e))?;
+        w.write_all(full_cmd.as_bytes()).map_err(|e| format!("写入失败: {}", e))?;
+        w.write_all(b"\n").map_err(|e| format!("写入换行失败: {}", e))?;
+        w.flush().map_err(|e| format!("刷新失败: {}", e))?;
+    }
+
+    // 读取直到找到结束标记
+    let mut r = shell.reader.lock().map_err(|e| format!("锁失败: {}", e))?;
+    let mut output = String::new();
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed().as_millis() > timeout_ms as u128 {
+            return Err("WSL shell 命令超时".into());
+        }
+        let mut line = String::new();
+        r.read_line(&mut line).map_err(|e| format!("读取失败: {}", e))?;
+        if line.trim() == marker_end {
+            break;
+        }
+        // 跳过 echo marker_start 那一行
+        if line.trim() == marker_start { continue; }
+        output.push_str(&line);
+    }
+    Ok(output)
+}
+
 /// 全局状态：多个独立串口连接（key = monitor_id）
 struct PortState {
     ports: Mutex<HashMap<String, Box<dyn SerialPort>>>,
@@ -984,25 +1059,19 @@ fn set_wsl_signal_cmd(state: tauri::State<'_, WslSerialState>, monitor_id: Strin
     if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) { Ok(()) } else { Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("设置信号失败").to_string()) }
 }
 
-/// 获取 WSL 中可用的串口设备列表
+/// 获取 WSL 中可用的串口设备列表（使用持久化 shell，毫秒级响应）
 #[tauri::command]
 fn get_wsl_serial_devices() -> Result<Vec<String>, String> {
-    if check_wsl_running().unwrap_or_default().is_empty() {
-        return Ok(vec![]);
-    }
+    let distros = check_wsl_running().unwrap_or_default();
+    let distro = distros.first().cloned().unwrap_or_default();
+    if distro.is_empty() { return Ok(vec![]); }
 
-    let output = hidden_command("wsl")
-        .args(["-e", "bash", "-c", "ls /dev/ttyACM* /dev/ttyUSB* /dev/ttyS* 2>/dev/null || true"])
-        .output()
-        .map_err(|e| format!("执行失败: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let devices: Vec<String> = stdout
+    let output = wsl_shell_exec(&distro, "ls /dev/ttyACM* /dev/ttyUSB* /dev/ttyS* 2>/dev/null || true", 2000)?;
+    let devices: Vec<String> = output
         .lines()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty() && s.starts_with("/dev/tty"))
         .collect();
-
     Ok(devices)
 }
 
