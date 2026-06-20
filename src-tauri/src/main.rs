@@ -96,10 +96,13 @@ struct PortState {
     ports: Mutex<HashMap<String, Box<dyn SerialPort>>>,
 }
 
-/// WSL 串口会话（daemon 模式下仅追踪 device_path）
+/// WSL 串口会话：通过管道与 bridge 脚本通信
 struct WslSerialSession {
-    #[allow(dead_code)]
+    child: std::process::Child,
+    writer: std::sync::Mutex<std::io::BufWriter<std::process::ChildStdin>>,
+    reader: std::sync::Mutex<std::io::BufReader<std::process::ChildStdout>>,
     device_path: String,
+    distro: String,
 }
 
 /// 全局状态：WSL 串口连接（key = monitor_id）
@@ -134,101 +137,10 @@ fn output_with_timeout(cmd: &mut std::process::Command, timeout_secs: u64) -> Re
     }
 }
 
-/// 嵌入的 daemon 脚本（部署到 WSL 后台运行）
-const DAEMON_SCRIPT: &str = include_str!("../wsl-daemon/seahi_serial_daemon.py");
-
-const DAEMON_PORT: u16 = 19876;
-const DAEMON_SCRIPT_PATH: &str = "/tmp/seahi-serial-daemon.py";
-const DAEMON_TIMEOUT_SECS: u64 = 5;
-
-/// 部署 daemon 脚本到 WSL
-fn deploy_daemon() -> Result<(), String> {
-    // 用 heredoc 写入文件，避免转义问题
-    let write_cmd = format!(
-        "cat > {} << '__SEAHID__'\n{}\n__SEAHID__",
-        DAEMON_SCRIPT_PATH, DAEMON_SCRIPT
-    );
-    let out = output_with_timeout(
-        hidden_command("wsl").args(["-e", "bash", "-c", &write_cmd]),
-        5,
-    );
-    match out {
-        Ok(o) if o.status.success() => Ok(()),
-        Ok(o) => Err(format!("部署 daemon 失败: {}", String::from_utf8_lossy(&o.stderr))),
-        Err(e) => Err(format!("部署 daemon 失败: {}", e)),
-    }
-}
-
-/// 检查 daemon 是否存活
-fn daemon_ping() -> bool {
-    let resp = daemon_request_raw(&json!({"cmd":"ping"}).to_string());
-    match resp {
-        Some(r) => r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
-        None => false,
-    }
-}
-
-/// 启动 daemon 进程
-fn start_daemon() -> Result<(), String> {
-    let cmd = format!("nohup python3 {} > /dev/null 2>&1 &", DAEMON_SCRIPT_PATH);
-    let _ = output_with_timeout(
-        hidden_command("wsl").args(["-e", "bash", "-c", &cmd]),
-        5,
-    );
-    // 等待 daemon 就绪（最多 3 秒）
-    for _ in 0..30 {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        if daemon_ping() {
-            return Ok(());
-        }
-    }
-    Err("daemon 启动超时".into())
-}
-
-/// 确保 daemon 运行中，返回后保证可用
-fn ensure_daemon_running() -> Result<(), String> {
-    if daemon_ping() {
-        return Ok(());
-    }
-    deploy_daemon()?;
-    start_daemon()
-}
-
-/// 向 daemon 发送请求并读取响应（原始 JSON 字符串）
-fn daemon_request_raw(request: &str) -> Option<serde_json::Value> {
-    use std::net::TcpStream;
-    let mut stream = TcpStream::connect_timeout(
-        &format!("127.0.0.1:{}", DAEMON_PORT).parse().unwrap(),
-        std::time::Duration::from_secs(DAEMON_TIMEOUT_SECS),
-    ).ok()?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(DAEMON_TIMEOUT_SECS))).ok()?;
-    stream.set_write_timeout(Some(std::time::Duration::from_secs(DAEMON_TIMEOUT_SECS))).ok()?;
-
-    use std::io::Write;
-    let mut msg = request.as_bytes().to_vec();
-    msg.push(b'\n');
-    stream.write_all(&msg).ok()?;
-
-    use std::io::Read;
-    let mut resp_buf = Vec::new();
-    let mut tmp = [0u8; 4096];
-    loop {
-        let n = stream.read(&mut tmp).ok()?;
-        resp_buf.extend_from_slice(&tmp[..n]);
-        if resp_buf.ends_with(b"\n") {
-            break;
-        }
-    }
-    let resp_str = String::from_utf8_lossy(&resp_buf).trim().to_string();
-    serde_json::from_str(&resp_str).ok()
-}
-
-/// 向 daemon 发送请求
-fn daemon_request(req: &serde_json::Value) -> Result<serde_json::Value, String> {
-    ensure_daemon_running()?;
-    daemon_request_raw(&req.to_string())
-        .ok_or_else(|| "daemon 通信失败".into())
-}
+/// 嵌入的 bridge 脚本 base64
+const BRIDGE_B64: &str = include_str!("../wsl-daemon/bridge_b64.txt");
+const BRIDGE_SCRIPT_PATH: &str = "/tmp/seahi_serial_bridge.py";
+const BRIDGE_TIMEOUT_SECS: u64 = 5;
 
 /// 串口信息（发给前端）
 #[derive(Debug, serde::Serialize, Clone)]
@@ -883,7 +795,46 @@ fn validate_device_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 打开 WSL 侧的串口设备（通过 daemon）
+/// 部署 bridge 脚本到指定 WSL 发行版
+fn deploy_bridge(distro: &str) -> Result<(), String> {
+    let b64 = BRIDGE_B64.trim();
+    let tmp_b64 = std::env::temp_dir().join("seahi_bridge_b64.txt");
+    std::fs::write(&tmp_b64, b64).map_err(|e| format!("写入临时文件失败: {}", e))?;
+    let wsl_path = std::process::Command::new("wsl")
+        .args(["-d", distro, "wslpath", "-u", tmp_b64.to_str().unwrap_or("")])
+        .output()
+        .map_err(|e| format!("路径转换失败: {}", e))?;
+    let wsl_b64_path = String::from_utf8_lossy(&wsl_path.stdout).trim().to_string();
+    let decode_cmd = format!("base64 -d < {} > {}", wsl_b64_path, BRIDGE_SCRIPT_PATH);
+    let out = std::process::Command::new("wsl")
+        .args(["-d", distro, "-e", "bash", "-c", &decode_cmd])
+        .output()
+        .map_err(|e| format!("解码失败: {}", e))?;
+    let _ = std::fs::remove_file(&tmp_b64);
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!("部署 bridge 失败: {}", String::from_utf8_lossy(&out.stderr)))
+    }
+}
+
+/// 通过 bridge 会话发送命令并读取响应
+fn bridge_command(session: &WslSerialSession, cmd: &serde_json::Value) -> Result<serde_json::Value, String> {
+    use std::io::{BufRead, Write};
+    let mut msg = serde_json::to_string(cmd).map_err(|e| format!("序列化失败: {}", e))?;
+    msg.push('\n');
+    {
+        let mut w = session.writer.lock().map_err(|e| format!("锁失败: {}", e))?;
+        w.write_all(msg.as_bytes()).map_err(|e| format!("写入失败: {}", e))?;
+        w.flush().map_err(|e| format!("刷新失败: {}", e))?;
+    }
+    let mut r = session.reader.lock().map_err(|e| format!("锁失败: {}", e))?;
+    let mut resp_line = String::new();
+    r.read_line(&mut resp_line).map_err(|e| format!("读取响应失败: {}", e))?;
+    serde_json::from_str(resp_line.trim()).map_err(|e| format!("解析响应失败: {}", e))
+}
+
+/// 打开 WSL 串口（通过 bridge 管道）
 #[tauri::command]
 fn open_wsl_serial(
     state: tauri::State<'_, WslSerialState>,
@@ -892,88 +843,75 @@ fn open_wsl_serial(
     baud_rate: u32,
 ) -> Result<(), String> {
     validate_device_path(&device_path)?;
-
-    // 关闭已有的 daemon 会话
-    {
-        let mut sessions = state.sessions.lock().unwrap();
-        if let Some(_) = sessions.remove(&monitor_id) {
-            let _ = daemon_request(&json!({"cmd":"close","id":monitor_id}));
+    { let mut s = state.sessions.lock().unwrap(); if let Some(mut old) = s.remove(&monitor_id) { let _ = old.child.kill(); let _ = old.child.wait(); } }
+    let distros = check_wsl_running().unwrap_or_default();
+    let distro = distros.first().ok_or("没有运行中的 WSL 发行版，请先启动一个 WSL 终端")?.clone();
+    deploy_bridge(&distro)?;
+    let mut child = std::process::Command::new("wsl")
+        .args(["-d", &distro, "-e", "python3", BRIDGE_SCRIPT_PATH])
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).stdin(std::process::Stdio::piped())
+        .spawn().map_err(|e| format!("启动 bridge 失败: {}", e))?;
+    let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
+    let ready = std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stderr).lines() {
+            match line { Ok(l) if l.trim() == "ready" => return true, Err(_) => return false, _ => {} }
         }
-    }
-
-    let resp = daemon_request(&json!({
-        "cmd": "open",
-        "id": &monitor_id,
-        "path": &device_path,
-        "baud": baud_rate,
-    }))?;
-
+        false
+    }).join().unwrap_or(false);
+    if !ready { let _ = child.kill(); let _ = child.wait(); return Err("bridge 启动超时".into()); }
+    let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
+    let stdin = child.stdin.take().ok_or("无法获取 stdin")?;
+    let writer = std::sync::Mutex::new(std::io::BufWriter::new(stdin));
+    let reader = std::sync::Mutex::new(std::io::BufReader::new(stdout));
+    let mut session = WslSerialSession { child, writer, reader, device_path: device_path.clone(), distro };
+    let resp = bridge_command(&session, &json!({"cmd":"open","id":&monitor_id,"path":&device_path,"baud":baud_rate}))?;
     if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-        let session = WslSerialSession {
-            device_path: device_path.clone(),
-        };
         state.sessions.lock().unwrap().insert(monitor_id, session);
         Ok(())
     } else {
-        Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("daemon 打开端口失败").to_string())
+        let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("打开失败").to_string();
+        let _ = session.child.kill();
+        let _ = session.child.wait();
+        Err(err)
     }
 }
 
-/// 关闭 WSL 串口连接（通过 daemon）
+/// 关闭 WSL 串口连接
 #[tauri::command]
-fn close_wsl_serial(
-    state: tauri::State<'_, WslSerialState>,
-    monitor_id: String,
-) -> Result<(), String> {
+fn close_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String) -> Result<(), String> {
     let mut sessions = state.sessions.lock().unwrap();
-    sessions.remove(&monitor_id);
-    let _ = daemon_request(&json!({"cmd":"close","id":monitor_id}));
+    if let Some(mut session) = sessions.remove(&monitor_id) {
+        { use std::io::Write; if let Ok(mut w) = session.writer.lock() { let _ = w.write_all(b"{\"cmd\":\"close\"}\n"); let _ = w.flush(); } }
+        let _ = session.child.kill(); let _ = session.child.wait();
+    }
     Ok(())
 }
 
-/// 读取 WSL 串口数据（通过 daemon）
+/// 读取 WSL 串口数据
 #[tauri::command]
-fn read_wsl_serial(
-    state: tauri::State<'_, WslSerialState>,
-    monitor_id: String,
-) -> Result<Vec<u8>, String> {
+fn read_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String) -> Result<Vec<u8>, String> {
     let sessions = state.sessions.lock().unwrap();
-    if !sessions.contains_key(&monitor_id) {
-        return Err("未连接 WSL 串口".into());
-    }
-    drop(sessions);
-
-    let resp = daemon_request(&json!({"cmd":"read","id":&monitor_id,"max":4096}))?;
+    let session = sessions.get(&monitor_id).ok_or("未连接 WSL 串口")?;
+    let resp = bridge_command(session, &json!({"cmd":"read","id":&monitor_id,"max":4096}))?;
     if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         let b64 = resp.get("data").and_then(|v| v.as_str()).unwrap_or("");
         use base64::Engine;
         Ok(base64::engine::general_purpose::STANDARD.decode(b64).unwrap_or_default())
     } else {
         let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("读取失败");
-        if err.contains("端口未打开") || err.contains("Resource temporarily unavailable") {
-            Ok(vec![])
-        } else {
-            Err(err.to_string())
-        }
+        if err.contains("port not open") || err.contains("Resource temporarily unavailable") { Ok(vec![]) } else { Err(err.to_string()) }
     }
 }
 
-/// 向 WSL 串口发送数据（通过 daemon）
+/// 向 WSL 串口发送数据
 #[tauri::command]
-fn send_wsl_serial(
-    state: tauri::State<'_, WslSerialState>,
-    monitor_id: String,
-    data: Vec<u8>,
-) -> Result<usize, String> {
+fn send_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String, data: Vec<u8>) -> Result<usize, String> {
     let sessions = state.sessions.lock().unwrap();
-    if !sessions.contains_key(&monitor_id) {
-        return Err("未连接 WSL 串口".into());
-    }
-    drop(sessions);
-
+    let session = sessions.get(&monitor_id).ok_or("未连接 WSL 串口")?;
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-    let resp = daemon_request(&json!({"cmd":"write","id":&monitor_id,"data":b64}))?;
+    let resp = bridge_command(session, &json!({"cmd":"write","id":&monitor_id,"data":b64}))?;
     if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         Ok(resp.get("n").and_then(|v| v.as_u64()).unwrap_or(data.len() as u64) as usize)
     } else {
@@ -981,21 +919,15 @@ fn send_wsl_serial(
     }
 }
 
-/// 设置 WSL 串口信号（通过 daemon）
-fn set_wsl_signal(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool, signal: &str, _mask: u32) -> Result<(), String> {
+/// 设置 WSL 串口信号
+fn set_wsl_signal_cmd(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool, signal: &str) -> Result<(), String> {
     let sessions = state.sessions.lock().unwrap();
-    if !sessions.contains_key(&monitor_id) {
-        return Err("未连接 WSL 串口".into());
-    }
-    drop(sessions);
-
-    let resp = daemon_request(&json!({"cmd":signal.to_lowercase(),"id":&monitor_id,"level":level}))?;
-    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-        Ok(())
-    } else {
-        Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("设置信号失败").to_string())
-    }
+    let session = sessions.get(&monitor_id).ok_or("未连接 WSL 串口")?;
+    let resp = bridge_command(session, &json!({"cmd":signal.to_lowercase(),"id":&monitor_id,"level":level}))?;
+    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) { Ok(()) } else { Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("设置信号失败").to_string()) }
 }
+
+/// 获取 WSL 中可用的串口设备列表
 #[tauri::command]
 fn get_wsl_serial_devices() -> Result<Vec<String>, String> {
     if check_wsl_running().unwrap_or_default().is_empty() {
@@ -1019,12 +951,12 @@ fn get_wsl_serial_devices() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 fn set_wsl_dtr(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool) -> Result<(), String> {
-    set_wsl_signal(state, monitor_id, level, "DTR", 0x002)
+    set_wsl_signal_cmd(state, monitor_id, level, "DTR")
 }
 
 #[tauri::command]
 fn set_wsl_rts(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool) -> Result<(), String> {
-    set_wsl_signal(state, monitor_id, level, "RTS", 0x004)
+    set_wsl_signal_cmd(state, monitor_id, level, "RTS")
 }
 
 /// 将指定串口对应的 USB 设备映射到 WSL

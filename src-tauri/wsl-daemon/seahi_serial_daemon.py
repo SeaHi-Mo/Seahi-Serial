@@ -18,7 +18,7 @@ except ImportError:
     # 尝试 pyserial，如果不存在则用原生 ioctl
     serial = None
 
-HOST = "127.0.0.1"
+HOST = "0.0.0.0"
 PORT = 19876
 PID_FILE = "/tmp/seahi-serial-daemon.pid"
 
