@@ -842,10 +842,8 @@ fn get_or_start_wsl_distro() -> Result<String, String> {
 /// 部署 bridge 脚本到指定 WSL 发行版（通过 /mnt 路径直接写入）
 fn deploy_bridge(distro: &str) -> Result<(), String> {
     let b64 = BRIDGE_B64.trim();
-    // 写到项目目录下的临时文件（Windows 路径）
     let tmp_b64 = std::env::temp_dir().join("seahi_bridge_b64.txt");
     std::fs::write(&tmp_b64, b64).map_err(|e| format!("写入临时文件失败: {}", e))?;
-    // 转换为 WSL 可访问的 /mnt/ 路径
     let win_path = tmp_b64.to_string_lossy().to_string();
     let drive = win_path.chars().next().unwrap_or('c').to_lowercase();
     let rest = win_path[2..].replace('\\', "/");
@@ -860,6 +858,33 @@ fn deploy_bridge(distro: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("部署 bridge 失败: {}", String::from_utf8_lossy(&out.stderr)))
+    }
+}
+
+/// 修复串口设备权限（通过 pkexec 弹出图形密码对话框）
+fn fix_device_permissions(distro: &str, device_path: &str) -> Result<(), String> {
+    // 先尝试普通 chmod（不需要密码，如果设备属于当前用户的话）
+    let _ = hidden_command("wsl")
+        .args(["-d", distro, "-e", "chmod", "666", device_path])
+        .output();
+    // 验证是否成功
+    let check = hidden_command("wsl")
+        .args(["-d", distro, "-e", "test", "-r", device_path, "-a", "-w", device_path])
+        .output();
+    if let Ok(o) = check {
+        if o.status.success() {
+            return Ok(());
+        }
+    }
+    // chmod 失败，用 pkexec 弹出密码对话框
+    let out = hidden_command("wsl")
+        .args(["-d", distro, "-e", "pkexec", "chmod", "666", device_path])
+        .output()
+        .map_err(|e| format!("pkexec 失败: {}", e))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!("无权访问 {}，请在 WSL 终端执行:\nsudo chmod 666 {}\nsudo usermod -aG dialout $(whoami)", device_path, device_path))
     }
 }
 
@@ -902,6 +927,8 @@ fn open_wsl_serial(
     { let mut s = state.sessions.lock().unwrap(); if let Some(mut old) = s.remove(&monitor_id) { let _ = old.child.kill(); let _ = old.child.wait(); } }
     let distro = get_or_start_wsl_distro()?;
     deploy_bridge(&distro)?;
+    // 修复设备权限（弹出密码对话框）
+    fix_device_permissions(&distro, &device_path)?;
     let mut child = spawn_bridge(&distro)?;
     let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
     let ready = std::thread::spawn(move || {
