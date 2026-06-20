@@ -10,6 +10,7 @@ use std::sync::Mutex;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 use tauri::Emitter;
+use serde_json::json;
 
 fn dbg_log(msg: &str) {
     #[cfg(debug_assertions)]
@@ -95,14 +96,9 @@ struct PortState {
     ports: Mutex<HashMap<String, Box<dyn SerialPort>>>,
 }
 
-const WSL_BUFFER_MAX: usize = 1024 * 1024; // 1MB 读缓冲上限
-
-/// WSL 串口会话
+/// WSL 串口会话（daemon 模式下仅追踪 device_path）
 struct WslSerialSession {
-    child: std::process::Child,
-    stdin: Option<std::process::ChildStdin>,
-    buffer: std::sync::Arc<Mutex<Vec<u8>>>,
-    _reader_thread: std::thread::JoinHandle<()>,
+    #[allow(dead_code)]
     device_path: String,
 }
 
@@ -117,6 +113,121 @@ fn hidden_command(program: &str) -> std::process::Command {
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW); // CREATE_NO_WINDOW
     cmd
+}
+
+/// 带超时执行 Command::output()
+fn output_with_timeout(cmd: &mut std::process::Command, timeout_secs: u64) -> Result<std::process::Output, String> {
+    use std::sync::mpsc;
+    let (tx, rx) = mpsc::channel();
+    let child = cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+        .spawn().map_err(|e| format!("启动进程失败: {}", e))?;
+    let child_id = child.id();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(timeout_secs)) {
+        Ok(result) => result.map_err(|e| format!("进程执行失败: {}", e)),
+        Err(_) => {
+            unsafe { windows_sys::Win32::System::Threading::TerminateProcess(child_id as *mut _, 1); }
+            Err(format!("命令执行超时（{}秒）", timeout_secs))
+        }
+    }
+}
+
+/// 嵌入的 daemon 脚本（部署到 WSL 后台运行）
+const DAEMON_SCRIPT: &str = include_str!("../wsl-daemon/seahi_serial_daemon.py");
+
+const DAEMON_PORT: u16 = 19876;
+const DAEMON_SCRIPT_PATH: &str = "/tmp/seahi-serial-daemon.py";
+const DAEMON_TIMEOUT_SECS: u64 = 5;
+
+/// 部署 daemon 脚本到 WSL
+fn deploy_daemon() -> Result<(), String> {
+    // 用 heredoc 写入文件，避免转义问题
+    let write_cmd = format!(
+        "cat > {} << '__SEAHID__'\n{}\n__SEAHID__",
+        DAEMON_SCRIPT_PATH, DAEMON_SCRIPT
+    );
+    let out = output_with_timeout(
+        hidden_command("wsl").args(["-e", "bash", "-c", &write_cmd]),
+        5,
+    );
+    match out {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(format!("部署 daemon 失败: {}", String::from_utf8_lossy(&o.stderr))),
+        Err(e) => Err(format!("部署 daemon 失败: {}", e)),
+    }
+}
+
+/// 检查 daemon 是否存活
+fn daemon_ping() -> bool {
+    let resp = daemon_request_raw(&json!({"cmd":"ping"}).to_string());
+    match resp {
+        Some(r) => r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
+        None => false,
+    }
+}
+
+/// 启动 daemon 进程
+fn start_daemon() -> Result<(), String> {
+    let cmd = format!("nohup python3 {} > /dev/null 2>&1 &", DAEMON_SCRIPT_PATH);
+    let _ = output_with_timeout(
+        hidden_command("wsl").args(["-e", "bash", "-c", &cmd]),
+        5,
+    );
+    // 等待 daemon 就绪（最多 3 秒）
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if daemon_ping() {
+            return Ok(());
+        }
+    }
+    Err("daemon 启动超时".into())
+}
+
+/// 确保 daemon 运行中，返回后保证可用
+fn ensure_daemon_running() -> Result<(), String> {
+    if daemon_ping() {
+        return Ok(());
+    }
+    deploy_daemon()?;
+    start_daemon()
+}
+
+/// 向 daemon 发送请求并读取响应（原始 JSON 字符串）
+fn daemon_request_raw(request: &str) -> Option<serde_json::Value> {
+    use std::net::TcpStream;
+    let mut stream = TcpStream::connect_timeout(
+        &format!("127.0.0.1:{}", DAEMON_PORT).parse().unwrap(),
+        std::time::Duration::from_secs(DAEMON_TIMEOUT_SECS),
+    ).ok()?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(DAEMON_TIMEOUT_SECS))).ok()?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(DAEMON_TIMEOUT_SECS))).ok()?;
+
+    use std::io::Write;
+    let mut msg = request.as_bytes().to_vec();
+    msg.push(b'\n');
+    stream.write_all(&msg).ok()?;
+
+    use std::io::Read;
+    let mut resp_buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    loop {
+        let n = stream.read(&mut tmp).ok()?;
+        resp_buf.extend_from_slice(&tmp[..n]);
+        if resp_buf.ends_with(b"\n") {
+            break;
+        }
+    }
+    let resp_str = String::from_utf8_lossy(&resp_buf).trim().to_string();
+    serde_json::from_str(&resp_str).ok()
+}
+
+/// 向 daemon 发送请求
+fn daemon_request(req: &serde_json::Value) -> Result<serde_json::Value, String> {
+    ensure_daemon_running()?;
+    daemon_request_raw(&req.to_string())
+        .ok_or_else(|| "daemon 通信失败".into())
 }
 
 /// 串口信息（发给前端）
@@ -778,10 +889,7 @@ fn validate_device_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 打开 WSL 侧的串口设备
-/// 1. 用 stty 配置波特率等参数
-/// 2. 启动 cat 进程持续读取设备，stdin 管道用于写入
-/// 3. 后台线程读取 cat 的 stdout 并缓冲（带上限）
+/// 打开 WSL 侧的串口设备（通过 daemon）
 #[tauri::command]
 fn open_wsl_serial(
     state: tauri::State<'_, WslSerialState>,
@@ -791,141 +899,109 @@ fn open_wsl_serial(
 ) -> Result<(), String> {
     validate_device_path(&device_path)?;
 
-    // 关闭已有的会话
+    // 关闭已有的 daemon 会话
     {
         let mut sessions = state.sessions.lock().unwrap();
-        if let Some(mut old) = sessions.remove(&monitor_id) {
-            let _ = old.child.kill();
-            let _ = old.child.wait();
+        if let Some(_) = sessions.remove(&monitor_id) {
+            let _ = daemon_request(&json!({"cmd":"close","id":monitor_id}));
         }
     }
 
-    // 尝试设置设备权限
-    let chmod_cmd = format!("sudo chmod 666 {} 2>/dev/null || true", device_path);
-    let _ = hidden_command("wsl")
-        .args(["-e", "bash", "-c", &chmod_cmd])
-        .output();
+    let resp = daemon_request(&json!({
+        "cmd": "open",
+        "id": &monitor_id,
+        "path": &device_path,
+        "baud": baud_rate,
+    }))?;
 
-    // 用 stty 配置波特率
-    let stty_cmd = format!("stty -F {} {} raw -echo", device_path, baud_rate);
-    let stty_out = hidden_command("wsl")
-        .args(["-e", "bash", "-c", &stty_cmd])
-        .output();
-    match stty_out {
-        Ok(out) if !out.status.success() => {
-            return Err(format!("stty 配置失败: {}", String::from_utf8_lossy(&out.stderr).trim()));
-        }
-        Err(e) => {
-            return Err(format!("执行 stty 失败: {}", e));
-        }
-        _ => {}
+    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let session = WslSerialSession {
+            device_path: device_path.clone(),
+        };
+        state.sessions.lock().unwrap().insert(monitor_id, session);
+        Ok(())
+    } else {
+        Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("daemon 打开端口失败").to_string())
     }
-
-    // 用 cat 读取设备，stdin 管道用于后续写入
-    let cat_cmd = format!("cat {}", device_path);
-    let mut child = hidden_command("wsl")
-        .args(["-e", "bash", "-c", &cat_cmd])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("启动 cat 进程失败: {}", e))?;
-
-    let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
-    let stdin = child.stdin.take();
-    let buffer = std::sync::Arc::new(Mutex::new(Vec::new()));
-    let buffer_clone = buffer.clone();
-
-    // 后台线程持续读取 cat 的输出（带缓冲上限）
-    let reader_thread = std::thread::spawn(move || {
-        use std::io::Read;
-        let mut reader = stdout;
-        let mut buf = [0u8; 4096];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let mut data = buffer_clone.lock().unwrap();
-                    if data.len() + n > WSL_BUFFER_MAX {
-                        let drain = data.len() + n - WSL_BUFFER_MAX;
-                        data.drain(..drain);
-                    }
-                    data.extend_from_slice(&buf[..n]);
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    let session = WslSerialSession {
-        child,
-        stdin,
-        buffer,
-        _reader_thread: reader_thread,
-        device_path: device_path.clone(),
-    };
-
-    state.sessions.lock().unwrap().insert(monitor_id, session);
-    Ok(())
 }
 
-/// 关闭 WSL 串口连接
+/// 关闭 WSL 串口连接（通过 daemon）
 #[tauri::command]
 fn close_wsl_serial(
     state: tauri::State<'_, WslSerialState>,
     monitor_id: String,
 ) -> Result<(), String> {
     let mut sessions = state.sessions.lock().unwrap();
-    if let Some(mut session) = sessions.remove(&monitor_id) {
-        // 先关闭 stdin，让 cat 进程感知到 EOF
-        drop(session.stdin.take());
-        let _ = session.child.kill();
-        let _ = session.child.wait();
-    }
+    sessions.remove(&monitor_id);
+    let _ = daemon_request(&json!({"cmd":"close","id":monitor_id}));
     Ok(())
 }
 
-/// 读取 WSL 串口数据（非阻塞，返回缓冲区中的数据）
+/// 读取 WSL 串口数据（通过 daemon）
 #[tauri::command]
 fn read_wsl_serial(
     state: tauri::State<'_, WslSerialState>,
     monitor_id: String,
 ) -> Result<Vec<u8>, String> {
-    let mut sessions = state.sessions.lock().unwrap();
-    if let Some(session) = sessions.get_mut(&monitor_id) {
-        let mut buf = session.buffer.lock().unwrap();
-        if buf.is_empty() {
-            return Ok(vec![]);
-        }
-        Ok(std::mem::take(&mut *buf))
+    let sessions = state.sessions.lock().unwrap();
+    if !sessions.contains_key(&monitor_id) {
+        return Err("未连接 WSL 串口".into());
+    }
+    drop(sessions);
+
+    let resp = daemon_request(&json!({"cmd":"read","id":&monitor_id,"max":4096}))?;
+    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let b64 = resp.get("data").and_then(|v| v.as_str()).unwrap_or("");
+        use base64::Engine;
+        Ok(base64::engine::general_purpose::STANDARD.decode(b64).unwrap_or_default())
     } else {
-        Err("未连接 WSL 串口".into())
+        let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("读取失败");
+        if err.contains("端口未打开") || err.contains("Resource temporarily unavailable") {
+            Ok(vec![])
+        } else {
+            Err(err.to_string())
+        }
     }
 }
 
-/// 向 WSL 串口发送数据（通过持久 stdin 管道）
+/// 向 WSL 串口发送数据（通过 daemon）
 #[tauri::command]
 fn send_wsl_serial(
     state: tauri::State<'_, WslSerialState>,
     monitor_id: String,
     data: Vec<u8>,
 ) -> Result<usize, String> {
-    let mut sessions = state.sessions.lock().unwrap();
-    if let Some(session) = sessions.get_mut(&monitor_id) {
-        if let Some(ref mut stdin) = session.stdin {
-            use std::io::Write;
-            stdin.write_all(&data).map_err(|e| format!("写入失败: {}", e))?;
-            stdin.flush().map_err(|e| format!("刷新失败: {}", e))?;
-            Ok(data.len())
-        } else {
-            Err("WSL 串口 stdin 不可用".into())
-        }
+    let sessions = state.sessions.lock().unwrap();
+    if !sessions.contains_key(&monitor_id) {
+        return Err("未连接 WSL 串口".into());
+    }
+    drop(sessions);
+
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+    let resp = daemon_request(&json!({"cmd":"write","id":&monitor_id,"data":b64}))?;
+    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        Ok(resp.get("n").and_then(|v| v.as_u64()).unwrap_or(data.len() as u64) as usize)
     } else {
-        Err("未连接 WSL 串口".into())
+        Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("写入失败").to_string())
     }
 }
 
-/// 获取 WSL 中可用的串口设备列表
+/// 设置 WSL 串口信号（通过 daemon）
+fn set_wsl_signal(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool, signal: &str, _mask: u32) -> Result<(), String> {
+    let sessions = state.sessions.lock().unwrap();
+    if !sessions.contains_key(&monitor_id) {
+        return Err("未连接 WSL 串口".into());
+    }
+    drop(sessions);
+
+    let resp = daemon_request(&json!({"cmd":signal.to_lowercase(),"id":&monitor_id,"level":level}))?;
+    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        Ok(())
+    } else {
+        Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("设置信号失败").to_string())
+    }
+}
 #[tauri::command]
 fn get_wsl_serial_devices() -> Result<Vec<String>, String> {
     if check_wsl_running().unwrap_or_default().is_empty() {
@@ -945,31 +1021,6 @@ fn get_wsl_serial_devices() -> Result<Vec<String>, String> {
         .collect();
 
     Ok(devices)
-}
-
-/// 设置 WSL 串口信号（通过 Python ioctl 控制）
-fn set_wsl_signal(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool, signal: &str, mask: u32) -> Result<(), String> {
-    let sessions = state.sessions.lock().unwrap();
-    if let Some(session) = sessions.get(&monitor_id) {
-        validate_device_path(&session.device_path)?;
-        let ioctl_num = if level { "0x5416" } else { "0x5417" };
-        let mask_str = format!("0x{:03x}", mask);
-        let py_code = format!(
-            "import fcntl,struct;f=open('{}','rb',0);fcntl.ioctl(f.fileno(),{},struct.pack('I',{}));f.close()",
-            session.device_path, ioctl_num, mask_str
-        );
-        let out = hidden_command("wsl")
-            .args(["-e", "python3", "-c", &py_code])
-            .output()
-            .map_err(|e| format!("设置 {} 失败: {}", signal, e))?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(format!("设置 {} 失败: {}", signal, stderr.trim()));
-        }
-        Ok(())
-    } else {
-        Err("未连接 WSL 串口".into())
-    }
 }
 
 #[tauri::command]
