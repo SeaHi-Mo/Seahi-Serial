@@ -927,8 +927,6 @@ fn open_wsl_serial(
     { let mut s = state.sessions.lock().unwrap(); if let Some(mut old) = s.remove(&monitor_id) { let _ = old.child.kill(); let _ = old.child.wait(); } }
     let distro = get_or_start_wsl_distro()?;
     deploy_bridge(&distro)?;
-    // 修复设备权限（弹出密码对话框）
-    fix_device_permissions(&distro, &device_path)?;
     let mut child = spawn_bridge(&distro)?;
     let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
     let ready = std::thread::spawn(move || {

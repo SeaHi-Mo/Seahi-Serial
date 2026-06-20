@@ -52,14 +52,27 @@ def ensure_device_perm(path):
 
 def open_port(mid, path, baud):
     close_port(mid)
-    if not ensure_device_perm(path):
-        return False, f"无权访问 {path}，请在 WSL 终端执行: sudo usermod -aG dialout $(whoami) 然后重启 WSL"
     if serial is not None:
         try:
             s = serial.Serial(port=path, baudrate=baud, timeout=0, write_timeout=0)
             s.reset_input_buffer()
             ports[mid] = s
             return True, ""
+        except PermissionError:
+            # 权限不足，尝试 chmod 修复
+            import subprocess
+            try:
+                subprocess.run(["sudo", "-n", "chmod", "666", path], timeout=3, capture_output=True)
+            except Exception:
+                pass
+            # 重试一次
+            try:
+                s = serial.Serial(port=path, baudrate=baud, timeout=0, write_timeout=0)
+                s.reset_input_buffer()
+                ports[mid] = s
+                return True, ""
+            except Exception as e:
+                return False, f"无权访问 {path}，请在 WSL 终端执行: sudo chmod 666 {path}"
         except Exception as e:
             return False, str(e)
     else:
@@ -68,6 +81,19 @@ def open_port(mid, path, baud):
             os.system(f"stty -F {path} {baud} raw -echo 2>/dev/null")
             ports[mid] = fd
             return True, ""
+        except PermissionError:
+            import subprocess
+            try:
+                subprocess.run(["sudo", "-n", "chmod", "666", path], timeout=3, capture_output=True)
+            except Exception:
+                pass
+            try:
+                fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+                os.system(f"stty -F {path} {baud} raw -echo 2>/dev/null")
+                ports[mid] = fd
+                return True, ""
+            except Exception as e:
+                return False, f"无权访问 {path}，请在 WSL 终端执行: sudo chmod 666 {path}"
         except Exception as e:
             return False, str(e)
 
