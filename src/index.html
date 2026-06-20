@@ -39,7 +39,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .pane-container { flex:1; display:flex; flex-direction:row; overflow:hidden; min-height:0; }
 
 /* ===== 监视器窗格 ===== */
-.monitor-pane { flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; }
+.monitor-pane { flex:1; display:flex; flex-direction:column; min-width:280px; min-height:0; }
 .monitor-pane + .monitor-pane { border-left:2px solid var(--split-line); }
 .pane-header { display:flex; align-items:center; padding:0 8px; height:24px; background:var(--toolbar-bg); border-bottom:1px solid var(--border); flex-shrink:0; font-size:12px; color:var(--text-d); justify-content:space-between; }
 .pane-title { white-space:nowrap; font-size:12px; }
@@ -67,13 +67,13 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .sel-text { pointer-events:none; overflow:hidden; text-overflow:ellipsis; flex:1; min-width:0; }
 .sel-arrow { font-size:8px; opacity:.6; flex-shrink:0; }
 .sel-drop {
-    display:none; position:absolute; bottom:calc(100% + 2px); left:0; z-index:9999;
+    display:none; position:absolute; top:calc(100% + 2px); left:0; z-index:9999;
     background:#2d2d2d; border:1px solid var(--border-h);
-    border-radius:2px; box-shadow:0 -4px 12px rgba(0,0,0,.5);
+    border-radius:2px; box-shadow:0 4px 12px rgba(0,0,0,.5);
     min-width:100%; overflow:hidden; max-height:200px; overflow-y:auto;
 }
 .sel-drop.open { display:block; }
-.sel-drop-down { bottom:auto; top:calc(100% + 2px); }
+.sel-drop-up { top:auto; bottom:calc(100% + 2px); box-shadow:0 -4px 12px rgba(0,0,0,.5); }
 .sel-opt { padding:4px 10px; font-size:12px; color:var(--text); cursor:pointer; white-space:nowrap; }
 .sel-opt:hover { background:rgba(255,255,255,.07); }
 .sel-opt.active { background:var(--btn-p); color:#fff; }
@@ -140,6 +140,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ibtn svg { display:block; }
 .ibtn:hover { background:rgba(255,255,255,.06); color:var(--text-b); }
 .ibtn.on { background:rgba(0,122,204,.2); color:var(--text-b); }
+.ibtn:focus-visible, .btn-main:focus-visible, .btn-ref:focus-visible, .pane-close:focus-visible, .btn-send:focus-visible, .qcmd-trigger:focus-visible, .sel:focus-visible { outline:2px solid var(--link); outline-offset:-2px; }
 
 /* 状态区 */
 .tb-status { display:flex; align-items:center; gap:6px; margin-left:auto; padding-left:8px; font-size:12px; color:var(--text-d); white-space:nowrap; flex-shrink:0; }
@@ -179,7 +180,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     flex:1; overflow-y:auto; padding:5px 10px;
     font-family:var(--font-mono); font-size:14px; line-height:1.6;
     background:var(--editor-bg); color:var(--text);
-    white-space:pre-wrap; word-break:break-all; min-height:0;
+    white-space:pre-wrap; overflow-wrap:break-word; min-height:0;
 }
 .output::-webkit-scrollbar { width:12px; }
 .output::-webkit-scrollbar-track { background:transparent; }
@@ -188,12 +189,12 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ol { display:block; margin:0; padding:0; }
 .ol .ln { display:none; }
 .output.with-line-num .ol { display:flex; align-items:flex-start; }
-.output.with-line-num .ln { display:inline-block; color:#858585; user-select:none; width:auto; text-align:right; margin-right:8px; font-family:var(--font-mono); font-size:14px; padding-right:2px; flex-shrink:0; }
+.output.with-line-num .ln { display:inline-block; color:#858585; user-select:none; width:3.5em; text-align:right; margin-right:8px; font-family:var(--font-mono); font-size:14px; padding-right:2px; flex-shrink:0; }
 .ol .lc { flex:1; min-width:0; }
 .ol.recv { color:#cccccc; }
 .ol.send { display:block; width:fit-content; max-width:100%; color:#fff; background:#1e3a5f; padding:2px 6px; border-radius:3px; margin:1px 0; word-break:break-all; white-space:pre-wrap; }
 .ol.err  { color:#f48771; }
-.ol.sys  { color:#666; }
+.ol.sys  { color:#999; }
 .ol.empty-line { height:1.6em; }
 /* ANSI 颜色支持 */
 .ansi-0 { color:#cccccc; }
@@ -203,7 +204,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ansi-4 { color:#c586c0; }
 .ansi-5 { color:#9cdcfe; }
 .ansi-6 { color:#4ec9b0; }
-.ansi-7 { color:#2d2d2d; }
+.ansi-7 { color:#d4d4d4; }
 .ansi-30 { color:#666; }
 .ansi-31 { color:#f44747; }
 .ansi-32 { color:#89d185; }
@@ -225,7 +226,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .send-bar { display:flex; align-items:center; height:34px; background:var(--toolbar-bg); border-top:1px solid var(--border); flex-shrink:0; padding:0 4px; }
 .send-wrap { flex:1; display:flex; align-items:center; padding:0 4px; min-width:0; position:relative; }
 .send-inp { width:100%; height:24px; background:var(--editor-bg); border:1px solid transparent; border-radius:2px; color:var(--text); font-family:var(--font-mono); font-size:13px; padding:0 7px; outline:none; }
-.send-inp::placeholder { color:#555; }
+.send-inp::placeholder { color:var(--text-d); }
 .send-inp:focus { border-color:#007acc; }
 /* 发送历史下拉 */
 .send-hist {
@@ -265,7 +266,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 }
 .send-as-opt:hover { background:rgba(255,255,255,.07); }
 .send-as-opt.active { background:var(--btn-p); color:#fff; }
-.ssep { color:var(--text-d); font-size:15px; padding:0 2px; flex-shrink:0; }
+.ssep { color:var(--text-d); font-size:13px; padding:0 2px; flex-shrink:0; }
 .btn-send {
     height:24px; padding:0 12px; border:none; border-radius:2px 0 0 2px;
     background:var(--btn-p); color:#fff; font-size:12px; cursor:pointer;
@@ -273,7 +274,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     display:inline-flex; align-items:center; gap:4px;
 }
 .btn-send:hover { background:var(--btn-ph); }
-.btn-send:disabled { background:#3a3a3a; color:#555; cursor:default; }
+.btn-send:disabled { background:#3a3a3a; color:#888; cursor:default; }
 
 /* ===== 快速指令下拉 ===== */
 .qcmd-wrap {
@@ -317,9 +318,6 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .qcmd-list {
     max-height:200px; overflow-y:auto;
 }
-.qcmd-list::-webkit-scrollbar { width:6px; }
-.qcmd-list::-webkit-scrollbar-track { background:transparent; }
-.qcmd-list::-webkit-scrollbar-thumb { background:rgba(121,121,121,.4); border-radius:3px; }
 /* 每一行 */
 .qcmd-item {
     display:flex; align-items:center; gap:4px;
@@ -380,7 +378,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 }
 .toast.show { transform:translateX(0); }
 .toast.toast-error { background:#f44747; }
-.toast.toast-success { background:#89d185; }
+.toast.toast-success { background:#89d185; color:#1e1e1e; }
 .toast.toast-info { background:#2d8cf0; }
 
 /* WSL复选框样式 */
@@ -391,7 +389,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     width: 20px;
     height: 20px;
     border: 2px solid #555;
-    border-radius: 50%;
+    border-radius: 3px;
     background: #2d2d2d;
     cursor: pointer;
     position: relative;
@@ -475,8 +473,26 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     cursor: not-allowed;
 }
 
+/* WSL 串口监视器拖拽调整手柄 */
+.wsl-mon-resize {
+    height:5px; cursor:row-resize; background:var(--border);
+    flex-shrink:0; position:relative; z-index:10;
+}
+.wsl-mon-resize:hover, .wsl-mon-resize.dragging {
+    background:var(--split-line);
+}
+.wsl-mon-resize::after {
+    content:''; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:30px; height:3px; border-radius:2px; background:rgba(255,255,255,0.15);
+}
+.wsl-mon-disabled { opacity:0.4; pointer-events:none; }
+
+/* WSL 设备行 hover */
+.wsl-device-row { transition: background 0.15s; }
+.wsl-device-row:hover { background: rgba(255,255,255,0.04) !important; }
+
 /* 终端模式光标 */
-.terminal-cursor { display:inline-block; width:8px; height:16px; background:var(--text); animation:blink 1s step-end infinite; vertical-align:text-bottom; margin-left:1px; }
+.terminal-cursor { display:inline-block; width:8px; height:1.2em; background:var(--text); animation:blink 1s step-end infinite; vertical-align:text-bottom; margin-left:1px; }
 @keyframes blink { 50% { opacity:0; } }
 .no-scrollbar::-webkit-scrollbar {
     display: none;
@@ -506,13 +522,15 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 
 <script>
 const { invoke } = window.__TAURI__.core;
+const _textDecoder = new TextDecoder();
 
 /* ===== 全局状态 ===== */
 const monitors = {}; // { mid: { isConnected, portName, readTimer, sendHistory: [] } }
 let extraCount = 0;
 let logDirPath = '';
 const MAX_SEND_HISTORY = 50;
-var _loadingConfig = false; // 配置恢复期间跳过自动保存
+var _loadingConfig = false;
+var _cachedWindowSize = null;
 
 /* ===== SVG 图标 ===== */
 const ICONS = {
@@ -535,7 +553,7 @@ const ICONS = {
 /* ===== ANSI 颜色解析 ===== */
 function parseAnsi(text) {
     const re = /\x1b\[([0-9;]*)m/g;
-    let result = '', lastIdx = 0, currentClasses = [], m;
+    let result = '', lastIdx = 0, currentClasses = [], m, openCount = 0;
     while ((m = re.exec(text)) !== null) {
         result += escapeHtml(text.slice(lastIdx, m.index));
         lastIdx = re.lastIndex;
@@ -547,32 +565,33 @@ function parseAnsi(text) {
             else if (n >= 30 && n <= 37) { currentClasses = currentClasses.filter(c => !c.startsWith('ansi-3')); currentClasses.push('ansi-' + n); }
             else if (n >= 90 && n <= 97) { currentClasses = currentClasses.filter(c => !c.startsWith('ansi-9')); currentClasses.push('ansi-' + n); }
         }
-        if (currentClasses.length > 0) result += '<span class="' + currentClasses.join(' ') + '">';
+        if (currentClasses.length > 0) { result += '<span class="' + currentClasses.join(' ') + '">'; openCount++; }
     }
     result += escapeHtml(text.slice(lastIdx));
-    const openCount = (result.match(/<span[^>]*>/g) || []).length;
-    const closeCount = (result.match(/<\/span>/g) || []).length;
-    for (let i = 0; i < openCount - closeCount; i++) result += '</span>';
+    for (let i = 0; i < openCount; i++) result += '</span>';
     return result;
 }
-function escapeHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escapeHtml(s) { var r = ''; for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i); if (c === 38) r += '&amp;'; else if (c === 60) r += '&lt;'; else if (c === 62) r += '&gt;'; else r += s[i]; } return r; }
 
 /* ===== Toast 通知 ===== */
 function showToast(message, type) {
     type = type || 'info';
+    var toasts = document.querySelectorAll('.toast');
+    var offset = 0;
+    toasts.forEach(function(t) { if (t.style.display !== 'none') offset += 44; });
     var toast = document.createElement('div');
     toast.className = 'toast toast-' + type;
     toast.textContent = message;
+    toast.style.top = (40 + offset) + 'px';
+    if (type === 'error') { toast.style.cursor = 'pointer'; toast.title = '点击关闭'; toast.addEventListener('click', function() { toast.remove(); }); }
     document.body.appendChild(toast);
-    
-    // 触发动画
     setTimeout(function() { toast.classList.add('show'); }, 10);
-    
-    // 自动关闭
-    setTimeout(function() {
-        toast.classList.remove('show');
-        setTimeout(function() { toast.remove(); }, 300);
-    }, 3000);
+    if (type !== 'error') {
+        setTimeout(function() {
+            toast.classList.remove('show');
+            setTimeout(function() { toast.remove(); }, 300);
+        }, 3000);
+    }
 }
 
 /* ===== 创建监视器窗格 ===== */
@@ -594,7 +613,7 @@ function createMonitorPane(mid, title, closable) {
             '<span class="lbl">查看</span>' +
             '<div class="sel" id="' + mid + '-viewMode" data-val="text" onclick="toggleSelDrop(this)">' +
                 '<span class="sel-text">文本</span><span class="sel-arrow">&#9660;</span>' +
-                '<div class="sel-drop sel-drop-down">' +
+                '<div class="sel-drop">' +
                     '<div class="sel-opt active" data-val="text" onclick="setSel(this,\'text\',event)">文本</div>' +
                     '<div class="sel-opt" data-val="hex" onclick="setSel(this,\'hex\',event)">HEX</div>' +
                 '</div>' +
@@ -602,7 +621,7 @@ function createMonitorPane(mid, title, closable) {
             '<span class="lbl">端口</span>' +
             '<div class="sel sel-port" id="' + mid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:220px;">' +
                 '<span class="sel-text">加载中...</span><span class="sel-arrow">&#9660;</span>' +
-                '<div class="sel-drop sel-drop-down" id="' + mid + '-portDrop"></div>' +
+                '<div class="sel-drop" id="' + mid + '-portDrop"></div>' +
             '</div>' +
             '<button class="btn-ref" onclick="refreshPorts(\'' + mid + '\')" title="刷新端口">' + ICONS.refresh + '</button>' +
             '<span class="lbl">波特率</span>' +
@@ -614,7 +633,7 @@ function createMonitorPane(mid, title, closable) {
             '<span class="lbl">行尾</span>' +
             '<div class="sel" id="' + mid + '-lineEnding" data-val="crlf" onclick="toggleSelDrop(this)">' +
                 '<span class="sel-text">CRLF</span><span class="sel-arrow">&#9660;</span>' +
-                '<div class="sel-drop sel-drop-down">' +
+                '<div class="sel-drop">' +
                     '<div class="sel-opt active" data-val="crlf" onclick="setSel(this,\'crlf\',event)">CRLF</div>' +
                     '<div class="sel-opt" data-val="lf" onclick="setSel(this,\'lf\',event)">LF</div>' +
                     '<div class="sel-opt" data-val="cr" onclick="setSel(this,\'cr\',event)">CR</div>' +
@@ -638,7 +657,7 @@ function createMonitorPane(mid, title, closable) {
             '<span class="lbl">数据位</span>' +
             '<div class="sel" id="' + mid + '-dataBits" onclick="toggleSelDrop(this)">' +
                 '<span class="sel-text">8</span><span class="sel-arrow">&#9660;</span>' +
-                '<div class="sel-drop sel-drop-down">' +
+                '<div class="sel-drop">' +
                     '<div class="sel-opt" data-val="5" onclick="setSel(this,\'5\',event)">5</div>' +
                     '<div class="sel-opt" data-val="6" onclick="setSel(this,\'6\',event)">6</div>' +
                     '<div class="sel-opt" data-val="7" onclick="setSel(this,\'7\',event)">7</div>' +
@@ -648,7 +667,7 @@ function createMonitorPane(mid, title, closable) {
             '<span class="lbl">停止位</span>' +
             '<div class="sel" id="' + mid + '-stopBits" onclick="toggleSelDrop(this)">' +
                 '<span class="sel-text">1</span><span class="sel-arrow">&#9660;</span>' +
-                '<div class="sel-drop sel-drop-down">' +
+                '<div class="sel-drop">' +
                     '<div class="sel-opt active" data-val="1" onclick="setSel(this,\'1\',event)">1</div>' +
                     '<div class="sel-opt" data-val="2" onclick="setSel(this,\'2\',event)">2</div>' +
                 '</div>' +
@@ -656,7 +675,7 @@ function createMonitorPane(mid, title, closable) {
             '<span class="lbl">校验位</span>' +
             '<div class="sel" id="' + mid + '-parity" onclick="toggleSelDrop(this)">' +
                 '<span class="sel-text">无</span><span class="sel-arrow">&#9660;</span>' +
-                '<div class="sel-drop sel-drop-down">' +
+                '<div class="sel-drop">' +
                     '<div class="sel-opt active" data-val="none" onclick="setSel(this,\'none\',event)">无</div>' +
                     '<div class="sel-opt" data-val="odd" onclick="setSel(this,\'odd\',event)">奇校验</div>' +
                     '<div class="sel-opt" data-val="even" onclick="setSel(this,\'even\',event)">偶校验</div>' +
@@ -664,8 +683,8 @@ function createMonitorPane(mid, title, closable) {
             '</div>' +
             '<div class="chk-wrap"><input type="checkbox" id="' + mid + '-chkDTR" onchange="toggleDTR(\'' + mid + '\',this.checked)"><label for="' + mid + '-chkDTR">DTR</label></div>' +
             '<div class="chk-wrap"><input type="checkbox" id="' + mid + '-chkRTS" checked onchange="toggleRTS(\'' + mid + '\',this.checked)"><label for="' + mid + '-chkRTS">RTS</label></div>' +
-            '<button class="btn-logdir" onclick="chooseLogDir()">&#128193; 选择日志目录</button>' +
-            '<button class="ibtn" onclick="saveLogToFile()" title="保存日志">' + ICONS.saveLog + '</button>' +
+            '<button class="btn-logdir" onclick="chooseLogDir(\'' + mid + '\')">&#128193; 选择日志目录</button>' +
+            '<button class="ibtn" onclick="saveLogToFile(\'' + mid + '\')" title="保存日志">' + ICONS.saveLog + '</button>' +
             '<button class="ibtn" onclick="copyOutput(\'' + mid + '\')" title="复制全部">' + ICONS.copyAll + '</button>' +
         '</div>' +
         '<div class="output" id="' + mid + '-output"></div>' +
@@ -803,7 +822,7 @@ function setBaud(mid, val) {
     });
     scheduleConfigSave();
 }
-// 点击外部关闭所有波特率下拉、发送历史下拉和格式下拉
+// 点击外部关闭所有下拉
 document.addEventListener('click', function(e) {
     document.querySelectorAll('.baud-dropdown.open').forEach(function(dd) {
         var wrap = dd.closest('.baud-wrap');
@@ -821,6 +840,10 @@ document.addEventListener('click', function(e) {
         var wrap = d.closest('.sel');
         if (wrap && !wrap.contains(e.target)) d.classList.remove('open');
     });
+    if (!e.target.closest('.qcmd-wrap')) {
+        document.querySelectorAll('.qcmd-dropdown.open').forEach(function(d) { d.classList.remove('open'); });
+        document.querySelectorAll('.qcmd-trigger.on').forEach(function(b) { b.classList.remove('on'); });
+    }
 });
 
 /* ===== 通用下拉选择 ===== */
@@ -940,15 +963,16 @@ function updateLineNumbers(mid) {
     if (!output) return;
     var lines = output.querySelectorAll('.ol');
     var lineNum = 1;
-    lines.forEach(function(line) {
-        var ln = line.querySelector('.ln');
-        if (line.classList.contains('empty-line')) {
+    for (var i = 0; i < lines.length; i++) {
+        var ln = lines[i].querySelector('.ln');
+        if (lines[i].classList.contains('empty-line')) {
             if (ln) ln.textContent = '';
         } else {
             if (ln) ln.textContent = String(lineNum);
             lineNum++;
         }
-    });
+    }
+    output._lineCount = lineNum - 1;
 }
 
 /* ===== 终端模式 ===== */
@@ -1084,6 +1108,8 @@ async function toggleConnection(mid) {
 async function connectPort(mid, silent) {
     var name = document.getElementById(mid + '-portSelect').getAttribute('data-val') || '';
     if (!name) { if (!silent) appendOutput(mid, 'err', '请先选择端口'); return; }
+    var btn = document.getElementById(mid + '-btnStart');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span style="font-size:11px;">⏳</span> 连接中...'; }
     var baud = parseInt(document.getElementById(mid + '-baudRate').value) || 115200;
     var dataBits = parseInt((document.getElementById(mid + '-dataBits').getAttribute('data-val'))) || 8;
     var stopBits = parseInt((document.getElementById(mid + '-stopBits').getAttribute('data-val'))) || 1;
@@ -1096,17 +1122,26 @@ async function connectPort(mid, silent) {
         monitors[mid].portName = name;
         updateMonitorUI(mid, true);
         startReading(mid);
-    } catch (e) { if (!silent) appendOutput(mid, 'err', '连接失败: ' + e); }
+    } catch (e) {
+        if (btn) { btn.disabled = false; }
+        updateMonitorUI(mid, false);
+        if (!silent) showToast('连接失败: ' + e, 'error');
+    }
 }
 
 async function disconnectPort(mid) {
+    var btn = document.getElementById(mid + '-btnStart');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span style="font-size:11px;">⏳</span> 断开中...'; }
     try {
         await invoke('close_port', { monitorId: mid });
         monitors[mid].isConnected = false;
         monitors[mid].portName = '';
         stopReading(mid);
         updateMonitorUI(mid, false);
-    } catch (e) { appendOutput(mid, 'err', '断开失败: ' + e); }
+    } catch (e) {
+        updateMonitorUI(mid, false);
+        showToast('断开失败: ' + e, 'error');
+    }
 }
 
 function updateMonitorUI(mid, connected) {
@@ -1117,11 +1152,13 @@ function updateMonitorUI(mid, connected) {
     if (connected) {
         btn.innerHTML = '<span style="font-size:11px;">&#9632;</span> 停止监控';
         btn.className = 'btn-main stop';
+        btn.disabled = false;
         sendBtn.disabled = false;
         ps.disabled = true;
     } else {
         btn.innerHTML = '<span style="font-size:11px;">&#9654;</span> 开始监控';
         btn.className = 'btn-main start';
+        btn.disabled = false;
         sendBtn.disabled = true;
         ps.disabled = false;
     }
@@ -1130,13 +1167,14 @@ function updateMonitorUI(mid, connected) {
 
 function startReading(mid) {
     stopReading(mid);
+    var reading = false;
     monitors[mid].readTimer = setInterval(async function() {
-        if (!monitors[mid] || !monitors[mid].isConnected) { stopReading(mid); return; }
+        if (reading || !monitors[mid] || !monitors[mid].isConnected) { if (!monitors[mid] || !monitors[mid].isConnected) stopReading(mid); return; }
+        reading = true;
         try {
             var data = await invoke('read_data', { monitorId: mid });
             if (data && data.length > 0) {
                 var decoded = decodeData(mid, data);
-                // 去除末尾的换行符，然后按换行符拆分
                 decoded = decoded.replace(/[\r\n]+$/, '');
                 if (decoded) {
                     var lines = decoded.split(/\r?\n/);
@@ -1146,7 +1184,6 @@ function startReading(mid) {
                 }
             }
         } catch (e) {
-            // 读取失败：端口可能已断开
             var reconnectBtn = document.getElementById(mid + '-btnAutoReconnect');
             if (reconnectBtn && reconnectBtn.classList.contains('on')) {
                 try {
@@ -1156,23 +1193,34 @@ function startReading(mid) {
                 stopReading(mid);
                 updateMonitorUI(mid, false);
                 var savedPort = monitors[mid].portName;
-                for (var i = 0; i < 50; i++) {
-                    await refreshPorts(mid, true);
-                    var sel = document.getElementById(mid + '-portSelect');
-                    if (sel && [...sel.querySelectorAll('.sel-opt')].some(function(o) { return o.getAttribute('data-val') === savedPort; })) {
-                        await connectPort(mid, true);
-                        if (monitors[mid].isConnected) return;
-                    }
-                    await new Promise(function(r) { setTimeout(r, 200); });
-                }
+                appendOutput(mid, 'sys', '连接断开，正在自动重连...');
+                reconnectPort(mid, savedPort, 1);
             } else {
                 monitors[mid].isConnected = false;
                 stopReading(mid);
                 updateMonitorUI(mid, false);
                 refreshPorts(mid, true);
             }
+        } finally {
+            reading = false;
         }
     }, 100);
+}
+
+async function reconnectPort(mid, portName, attempt) {
+    if (!portName || attempt > 10) {
+        if (attempt > 10) appendOutput(mid, 'err', '重连失败，已达到最大重试次数');
+        return;
+    }
+    await refreshPorts(mid, true);
+    var sel = document.getElementById(mid + '-portSelect');
+    if (sel && [...sel.querySelectorAll('.sel-opt')].some(function(o) { return o.getAttribute('data-val') === portName; })) {
+        await connectPort(mid, true);
+        if (monitors[mid].isConnected) return;
+    }
+    var delay = Math.min(2000 * attempt, 20000);
+    appendOutput(mid, 'sys', '重连失败，' + Math.round(delay/1000) + '秒后重试 (' + attempt + '/10)...');
+    setTimeout(function() { reconnectPort(mid, portName, attempt + 1); }, delay);
 }
 function stopReading(mid) {
     if (monitors[mid] && monitors[mid].readTimer) { clearInterval(monitors[mid].readTimer); monitors[mid].readTimer = null; }
@@ -1186,11 +1234,13 @@ function addMonitor() {
 }
 
 function closeMonitor(mid) {
+    if (!confirm('确定关闭此监视器？所有输出内容将丢失。')) return;
     stopReading(mid);
     if (monitors[mid] && monitors[mid].isConnected) {
         invoke('close_port', { monitorId: mid }).catch(function() {});
     }
     delete monitors[mid];
+    delete _terminalBuffers[mid];
     var pane = document.getElementById('pane-' + mid);
     if (pane) pane.remove();
     scheduleConfigSave();
@@ -1221,7 +1271,7 @@ async function sendData(mid) {
             if (hist.length > MAX_SEND_HISTORY) hist.pop();
         }
         monitors[mid].histNavIdx = -1;
-        if (!hexMode) input.value = '';
+        input.value = '';
         input.focus();
         scheduleConfigSave();
     } catch (e) { appendOutput(mid, 'err', '发送失败: ' + e); }
@@ -1254,18 +1304,20 @@ function leStr(mid) {
 }
 
 /* ===== 日志 ===== */
-async function chooseLogDir() {
+async function chooseLogDir(mid) {
+    mid = mid || 'main';
     try {
         var result = await invoke('choose_log_directory');
-        if (result) { logDirPath = result; appendOutput('main', 'sys', '日志目录: ' + logDirPath); }
-    } catch (e) { appendOutput('main', 'err', '选择目录失败: ' + e); }
+        if (result) { logDirPath = result; appendOutput(mid, 'sys', '日志目录: ' + logDirPath); }
+    } catch (e) { appendOutput(mid, 'err', '选择目录失败: ' + e); }
 }
-async function saveLogToFile() {
+async function saveLogToFile(mid) {
+    mid = mid || 'main';
     try {
-        var content = getOutputText('main');
+        var content = getOutputText(mid);
         await invoke('save_log', { content: content, path: logDirPath });
-        appendOutput('main', 'sys', '日志保存成功。');
-    } catch (e) { appendOutput('main', 'err', '保存失败: ' + e); }
+        showToast('日志保存成功', 'info');
+    } catch (e) { showToast('保存失败: ' + e, 'error'); }
 }
 function copyOutput(mid) {
     navigator.clipboard.writeText(getOutputText(mid)).then(function() {
@@ -1275,18 +1327,10 @@ function copyOutput(mid) {
 function getOutputText(mid) {
     var output = document.getElementById(mid + '-output');
     if (!output) return '';
-    var withLineNum = output.classList.contains('with-line-num');
-    var lineNum = 1;
     return Array.from(output.querySelectorAll('.ol'))
         .map(function(l) {
-            var text = l.querySelector('.lc').textContent;
-            if (withLineNum) {
-                if (l.classList.contains('empty-line')) {
-                    return text;
-                }
-                return (lineNum++) + '  ' + text;
-            }
-            return text;
+            var lc = l.querySelector('.lc');
+            return lc ? lc.textContent : '';
         }).join('\n');
 }
 
@@ -1299,7 +1343,7 @@ function decodeRaw(bytes, mode) {
     mode = mode || 'text';
     var arr = new Uint8Array(bytes);
     if (mode === 'hex') return '<span style="color:var(--text-d);">HEX:</span>' + bytesToHex(arr);
-    return new TextDecoder().decode(arr);
+    return _textDecoder.decode(arr);
 }
 
 function appendOutput(mid, type, text) {
@@ -1310,17 +1354,16 @@ function appendOutput(mid, type, text) {
     var ts = showTs ? '[' + new Date().toTimeString().slice(0,8) + '] ' : '';
     var div = document.createElement('div');
     div.className = 'ol ' + type;
-    // 添加行号元素（空行不显示行号）
     var isEmpty = !text || text.trim() === '';
     var lnSpan = document.createElement('span');
     lnSpan.className = 'ln';
     if (!isEmpty) {
-        var lineNum = el.querySelectorAll('.ol:not(.empty-line)').length + 1;
-        lnSpan.textContent = String(lineNum);
+        if (!el._lineCount) el._lineCount = 0;
+        el._lineCount++;
+        lnSpan.textContent = String(el._lineCount);
     }
     div.appendChild(lnSpan);
     if (isEmpty) div.classList.add('empty-line');
-    // 添加内容
     var contentSpan = document.createElement('span');
     contentSpan.className = 'lc';
     if (type === 'recv') {
@@ -1332,14 +1375,11 @@ function appendOutput(mid, type, text) {
     }
     div.appendChild(contentSpan);
     el.appendChild(div);
-    // 限制最大行数，防止内存溢出
     var maxLines = 10000;
-    while (el.children.length > maxLines) {
-        el.removeChild(el.firstChild);
-    }
-    // 重新编号行号
-    if (el.children.length >= maxLines) {
-        updateLineNumbers(mid);
+    if (el.children.length > maxLines) {
+        var removeCount = el.children.length - maxLines;
+        for (var r = 0; r < removeCount; r++) el.removeChild(el.firstChild);
+        if (el._lineCount > removeCount) el._lineCount -= removeCount; else el._lineCount = 0;
     }
     var scrollBtn = document.getElementById(mid + '-btnScroll');
     if (scrollBtn && scrollBtn.classList.contains('on')) el.scrollTop = el.scrollHeight;
@@ -1439,14 +1479,6 @@ function toggleQcmdDropdown(mid) {
         btn.classList.add('on');
     }
 }
-
-// 点击空白关闭下拉
-document.addEventListener('click', function(e) {
-    if (!e.target.closest('.qcmd-wrap')) {
-        document.querySelectorAll('.qcmd-dropdown.open').forEach(function(d) { d.classList.remove('open'); });
-        document.querySelectorAll('.qcmd-trigger.on').forEach(function(b) { b.classList.remove('on'); });
-    }
-});
 
 function addQcmdItem(mid) {
     var cmds = monitors[mid].quickCmds;
@@ -1549,11 +1581,10 @@ function collectConfig() {
         if (m) { var n = parseInt(m[1], 10); if (n > maxExtra) maxExtra = n; }
     });
     var cfg = { version: 1, extraCount: maxExtra, monitors: {}, logDir: logDirPath, wslAutoMap: _wslAutoMap };
-    // 窗口大小将在异步调用后设置
-    cfg._windowSizePromise = invoke('get_window_size').then(function(size) {
-        cfg.windowWidth = size[0];
-        cfg.windowHeight = size[1];
-    }).catch(function(e) { console.warn('获取窗口大小失败:', e); });
+    if (_cachedWindowSize) {
+        cfg.windowWidth = _cachedWindowSize[0];
+        cfg.windowHeight = _cachedWindowSize[1];
+    }
     Object.keys(monitors).forEach(function(mid) {
         var m = monitors[mid];
         var portSel   = document.getElementById(mid + '-portSelect');
@@ -1590,11 +1621,7 @@ function collectConfig() {
             sendHistory:  m.sendHistory ? m.sendHistory.slice(0, 20) : [],
         };
     });
-    // 等待窗口大小获取完成后返回配置
-    return cfg._windowSizePromise.then(function() {
-        delete cfg._windowSizePromise;
-        return cfg;
-    });
+    return cfg;
 }
 
 // 收集单个监视器的配置
@@ -1763,10 +1790,9 @@ function scheduleConfigSave() {
     if (_loadingConfig) return; // 配置恢复期间跳过
     if (_saveConfigTimer) clearTimeout(_saveConfigTimer);
     _saveConfigTimer = setTimeout(function() {
-        collectConfig().then(function(cfg) {
-            invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) {
-                console.warn('保存配置失败:', e);
-            });
+        var cfg = collectConfig();
+        invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) {
+            console.warn('保存配置失败:', e);
         });
     }, 500);
 }
@@ -1813,23 +1839,130 @@ async function loadAndApplyConfig() {
 
 /* ===== WSL 映射页面 ===== */
 function getWslMappingHtml(mid) {
+    var wmid = 'wsl';
+    var baudOpts = [110,300,1200,2400,4800,9600,19200,38400,57600,115200,230400,460800,921600,1500000,2000000,3000000].map(function(v) {
+        return '<div class="baud-opt' + (v===115200?' active':'') + '" onclick="setBaud(\'' + wmid + '\',' + v + ')">' + v + '</div>';
+    }).join('');
     return '<div style="display:flex;flex-direction:column;height:100%;background:#1e1e1e;">' +
         '<div style="background:#252526;border-bottom:1px solid #3c3c3c;padding:12px 16px;display:flex;align-items:flex-start;gap:20px;">' +
             '<h1 style="font-size:15px;font-weight:600;color:#e0e0e0;padding-top:2px;white-space:nowrap;">WSL 端口映射</h1>' +
             '<div id="' + mid + '-wslDistroList" style="flex:1;min-width:0;"></div>' +
         '</div>' +
-        '<div style="flex:1;overflow:hidden;display:flex;flex-direction:column;">' +
-            '<div style="flex:1;overflow-y:auto;" id="' + mid + '-wslDeviceList">' +
+        '<div style="flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0;" id="' + mid + '-wslTop">' +
+            '<div style="flex:1;overflow-y:auto;min-height:0;" id="' + mid + '-wslDeviceList">' +
                 '<div style="color:#858585;text-align:center;padding:20px;">正在加载设备列表...</div>' +
             '</div>' +
         '</div>' +
-        '<div style="height:180px;background:#252526;border-top:1px solid #3c3c3c;display:flex;flex-direction:column;">' +
-            '<div style="padding:6px 12px;background:#252526;border-bottom:1px solid #3c3c3c;display:flex;align-items:center;justify-content:space-between;">' +
-                '<span style="font-size:12px;font-weight:500;color:#858585;">操作日志</span>' +
-                '<button class="btn btn-outline" onclick="clearWslLog(\'' + mid + '\')" style="height:20px;font-size:11px;padding:0 8px;border:1px solid #454545;border-radius:3px;background:transparent;color:#ccc;cursor:pointer;">清除</button>' +
+        '<div class="wsl-mon-resize" id="' + mid + '-wslMonResize"></div>' +
+        '<div style="height:300px;min-height:120px;display:flex;flex-direction:column;background:var(--editor-bg);flex-shrink:0;" id="' + mid + '-wslMonPanel">' +
+            '<div class="toolbar" id="' + wmid + '-toolbar">' +
+                '<span class="lbl">查看</span>' +
+                '<div class="sel" id="' + wmid + '-viewMode" data-val="text" onclick="toggleSelDrop(this)">' +
+                    '<span class="sel-text">文本</span><span class="sel-arrow">&#9660;</span>' +
+                    '<div class="sel-drop">' +
+                        '<div class="sel-opt active" data-val="text" onclick="setSel(this,\'text\',event)">文本</div>' +
+                        '<div class="sel-opt" data-val="hex" onclick="setSel(this,\'hex\',event)">HEX</div>' +
+                    '</div>' +
+                '</div>' +
+                '<span class="lbl">端口</span>' +
+                '<div class="sel sel-port" id="' + wmid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:180px;">' +
+                    '<span class="sel-text">无可用端口</span><span class="sel-arrow">&#9660;</span>' +
+                    '<div class="sel-drop" id="' + wmid + '-portDrop"></div>' +
+                '</div>' +
+                '<button class="btn-ref" onclick="refreshWslMonPorts()" title="刷新端口">' + ICONS.refresh + '</button>' +
+                '<span class="lbl">波特率</span>' +
+                '<div class="baud-wrap" id="' + wmid + '-baudWrap">' +
+                    '<input class="baud-input" id="' + wmid + '-baudRate" type="number" value="115200" min="110" max="4000000" autocomplete="off">' +
+                    '<button class="baud-arrow" onclick="toggleBaudDropdown(event,\'' + wmid + '\')" title="波特率">&#9660;</button>' +
+                    '<div class="baud-dropdown" id="' + wmid + '-baudDropdown">' + baudOpts + '</div>' +
+                '</div>' +
+                '<span class="lbl">行尾</span>' +
+                '<div class="sel" id="' + wmid + '-lineEnding" data-val="crlf" onclick="toggleSelDrop(this)">' +
+                    '<span class="sel-text">CRLF</span><span class="sel-arrow">&#9660;</span>' +
+                    '<div class="sel-drop">' +
+                        '<div class="sel-opt active" data-val="crlf" onclick="setSel(this,\'crlf\',event)">CRLF</div>' +
+                        '<div class="sel-opt" data-val="lf" onclick="setSel(this,\'lf\',event)">LF</div>' +
+                        '<div class="sel-opt" data-val="cr" onclick="setSel(this,\'cr\',event)">CR</div>' +
+                        '<div class="sel-opt" data-val="none" onclick="setSel(this,\'none\',event)">无</div>' +
+                    '</div>' +
+                '</div>' +
+                '<button class="btn-main start" id="' + wmid + '-btnStart" onclick="toggleConnection(\'' + wmid + '\')">' +
+                    '<span style="font-size:11px;">&#9654;</span> 开始监控' +
+                '</button>' +
+                '<div class="tsep"></div>' +
+                '<button class="ibtn" onclick="clearLog(\'' + wmid + '\')" title="清除内容">' + ICONS.clear + '</button>' +
+                '<button class="ibtn on" id="' + wmid + '-btnScroll" onclick="toggleIbtn(this)" title="自动回滚">' + ICONS.rollback + '</button>' +
+                '<button class="ibtn" id="' + wmid + '-btnAutoReconnect" onclick="toggleIbtn(this)" title="自动重连">' + ICONS.reconnect + '</button>' +
+                '<button class="ibtn on" id="' + wmid + '-btnSendLE" onclick="toggleTerminalMode(this,\'' + wmid + '\')" title="终端模式">' + ICONS.terminal + '</button>' +
+                '<button class="ibtn" id="' + wmid + '-btnLineNum" onclick="toggleLineNum(this,\'' + wmid + '\')" title="显示行号">' + ICONS.lineNum + '</button>' +
+                '<button class="ibtn on" id="' + wmid + '-btnTs" onclick="toggleIbtn(this)" title="开启时间戳">' + ICONS.timestamp + '</button>' +
+                '<button class="ibtn on" id="' + wmid + '-btnEcho" onclick="toggleIbtn(this)" title="启动消息回显">' + ICONS.copy + '</button>' +
+                '<button class="ibtn" id="' + wmid + '-btnAdv" onclick="toggleAdv(\'' + wmid + '\')" title="更多设置">' + ICONS.settings + '</button>' +
             '</div>' +
-            '<div style="flex:1;overflow-y:auto;padding:8px 12px;font-family:monospace;font-size:12px;line-height:1.6;" class="no-scrollbar" id="' + mid + '-wslLog">' +
-                '<div style="color:#9cdcfe;">[等待操作...]</div>' +
+            '<div class="adv-row" id="' + wmid + '-advRow">' +
+                '<span class="lbl">数据位</span>' +
+                '<div class="sel" id="' + wmid + '-dataBits" onclick="toggleSelDrop(this)">' +
+                    '<span class="sel-text">8</span><span class="sel-arrow">&#9660;</span>' +
+                    '<div class="sel-drop">' +
+                        '<div class="sel-opt" data-val="5" onclick="setSel(this,\'5\',event)">5</div>' +
+                        '<div class="sel-opt" data-val="6" onclick="setSel(this,\'6\',event)">6</div>' +
+                        '<div class="sel-opt" data-val="7" onclick="setSel(this,\'7\',event)">7</div>' +
+                        '<div class="sel-opt active" data-val="8" onclick="setSel(this,\'8\',event)">8</div>' +
+                    '</div>' +
+                '</div>' +
+                '<span class="lbl">停止位</span>' +
+                '<div class="sel" id="' + wmid + '-stopBits" onclick="toggleSelDrop(this)">' +
+                    '<span class="sel-text">1</span><span class="sel-arrow">&#9660;</span>' +
+                    '<div class="sel-drop">' +
+                        '<div class="sel-opt active" data-val="1" onclick="setSel(this,\'1\',event)">1</div>' +
+                        '<div class="sel-opt" data-val="2" onclick="setSel(this,\'2\',event)">2</div>' +
+                    '</div>' +
+                '</div>' +
+                '<span class="lbl">校验位</span>' +
+                '<div class="sel" id="' + wmid + '-parity" onclick="toggleSelDrop(this)">' +
+                    '<span class="sel-text">无</span><span class="sel-arrow">&#9660;</span>' +
+                    '<div class="sel-drop">' +
+                        '<div class="sel-opt active" data-val="none" onclick="setSel(this,\'none\',event)">无</div>' +
+                        '<div class="sel-opt" data-val="odd" onclick="setSel(this,\'odd\',event)">奇校验</div>' +
+                        '<div class="sel-opt" data-val="even" onclick="setSel(this,\'even\',event)">偶校验</div>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="chk-wrap"><input type="checkbox" id="' + wmid + '-chkDTR" onchange="toggleWslDTR(this.checked)"><label for="' + wmid + '-chkDTR">DTR</label></div>' +
+                '<div class="chk-wrap"><input type="checkbox" id="' + wmid + '-chkRTS" checked onchange="toggleWslRTS(this.checked)"><label for="' + wmid + '-chkRTS">RTS</label></div>' +
+                '<button class="btn-logdir" onclick="chooseLogDir(\'' + wmid + '\')">&#128193; 选择日志目录</button>' +
+                '<button class="ibtn" onclick="saveLogToFile(\'' + wmid + '\')" title="保存日志">' + ICONS.saveLog + '</button>' +
+                '<button class="ibtn" onclick="copyOutput(\'' + wmid + '\')" title="复制全部">' + ICONS.copyAll + '</button>' +
+            '</div>' +
+            '<div class="output" id="' + wmid + '-output"></div>' +
+            '<div class="send-bar" id="' + wmid + '-sendBar">' +
+                '<div class="send-wrap" id="' + wmid + '-sendWrap">' +
+                    '<input class="send-inp" id="' + wmid + '-sendInput" placeholder="输入要发送的内容，回车发送..." autocomplete="off" spellcheck="false">' +
+                    '<div class="send-hist" id="' + wmid + '-sendHist"></div>' +
+                '</div>' +
+                '<div class="send-as" id="' + wmid + '-sendAs" onclick="toggleSendAsDrop(\'' + wmid + '\')">' +
+                    '<span class="send-as-text" id="' + wmid + '-sendAsText">文本</span>' +
+                    '<span class="send-as-arrow">&#9660;</span>' +
+                    '<div class="send-as-drop" id="' + wmid + '-sendAsDrop">' +
+                        '<div class="send-as-opt active" data-val="text" onclick="setSendAs(\'' + wmid + '\',\'text\',this,event)">文本</div>' +
+                        '<div class="send-as-opt" data-val="hex" onclick="setSendAs(\'' + wmid + '\',\'hex\',this,event)">HEX</div>' +
+                    '</div>' +
+                '</div>' +
+                '<span class="ssep">|</span>' +
+                '<button class="btn-send" id="' + wmid + '-btnSend" onclick="sendWslData(\'' + wmid + '\')" disabled>' +
+                    '<span style="font-size:10px;">&#9654;</span> 发送' +
+                '</button>' +
+                '<div class="qcmd-wrap" id="' + wmid + '-qcmdWrap">' +
+                    '<button class="qcmd-trigger" id="' + wmid + '-btnQcmd" onclick="toggleQcmdDropdown(\'' + wmid + '\')" title="快速指令">' +
+                        ICONS.quickCmd + '<span class="qcmd-arrow">▲</span>' +
+                    '</button>' +
+                    '<div class="qcmd-dropdown" id="' + wmid + '-qcmdDrop">' +
+                        '<div class="qcmd-dh">' +
+                            '<span>快速指令</span>' +
+                            '<button class="qcmd-dh-add" onclick="addQcmdItem(\'' + wmid + '\')">＋ 添加</button>' +
+                        '</div>' +
+                        '<div class="qcmd-list" id="' + wmid + '-qcmdList"></div>' +
+                    '</div>' +
+                '</div>' +
             '</div>' +
         '</div>' +
     '</div>';
@@ -1869,6 +2002,12 @@ function openWslMapping() {
         if (icon) icon.innerHTML = '<rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><polyline points="9 3 9 21" fill="none" stroke="currentColor" stroke-width="2"/><line x1="3" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="2"/>';
     }
 
+    // 初始化 WSL 串口监视器
+    initWslMonitor();
+
+    // 拖拽调整监视器高度
+    initWslMonResize(mid);
+
     // 检查 WSL 运行状态
     function loadWslDistros() {
         invoke('get_wsl_distributions').then(function(distros) {
@@ -1879,30 +2018,347 @@ function openWslMapping() {
         });
     }
     function updateWslStatusUI(running) {
+        console.log('[WSL] updateWslStatusUI:', running);
         _wslRunning = running;
         loadWslDistros();
         renderWslDeviceList(mid);
+        setWslMonitorEnabled(running);
+        // WSL 关闭时自动释放所有映射
+        if (!running) {
+            autoDetachAllDevices(mid);
+        }
     }
-    // 初始检查
-    invoke('check_wsl_status').then(function(dists) {
-        _wslRunning = dists && dists.length > 0;
-        updateWslStatusUI(_wslRunning);
-    }).catch(function() {
-        _wslRunning = false;
-        updateWslStatusUI(false);
-    });
-    // 监听状态变化事件
+    // 先监听事件，确保不丢失
     if (_wslStatusUnlisten) _wslStatusUnlisten();
     if (window.__TAURI__ && window.__TAURI__.event) {
         window.__TAURI__.event.listen('wsl-status-changed', function(event) {
+            console.log('[WSL] wsl-status-changed event:', event.payload);
             updateWslStatusUI(event.payload);
         }).then(function(unlisten) {
             _wslStatusUnlisten = unlisten;
         });
     }
+    // 初始检查（异步，结果回来后更新UI）
+    invoke('check_wsl_status').then(function(dists) {
+        console.log('[WSL] check_wsl_status result:', dists);
+        var running = dists && dists.length > 0;
+        _wslRunning = running;
+        updateWslStatusUI(running);
+    }).catch(function(e) {
+        console.error('[WSL] check_wsl_status error:', e);
+    });
 
     // 加载设备列表
     loadWslDevices(mid);
+}
+
+/* ===== WSL 串口监视器 ===== */
+function initWslMonitor() {
+    var wmid = 'wsl';
+    if (!monitors[wmid]) {
+        monitors[wmid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, quickCmds: [
+            {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
+            {label:'指令4', value:''}, {label:'指令5', value:''}
+        ], isWsl: true };
+    }
+    // 初始化快速指令下拉列表
+    var qlist = document.getElementById(wmid + '-qcmdList');
+    if (qlist && monitors[wmid].quickCmds) {
+        qlist.innerHTML = '';
+        monitors[wmid].quickCmds.forEach(function(cmd, idx) {
+            qlist.appendChild(makeQcmdItem(wmid, idx, cmd.label, cmd.value));
+        });
+    }
+    // 绑定键盘事件
+    var sendInput = document.getElementById(wmid + '-sendInput');
+    if (sendInput) {
+        sendInput.addEventListener('keydown', function(e) {
+            var hist = monitors[wmid].sendHistory;
+            var histEl = document.getElementById(wmid + '-sendHist');
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                if (histEl && histEl.classList.contains('open')) {
+                    var selItem = histEl.querySelector('.send-hist-item.selected');
+                    if (selItem) { sendInput.value = selItem.textContent; histEl.classList.remove('open'); sendInput.focus(); return; }
+                }
+                sendWslData(wmid);
+                if (histEl) histEl.classList.remove('open');
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (histEl && histEl.classList.contains('open')) {
+                    var selItem = histEl.querySelector('.send-hist-item.selected');
+                    if (selItem && selItem.nextElementSibling) { selItem.classList.remove('selected'); selItem.nextElementSibling.classList.add('selected'); selItem.nextElementSibling.scrollIntoView({ block: 'nearest' }); }
+                } else if (hist.length > 0) { showSendHistory(wmid); var items = histEl ? histEl.querySelectorAll('.send-hist-item') : []; if (items.length > 0) items[0].classList.add('selected'); }
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (histEl && histEl.classList.contains('open')) {
+                    var selItem = histEl.querySelector('.send-hist-item.selected');
+                    if (selItem && selItem.previousElementSibling) { selItem.classList.remove('selected'); selItem.previousElementSibling.classList.add('selected'); selItem.previousElementSibling.scrollIntoView({ block: 'nearest' }); }
+                    else if (!selItem || !selItem.previousElementSibling) { histEl.classList.remove('open'); }
+                } else if (hist.length > 0) { monitors[wmid].histNavIdx = Math.min(monitors[wmid].histNavIdx + 1, hist.length - 1); sendInput.value = hist[monitors[wmid].histNavIdx]; }
+            } else if (e.key === 'Escape') { if (histEl) histEl.classList.remove('open'); monitors[wmid].histNavIdx = -1; }
+        });
+        sendInput.addEventListener('input', function() { monitors[wmid].histNavIdx = -1; });
+    }
+    // 重写开始/停止按钮的 onclick
+    var btnStart = document.getElementById(wmid + '-btnStart');
+    if (btnStart) {
+        btnStart.setAttribute('onclick', "toggleWslConnection()");
+    }
+    // 初始禁用（等WSL状态确认后再启用）
+    setWslMonitorEnabled(false);
+    // 初始化终端模式（不刷新端口，等WSL确认运行后再刷新）
+    initTerminalMode(wmid);
+}
+
+// WSL 串口连接/断开切换
+async function toggleWslConnection() {
+    var wmid = 'wsl';
+    if (monitors[wmid] && monitors[wmid].isConnected) {
+        await disconnectWslPort(wmid);
+    } else {
+        await connectWslPort(wmid);
+    }
+}
+
+// 连接 WSL 串口
+async function connectWslPort(mid) {
+    var ps = document.getElementById(mid + '-portSelect');
+    var devicePath = ps ? ps.getAttribute('data-val') : '';
+    if (!devicePath) { showToast('请先选择端口', 'error'); return; }
+    var btn = document.getElementById(mid + '-btnStart');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span style="font-size:11px;">⏳</span> 连接中...'; }
+    var baud = parseInt(document.getElementById(mid + '-baudRate').value) || 115200;
+    try {
+        await invoke('open_wsl_serial', { monitorId: mid, devicePath: devicePath, baudRate: baud });
+        monitors[mid].isConnected = true;
+        monitors[mid].portName = devicePath;
+        updateMonitorUI(mid, true);
+        startWslReading(mid);
+        showToast('WSL 串口已连接', 'success');
+    } catch (e) {
+        if (btn) btn.disabled = false;
+        updateMonitorUI(mid, false);
+        showToast('连接失败: ' + e, 'error');
+    }
+}
+
+// 断开 WSL 串口
+async function disconnectWslPort(mid) {
+    try {
+        await invoke('close_wsl_serial', { monitorId: mid });
+        monitors[mid].isConnected = false;
+        monitors[mid].portName = '';
+        stopReading(mid);
+        updateMonitorUI(mid, false);
+        showToast('WSL 串口已断开', 'info');
+    } catch (e) { showToast('断开失败: ' + e, 'error'); }
+}
+
+// 发送数据到 WSL 串口
+async function sendWslData(mid) {
+    if (!monitors[mid] || !monitors[mid].isConnected) return;
+    var input = document.getElementById(mid + '-sendInput');
+    var text = input.value;
+    if (!text) return;
+    var hexMode = document.getElementById(mid + '-sendAsText').textContent === 'HEX';
+    var bytes;
+    try {
+        if (hexMode) { bytes = hexToBytes(text); }
+        else { text += leStr(mid); bytes = new TextEncoder().encode(text); }
+    } catch (e) { appendOutput(mid, 'err', '格式错误: ' + e); return; }
+    try {
+        await invoke('send_wsl_serial', { monitorId: mid, data: Array.from(bytes) });
+        var echoBtn = document.getElementById(mid + '-btnEcho');
+        if (echoBtn && echoBtn.classList.contains('on')) {
+            appendOutput(mid, 'send', hexMode ? '<span style="color:var(--text-d);">HEX:</span>' + bytesToHex(bytes) : decodeRaw(bytes));
+        }
+        var hist = monitors[mid].sendHistory;
+        if (hist.length === 0 || hist[0] !== text) {
+            hist.unshift(text);
+            if (hist.length > MAX_SEND_HISTORY) hist.pop();
+        }
+        monitors[mid].histNavIdx = -1;
+        input.value = '';
+        input.focus();
+    } catch (e) { appendOutput(mid, 'err', '发送失败: ' + e); }
+}
+
+// WSL DTR/RTS 控制
+async function toggleWslDTR(level) {
+    if (!monitors['wsl'] || !monitors['wsl'].isConnected) return;
+    try { await invoke('set_wsl_dtr', { monitorId: 'wsl', level: level }); } catch (e) { showToast('DTR 设置失败: ' + e, 'error'); }
+}
+async function toggleWslRTS(level) {
+    if (!monitors['wsl'] || !monitors['wsl'].isConnected) return;
+    try { await invoke('set_wsl_rts', { monitorId: 'wsl', level: level }); } catch (e) { showToast('RTS 设置失败: ' + e, 'error'); }
+}
+
+// WSL 串口数据读取轮询
+function startWslReading(mid) {
+    stopReading(mid);
+    var reading = false;
+    monitors[mid].readTimer = setInterval(async function() {
+        if (reading || !monitors[mid] || !monitors[mid].isConnected) { if (!monitors[mid] || !monitors[mid].isConnected) stopReading(mid); return; }
+        reading = true;
+        try {
+            var data = await invoke('read_wsl_serial', { monitorId: mid });
+            if (data && data.length > 0) {
+                var decoded = decodeData(mid, data);
+                decoded = decoded.replace(/[\r\n]+$/, '');
+                if (decoded) {
+                    var lines = decoded.split(/\r?\n/);
+                    for (var i = 0; i < lines.length; i++) {
+                        appendOutput(mid, 'recv', lines[i]);
+                    }
+                }
+            }
+        } catch (e) {
+            var reconnectBtn = document.getElementById(mid + '-btnAutoReconnect');
+            if (reconnectBtn && reconnectBtn.classList.contains('on')) {
+                try { await invoke('close_wsl_serial', { monitorId: mid }); } catch (_) {}
+                monitors[mid].isConnected = false;
+                stopReading(mid);
+                updateMonitorUI(mid, false);
+                var savedPort = monitors[mid].portName;
+                appendOutput(mid, 'sys', '连接断开，3秒后自动重连...');
+                setTimeout(function() { reconnectWslPort(mid, savedPort); }, 3000);
+            } else {
+                console.error('[WSL] 读取失败:', e);
+            }
+        } finally {
+            reading = false;
+        }
+    }, 100);
+}
+
+async function reconnectWslPort(mid, portName, attempt) {
+    if (!portName) return;
+    attempt = attempt || 1;
+    if (attempt > 10) { appendOutput(mid, 'err', '重连失败，已达到最大重试次数'); return; }
+    var baud = parseInt(document.getElementById(mid + '-baudRate').value) || 115200;
+    try {
+        appendOutput(mid, 'sys', '正在重连 (' + attempt + '/10): ' + portName);
+        await invoke('open_wsl_serial', { monitorId: mid, devicePath: portName, baudRate: baud });
+        monitors[mid].isConnected = true;
+        monitors[mid].portName = portName;
+        updateMonitorUI(mid, true);
+        startWslReading(mid);
+        appendOutput(mid, 'sys', '重连成功');
+    } catch (e) {
+        appendOutput(mid, 'err', '重连失败: ' + e);
+        var reconnectBtn = document.getElementById(mid + '-btnAutoReconnect');
+        if (reconnectBtn && reconnectBtn.classList.contains('on')) {
+            var delay = Math.min(3000 * attempt, 30000);
+            setTimeout(function() { reconnectWslPort(mid, portName, attempt + 1); }, delay);
+        }
+    }
+}
+
+// WSL 关闭时自动释放所有映射设备
+async function autoDetachAllDevices(mid) {
+    var detached = [];
+    for (var i = 0; i < _wslDevices.length; i++) {
+        var d = _wslDevices[i];
+        if (d.status === 'mapped' && !_wslBusy[d.busid]) {
+            _wslBusy[d.busid] = true;
+            try {
+                await invoke('detach_port_from_wsl', { busid: d.busid });
+                d.status = 'unmapped';
+                detached.push(d.name || d.busid);
+            } catch (e) { console.error('[WSL] 自动释放失败:', e); }
+            delete _wslBusy[d.busid];
+        }
+    }
+    if (detached.length > 0) {
+        console.log('[WSL] 已自动释放:', detached);
+        renderWslDeviceList(mid);
+    }
+}
+
+function setWslMonitorEnabled(enabled) {
+    var wmid = 'wsl';
+    var panel = document.querySelector('[id$="-wslMonPanel"]');
+    console.log('[WSL] setWslMonitorEnabled:', enabled, 'panel:', panel);
+    if (!panel) return;
+    if (enabled) {
+        panel.classList.remove('wsl-mon-disabled');
+        refreshWslMonPorts();
+    } else {
+        panel.classList.add('wsl-mon-disabled');
+        if (monitors[wmid] && monitors[wmid].isConnected) {
+            disconnectWslPort(wmid);
+        }
+    }
+}
+
+async function refreshWslMonPorts() {
+    var wmid = 'wsl';
+    var drop = document.getElementById(wmid + '-portDrop');
+    if (!drop) return;
+    // 从 WSL 内部获取串口设备列表
+    var ports = [];
+    try {
+        var devices = await invoke('get_wsl_serial_devices');
+        if (devices && devices.length > 0) {
+            ports = devices.map(function(d) { return { name: d, label: d }; });
+        }
+    } catch (e) { console.error('[WSL] 获取串口设备失败:', e); }
+    drop.innerHTML = '';
+    if (ports.length === 0) {
+        drop.innerHTML = '<div class="sel-opt" style="color:#585858;">无可用端口</div>';
+        var ps = document.getElementById(wmid + '-portSelect');
+        if (ps) {
+            ps.setAttribute('data-val', '');
+            ps.querySelector('.sel-text').textContent = '无可用端口';
+        }
+        return;
+    }
+    ports.forEach(function(p, i) {
+        var div = document.createElement('div');
+        div.className = 'sel-opt' + (i === 0 ? ' active' : '');
+        div.setAttribute('data-val', p.name);
+        div.textContent = p.label;
+        div.addEventListener('click', function(e) { e.stopPropagation(); setSel(div, p.name, e); });
+        drop.appendChild(div);
+    });
+    // 默认选中第一个
+    var ps = document.getElementById(wmid + '-portSelect');
+    if (ps && ports.length > 0) {
+        ps.setAttribute('data-val', ports[0].name);
+        ps.querySelector('.sel-text').textContent = ports[0].label;
+    }
+}
+
+function initWslMonResize(mid) {
+    var handle = document.getElementById(mid + '-wslMonResize');
+    var topPanel = document.getElementById(mid + '-wslTop');
+    var monPanel = document.getElementById(mid + '-wslMonPanel');
+    if (!handle || !topPanel || !monPanel) return;
+    var startY = 0, startTopH = 0, startMonH = 0;
+    function onMouseDown(e) {
+        e.preventDefault();
+        startY = e.clientY;
+        startTopH = topPanel.offsetHeight;
+        startMonH = monPanel.offsetHeight;
+        handle.classList.add('dragging');
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    }
+    function onMouseMove(e) {
+        var dy = e.clientY - startY;
+        var newTopH = Math.max(60, startTopH + dy);
+        var newMonH = Math.max(80, startMonH - dy);
+        topPanel.style.flex = 'none';
+        topPanel.style.height = newTopH + 'px';
+        monPanel.style.height = newMonH + 'px';
+    }
+    function onMouseUp() {
+        handle.classList.remove('dragging');
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+    }
+    handle.addEventListener('mousedown', onMouseDown);
 }
 
 function renderWslDistroCards(mid, distros) {
@@ -2014,6 +2470,11 @@ function bindMonitorEvents(mid) {
 function restoreMonitorPane(mid) {
     console.log('[WSL] 返回监视器页面:', mid);
     if (_wslStatusUnlisten) { _wslStatusUnlisten(); _wslStatusUnlisten = null; }
+    // 断开 WSL 串口监视器
+    var wmid = 'wsl';
+    if (monitors[wmid] && monitors[wmid].isConnected) {
+        disconnectWslPort(wmid);
+    }
     var pane = document.getElementById('pane-' + mid);
     if (pane && monitors[mid] && monitors[mid]._originalHtml) {
         pane.innerHTML = monitors[mid]._originalHtml;
@@ -2049,6 +2510,9 @@ function restoreMonitorPane(mid) {
         
         // 自动刷新端口列表
         refreshPorts(mid);
+        
+        // 恢复终端模式
+        initTerminalMode(mid);
     }
 }
 
@@ -2113,10 +2577,6 @@ async function loadWslDevices(mid) {
         
         console.log('[WSL] 设备列表:', _wslDevices);
         renderWslDeviceList(mid);
-        
-        if (_wslDevices.length === 0) {
-            addWslLog(mid, 'warning', '未发现可用的USB串口设备');
-        }
     } catch (e) {
         console.error('[WSL] 加载设备列表失败:', e);
         container.innerHTML = '<div style="color:#f44747;text-align:center;padding:20px;">加载失败: ' + e + '</div>';
@@ -2128,10 +2588,10 @@ function renderWslDeviceList(mid) {
     if (!container) return;
     
     if (_wslDevices.length === 0) {
-        container.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:#484848;">' +
-            '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#484848" stroke-width="1.5" style="margin-bottom:10px;"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y="17" x2="12" y="21"/></svg>' +
+        container.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:#999;">' +
+            '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#666" stroke-width="1.5" style="margin-bottom:10px;"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y="17" x2="12" y="21"/></svg>' +
             '<div style="font-size:13px;">未发现可用的 USB 设备</div>' +
-            '<div style="font-size:11px;margin-top:4px;color:#383838;">连接设备后将自动刷新</div>' +
+            '<div style="font-size:11px;margin-top:4px;color:#666;">连接设备后将自动刷新</div>' +
         '</div>';
         return;
     }
@@ -2158,7 +2618,7 @@ function renderWslDeviceList(mid) {
         var safeBusid = device.busid || '';
         var safePort = device.port || '';
         
-        html += '<div style="display:flex;align-items:center;padding:8px 12px;gap:12px;border-radius:4px;background:' + rowBg + ';border:1px solid ' + rowBorder + ';transition:all 0.15s;cursor:default;' + (isBusy ? 'opacity:0.6;' : '') + '" onmouseover="this.style.background=\'rgba(255,255,255,0.04)\'" onmouseout="this.style.background=\'' + rowBg + '\'">';
+        html += '<div class="wsl-device-row" style="display:flex;align-items:center;padding:8px 12px;gap:12px;border-radius:4px;background:' + rowBg + ';border:1px solid ' + rowBorder + ';cursor:default;' + (isBusy ? 'opacity:0.6;' : '') + '">';
         // BUSID
         html += '<span style="width:70px;flex-shrink:0;font-family:monospace;font-size:12px;color:#484848;">' + safeBusid + '</span>';
         // 端口
@@ -2189,8 +2649,6 @@ function renderWslDeviceList(mid) {
     html += '</div>';
     container.innerHTML = html;
 }
-
-// 切换映射状态
 async function toggleWslMapping(mid, idx, checked) {
     if (!_wslRunning) return;
     var device = _wslDevices[idx];
@@ -2202,23 +2660,15 @@ async function toggleWslMapping(mid, idx, checked) {
     var attachId = device.hasCom ? device.port : device.busid;
     
     if (checked) {
-        addWslLog(mid, 'info', '正在将 ' + device.name + ' 映射到 WSL...');
         try {
-            var result = await invoke('attach_port_to_wsl', { portName: attachId });
-            addWslLog(mid, 'success', result);
+            await invoke('attach_port_to_wsl', { portName: attachId });
             device.status = 'mapped';
-        } catch (e) {
-            addWslLog(mid, 'error', '映射失败: ' + e);
-        }
+        } catch (e) { console.error('[WSL] 映射失败:', e); }
     } else {
-        addWslLog(mid, 'info', '正在断开 ' + device.name + ' 的映射...');
         try {
-            var result = await invoke('detach_port_from_wsl', { busid: device.busid });
-            addWslLog(mid, 'success', result);
+            await invoke('detach_port_from_wsl', { busid: device.busid });
             device.status = 'unmapped';
-        } catch (e) {
-            addWslLog(mid, 'error', '断开失败: ' + e);
-        }
+        } catch (e) { console.error('[WSL] 断开失败:', e); }
     }
     
     delete _wslBusy[device.busid];
@@ -2289,16 +2739,14 @@ async function autoMapCheck() {
             if (_wslAutoMap[d.busid] && d.status !== 'mapped' && !_wslBusy[d.busid]) {
                 _wslBusy[d.busid] = true;
                 var autoAttachId = d.hasCom ? d.port : d.busid;
-                addWslLog('main', 'info', '[自动] 正在将 ' + d.name + ' 映射到 WSL...');
                 (function(device, attachId) {
                     tasks.push(
                         invoke('attach_port_to_wsl', { portName: attachId })
                             .then(function(result) { 
-                                addWslLog('main', 'success', '[自动] ' + result); 
                                 device.status = 'mapped';
                             })
                             .catch(function(e) { 
-                                addWslLog('main', 'error', '[自动] 映射失败: ' + e); 
+                                console.error('[WSL] 自动映射失败:', e);
                             })
                             .finally(function() { 
                                 delete _wslBusy[device.busid]; 
@@ -2337,28 +2785,6 @@ async function autoMapCheck() {
         }
     } catch (e) {
         // 静默失败，下次轮询重试
-    }
-}
-
-function addWslLog(mid, type, message) {
-    var logContainer = document.getElementById(mid + '-wslLog');
-    if (!logContainer) return;
-    
-    var now = new Date();
-    var time = now.toTimeString().slice(0, 8);
-    var colors = { info: '#9cdcfe', success: '#89d185', error: '#f44747', warning: '#dcdcaa' };
-    
-    var line = document.createElement('div');
-    line.style.color = colors[type] || '#9cdcfe';
-    line.textContent = '[' + time + '] ' + message;
-    logContainer.appendChild(line);
-    logContainer.scrollTop = logContainer.scrollHeight;
-}
-
-function clearWslLog(mid) {
-    var logContainer = document.getElementById(mid + '-wslLog');
-    if (logContainer) {
-        logContainer.innerHTML = '<div style="color:#9cdcfe;">[日志已清除]</div>';
     }
 }
 
@@ -2404,9 +2830,16 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // 监听窗口大小变化，保存到配置（防抖 500ms）
+    // 监听窗口大小变化，缓存并保存到配置（防抖 500ms）
+    function refreshWindowSizeCache() {
+        invoke('get_window_size').then(function(size) {
+            _cachedWindowSize = size;
+        }).catch(function() {});
+    }
+    refreshWindowSizeCache();
     var _resizeTimer = null;
     window.addEventListener('resize', function() {
+        refreshWindowSizeCache();
         if (_resizeTimer) clearTimeout(_resizeTimer);
         _resizeTimer = setTimeout(function() {
             _resizeTimer = null;

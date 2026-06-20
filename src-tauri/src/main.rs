@@ -6,18 +6,25 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
 use std::sync::Mutex;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 use tauri::Emitter;
 
 fn dbg_log(msg: &str) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let line = format!("[{}ms] {}\n", now, msg);
-    let _ = std::fs::OpenOptions::new()
-        .create(true).append(true)
-        .open(std::env::temp_dir().join("seahi-serial-debug.log"))
-        .and_then(|mut f| f.write_all(line.as_bytes()));
+    #[cfg(debug_assertions)]
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let line = format!("[{}ms] {}\n", now, msg);
+        let _ = std::fs::OpenOptions::new()
+            .create(true).append(true)
+            .open(std::env::temp_dir().join("seahi-serial-debug.log"))
+            .and_then(|mut f| f.write_all(line.as_bytes()));
+    }
+    let _ = msg;
 }
 
 #[cfg(windows)]
@@ -88,16 +95,32 @@ struct PortState {
     ports: Mutex<HashMap<String, Box<dyn SerialPort>>>,
 }
 
+const WSL_BUFFER_MAX: usize = 1024 * 1024; // 1MB 读缓冲上限
+
+/// WSL 串口会话
+struct WslSerialSession {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    buffer: std::sync::Arc<Mutex<Vec<u8>>>,
+    _reader_thread: std::thread::JoinHandle<()>,
+    device_path: String,
+}
+
+/// 全局状态：WSL 串口连接（key = monitor_id）
+struct WslSerialState {
+    sessions: Mutex<HashMap<String, WslSerialSession>>,
+}
+
 /// 创建不显示控制台窗口的 Command
 fn hidden_command(program: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new(program);
     #[cfg(windows)]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    cmd.creation_flags(CREATE_NO_WINDOW); // CREATE_NO_WINDOW
     cmd
 }
 
 /// 串口信息（发给前端）
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, Clone)]
 struct PortInfo {
     port_name: String,
     friendly_name: String,
@@ -261,9 +284,8 @@ fn open_port(
             .map_err(|e| format!("打开失败: {}", e))?;
 
     // 设置波特率
-    if let Err(e) = port.set_baud_rate(baud_rate) {
-        eprintln!("设置波特率失败: {}", e);
-    }
+    port.set_baud_rate(baud_rate)
+        .map_err(|e| format!("设置波特率失败: {}", e))?;
 
     // 设置数据位
     let db = match data_bits {
@@ -272,18 +294,16 @@ fn open_port(
         7 => DataBits::Seven,
         _ => DataBits::Eight,
     };
-    if let Err(e) = port.set_data_bits(db) {
-        eprintln!("设置数据位失败: {}", e);
-    }
+    port.set_data_bits(db)
+        .map_err(|e| format!("设置数据位失败: {}", e))?;
 
     // 设置停止位
     let sb = match stop_bits {
         2 => StopBits::Two,
         _ => StopBits::One,
     };
-    if let Err(e) = port.set_stop_bits(sb) {
-        eprintln!("设置停止位失败: {}", e);
-    }
+    port.set_stop_bits(sb)
+        .map_err(|e| format!("设置停止位失败: {}", e))?;
 
     // 设置校验位
     let pr = match parity.as_str() {
@@ -291,17 +311,14 @@ fn open_port(
         "odd" => Parity::Odd,
         _ => Parity::None,
     };
-    if let Err(e) = port.set_parity(pr) {
-        eprintln!("设置校验位失败: {}", e);
-    }
+    port.set_parity(pr)
+        .map_err(|e| format!("设置校验位失败: {}", e))?;
 
     // 设置 DTR/RTS
-    if let Err(e) = port.write_data_terminal_ready(dtr) {
-        eprintln!("DTR 设置失败: {}", e);
-    }
-    if let Err(e) = port.write_request_to_send(rts) {
-        eprintln!("RTS 设置失败: {}", e);
-    }
+    port.write_data_terminal_ready(dtr)
+        .map_err(|e| format!("DTR 设置失败: {}", e))?;
+    port.write_request_to_send(rts)
+        .map_err(|e| format!("RTS 设置失败: {}", e))?;
 
     let mut guard = state.ports.lock().unwrap_or_else(|e| e.into_inner());
     guard.insert(monitor_id, port);
@@ -313,7 +330,8 @@ fn open_port(
 #[tauri::command]
 fn close_port(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<(), String> {
     let mut map = state.ports.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(port) = map.remove(&monitor_id) {
+    if let Some(mut port) = map.remove(&monitor_id) {
+        let _ = port.flush();
         let _ = port.clear(ClearBuffer::All);
     }
     Ok(())
@@ -331,19 +349,24 @@ fn send_data(state: tauri::State<'_, PortState>, monitor_id: String, data: Vec<u
     }
 }
 
-/// 读取数据（非阻塞，返回可用字节）
+/// 读取数据（非阻塞，返回所有可用字节）
 #[tauri::command]
 fn read_data(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<Vec<u8>, String> {
     let mut map = state.ports.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref mut port) = map.get_mut(&monitor_id) {
+        let mut all_data = Vec::new();
         let mut buf = [0u8; 4096];
-        match port.read(&mut buf) {
-            Ok(n) if n > 0 => Ok(buf[..n].to_vec()),
-            Ok(_) => Ok(vec![]),
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(vec![]),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(vec![]),
-            Err(e) => Err(format!("读取失败: {}", e)),
+        loop {
+            match port.read(&mut buf) {
+                Ok(n) if n > 0 => all_data.extend_from_slice(&buf[..n]),
+                Ok(_) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) if all_data.is_empty() => return Err(format!("读取失败: {}", e)),
+                Err(_) => break,
+            }
         }
+        Ok(all_data)
     } else {
         Err("未连接串口".into())
     }
@@ -393,14 +416,17 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
         let _ = tx.send(result);
     });
     
+    // 检查 WSL 是否正在运行
+    let wsl_running = check_wsl_running().map(|d| !d.is_empty()).unwrap_or(false);
+    
     let output = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(Ok(out)) => Some(out),
         Ok(Err(e)) => {
-            println!("[DEBUG] usbipd list 执行失败: {}", e);
+            dbg_log(&format!("usbipd list 执行失败: {}", e));
             None
         }
         Err(_) => {
-            println!("[DEBUG] usbipd list 执行超时");
+            dbg_log(&format!("usbipd list 执行超时"));
             None
         }
     };
@@ -479,7 +505,7 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                         "port": port,
                         "name": name,
                         "hasCom": has_com,
-                        "status": if status == "attached" { "mapped" } else { "unmapped" }
+                        "status": if status == "attached" && wsl_running { "mapped" } else { "unmapped" }
                     }));
                 }
             }
@@ -536,13 +562,13 @@ fn check_wsl_running() -> Option<Vec<String>> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let result = hidden_command("wsl")
-            .args(["--list", "--running"])
+            .args(["--list", "--verbose"])
             .output();
         let _ = tx.send(result);
     });
-    let output = match rx.recv_timeout(std::time::Duration::from_secs(8)) {
+    let output = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(Ok(out)) => Some(out),
-        _ => return None, // 超时或失败，返回 None 表示检测失败
+        _ => return None,
     };
     let dists: Vec<String> = match output {
         Some(out) => {
@@ -552,11 +578,24 @@ fn check_wsl_running() -> Option<Vec<String>> {
                 .filter(|l| {
                     if l.is_empty() { return false; }
                     let lower = l.to_lowercase();
-                    if lower.contains("distributions") || lower.contains("分发") { return false; }
-                    if lower.contains("没有") || lower.contains("there are no") { return false; }
+                    if lower.starts_with("name") || lower.starts_with("名称") { return false; }
+                    if lower.starts_with("version") || lower.starts_with("版本") { return false; }
                     true
                 })
-                .map(|s| s.to_string())
+                .filter_map(|l| {
+                    let clean = l.trim_start_matches('*').trim();
+                    let parts: Vec<&str> = clean.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        let state = parts[1].to_lowercase();
+                        if state.contains("running") || state.contains("运行") {
+                            Some(parts[0].to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
                 .collect()
         }
         None => vec![],
@@ -568,39 +607,15 @@ fn start_wsl_watcher(app: tauri::AppHandle) {
     std::thread::spawn(move || {
         let mut last_running = false;
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            match check_wsl_running() {
-                Some(dists) => {
-                    let running = !dists.is_empty();
-                    if running != last_running {
-                        last_running = running;
-                        dbg_log(&format!("wsl_watcher: status changed, running={}", running));
-                        let _ = app.emit("wsl-status-changed", running);
-                    }
-                }
-                None => {
-                    // 超时，不更新状态，下次重试
-                    dbg_log("wsl_watcher: check timed out, retrying");
-                }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let running = !check_wsl_running().unwrap_or_default().is_empty();
+            if running != last_running {
+                last_running = running;
+                dbg_log(&format!("wsl_watcher: status changed, running={}", running));
+                let _ = app.emit("wsl-status-changed", running);
             }
         }
     });
-}
-
-/// 检查 LxssManager 服务是否正在运行（不 spawn 进程）
-fn is_lxss_running() -> bool {
-    use std::process::Command;
-    let out = Command::new("sc")
-        .args(["query", "LxssManager"])
-        .creation_flags(0x08000000)
-        .output();
-    match out {
-        Ok(o) => {
-            let text = String::from_utf8_lossy(&o.stdout);
-            text.contains("RUNNING")
-        }
-        Err(_) => false,
-    }
 }
 
 /// 启动 WSL 终端（可指定分发版）
@@ -609,9 +624,9 @@ fn launch_wsl(dist: Option<String>) -> Result<(), String> {
     let mut cmd = std::process::Command::new("powershell");
     cmd.args(["-NoExit", "-Command"]);
     if let Some(ref d) = dist {
-        cmd.args(["wsl", "-d", d, "--cd", "/home/seahi"]);
+        cmd.args(["wsl", "-d", d]);
     } else {
-        cmd.args(["wsl", "--cd", "/home/seahi"]);
+        cmd.args(["wsl"]);
     }
     cmd.spawn().map_err(|e| format!("{}", e))?;
     Ok(())
@@ -620,10 +635,14 @@ fn launch_wsl(dist: Option<String>) -> Result<(), String> {
 /// 关闭指定 WSL 分发版
 #[tauri::command]
 fn shutdown_wsl(dist: String) -> Result<(), String> {
-    hidden_command("wsl")
+    let out = hidden_command("wsl")
         .args(["-t", &dist])
         .output()
         .map_err(|e| format!("{}", e))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("关闭 WSL 发行版失败: {}", stderr.trim()));
+    }
     Ok(())
 }
 
@@ -642,7 +661,7 @@ fn get_wsl_distributions() -> Result<Vec<serde_json::Value>, String> {
         let line = line.trim();
         if line.is_empty() { continue; }
         let lower = line.to_lowercase();
-        if lower.contains("name") || lower.contains("名称") || lower.contains("version") || lower.contains("版本") {
+        if lower.starts_with("name") || lower.starts_with("名称") || lower.starts_with("version") || lower.starts_with("版本") {
             continue;
         }
 
@@ -656,8 +675,10 @@ fn get_wsl_distributions() -> Result<Vec<serde_json::Value>, String> {
         let running = state_str.contains("running") || state_str.contains("运行");
 
         let (uptime, mem_used, mem_total) = if running {
+            // 用 timeout 避免命令阻塞，且不启动已停止的发行版
             let uptime_out = hidden_command("wsl")
                 .args(["-d", &name, "--", "cat", "/proc/uptime"])
+                .creation_flags(CREATE_NO_WINDOW)
                 .output();
             let uptime = match uptime_out {
                 Ok(o) => {
@@ -668,6 +689,7 @@ fn get_wsl_distributions() -> Result<Vec<serde_json::Value>, String> {
             };
             let free_out = hidden_command("wsl")
                 .args(["-d", &name, "--", "free", "-m"])
+                .creation_flags(CREATE_NO_WINDOW)
                 .output();
             let (total, used) = match free_out {
                 Ok(o) => parse_free_output(&decode_wsl_output(&o.stdout)),
@@ -715,6 +737,226 @@ fn parse_uptime_hms(text: &str) -> String {
     let m = (secs % 3600) / 60;
     let s = secs % 60;
     format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
+// ===== WSL 串口转发（通过子进程管道）=====
+
+/// 验证 WSL 设备路径合法性（只允许 /dev/ttyXXX 格式）
+fn validate_device_path(path: &str) -> Result<(), String> {
+    if !path.starts_with("/dev/tty") {
+        return Err("设备路径必须以 /dev/tty 开头".into());
+    }
+    if !path.chars().all(|c| c.is_alphanumeric() || c == '/' || c == '_') {
+        return Err("设备路径包含非法字符".into());
+    }
+    if path.contains("..") || path.contains(' ') || path.contains(';') || path.contains('&') || path.contains('|') {
+        return Err("设备路径包含非法字符".into());
+    }
+    Ok(())
+}
+
+/// 打开 WSL 侧的串口设备
+/// 1. 用 stty 配置波特率等参数
+/// 2. 启动 cat 进程持续读取设备，stdin 管道用于写入
+/// 3. 后台线程读取 cat 的 stdout 并缓冲（带上限）
+#[tauri::command]
+fn open_wsl_serial(
+    state: tauri::State<'_, WslSerialState>,
+    monitor_id: String,
+    device_path: String,
+    baud_rate: u32,
+) -> Result<(), String> {
+    validate_device_path(&device_path)?;
+
+    // 关闭已有的会话
+    {
+        let mut sessions = state.sessions.lock().unwrap();
+        if let Some(mut old) = sessions.remove(&monitor_id) {
+            let _ = old.child.kill();
+            let _ = old.child.wait();
+        }
+    }
+
+    // 尝试设置设备权限
+    let chmod_cmd = format!("sudo chmod 666 {} 2>/dev/null || true", device_path);
+    let _ = hidden_command("wsl")
+        .args(["-e", "bash", "-c", &chmod_cmd])
+        .output();
+
+    // 用 stty 配置波特率
+    let stty_cmd = format!("stty -F {} {} raw -echo", device_path, baud_rate);
+    let stty_out = hidden_command("wsl")
+        .args(["-e", "bash", "-c", &stty_cmd])
+        .output();
+    match stty_out {
+        Ok(out) if !out.status.success() => {
+            return Err(format!("stty 配置失败: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        Err(e) => {
+            return Err(format!("执行 stty 失败: {}", e));
+        }
+        _ => {}
+    }
+
+    // 用 cat 读取设备，stdin 管道用于后续写入
+    let cat_cmd = format!("cat {}", device_path);
+    let mut child = hidden_command("wsl")
+        .args(["-e", "bash", "-c", &cat_cmd])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动 cat 进程失败: {}", e))?;
+
+    let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
+    let stdin = child.stdin.take();
+    let buffer = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let buffer_clone = buffer.clone();
+
+    // 后台线程持续读取 cat 的输出（带缓冲上限）
+    let reader_thread = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut reader = stdout;
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let mut data = buffer_clone.lock().unwrap();
+                    if data.len() + n > WSL_BUFFER_MAX {
+                        let drain = data.len() + n - WSL_BUFFER_MAX;
+                        data.drain(..drain);
+                    }
+                    data.extend_from_slice(&buf[..n]);
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let session = WslSerialSession {
+        child,
+        stdin,
+        buffer,
+        _reader_thread: reader_thread,
+        device_path: device_path.clone(),
+    };
+
+    state.sessions.lock().unwrap().insert(monitor_id, session);
+    Ok(())
+}
+
+/// 关闭 WSL 串口连接
+#[tauri::command]
+fn close_wsl_serial(
+    state: tauri::State<'_, WslSerialState>,
+    monitor_id: String,
+) -> Result<(), String> {
+    let mut sessions = state.sessions.lock().unwrap();
+    if let Some(mut session) = sessions.remove(&monitor_id) {
+        // 先关闭 stdin，让 cat 进程感知到 EOF
+        drop(session.stdin.take());
+        let _ = session.child.kill();
+        let _ = session.child.wait();
+    }
+    Ok(())
+}
+
+/// 读取 WSL 串口数据（非阻塞，返回缓冲区中的数据）
+#[tauri::command]
+fn read_wsl_serial(
+    state: tauri::State<'_, WslSerialState>,
+    monitor_id: String,
+) -> Result<Vec<u8>, String> {
+    let mut sessions = state.sessions.lock().unwrap();
+    if let Some(session) = sessions.get_mut(&monitor_id) {
+        let mut buf = session.buffer.lock().unwrap();
+        if buf.is_empty() {
+            return Ok(vec![]);
+        }
+        Ok(std::mem::take(&mut *buf))
+    } else {
+        Err("未连接 WSL 串口".into())
+    }
+}
+
+/// 向 WSL 串口发送数据（通过持久 stdin 管道）
+#[tauri::command]
+fn send_wsl_serial(
+    state: tauri::State<'_, WslSerialState>,
+    monitor_id: String,
+    data: Vec<u8>,
+) -> Result<usize, String> {
+    let mut sessions = state.sessions.lock().unwrap();
+    if let Some(session) = sessions.get_mut(&monitor_id) {
+        if let Some(ref mut stdin) = session.stdin {
+            use std::io::Write;
+            stdin.write_all(&data).map_err(|e| format!("写入失败: {}", e))?;
+            stdin.flush().map_err(|e| format!("刷新失败: {}", e))?;
+            Ok(data.len())
+        } else {
+            Err("WSL 串口 stdin 不可用".into())
+        }
+    } else {
+        Err("未连接 WSL 串口".into())
+    }
+}
+
+/// 获取 WSL 中可用的串口设备列表
+#[tauri::command]
+fn get_wsl_serial_devices() -> Result<Vec<String>, String> {
+    if check_wsl_running().unwrap_or_default().is_empty() {
+        return Ok(vec![]);
+    }
+
+    let output = hidden_command("wsl")
+        .args(["-e", "bash", "-c", "ls /dev/ttyACM* /dev/ttyUSB* /dev/ttyS* 2>/dev/null || true"])
+        .output()
+        .map_err(|e| format!("执行失败: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let devices: Vec<String> = stdout
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s.starts_with("/dev/tty"))
+        .collect();
+
+    Ok(devices)
+}
+
+/// 设置 WSL 串口信号（通过 Python ioctl 控制）
+fn set_wsl_signal(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool, signal: &str, mask: u32) -> Result<(), String> {
+    let sessions = state.sessions.lock().unwrap();
+    if let Some(session) = sessions.get(&monitor_id) {
+        validate_device_path(&session.device_path)?;
+        let ioctl_num = if level { "0x5416" } else { "0x5417" };
+        let mask_str = format!("0x{:03x}", mask);
+        let py_code = format!(
+            "import fcntl,struct;f=open('{}','rb',0);fcntl.ioctl(f.fileno(),{},struct.pack('I',{}));f.close()",
+            session.device_path, ioctl_num, mask_str
+        );
+        let out = hidden_command("wsl")
+            .args(["-e", "python3", "-c", &py_code])
+            .output()
+            .map_err(|e| format!("设置 {} 失败: {}", signal, e))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("设置 {} 失败: {}", signal, stderr.trim()));
+        }
+        Ok(())
+    } else {
+        Err("未连接 WSL 串口".into())
+    }
+}
+
+#[tauri::command]
+fn set_wsl_dtr(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool) -> Result<(), String> {
+    set_wsl_signal(state, monitor_id, level, "DTR", 0x002)
+}
+
+#[tauri::command]
+fn set_wsl_rts(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool) -> Result<(), String> {
+    set_wsl_signal(state, monitor_id, level, "RTS", 0x004)
 }
 
 /// 将指定串口对应的 USB 设备映射到 WSL
@@ -814,7 +1056,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
         let line_upper = target_line.to_uppercase();
         line_upper.contains("SHARED") && !line_upper.contains("NOT SHARED")
     };
-    println!("[DEBUG] Device {} bound status: {} (line: {})", busid, already_bound, target_line);
+    dbg_log(&format!("Device {} bound status: {} (line: {})", busid, already_bound, target_line));
 
     // 已经映射到WSL，直接返回成功
     if target_line.to_uppercase().contains("ATTACHED") {
@@ -823,24 +1065,24 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
 
     // 4. 如果已绑定，尝试直接 attach（无需管理员权限）
     if already_bound {
-        println!("[DEBUG] Device {} already bound, trying direct attach", busid);
+        dbg_log(&format!("Device {} already bound, trying direct attach", busid));
         let output = hidden_command("usbipd")
             .args(["attach", "--wsl", "--busid", &busid])
             .output();
 
         match output {
             Ok(out) if out.status.success() => {
-                println!("[DEBUG] Direct attach succeeded for {}", busid);
+                dbg_log(&format!("Direct attach succeeded for {}", busid));
                 return Ok(format!("已将 {} (busid: {}) 映射到 WSL", port_name, busid));
             }
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr).to_string();
                 let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-                println!("[DEBUG] Direct attach failed for {}: stderr={}, stdout={}", busid, stderr, stdout);
+                dbg_log(&format!("Direct attach failed for {}: stderr={}, stdout={}", busid, stderr, stdout));
                 // 直接attach失败，需要用管理员权限
             }
             Err(e) => {
-                println!("[DEBUG] Direct attach command error for {}: {}", busid, e);
+                dbg_log(&format!("Direct attach command error for {}: {}", busid, e));
                 return Err(format!("执行 usbipd attach 失败: {}", e));
             }
         }
@@ -855,7 +1097,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
 
     let ps_script = if already_bound {
         // 已绑定但直接attach失败，用管理员权限attach
-        println!("[DEBUG] Using admin to attach {}", busid);
+        dbg_log(&format!("Using admin to attach {}", busid));
         format!(
             "try {{ \
                $out = & usbipd.exe attach --wsl --busid {busid} 2>&1 | Out-String; \
@@ -870,7 +1112,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
         )
     } else {
         // 未绑定，用管理员权限bind + attach
-        println!("[DEBUG] Using admin to bind and attach {}", busid);
+        dbg_log(&format!("Using admin to bind and attach {}", busid));
         format!(
             "try {{ \
                '开始绑定设备 {busid}...' | Out-File -FilePath '{result}' -Encoding UTF8; \
@@ -904,7 +1146,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
 
     let script_path_str = tmp_script.to_str().unwrap_or("");
 
-    println!("[DEBUG] PowerShell script file: {:?}", tmp_script);
+    dbg_log(&format!("PowerShell script file: {:?}", tmp_script));
 
     let status = hidden_command("powershell")
         .args(["-NonInteractive", "-Command"])
@@ -919,15 +1161,15 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // 7. 读取提权进程写入的结果文件
-    println!("[DEBUG] Reading result file: {:?}", tmp_result);
+    dbg_log(&format!("Reading result file: {:?}", tmp_result));
     let result_content = std::fs::read_to_string(&tmp_result)
         .unwrap_or_else(|e| {
-            println!("[DEBUG] Failed to read result file: {}", e);
+            dbg_log(&format!("Failed to read result file: {}", e));
             String::new()
         })
         .trim()
         .to_string();
-    println!("[DEBUG] Result content: {}", result_content);
+    dbg_log(&format!("Result content: {}", result_content));
     let _ = std::fs::remove_file(&tmp_result);
 
     // 检查是否成功 - 通过结果内容判断
@@ -1000,24 +1242,10 @@ fn dirs_config_path() -> Option<std::path::PathBuf> {
     {
         std::env::var("APPDATA").ok().map(|p| std::path::PathBuf::from(p).join("seahi-serial"))
     }
-    #[cfg(target_os = "macos")]
-    {
-        dirs_mac_config()
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(windows))]
     {
         std::env::var("HOME").ok().map(|p| std::path::PathBuf::from(p).join(".config").join("seahi-serial"))
     }
-}
-
-#[cfg(target_os = "macos")]
-fn dirs_mac_config() -> Option<std::path::PathBuf> {
-    std::env::var("HOME").ok().map(|p|
-        std::path::PathBuf::from(p)
-            .join("Library")
-            .join("Application Support")
-            .join("seahi-serial")
-    )
 }
 
 /// 保存日志内容到文件
@@ -1233,6 +1461,7 @@ fn install_update(file_path: String) -> Result<(), String> {
 
     // 给安装程序一点时间启动，然后退出当前程序
     std::thread::sleep(std::time::Duration::from_millis(500));
+    // 使用 tauri 的退出机制而非 process::exit，确保 Drop 被执行
     std::process::exit(0);
 }
 
@@ -1254,6 +1483,9 @@ fn main() {
     tauri::Builder::default()
         .manage(PortState {
             ports: Mutex::new(HashMap::new()),
+        })
+        .manage(WslSerialState {
+            sessions: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             list_ports,
@@ -1279,6 +1511,13 @@ fn main() {
             install_update,
             get_window_size,
             set_window_size,
+            open_wsl_serial,
+            close_wsl_serial,
+            read_wsl_serial,
+            send_wsl_serial,
+            get_wsl_serial_devices,
+            set_wsl_dtr,
+            set_wsl_rts,
         ])
         .setup(|app| {
             #[cfg(windows)]
