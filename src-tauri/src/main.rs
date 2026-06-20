@@ -515,8 +515,31 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
     Ok(devices)
 }
 
+fn decode_utf32_lossy(raw: &[u8]) -> String {
+    raw.chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .filter_map(|cp| char::from_u32(cp))
+        .collect()
+}
+
 fn decode_wsl_output(raw: &[u8]) -> String {
-    // wsl.exe 总是输出 UTF-16LE
+    if raw.len() >= 4 {
+        // 检测 UTF-32LE BOM：FF FE 00 00
+        if raw[0] == 0xFF && raw[1] == 0xFE && raw[2] == 0x00 && raw[3] == 0x00 {
+            return decode_utf32_lossy(&raw[4..]);
+        }
+        // 检测 UTF-32LE（无 BOM）：偶数倍 4 字节，且每 4 字节中第 2/3/4 字节为 0
+        if raw.len() % 4 == 0 && raw.len() >= 8 {
+            let null_count = raw.iter().enumerate()
+                .filter(|(i, _)| i % 4 == 1 || i % 4 == 2 || i % 4 == 3)
+                .filter(|(_, b)| **b == 0)
+                .count();
+            let total_check = (raw.len() / 4) * 3;
+            if total_check > 0 && null_count * 100 / total_check > 80 {
+                return decode_utf32_lossy(raw);
+            }
+        }
+    }
     if raw.len() >= 2 {
         // 检测 BOM：FF FE = UTF-16LE
         if raw[0] == 0xFF && raw[1] == 0xFE {
