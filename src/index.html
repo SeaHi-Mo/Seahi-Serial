@@ -71,7 +71,9 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     background:#2d2d2d; border:1px solid var(--border-h);
     border-radius:2px; box-shadow:0 4px 12px rgba(0,0,0,.5);
     min-width:100%; overflow:hidden; max-height:200px; overflow-y:auto;
+    -ms-overflow-style:none; scrollbar-width:none;
 }
+.sel-drop::-webkit-scrollbar { display:none; }
 .sel-drop.open { display:block; }
 .sel-drop-up { top:auto; bottom:calc(100% + 2px); box-shadow:0 -4px 12px rgba(0,0,0,.5); }
 .sel-opt { padding:4px 10px; font-size:12px; color:var(--text); cursor:pointer; white-space:nowrap; }
@@ -100,8 +102,10 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     position:absolute; top:24px; left:0; z-index:9999;
     background:#2d2d2d; border:1px solid var(--border-h);
     border-radius:2px; min-width:100px; box-shadow:0 4px 12px rgba(0,0,0,.5);
-    display:none;
+    display:none; max-height:240px; overflow-y:auto;
+    -ms-overflow-style:none; scrollbar-width:none;
 }
+.baud-dropdown::-webkit-scrollbar { display:none; }
 .baud-dropdown.open { display:block; }
 .baud-opt { padding:4px 10px; font-size:12px; color:var(--text); cursor:pointer; white-space:nowrap; }
 .baud-opt:hover { background:rgba(255,255,255,.07); }
@@ -597,7 +601,7 @@ function showToast(message, type) {
 /* ===== 创建监视器窗格 ===== */
 function createMonitorPane(mid, title, closable) {
     const closeBtn = closable ? '<button class="pane-close" onclick="closeMonitor(\'' + mid + '\')" title="关闭">\u2715</button>' : '';
-    const baudOpts = [110,300,1200,2400,4800,9600,19200,38400,57600,115200,230400,460800,921600,1500000,2000000,3000000].map(v =>
+    const baudOpts = [50,75,110,134,150,200,300,600,1200,1800,2400,4800,7200,9600,14400,19200,28800,38400,57600,115200,230400,460800,500000,576000,921600,1000000,1152000,1500000,2000000,2500000,3000000,3500000,4000000].map(v =>
         '<div class="baud-opt' + (v===115200?' active':'') + '" onclick="setBaud(\'' + mid + '\',' + v + ')">' + v + '</div>'
     ).join('');
 
@@ -1840,7 +1844,7 @@ async function loadAndApplyConfig() {
 /* ===== WSL 映射页面 ===== */
 function getWslMappingHtml(mid) {
     var wmid = 'wsl';
-    var baudOpts = [110,300,1200,2400,4800,9600,19200,38400,57600,115200,230400,460800,921600,1500000,2000000,3000000].map(function(v) {
+    var baudOpts = [50,75,110,134,150,200,300,600,1200,1800,2400,4800,7200,9600,14400,19200,28800,38400,57600,115200,230400,460800,500000,576000,921600,1000000,1152000,1500000,2000000,2500000,3000000,3500000,4000000].map(function(v) {
         return '<div class="baud-opt' + (v===115200?' active':'') + '" onclick="setBaud(\'' + wmid + '\',' + v + ')">' + v + '</div>';
     }).join('');
     return '<div style="display:flex;flex-direction:column;height:100%;background:#1e1e1e;">' +
