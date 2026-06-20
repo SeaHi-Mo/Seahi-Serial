@@ -635,24 +635,20 @@ fn decode_utf32_lossy(raw: &[u8]) -> String {
 
 fn decode_wsl_output(raw: &[u8]) -> String {
     if raw.len() >= 4 {
-        // 检测 UTF-32LE BOM：FF FE 00 00
+        // 检测 UTF-32LE BOM：FF FE 00 00（可靠）
         if raw[0] == 0xFF && raw[1] == 0xFE && raw[2] == 0x00 && raw[3] == 0x00 {
             return decode_utf32_lossy(&raw[4..]);
         }
-        // 检测 UTF-32LE（无 BOM）：偶数倍 4 字节，且每 4 字节中第 2/3/4 字节为 0
-        if raw.len() % 4 == 0 && raw.len() >= 8 {
-            let null_count = raw.iter().enumerate()
-                .filter(|(i, _)| i % 4 == 1 || i % 4 == 2 || i % 4 == 3)
-                .filter(|(_, b)| **b == 0)
-                .count();
-            let total_check = (raw.len() / 4) * 3;
-            if total_check > 0 && null_count * 100 / total_check > 80 {
-                return decode_utf32_lossy(raw);
-            }
+        // 检测 UTF-32BE BOM：00 00 FE FF（可靠）
+        if raw[0] == 0x00 && raw[1] == 0x00 && raw[2] == 0xFE && raw[3] == 0xFF {
+            return raw[4..].chunks_exact(4)
+                .map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+                .filter_map(|cp| char::from_u32(cp))
+                .collect();
         }
     }
     if raw.len() >= 2 {
-        // 检测 BOM：FF FE = UTF-16LE
+        // 检测 UTF-16LE BOM：FF FE（可靠）
         if raw[0] == 0xFF && raw[1] == 0xFE {
             let u16_vec: Vec<u16> = raw[2..]
                 .chunks_exact(2)
@@ -660,18 +656,16 @@ fn decode_wsl_output(raw: &[u8]) -> String {
                 .collect();
             return String::from_utf16_lossy(&u16_vec);
         }
-        // 无 BOM：检查是否含有 UTF-16LE 的 CRLF (\r\0\n\0) 或 \n\0 模式
-        if raw.len() >= 4 && raw.len() % 2 == 0 {
-            let has_utf16_crlf = raw.windows(4).any(|w| w == [0x0D, 0x00, 0x0A, 0x00]);
-            let has_utf16_lf = raw.windows(2).any(|w| w == [0x0A, 0x00]);
-            if has_utf16_crlf || has_utf16_lf {
-                let u16_vec: Vec<u16> = raw
-                    .chunks_exact(2)
-                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                    .collect();
-                return String::from_utf16_lossy(&u16_vec);
-            }
-            // 兜底：偶数字节且奇数字节有 \0，按 UTF-16LE 处理
+        // 检测 UTF-16BE BOM：FE FF
+        if raw[0] == 0xFE && raw[1] == 0xFF {
+            let u16_vec: Vec<u16> = raw[2..]
+                .chunks_exact(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect();
+            return String::from_utf16_lossy(&u16_vec);
+        }
+        // 无 BOM：默认按 UTF-16LE 处理（wsl --list 最常见编码）
+        if raw.len() % 2 == 0 && raw.len() >= 4 {
             let null_count = raw.iter().enumerate().skip(1).step_by(2).filter(|(_, b)| **b == 0).count();
             if null_count > 0 {
                 let u16_vec: Vec<u16> = raw
