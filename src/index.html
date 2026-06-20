@@ -80,6 +80,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .sel-opt:hover { background:rgba(255,255,255,.07); }
 .sel-opt.active { background:var(--btn-p); color:#fff; }
 .sel-port .sel-drop { min-width:260px; }
+.wsl-port-drop { max-height:none !important; min-height:100px; }
 
 /* 波特率 combo box */
 .baud-wrap { position:relative; display:inline-flex; align-items:center; flex-shrink:0; }
@@ -1871,7 +1872,7 @@ function getWslMappingHtml(mid) {
                 '<span class="lbl">端口</span>' +
                 '<div class="sel sel-port" id="' + wmid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:180px;">' +
                     '<span class="sel-text">无可用端口</span><span class="sel-arrow">&#9660;</span>' +
-                    '<div class="sel-drop" id="' + wmid + '-portDrop"></div>' +
+                    '<div class="sel-drop wsl-port-drop" id="' + wmid + '-portDrop"></div>' +
                 '</div>' +
                 '<button class="btn-ref" onclick="refreshWslMonPorts()" title="刷新端口">' + ICONS.refresh + '</button>' +
                 '<span class="lbl">波特率</span>' +
