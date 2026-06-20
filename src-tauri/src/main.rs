@@ -795,18 +795,63 @@ fn validate_device_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 部署 bridge 脚本到指定 WSL 发行版
+/// 获取默认 WSL 发行版名称（如果未运行则自动启动）
+fn get_or_start_wsl_distro() -> Result<String, String> {
+    // 先检查是否有运行中的发行版
+    let running = check_wsl_running().unwrap_or_default();
+    if let Some(name) = running.first() {
+        return Ok(name.clone());
+    }
+    // 没有运行中的，获取默认发行版名称
+    let out = hidden_command("wsl")
+        .args(["--list", "--verbose"])
+        .output()
+        .map_err(|e| format!("获取 WSL 列表失败: {}", e))?;
+    let text = decode_wsl_output(&out.stdout);
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('*') {
+            let name = line[1..].trim().split_whitespace().next()
+                .ok_or("无法解析默认发行版名称")?;
+            // 启动默认发行版
+            let _ = hidden_command("wsl")
+                .args(["-d", name, "-e", "echo", "ok"])
+                .output();
+            // 等待启动完成
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            return Ok(name.to_string());
+        }
+    }
+    // 没找到带 * 的，取第一个
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        let lower = line.to_lowercase();
+        if lower.starts_with("name") || lower.starts_with("version") { continue; }
+        let name = line.split_whitespace().next()
+            .ok_or("无法解析发行版名称")?;
+        let _ = hidden_command("wsl")
+            .args(["-d", name, "-e", "echo", "ok"])
+            .output();
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        return Ok(name.to_string());
+    }
+    Err("没有可用的 WSL 发行版".into())
+}
+
+/// 部署 bridge 脚本到指定 WSL 发行版（通过 /mnt 路径直接写入）
 fn deploy_bridge(distro: &str) -> Result<(), String> {
     let b64 = BRIDGE_B64.trim();
+    // 写到项目目录下的临时文件（Windows 路径）
     let tmp_b64 = std::env::temp_dir().join("seahi_bridge_b64.txt");
     std::fs::write(&tmp_b64, b64).map_err(|e| format!("写入临时文件失败: {}", e))?;
-    let wsl_path = std::process::Command::new("wsl")
-        .args(["-d", distro, "wslpath", "-u", tmp_b64.to_str().unwrap_or("")])
-        .output()
-        .map_err(|e| format!("路径转换失败: {}", e))?;
-    let wsl_b64_path = String::from_utf8_lossy(&wsl_path.stdout).trim().to_string();
-    let decode_cmd = format!("base64 -d < {} > {}", wsl_b64_path, BRIDGE_SCRIPT_PATH);
-    let out = std::process::Command::new("wsl")
+    // 转换为 WSL 可访问的 /mnt/ 路径
+    let win_path = tmp_b64.to_string_lossy().to_string();
+    let drive = win_path.chars().next().unwrap_or('c').to_lowercase();
+    let rest = win_path[2..].replace('\\', "/");
+    let mnt_path = format!("/mnt/{}{}", drive, rest);
+    let decode_cmd = format!("base64 -d < {} > {}", mnt_path, BRIDGE_SCRIPT_PATH);
+    let out = hidden_command("wsl")
         .args(["-d", distro, "-e", "bash", "-c", &decode_cmd])
         .output()
         .map_err(|e| format!("解码失败: {}", e))?;
@@ -844,8 +889,7 @@ fn open_wsl_serial(
 ) -> Result<(), String> {
     validate_device_path(&device_path)?;
     { let mut s = state.sessions.lock().unwrap(); if let Some(mut old) = s.remove(&monitor_id) { let _ = old.child.kill(); let _ = old.child.wait(); } }
-    let distros = check_wsl_running().unwrap_or_default();
-    let distro = distros.first().ok_or("没有运行中的 WSL 发行版，请先启动一个 WSL 终端")?.clone();
+    let distro = get_or_start_wsl_distro()?;
     deploy_bridge(&distro)?;
     let mut child = std::process::Command::new("wsl")
         .args(["-d", &distro, "-e", "python3", BRIDGE_SCRIPT_PATH])
