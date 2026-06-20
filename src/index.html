@@ -1849,9 +1849,9 @@ function getWslMappingHtml(mid) {
         return '<div class="baud-opt' + (v===115200?' active':'') + '" onclick="setBaud(\'' + wmid + '\',' + v + ')">' + v + '</div>';
     }).join('');
     return '<div style="display:flex;flex-direction:column;height:100%;background:#1e1e1e;">' +
-        '<div style="background:#252526;border-bottom:1px solid #3c3c3c;padding:8px 16px;display:flex;align-items:center;gap:12px;">' +
+        '<div style="background:#252526;border-bottom:1px solid #3c3c3c;padding:8px 16px;display:flex;align-items:center;gap:20px;">' +
             '<div style="font-size:13px;font-weight:600;color:#e0e0e0;white-space:nowrap;flex-shrink:0;">WSL 端口映射</div>' +
-            '<div id="' + mid + '-wslDistroList" style="display:flex;flex-wrap:wrap;gap:6px;flex:1;min-width:0;"></div>' +
+            '<div id="' + mid + '-wslDistroList" style="display:flex;flex-wrap:wrap;gap:6px;flex:1;min-width:0;justify-content:flex-end;"></div>' +
         '</div>' +
         '<div style="flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0;" id="' + mid + '-wslTop">' +
             '<div style="flex:1;overflow-y:auto;min-height:0;" id="' + mid + '-wslDeviceList">' +
