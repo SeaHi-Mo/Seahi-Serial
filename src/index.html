@@ -1853,13 +1853,13 @@ function getWslMappingHtml(mid) {
             '<h1 style="font-size:15px;font-weight:600;color:#e0e0e0;padding-top:2px;white-space:nowrap;">WSL 端口映射</h1>' +
             '<div id="' + mid + '-wslDistroList" style="flex:1;min-width:0;"></div>' +
         '</div>' +
-        '<div style="display:flex;flex-direction:column;min-height:0;" id="' + mid + '-wslTop">' +
-            '<div style="overflow-y:auto;max-height:50%;min-height:60px;" id="' + mid + '-wslDeviceList">' +
+        '<div style="flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0;" id="' + mid + '-wslTop">' +
+            '<div style="flex:1;overflow-y:auto;min-height:0;" id="' + mid + '-wslDeviceList">' +
                 '<div style="color:#858585;text-align:center;padding:20px;">正在加载设备列表...</div>' +
             '</div>' +
         '</div>' +
         '<div class="wsl-mon-resize" id="' + mid + '-wslMonResize"></div>' +
-        '<div style="flex:1;min-height:120px;display:flex;flex-direction:column;background:var(--editor-bg);" id="' + mid + '-wslMonPanel">' +
+        '<div style="height:300px;min-height:120px;display:flex;flex-direction:column;background:var(--editor-bg);flex-shrink:0;" id="' + mid + '-wslMonPanel">' +
             '<div class="toolbar" id="' + wmid + '-toolbar">' +
                 '<span class="lbl">查看</span>' +
                 '<div class="sel" id="' + wmid + '-viewMode" data-val="text" onclick="toggleSelDrop(this)">' +
