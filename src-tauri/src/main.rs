@@ -795,11 +795,22 @@ fn validate_device_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 缓存已运行的发行版名（避免每次都检测）
+static CACHED_DISTRO: Mutex<Option<String>> = Mutex::new(None);
+
 /// 获取 WSL 发行版名称：优先已运行的，其次默认发行版
 fn get_or_start_wsl_distro() -> Result<String, String> {
+    // 先检查缓存
+    {
+        let cached = CACHED_DISTRO.lock().unwrap();
+        if let Some(ref name) = *cached {
+            return Ok(name.clone());
+        }
+    }
     // 优先选择已在运行的发行版
     let running = check_wsl_running().unwrap_or_default();
     if let Some(name) = running.first() {
+        *CACHED_DISTRO.lock().unwrap() = Some(name.clone());
         return Ok(name.clone());
     }
     // 没有运行中的，选择默认发行版并启动
@@ -808,7 +819,6 @@ fn get_or_start_wsl_distro() -> Result<String, String> {
         .output()
         .map_err(|e| format!("获取 WSL 列表失败: {}", e))?;
     let text = decode_wsl_output(&out.stdout);
-    // 优先找带 * 的默认发行版
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with('*') {
@@ -817,11 +827,10 @@ fn get_or_start_wsl_distro() -> Result<String, String> {
             let _ = hidden_command("wsl")
                 .args(["-d", name, "-e", "echo", "ok"])
                 .output();
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            *CACHED_DISTRO.lock().unwrap() = Some(name.to_string());
             return Ok(name.to_string());
         }
     }
-    // 取第一个发行版
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() { continue; }
@@ -832,7 +841,7 @@ fn get_or_start_wsl_distro() -> Result<String, String> {
         let _ = hidden_command("wsl")
             .args(["-d", name, "-e", "echo", "ok"])
             .output();
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        *CACHED_DISTRO.lock().unwrap() = Some(name.to_string());
         return Ok(name.to_string());
     }
     Err("没有可用的 WSL 发行版".into())
@@ -840,6 +849,12 @@ fn get_or_start_wsl_distro() -> Result<String, String> {
 
 /// 部署 bridge 脚本到指定 WSL 发行版（通过 /mnt 路径直接写入）
 fn deploy_bridge(distro: &str) -> Result<(), String> {
+    // 先检查 bridge 是否已存在（跳过重复部署）
+    let check = hidden_command("wsl")
+        .args(["-d", distro, "-e", "test", "-f", BRIDGE_SCRIPT_PATH])
+        .output();
+    if let Ok(o) = check { if o.status.success() { return Ok(()); } }
+
     let b64 = BRIDGE_B64.trim();
     let tmp_b64 = std::env::temp_dir().join("seahi_bridge_b64.txt");
     std::fs::write(&tmp_b64, b64).map_err(|e| format!("写入临时文件失败: {}", e))?;
@@ -853,14 +868,18 @@ fn deploy_bridge(distro: &str) -> Result<(), String> {
         .output()
         .map_err(|e| format!("解码失败: {}", e))?;
     let _ = std::fs::remove_file(&tmp_b64);
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(format!("部署 bridge 失败: {}", String::from_utf8_lossy(&out.stderr)))
-    }
+    if out.status.success() { Ok(()) } else { Err(format!("部署 bridge 失败: {}", String::from_utf8_lossy(&out.stderr))) }
 }
 
-/// 通过 bridge 会话发送命令并读取响应
+/// 启动 bridge 进程（使用 hidden_command 隐藏窗口 + sg dialout 切换组）
+fn spawn_bridge(distro: &str) -> Result<std::process::Child, String> {
+    let child = hidden_command("wsl")
+        .args(["-d", distro, "-e", "sg", "dialout", "-c", &format!("python3 {}", BRIDGE_SCRIPT_PATH)])
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动 bridge 失败: {}", e))?;
+    Ok(child)
+}
 fn bridge_command(session: &WslSerialSession, cmd: &serde_json::Value) -> Result<serde_json::Value, String> {
     use std::io::{BufRead, Write};
     let mut msg = serde_json::to_string(cmd).map_err(|e| format!("序列化失败: {}", e))?;
@@ -874,17 +893,6 @@ fn bridge_command(session: &WslSerialSession, cmd: &serde_json::Value) -> Result
     let mut resp_line = String::new();
     r.read_line(&mut resp_line).map_err(|e| format!("读取响应失败: {}", e))?;
     serde_json::from_str(resp_line.trim()).map_err(|e| format!("解析响应失败: {}", e))
-}
-
-/// 启动 bridge 进程（使用 sg dialout 临时切换到 dialout 组）
-fn spawn_bridge(distro: &str) -> Result<std::process::Child, String> {
-    // 用 sg dialout 临时切换组，这样不需要重启 WSL 就能访问串口设备
-    let child = std::process::Command::new("wsl")
-        .args(["-d", distro, "-e", "sg", "dialout", "-c", &format!("python3 {}", BRIDGE_SCRIPT_PATH)])
-        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).stdin(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("启动 bridge 失败: {}", e))?;
-    Ok(child)
 }
 
 /// 打开 WSL 串口（通过 bridge 管道）
