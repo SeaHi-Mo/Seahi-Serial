@@ -103,13 +103,11 @@ static WSL_SHELL: Mutex<Option<WslShell>> = Mutex::new(None);
 
 /// 获取或创建持久化 WSL shell
 fn get_wsl_shell(distro: &str) -> Result<&'static Mutex<Option<WslShell>>, String> {
-    {
-        let shell = WSL_SHELL.lock().unwrap();
-        if shell.is_some() {
-            return Ok(&WSL_SHELL);
-        }
+    let mut shell = WSL_SHELL.lock().unwrap();
+    if shell.is_some() {
+        return Ok(&WSL_SHELL);
     }
-    // 创建新的 shell
+    // 在锁内创建，避免 TOCTOU 竞态
     let mut child = hidden_command("wsl")
         .args(["-d", distro, "-e", "bash", "--norc", "--noprofile"])
         .stdout(std::process::Stdio::piped())
@@ -119,12 +117,11 @@ fn get_wsl_shell(distro: &str) -> Result<&'static Mutex<Option<WslShell>>, Strin
         .map_err(|e| format!("创建 WSL shell 失败: {}", e))?;
     let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
     let stdin = child.stdin.take().ok_or("无法获取 stdin")?;
-    let shell = WslShell {
+    *shell = Some(WslShell {
         writer: std::sync::Mutex::new(std::io::BufWriter::new(stdin)),
         reader: std::sync::Mutex::new(std::io::BufReader::new(stdout)),
         child,
-    };
-    *WSL_SHELL.lock().unwrap() = Some(shell);
+    });
     Ok(&WSL_SHELL)
 }
 
@@ -135,7 +132,6 @@ fn wsl_shell_exec(distro: &str, cmd: &str, timeout_ms: u64) -> Result<String, St
     let shell = shell_ref.lock().unwrap();
     let shell = shell.as_ref().ok_or("WSL shell 未初始化")?;
 
-    // 发送命令（用特殊标记包裹输出，方便提取）
     let marker_start = "___SEAHI_START___";
     let marker_end = "___SEAHI_END___";
     let full_cmd = format!("echo {}; {} 2>&1; echo {}", marker_start, cmd, marker_end);
@@ -146,7 +142,6 @@ fn wsl_shell_exec(distro: &str, cmd: &str, timeout_ms: u64) -> Result<String, St
         w.flush().map_err(|e| format!("刷新失败: {}", e))?;
     }
 
-    // 读取直到找到结束标记
     let mut r = shell.reader.lock().map_err(|e| format!("锁失败: {}", e))?;
     let mut output = String::new();
     let start = std::time::Instant::now();
@@ -155,11 +150,12 @@ fn wsl_shell_exec(distro: &str, cmd: &str, timeout_ms: u64) -> Result<String, St
             return Err("WSL shell 命令超时".into());
         }
         let mut line = String::new();
-        r.read_line(&mut line).map_err(|e| format!("读取失败: {}", e))?;
-        if line.trim() == marker_end {
-            break;
+        match r.read_line(&mut line) {
+            Ok(0) => return Err("WSL shell 进程已退出".into()), // EOF
+            Ok(_) => {}
+            Err(e) => return Err(format!("读取失败: {}", e)),
         }
-        // 跳过 echo marker_start 那一行
+        if line.trim() == marker_end { break; }
         if line.trim() == marker_start { continue; }
         output.push_str(&line);
     }
@@ -173,7 +169,7 @@ struct PortState {
 
 /// WSL 串口会话：通过管道与 bridge 脚本通信
 struct WslSerialSession {
-    child: std::process::Child,
+    child: std::sync::Mutex<std::process::Child>,
     writer: std::sync::Mutex<std::io::BufWriter<std::process::ChildStdin>>,
     reader: std::sync::Mutex<std::io::BufReader<std::process::ChildStdout>>,
     device_path: String,
@@ -966,8 +962,17 @@ fn bridge_command(session: &WslSerialSession, cmd: &serde_json::Value) -> Result
     }
     let mut r = session.reader.lock().map_err(|e| format!("锁失败: {}", e))?;
     let mut resp_line = String::new();
-    r.read_line(&mut resp_line).map_err(|e| format!("读取响应失败: {}", e))?;
-    serde_json::from_str(resp_line.trim()).map_err(|e| format!("解析响应失败: {}", e))
+    match r.read_line(&mut resp_line) {
+        Ok(0) => {
+            let mut c = session.child.lock().map_err(|e| format!("锁失败: {}", e))?;
+            let _ = c.kill();
+            Err("bridge 进程已退出".into())
+        }
+        Ok(_) => {
+            serde_json::from_str(resp_line.trim()).map_err(|e| format!("解析响应失败: {}", e))
+        }
+        Err(e) => Err(format!("读取 bridge 响应失败: {}", e)),
+    }
 }
 
 /// 打开 WSL 串口（通过 bridge 管道）
@@ -979,8 +984,12 @@ fn open_wsl_serial(
     baud_rate: u32,
 ) -> Result<(), String> {
     validate_device_path(&device_path)?;
-    { let mut s = state.sessions.lock().unwrap(); if let Some(mut old) = s.remove(&monitor_id) { let _ = old.child.kill(); let _ = old.child.wait(); } }
-    let distro = get_or_start_wsl_distro()?;
+    { let mut s = state.sessions.lock().unwrap(); if let Some(old) = s.remove(&monitor_id) { { let mut c = old.child.lock().unwrap(); let _ = c.kill(); let _ = c.wait(); } } }
+    let distro = get_or_start_wsl_distro().map_err(|e| {
+        // 连接失败时清除缓存，下次重新检测
+        *CACHED_DISTRO.lock().unwrap() = None;
+        e
+    })?;
     deploy_bridge(&distro)?;
     let mut child = spawn_bridge(&distro)?;
     let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
@@ -996,15 +1005,14 @@ fn open_wsl_serial(
     let stdin = child.stdin.take().ok_or("无法获取 stdin")?;
     let writer = std::sync::Mutex::new(std::io::BufWriter::new(stdin));
     let reader = std::sync::Mutex::new(std::io::BufReader::new(stdout));
-    let mut session = WslSerialSession { child, writer, reader, device_path: device_path.clone(), distro };
+    let session = WslSerialSession { child: std::sync::Mutex::new(child), writer, reader, device_path: device_path.clone(), distro };
     let resp = bridge_command(&session, &json!({"cmd":"open","id":&monitor_id,"path":&device_path,"baud":baud_rate}))?;
     if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         state.sessions.lock().unwrap().insert(monitor_id, session);
         Ok(())
     } else {
         let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("打开失败").to_string();
-        let _ = session.child.kill();
-        let _ = session.child.wait();
+        { let mut c = session.child.lock().unwrap(); let _ = c.kill(); let _ = c.wait(); }
         Err(err)
     }
 }
@@ -1013,9 +1021,9 @@ fn open_wsl_serial(
 #[tauri::command]
 fn close_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String) -> Result<(), String> {
     let mut sessions = state.sessions.lock().unwrap();
-    if let Some(mut session) = sessions.remove(&monitor_id) {
+    if let Some(session) = sessions.remove(&monitor_id) {
         { use std::io::Write; if let Ok(mut w) = session.writer.lock() { let _ = w.write_all(b"{\"cmd\":\"close\"}\n"); let _ = w.flush(); } }
-        let _ = session.child.kill(); let _ = session.child.wait();
+        { let mut c = session.child.lock().unwrap(); let _ = c.kill(); let _ = c.wait(); }
     }
     Ok(())
 }
