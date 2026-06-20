@@ -23,41 +23,37 @@ TIOCM_RTS = 0x004
 ports = {}  # monitor_id -> serial.Serial or fd
 
 def ensure_device_perm(path):
-    """确保串口设备可读写（尝试 chmod，失败则创建 udev 规则）"""
+    """确保串口设备可读写"""
+    # 尝试直接 chmod（不需要密码）
     try:
         os.chmod(path, 0o666)
-        return
+        return True
     except PermissionError:
         pass
-    # chmod 失败，尝试用 sudo
+    # 尝试 sudo chmod（可能需要密码）
     import subprocess
     try:
-        subprocess.run(["sudo", "chmod", "666", path],
-                       timeout=3, capture_output=True)
-        return
+        r = subprocess.run(["sudo", "-n", "chmod", "666", path],
+                           timeout=3, capture_output=True)
+        if r.returncode == 0:
+            return True
     except Exception:
         pass
-    # sudo 也失败，创建 udev 规则（下次插入生效）
+    # 尝试 pkexec（图形密码对话框）
     try:
-        import re
-        vid_pid = re.search(r'([0-9a-f]{4}):([0-9a-f]{4})', path)
-        if not vid_pid:
-            return
-        rule = f'SUBSYSTEM==\"tty\", ATTRS{{idVendor}}==\"*\", MODE=\"0666\"\n'
-        udev_dir = "/etc/udev/rules.d"
-        subprocess.run(["sudo", "mkdir", "-p", udev_dir], timeout=3, capture_output=True)
-        rule_path = f"{udev_dir}/99-seahi-serial.rules"
-        subprocess.run(["sudo", "bash", "-c",
-                        f'echo \'KERNEL==\"ttyUSB*\",MODE=\"0666\"\nKERNEL==\"ttyACM*\",MODE=\"0666\"\n\' > {rule_path}'],
-                       timeout=3, capture_output=True)
-        subprocess.run(["sudo", "udevadm", "control", "--reload-rules"], timeout=3, capture_output=True)
-        subprocess.run(["sudo", "udevadm", "trigger"], timeout=3, capture_output=True)
+        r = subprocess.run(["pkexec", "chmod", "666", path],
+                           timeout=30, capture_output=True)
+        if r.returncode == 0:
+            return True
     except Exception:
         pass
+    # 全部失败，返回错误信息
+    return False
 
 def open_port(mid, path, baud):
     close_port(mid)
-    ensure_device_perm(path)
+    if not ensure_device_perm(path):
+        return False, f"无权访问 {path}，请在 WSL 终端执行: sudo usermod -aG dialout $(whoami) 然后重启 WSL"
     if serial is not None:
         try:
             s = serial.Serial(port=path, baudrate=baud, timeout=0, write_timeout=0)

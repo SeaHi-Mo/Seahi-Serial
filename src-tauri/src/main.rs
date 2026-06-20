@@ -879,6 +879,17 @@ fn bridge_command(session: &WslSerialSession, cmd: &serde_json::Value) -> Result
     serde_json::from_str(resp_line.trim()).map_err(|e| format!("解析响应失败: {}", e))
 }
 
+/// 启动 bridge 进程（使用 sg dialout 临时切换到 dialout 组）
+fn spawn_bridge(distro: &str) -> Result<std::process::Child, String> {
+    // 用 sg dialout 临时切换组，这样不需要重启 WSL 就能访问串口设备
+    let child = std::process::Command::new("wsl")
+        .args(["-d", distro, "-e", "sg", "dialout", "-c", &format!("python3 {}", BRIDGE_SCRIPT_PATH)])
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动 bridge 失败: {}", e))?;
+    Ok(child)
+}
+
 /// 打开 WSL 串口（通过 bridge 管道）
 #[tauri::command]
 fn open_wsl_serial(
@@ -891,10 +902,7 @@ fn open_wsl_serial(
     { let mut s = state.sessions.lock().unwrap(); if let Some(mut old) = s.remove(&monitor_id) { let _ = old.child.kill(); let _ = old.child.wait(); } }
     let distro = get_or_start_wsl_distro()?;
     deploy_bridge(&distro)?;
-    let mut child = std::process::Command::new("wsl")
-        .args(["-d", &distro, "-e", "python3", BRIDGE_SCRIPT_PATH])
-        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).stdin(std::process::Stdio::piped())
-        .spawn().map_err(|e| format!("启动 bridge 失败: {}", e))?;
+    let mut child = spawn_bridge(&distro)?;
     let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
     let ready = std::thread::spawn(move || {
         use std::io::BufRead;
