@@ -22,8 +22,42 @@ TIOCM_RTS = 0x004
 
 ports = {}  # monitor_id -> serial.Serial or fd
 
+def ensure_device_perm(path):
+    """确保串口设备可读写（尝试 chmod，失败则创建 udev 规则）"""
+    try:
+        os.chmod(path, 0o666)
+        return
+    except PermissionError:
+        pass
+    # chmod 失败，尝试用 sudo
+    import subprocess
+    try:
+        subprocess.run(["sudo", "chmod", "666", path],
+                       timeout=3, capture_output=True)
+        return
+    except Exception:
+        pass
+    # sudo 也失败，创建 udev 规则（下次插入生效）
+    try:
+        import re
+        vid_pid = re.search(r'([0-9a-f]{4}):([0-9a-f]{4})', path)
+        if not vid_pid:
+            return
+        rule = f'SUBSYSTEM==\"tty\", ATTRS{{idVendor}}==\"*\", MODE=\"0666\"\n'
+        udev_dir = "/etc/udev/rules.d"
+        subprocess.run(["sudo", "mkdir", "-p", udev_dir], timeout=3, capture_output=True)
+        rule_path = f"{udev_dir}/99-seahi-serial.rules"
+        subprocess.run(["sudo", "bash", "-c",
+                        f'echo \'KERNEL==\"ttyUSB*\",MODE=\"0666\"\nKERNEL==\"ttyACM*\",MODE=\"0666\"\n\' > {rule_path}'],
+                       timeout=3, capture_output=True)
+        subprocess.run(["sudo", "udevadm", "control", "--reload-rules"], timeout=3, capture_output=True)
+        subprocess.run(["sudo", "udevadm", "trigger"], timeout=3, capture_output=True)
+    except Exception:
+        pass
+
 def open_port(mid, path, baud):
     close_port(mid)
+    ensure_device_perm(path)
     if serial is not None:
         try:
             s = serial.Serial(port=path, baudrate=baud, timeout=0, write_timeout=0)
