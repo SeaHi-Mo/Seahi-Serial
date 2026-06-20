@@ -2277,6 +2277,8 @@ async function autoDetachAllDevices(mid) {
     if (detached.length > 0) {
         console.log('[WSL] 已自动释放:', detached);
         renderWslDeviceList(mid);
+        // 自动断开后刷新 WSL 串口端口列表
+        setTimeout(function() { refreshWslMonPorts(); }, 1000);
     }
 }
 
@@ -2680,6 +2682,8 @@ async function toggleWslMapping(mid, idx, checked) {
     
     delete _wslBusy[device.busid];
     renderWslDeviceList(mid);
+    // 映射/断开后自动刷新 WSL 串口端口列表
+    setTimeout(function() { refreshWslMonPorts(); }, 1000);
     // 后台静默刷新：合并数据，保留当前列表中的设备
     try {
         var fresh = await invoke('list_wsl_devices');
@@ -2789,6 +2793,10 @@ async function autoMapCheck() {
                 sortWslDevices();
                 renderWslDeviceList(mid);
             }
+        }
+        // 自动映射完成后也刷新 WSL 串口端口列表
+        if (tasks.length > 0) {
+            setTimeout(function() { refreshWslMonPorts(); }, 1500);
         }
     } catch (e) {
         // 静默失败，下次轮询重试
