@@ -18,7 +18,7 @@ rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serialport = "3.3"
-winapi = { version = "0.3", features = ["setupapi", "guiddef"] }
+winapi = { version = "0.3", features = ["setupapi", "guiddef", "devpropdef"] }
 windows-sys = { version = "0.59", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Foundation", "Win32_System_Threading"] }
 reqwest = { version = "0.12", features = ["json"] }
 base64 = "0.22"

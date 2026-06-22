@@ -169,7 +169,7 @@ const MAX_SEND_HISTORY = 50;  // 发送历史最大条数
 | `ICONS.terminal` | 终端模式图标 |
 | `ICONS.settings` | 设置/更多图标 |
 | `ICONS.copy` | 复制图标 |
-| `ICONS.rollback` | 自动回滚图标 |
+| `ICONS.rollback` | 自动滚动图标 |
 | `ICONS.saveLog` | 保存日志图标 |
 | `ICONS.copyAll` | 复制全部图标 |
 | `ICONS.quickCmd` | 快速指令列表图标 |

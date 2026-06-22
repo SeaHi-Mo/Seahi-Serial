@@ -650,7 +650,7 @@ function createMonitorPane(mid, title, closable) {
             '</button>' +
             '<div class="tsep"></div>' +
             '<button class="ibtn" onclick="clearLog(\'' + mid + '\')" title="清除内容">' + ICONS.clear + '</button>' +
-            '<button class="ibtn on" id="' + mid + '-btnScroll" onclick="toggleIbtn(this)" title="自动回滚">' + ICONS.rollback + '</button>' +
+            '<button class="ibtn on" id="' + mid + '-btnScroll" onclick="toggleIbtn(this)" title="自动滚动">' + ICONS.rollback + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnAutoReconnect" onclick="toggleIbtn(this)" title="自动重连">' + ICONS.reconnect + '</button>' +
             '<button class="ibtn on" id="' + mid + '-btnSendLE" onclick="toggleTerminalMode(this,\'' + mid + '\')" title="终端模式">' + ICONS.terminal + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnLineNum" onclick="toggleLineNum(this,\'' + mid + '\')" title="显示行号">' + ICONS.lineNum + '</button>' +
@@ -910,7 +910,7 @@ async function refreshPorts(mid, force) {
             var opt = document.createElement('div');
             opt.className = 'sel-opt';
             opt.setAttribute('data-val', p.port_name);
-            opt.textContent = p.friendly_name || p.port_name;
+            opt.textContent = p.product_name ? p.product_name + ' (' + p.port_name + ')' : (p.friendly_name || p.port_name);
             opt.onclick = function(e) { e.stopPropagation(); setPortSel(mid, p.port_name, this); };
             drop.appendChild(opt);
         });
@@ -1896,7 +1896,7 @@ function getWslMappingHtml(mid) {
                 '</button>' +
                 '<div class="tsep"></div>' +
                 '<button class="ibtn" onclick="clearLog(\'' + wmid + '\')" title="清除内容">' + ICONS.clear + '</button>' +
-                '<button class="ibtn on" id="' + wmid + '-btnScroll" onclick="toggleIbtn(this)" title="自动回滚">' + ICONS.rollback + '</button>' +
+                '<button class="ibtn on" id="' + wmid + '-btnScroll" onclick="toggleIbtn(this)" title="自动滚动">' + ICONS.rollback + '</button>' +
                 '<button class="ibtn" id="' + wmid + '-btnAutoReconnect" onclick="toggleIbtn(this)" title="自动重连">' + ICONS.reconnect + '</button>' +
                 '<button class="ibtn on" id="' + wmid + '-btnSendLE" onclick="toggleTerminalMode(this,\'' + wmid + '\')" title="终端模式">' + ICONS.terminal + '</button>' +
                 '<button class="ibtn" id="' + wmid + '-btnLineNum" onclick="toggleLineNum(this,\'' + wmid + '\')" title="显示行号">' + ICONS.lineNum + '</button>' +
@@ -2376,6 +2376,7 @@ function renderWslDistroCards(mid, distros) {
     if (!container) return;
     if (!distros || distros.length === 0) {
         container.innerHTML = '<div style="color:#585858;font-size:12px;">未检测到 WSL 分发版</div>';
+        stopWslUptimeTicker();
         return;
     }
     var html = '';
@@ -2394,12 +2395,20 @@ function renderWslDistroCards(mid, distros) {
             ? "wslDistAction('shutdown_wsl','" + d.name.replace(/'/g, "\\'") + "')"
             : "wslDistAction('launch_wsl','" + d.name.replace(/'/g, "\\'") + "')";
 
+        if (running) {
+            var parts = d.uptime.split(':').map(Number);
+            var secs = (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+            _wslDistroBasetime[d.name] = { baseSeconds: secs, anchorMs: Date.now() };
+        } else {
+            delete _wslDistroBasetime[d.name];
+        }
+
         html += '<div style="padding:6px 12px;background:' + bgGrad + ';border:1px solid ' + borderColor + ';border-radius:6px;display:flex;align-items:center;gap:10px;">';
         html += '<span style="width:7px;height:7px;border-radius:50%;background:' + dotColor + ';flex-shrink:0;' + (running ? 'box-shadow:0 0 5px rgba(78,201,176,0.6);' : '') + '"></span>';
         html += '<span style="font-size:12px;font-weight:600;color:#e0e0e0;white-space:nowrap;" title="' + d.name + '">' + d.name + '</span>';
         html += '<span style="width:1px;height:16px;background:#3c3c3c;flex-shrink:0;"></span>';
         html += '<span style="font-size:10px;color:#585858;">UP</span>';
-        html += '<span style="font-size:11px;color:#b0b0b0;font-family:monospace;">' + uptime + '</span>';
+        html += '<span id="uptime-' + mid + '-' + d.name + '" style="font-size:11px;color:#b0b0b0;font-family:monospace;">' + uptime + '</span>';
         html += '<span style="width:1px;height:16px;background:#3c3c3c;flex-shrink:0;"></span>';
         html += '<span style="font-size:10px;color:#585858;">MEM</span>';
         html += '<span style="font-size:11px;color:#b0b0b0;font-family:monospace;">' + mem + '</span>';
@@ -2407,6 +2416,35 @@ function renderWslDistroCards(mid, distros) {
         html += '</div>';
     });
     container.innerHTML = html;
+    startWslUptimeTicker(mid);
+}
+
+function wslFormatUptime(totalSeconds) {
+    var h = Math.floor(totalSeconds / 3600);
+    var m = Math.floor((totalSeconds % 3600) / 60);
+    var s = Math.floor(totalSeconds % 60);
+    return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+function startWslUptimeTicker(mid) {
+    if (_wslUptimeTimer) { clearInterval(_wslUptimeTimer); _wslUptimeTimer = null; }
+    if (Object.keys(_wslDistroBasetime).length === 0) return;
+    _wslUptimeTimer = setInterval(function() {
+        var now = Date.now();
+        Object.keys(_wslDistroBasetime).forEach(function(name) {
+            var bt = _wslDistroBasetime[name];
+            if (!bt) return;
+            var elapsed = Math.floor((now - bt.anchorMs) / 1000);
+            var total = bt.baseSeconds + elapsed;
+            var el = document.getElementById('uptime-' + mid + '-' + name);
+            if (el) el.textContent = wslFormatUptime(total);
+        });
+    }, 1000);
+}
+
+function stopWslUptimeTicker() {
+    if (_wslUptimeTimer) { clearInterval(_wslUptimeTimer); _wslUptimeTimer = null; }
+    _wslDistroBasetime = {};
 }
 
 // 绑定监视器事件监听器
@@ -2547,6 +2585,8 @@ var _wslAutoMap = {}; // { busid: portName } 开启自动映射的设备
 var _wslAutoMapTimer = null;
 var _wslStatusUnlisten = null; // WSL 状态事件监听取消函数
 var _wslRunning = false; // WSL 是否正在运行
+var _wslUptimeTimer = null; // 运行时间秒级更新定时器
+var _wslDistroBasetime = {}; // { distroName: { baseSeconds, anchorMs } } 运行时间基准
 
 function sortWslDevices() {
     _wslDevices.sort(function(a, b) {

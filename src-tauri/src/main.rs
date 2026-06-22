@@ -162,6 +162,9 @@ fn wsl_shell_exec(distro: &str, cmd: &str, timeout_ms: u64) -> Result<String, St
     Ok(output)
 }
 
+/// WSL 终端进程 PID（由 launch_wsl 设置，用于检测用户关闭窗口）
+static WSL_TERMINAL_PID: Mutex<Option<u32>> = Mutex::new(None);
+
 /// 全局状态：多个独立串口连接（key = monitor_id）
 struct PortState {
     ports: Mutex<HashMap<String, Box<dyn SerialPort>>>,
@@ -218,18 +221,22 @@ const BRIDGE_TIMEOUT_SECS: u64 = 5;
 struct PortInfo {
     port_name: String,
     friendly_name: String,
+    product_name: String,
 }
 
-/// Windows 下通过 SetupAPI 一次性遍历所有串口设备，返回 COM 口名 → FriendlyName 的映射表。
-/// 用于修复 serialport crate 读取 USB 描述符时中文乱码（U+FFFD）的问题。
+/// Windows 下通过 SetupAPI 一次性遍历所有串口设备，返回 COM 口名 → (FriendlyName, ProductName) 的映射表。
+/// FriendlyName 来自 SPDRP_FRIENDLYNAME（如 "USB 串行设备 (COM28)"）。
+/// ProductName 来自 DEVPKEY_Device_BusReportedDeviceDesc（USB iProduct 字符串，如 "FlashKey"）。
 #[cfg(windows)]
-fn build_friendly_name_map() -> HashMap<String, String> {
+fn build_friendly_name_map() -> HashMap<String, (String, String)> {
     use std::ptr;
+    use winapi::shared::devpropdef::DEVPROPKEY;
     use winapi::shared::guiddef::GUID;
     use winapi::um::setupapi::{
         SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-        SetupDiGetDeviceRegistryPropertyW, HDEVINFO, SPDRP_FRIENDLYNAME, SP_DEVINFO_DATA,
-        DIGCF_PRESENT,
+        SetupDiGetDeviceRegistryPropertyW, SetupDiGetDevicePropertyW,
+        HDEVINFO, SPDRP_FRIENDLYNAME, SP_DEVINFO_DATA,
+        DIGCF_PRESENT, DIGCF_DEVICEINTERFACE,
     };
 
     let mut map = HashMap::new();
@@ -241,12 +248,23 @@ fn build_friendly_name_map() -> HashMap<String, String> {
         Data4: [0xBF, 0xC1, 0x08, 0x00, 0x2B, 0xE1, 0x03, 0x18],
     };
 
+    // DEVPKEY_Device_BusReportedDeviceDesc: DEVPROPGUID(540b947e-adcf-4c5f-895b-9d4080c0142e), PID 4
+    let prop_key = DEVPROPKEY {
+        fmtid: GUID {
+            Data1: 0x540b947e,
+            Data2: 0xadcf,
+            Data3: 0x4c5f,
+            Data4: [0x89, 0x5b, 0x9d, 0x40, 0x80, 0xc0, 0x14, 0x2e],
+        },
+        pid: 4,
+    };
+
     unsafe {
         let h_dev_info: HDEVINFO = SetupDiGetClassDevsW(
             &guid_ports,
             ptr::null(),
             ptr::null_mut(),
-            DIGCF_PRESENT,
+            DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
         );
 
         if h_dev_info as usize == usize::MAX {
@@ -260,44 +278,58 @@ fn build_friendly_name_map() -> HashMap<String, String> {
         while SetupDiEnumDeviceInfo(h_dev_info, index, &mut dev_info_data) != 0 {
             index += 1;
 
-            let mut required_size: u32 = 0;
-            let _ = SetupDiGetDeviceRegistryPropertyW(
-                h_dev_info,
-                &mut dev_info_data,
-                SPDRP_FRIENDLYNAME,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                0,
-                &mut required_size,
-            );
+            let mut friendly_name = String::new();
+            let mut product_name = String::new();
 
-            if required_size == 0 {
-                continue;
-            }
-
-            let mut buffer: Vec<u16> = vec![0; (required_size / 2 + 1) as usize];
-            let mut actual_size: u32 = 0;
-
-            let success = SetupDiGetDeviceRegistryPropertyW(
-                h_dev_info,
-                &mut dev_info_data,
-                SPDRP_FRIENDLYNAME,
-                ptr::null_mut(),
-                buffer.as_mut_ptr() as *mut u8,
-                buffer.len() as u32 * 2,
-                &mut actual_size,
-            );
-
-            if success != 0 {
-                let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
-                if let Ok(name) = String::from_utf16(&buffer[..len]) {
-                    if let Some(com_start) = name.find("COM") {
-                        let rest = &name[com_start..];
-                        let com_end = rest.find(|c: char| !c.is_alphanumeric()).unwrap_or(rest.len());
-                        let com_port = rest[..com_end].to_string();
-                        map.insert(com_port, name);
+            // 读取 FriendlyName
+            {
+                let mut required_size: u32 = 0;
+                let _ = SetupDiGetDeviceRegistryPropertyW(
+                    h_dev_info, &mut dev_info_data, SPDRP_FRIENDLYNAME,
+                    ptr::null_mut(), ptr::null_mut(), 0, &mut required_size,
+                );
+                if required_size > 0 {
+                    let mut buffer: Vec<u16> = vec![0; (required_size / 2 + 1) as usize];
+                    let mut actual_size: u32 = 0;
+                    let success = SetupDiGetDeviceRegistryPropertyW(
+                        h_dev_info, &mut dev_info_data, SPDRP_FRIENDLYNAME,
+                        ptr::null_mut(), buffer.as_mut_ptr() as *mut u8,
+                        buffer.len() as u32 * 2, &mut actual_size,
+                    );
+                    if success != 0 {
+                        let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+                        friendly_name = String::from_utf16(&buffer[..len]).unwrap_or_default();
                     }
                 }
+            }
+
+            // 读取 DEVPKEY_Device_BusReportedDeviceDesc（USB iProduct 字符串）
+            {
+                let mut required_size: u32 = 0;
+                let _ = SetupDiGetDevicePropertyW(
+                    h_dev_info, &mut dev_info_data, &prop_key,
+                    ptr::null_mut(), ptr::null_mut(), 0, &mut required_size, 0,
+                );
+                if required_size > 0 {
+                    let mut buffer: Vec<u16> = vec![0; (required_size / 2 + 1) as usize];
+                    let mut actual_size: u32 = 0;
+                    let success = SetupDiGetDevicePropertyW(
+                        h_dev_info, &mut dev_info_data, &prop_key,
+                        ptr::null_mut(), buffer.as_mut_ptr() as *mut u8,
+                        buffer.len() as u32 * 2, &mut actual_size, 0,
+                    );
+                    if success != 0 {
+                        let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+                        product_name = String::from_utf16(&buffer[..len]).unwrap_or_default();
+                    }
+                }
+            }
+
+            if let Some(com_start) = friendly_name.find("COM") {
+                let rest = &friendly_name[com_start..];
+                let com_end = rest.find(|c: char| !c.is_alphanumeric()).unwrap_or(rest.len());
+                let com_port = rest[..com_end].to_string();
+                map.insert(com_port, (friendly_name, product_name));
             }
         }
 
@@ -313,7 +345,7 @@ fn build_friendly_name_map() -> HashMap<String, String> {
 fn enumerate_ports() -> Vec<PortInfo> {
     build_friendly_name_map()
         .into_iter()
-        .map(|(port_name, friendly_name)| PortInfo { port_name, friendly_name })
+        .map(|(port_name, (friendly_name, product_name))| PortInfo { port_name, friendly_name, product_name })
         .collect()
 }
 
@@ -348,7 +380,7 @@ fn list_ports() -> Vec<PortInfo> {
                 SerialPortType::BluetoothPort => format!("{} - 蓝牙", p.port_name),
                 _ => p.port_name.clone(),
             };
-            PortInfo { port_name: p.port_name.clone(), friendly_name: friendly }
+            PortInfo { port_name: p.port_name.clone(), friendly_name: friendly, product_name: String::new() }
         })
         .collect()
 }
@@ -714,15 +746,43 @@ fn check_wsl_running() -> Option<Vec<String>> {
     Some(dists)
 }
 
+fn is_process_alive(pid: u32) -> bool {
+    unsafe {
+        use windows_sys::Win32::System::Threading::{OpenProcess, GetExitCodeProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() { return false; }
+        let mut code: u32 = 0;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        windows_sys::Win32::Foundation::CloseHandle(handle);
+        ok != 0 && code == 259
+    }
+}
+
 fn start_wsl_watcher(app: tauri::AppHandle) {
     std::thread::spawn(move || {
         let mut last_running = false;
         loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
-            let running = !check_wsl_running().unwrap_or_default().is_empty();
+
+            let distros = check_wsl_running().unwrap_or_default();
+            let wsl_running = !distros.is_empty();
+
+            let terminal_alive = {
+                let pid = WSL_TERMINAL_PID.lock().unwrap();
+                match *pid {
+                    Some(p) => is_process_alive(p),
+                    None => true,
+                }
+            };
+
+            if !terminal_alive && wsl_running {
+                *CACHED_DISTRO.lock().unwrap() = None;
+            }
+
+            let running = wsl_running && terminal_alive;
             if running != last_running {
                 last_running = running;
-                dbg_log(&format!("wsl_watcher: status changed, running={}", running));
+                dbg_log(&format!("wsl_watcher: status changed, running={}, terminal_alive={}, wsl_running={}", running, terminal_alive, wsl_running));
                 let _ = app.emit("wsl-status-changed", running);
             }
         }
@@ -739,11 +799,12 @@ fn launch_wsl(dist: Option<String>) -> Result<(), String> {
     } else {
         cmd.args(["wsl"]);
     }
-    cmd.spawn().map_err(|e| format!("{}", e))?;
+    let child = cmd.spawn().map_err(|e| format!("{}", e))?;
+    *WSL_TERMINAL_PID.lock().unwrap() = Some(child.id());
     Ok(())
 }
 
-/// 关闭指定 WSL 分发版
+/// 关闭指定 WSL 发行版
 #[tauri::command]
 fn shutdown_wsl(dist: String) -> Result<(), String> {
     let out = hidden_command("wsl")
@@ -754,6 +815,7 @@ fn shutdown_wsl(dist: String) -> Result<(), String> {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(format!("关闭 WSL 发行版失败: {}", stderr.trim()));
     }
+    *WSL_TERMINAL_PID.lock().unwrap() = None;
     Ok(())
 }
 
