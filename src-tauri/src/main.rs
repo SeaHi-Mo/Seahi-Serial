@@ -1675,6 +1675,16 @@ fn set_window_size(window: tauri::Window, width: u32, height: u32) -> Result<(),
         .map_err(|e| format!("设置窗口大小失败: {}", e))
 }
 
+/// 用系统默认浏览器打开 URL
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    std::process::Command::new("cmd")
+        .args(["/C", "start", "", &url])
+        .spawn()
+        .map_err(|e| format!("打开 URL 失败: {}", e))?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(PortState {
@@ -1714,6 +1724,7 @@ fn main() {
             get_wsl_serial_devices,
             set_wsl_dtr,
             set_wsl_rts,
+            open_url,
         ])
         .setup(|app| {
             #[cfg(windows)]

@@ -372,6 +372,18 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .update-btn.disabled { background:#3a5a7a; color:#aaa; cursor:default; }
 .update-btn.disabled:hover { background:#3a5a7a; }
 
+/* ===== Issue 提交按钮 ===== */
+.issue-btn {
+    background:#3a3a3a;
+    color:#999;
+    font-size:11px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:3px;
+    padding:2px 8px; border-radius:3px; margin-left:8px;
+    border:none; user-select:none;
+    transition:background .15s;
+}
+.issue-btn:hover { background:#4a4a4a; color:#ccc; }
+
 /* ===== Toast 通知 ===== */
 .toast {
     position:fixed; top:40px; right:20px; z-index:10001;
@@ -518,6 +530,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
         <span id="wslToggleText">WSL 端口映射</span>
     </span>
     <span style="flex:1;"></span>
+    <span class="issue-btn" onclick="invoke('open_url',{url:'https://github.com/SeaHi-Mo/Seahi-Serial/issues/new'})">提交issue</span>
     <span id="updateBtn" class="update-btn" style="display:none;" onclick="downloadAndInstallUpdate()">更新</span>
 </div>
 
@@ -591,12 +604,11 @@ function showToast(message, type) {
     if (type === 'error') { toast.style.cursor = 'pointer'; toast.title = '点击关闭'; toast.addEventListener('click', function() { toast.remove(); }); }
     document.body.appendChild(toast);
     setTimeout(function() { toast.classList.add('show'); }, 10);
-    if (type !== 'error') {
-        setTimeout(function() {
-            toast.classList.remove('show');
-            setTimeout(function() { toast.remove(); }, 300);
-        }, 3000);
-    }
+    var autoHideMs = type === 'error' ? 5000 : 3000;
+    setTimeout(function() {
+        toast.classList.remove('show');
+        setTimeout(function() { toast.remove(); }, 300);
+    }, autoHideMs);
 }
 
 /* ===== 创建监视器窗格 ===== */
@@ -1356,7 +1368,8 @@ function appendOutput(mid, type, text) {
     if (!el) return;
     var tsEl = document.getElementById(mid + '-btnTs');
     var showTs = tsEl && tsEl.classList.contains('on');
-    var ts = showTs ? '[' + new Date().toTimeString().slice(0,8) + '] ' : '';
+    var now = new Date();
+    var ts = showTs ? '[' + now.toTimeString().slice(0,8) + '.' + String(now.getMilliseconds()).padStart(3,'0') + '] ' : '';
     var div = document.createElement('div');
     div.className = 'ol ' + type;
     var isEmpty = !text || text.trim() === '';
