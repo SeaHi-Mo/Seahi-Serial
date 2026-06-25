@@ -2,7 +2,7 @@
 ; 使用 Inno Setup Compiler (ISCC) 编译此脚本生成安装程序
 
 #define MyAppName "Seahi Serial"
-#define MyAppVersion "0.1.13"
+#define MyAppVersion "0.1.14"
 #define MyAppPublisher "SeaHi"
 #define MyAppExeName "seahi-serial.exe"
 #define MyAppDescription "串口调试器 - Tauri 2 桌面应用"

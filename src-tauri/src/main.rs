@@ -230,13 +230,12 @@ struct PortInfo {
 #[cfg(windows)]
 fn build_friendly_name_map() -> HashMap<String, (String, String)> {
     use std::ptr;
-    use winapi::shared::devpropdef::DEVPROPKEY;
     use winapi::shared::guiddef::GUID;
     use winapi::um::setupapi::{
         SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-        SetupDiGetDeviceRegistryPropertyW, SetupDiGetDevicePropertyW,
+        SetupDiGetDeviceRegistryPropertyW,
         HDEVINFO, SPDRP_FRIENDLYNAME, SP_DEVINFO_DATA,
-        DIGCF_PRESENT, DIGCF_DEVICEINTERFACE,
+        DIGCF_PRESENT,
     };
 
     let mut map = HashMap::new();
@@ -248,23 +247,12 @@ fn build_friendly_name_map() -> HashMap<String, (String, String)> {
         Data4: [0xBF, 0xC1, 0x08, 0x00, 0x2B, 0xE1, 0x03, 0x18],
     };
 
-    // DEVPKEY_Device_BusReportedDeviceDesc: DEVPROPGUID(540b947e-adcf-4c5f-895b-9d4080c0142e), PID 4
-    let prop_key = DEVPROPKEY {
-        fmtid: GUID {
-            Data1: 0x540b947e,
-            Data2: 0xadcf,
-            Data3: 0x4c5f,
-            Data4: [0x89, 0x5b, 0x9d, 0x40, 0x80, 0xc0, 0x14, 0x2e],
-        },
-        pid: 4,
-    };
-
     unsafe {
         let h_dev_info: HDEVINFO = SetupDiGetClassDevsW(
             &guid_ports,
             ptr::null(),
             ptr::null_mut(),
-            DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
+            DIGCF_PRESENT,
         );
 
         if h_dev_info as usize == usize::MAX {
@@ -279,7 +267,7 @@ fn build_friendly_name_map() -> HashMap<String, (String, String)> {
             index += 1;
 
             let mut friendly_name = String::new();
-            let mut product_name = String::new();
+            let product_name = String::new();
 
             // 读取 FriendlyName
             {
@@ -299,28 +287,6 @@ fn build_friendly_name_map() -> HashMap<String, (String, String)> {
                     if success != 0 {
                         let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
                         friendly_name = String::from_utf16(&buffer[..len]).unwrap_or_default();
-                    }
-                }
-            }
-
-            // 读取 DEVPKEY_Device_BusReportedDeviceDesc（USB iProduct 字符串）
-            {
-                let mut required_size: u32 = 0;
-                let _ = SetupDiGetDevicePropertyW(
-                    h_dev_info, &mut dev_info_data, &prop_key,
-                    ptr::null_mut(), ptr::null_mut(), 0, &mut required_size, 0,
-                );
-                if required_size > 0 {
-                    let mut buffer: Vec<u16> = vec![0; (required_size / 2 + 1) as usize];
-                    let mut actual_size: u32 = 0;
-                    let success = SetupDiGetDevicePropertyW(
-                        h_dev_info, &mut dev_info_data, &prop_key,
-                        ptr::null_mut(), buffer.as_mut_ptr() as *mut u8,
-                        buffer.len() as u32 * 2, &mut actual_size, 0,
-                    );
-                    if success != 0 {
-                        let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
-                        product_name = String::from_utf16(&buffer[..len]).unwrap_or_default();
                     }
                 }
             }
@@ -1449,17 +1415,31 @@ fn dirs_config_path() -> Option<std::path::PathBuf> {
 fn save_log(content: String, path: String) -> Result<(), String> {
     use std::fs;
     use std::path::Path;
-    use std::time::SystemTime;
 
     if path.is_empty() {
         return Err("未设置日志目录".into());
     }
 
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let millis = now.as_millis();
-    let filename = format!("serial-log-{}.txt", millis);
+    let filename = {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+            use windows_sys::Win32::Foundation::SYSTEMTIME;
+            let mut st: SYSTEMTIME = unsafe { std::mem::zeroed() };
+            unsafe { GetLocalTime(&mut st) };
+            format!(
+                "Serial Debug {:04}-{:02}-{:02} {:02}{:02}{:02}.txt",
+                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap_or_default();
+            format!("Serial Debug {}.txt", now.as_secs())
+        }
+    };
     let filepath = Path::new(&path).join(&filename);
 
     fs::write(&filepath, content).map_err(|e| format!("写入日志失败: {}", e))?;
@@ -1671,7 +1651,9 @@ fn get_window_size(window: tauri::Window) -> Result<(u32, u32), String> {
 /// 设置窗口大小
 #[tauri::command]
 fn set_window_size(window: tauri::Window, width: u32, height: u32) -> Result<(), String> {
-    window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height }))
+    let w = width.max(1000);
+    let h = height.max(650);
+    window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: w, height: h }))
         .map_err(|e| format!("设置窗口大小失败: {}", e))
 }
 
