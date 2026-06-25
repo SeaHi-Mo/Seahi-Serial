@@ -59,6 +59,7 @@ jobs:
         run: choco install innosetup -y
 
       - name: Download Chinese language pack
+        continue-on-error: true
         run: |
           $langDir = "C:\Program Files (x86)\Inno Setup 6\Languages"
           if (!(Test-Path $langDir)) { New-Item -ItemType Directory -Path $langDir -Force }
