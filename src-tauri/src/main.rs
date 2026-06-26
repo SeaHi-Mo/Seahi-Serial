@@ -13,19 +13,15 @@ use tauri::Emitter;
 use serde_json::json;
 
 fn dbg_log(msg: &str) {
-    #[cfg(debug_assertions)]
-    {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let line = format!("[{}ms] {}\n", now, msg);
-        let _ = std::fs::OpenOptions::new()
-            .create(true).append(true)
-            .open(std::env::temp_dir().join("seahi-serial-debug.log"))
-            .and_then(|mut f| f.write_all(line.as_bytes()));
-    }
-    let _ = msg;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let line = format!("[{}ms] {}\n", now, msg);
+    let _ = std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open(std::env::temp_dir().join("seahi-serial-debug.log"))
+        .and_then(|mut f| f.write_all(line.as_bytes()));
 }
 
 #[cfg(windows)]
@@ -1667,6 +1663,44 @@ fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 设置标题栏颜色 (R, G, B)
+#[tauri::command]
+fn set_title_bar_color(window: tauri::Window, r: u8, g: u8, b: u8) -> Result<(), String> {
+    dbg_log(&format!("set_title_bar_color: r={} g={} b={}", r, g, b));
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE};
+
+        unsafe {
+            let hwnd = window.hwnd().map_err(|e| format!("获取窗口句柄失败: {}", e))?;
+            let hwnd_ptr: *mut std::ffi::c_void = std::mem::transmute(hwnd.0);
+
+            // 关闭沉浸式暗色模式
+            let dark_mode: u32 = 0;
+            DwmSetWindowAttribute(
+                hwnd_ptr,
+                DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+                &dark_mode as *const u32 as *const _,
+                std::mem::size_of::<u32>() as u32,
+            );
+
+            // 设置标题栏颜色 (COLORREF: 0x00BBGGRR)
+            let color: u32 = (b as u32) << 16 | (g as u32) << 8 | (r as u32);
+            let hr = DwmSetWindowAttribute(
+                hwnd_ptr,
+                DWMWA_CAPTION_COLOR as u32,
+                &color as *const u32 as *const _,
+                std::mem::size_of::<u32>() as u32,
+            );
+            dbg_log(&format!("DWMWA_CAPTION_COLOR hr={} color=0x{:06X}", hr, color));
+            if hr != 0 {
+                return Err(format!("DwmSetWindowAttribute 失败: hr={}", hr));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(PortState {
@@ -1707,6 +1741,7 @@ fn main() {
             set_wsl_dtr,
             set_wsl_rts,
             open_url,
+            set_title_bar_color,
         ])
         .setup(|app| {
             #[cfg(windows)]
