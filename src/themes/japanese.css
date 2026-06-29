@@ -1,0 +1,233 @@
+/* ===== 日本风 深色 — 田中一光风格 ===== */
+/* 色彩灵感：深靛蓝底、朱红主色、金茶辅色、抹茶绿点缀、墨黑轮廓 */
+[data-theme="japanese"] {
+    --bg: #141620;
+    --editor-bg: #181a26;
+    --toolbar-bg: #1c1e2c;
+    --input-bg: #22243a;
+    --border: #2a2c44;
+    --border-h: #383a58;
+    --text: #d4c8b8;
+    --text-b: #f0e8dc;
+    --text-d: #686478;
+    --link: #d4603c;
+    --btn-p: #c84830;
+    --btn-ph: #d85840;
+    --btn-pa: #b43c28;
+    --split-line: #c84830;
+    --surface-1: #1e2034;
+    --surface-2: #1c1e2c;
+    --surface-3: #181a26;
+    --text-soft: #a09484;
+    --text-muted: #585468;
+    --text-placeholder: #3c3850;
+    --accent-focus: #d4603c;
+    --accent-green: #5c8a48;
+    --accent-red: #c84830;
+    --accent-orange: #c8982c;
+    --send-bubble-bg: #2c2440;
+    --send-bubble-text: #f0e8dc;
+}
+[data-theme="japanese"] .sel-drop,
+[data-theme="japanese"] .baud-dropdown,
+[data-theme="japanese"] .send-hist,
+[data-theme="japanese"] .send-as-drop,
+[data-theme="japanese"] .qcmd-dropdown {
+    box-shadow: 0 4px 16px rgba(0,0,0,.65);
+}
+[data-theme="japanese"] .send-hist-item.selected {
+    background: rgba(200,72,48,.15);
+}
+[data-theme="japanese"] .ibtn.on {
+    background: rgba(200,72,48,.2);
+}
+[data-theme="japanese"] .toast {
+    box-shadow: 0 4px 16px rgba(0,0,0,.55);
+}
+[data-theme="japanese"] .wsl-spinner {
+    border-color: rgba(212,96,60,.25);
+    border-top-color: var(--btn-p);
+}
+[data-theme="japanese"] .wsl-loading-cell {
+    color: var(--btn-p);
+}
+[data-theme="japanese"] .output::-webkit-scrollbar-thumb {
+    background: rgba(140,130,110,.3);
+}
+[data-theme="japanese"] .output::-webkit-scrollbar-thumb:hover {
+    background: rgba(140,130,110,.5);
+}
+
+/* 日本风 深色 ANSI */
+[data-theme="japanese"] .ansi-0 { color: #d4c8b8; }
+[data-theme="japanese"] .ansi-1 { color: #d4c8b8; font-weight:bold; }
+[data-theme="japanese"] .ansi-2 { color: #d4603c; }
+[data-theme="japanese"] .ansi-3 { color: #c8982c; }
+[data-theme="japanese"] .ansi-4 { color: #9068a8; }
+[data-theme="japanese"] .ansi-5 { color: #6898b8; }
+[data-theme="japanese"] .ansi-6 { color: #5c8a48; }
+[data-theme="japanese"] .ansi-7 { color: #a09484; }
+[data-theme="japanese"] .ansi-30 { color: #585468; }
+[data-theme="japanese"] .ansi-31 { color: #c84830; }
+[data-theme="japanese"] .ansi-32 { color: #5c8a48; }
+[data-theme="japanese"] .ansi-33 { color: #c8982c; }
+[data-theme="japanese"] .ansi-34 { color: #d4603c; }
+[data-theme="japanese"] .ansi-35 { color: #9068a8; }
+[data-theme="japanese"] .ansi-36 { color: #5c8a48; }
+[data-theme="japanese"] .ansi-37 { color: #d4c8b8; }
+[data-theme="japanese"] .ansi-90 { color: #686478; }
+[data-theme="japanese"] .ansi-91 { color: #c84830; }
+[data-theme="japanese"] .ansi-92 { color: #5c8a48; }
+[data-theme="japanese"] .ansi-93 { color: #c8982c; }
+[data-theme="japanese"] .ansi-94 { color: #d4603c; }
+[data-theme="japanese"] .ansi-95 { color: #9068a8; }
+[data-theme="japanese"] .ansi-96 { color: #5c8a48; }
+[data-theme="japanese"] .ansi-97 { color: #d4c8b8; }
+
+/* ===== 日本风 浅色 — 田中一光风格 ===== */
+/* 素纸白底、朱红主色、金茶辅色、墨色文字、和纸质感 */
+[data-theme="japanese-light"] {
+    --bg: #f4f0e8;
+    --editor-bg: #faf7f0;
+    --toolbar-bg: #ede9e0;
+    --input-bg: #ffffff;
+    --border: #d8d0c0;
+    --border-h: #c0b8a4;
+    --text: #2c2418;
+    --text-b: #140c00;
+    --text-d: #787060;
+    --link: #b84c2c;
+    --btn-p: #b84c2c;
+    --btn-ph: #c85838;
+    --btn-pa: #a44020;
+    --split-line: #b84c2c;
+    --surface-1: #e8e2d6;
+    --surface-2: #faf7f0;
+    --surface-3: #ede9e0;
+    --text-soft: #605848;
+    --text-muted: #988c7c;
+    --text-placeholder: #b8b0a0;
+    --accent-focus: #b84c2c;
+    --accent-green: #4c7838;
+    --accent-red: #c04428;
+    --accent-orange: #b08020;
+    --send-bubble-bg: #e8dcd0;
+    --send-bubble-text: #2c2418;
+}
+[data-theme="japanese-light"] .sel-drop,
+[data-theme="japanese-light"] .baud-dropdown,
+[data-theme="japanese-light"] .send-hist,
+[data-theme="japanese-light"] .send-as-drop,
+[data-theme="japanese-light"] .qcmd-dropdown {
+    border-color: var(--border);
+    box-shadow: 0 6px 16px rgba(0,0,0,.08);
+}
+[data-theme="japanese-light"] .sel-drop-up {
+    box-shadow: 0 -6px 16px rgba(0,0,0,.08);
+}
+[data-theme="japanese-light"] .sel-opt:hover,
+[data-theme="japanese-light"] .baud-opt:hover,
+[data-theme="japanese-light"] .send-hist-item:hover,
+[data-theme="japanese-light"] .send-as-opt:hover {
+    background: rgba(0,0,0,.04);
+}
+[data-theme="japanese-light"] .send-hist-item.selected {
+    background: rgba(184,76,44,.1);
+}
+[data-theme="japanese-light"] .qcmd-item {
+    border-bottom-color: rgba(0,0,0,.04);
+}
+[data-theme="japanese-light"] .qcmd-item:hover {
+    background: rgba(0,0,0,.03);
+}
+[data-theme="japanese-light"] .qcmd-item-label:focus {
+    background: rgba(0,0,0,.04);
+}
+[data-theme="japanese-light"] .ibtn:hover,
+[data-theme="japanese-light"] .btn-ref:hover {
+    background: rgba(0,0,0,.05);
+}
+[data-theme="japanese-light"] .ibtn.on {
+    background: rgba(184,76,44,.12);
+}
+[data-theme="japanese-light"] .btn-logdir:hover {
+    background: rgba(184,76,44,.08);
+}
+[data-theme="japanese-light"] .qcmd-dh-add:hover {
+    background: rgba(184,76,44,.08);
+}
+[data-theme="japanese-light"] .qcmd-item-send:hover {
+    background: rgba(184,76,44,.08);
+}
+[data-theme="japanese-light"] .qcmd-item-del:hover {
+    background: rgba(192,68,40,.06);
+}
+[data-theme="japanese-light"] .pane-close:hover {
+    background: rgba(0,0,0,.05);
+}
+[data-theme="japanese-light"] .wsl-device-row:hover {
+    background: rgba(0,0,0,.03) !important;
+}
+[data-theme="japanese-light"] .issue-btn:hover {
+    background: rgba(0,0,0,.06);
+}
+[data-theme="japanese-light"] .wsl-spinner {
+    border-color: rgba(184,76,44,.2);
+    border-top-color: var(--btn-p);
+}
+[data-theme="japanese-light"] .wsl-loading-cell {
+    color: var(--btn-p);
+}
+[data-theme="japanese-light"] .toast {
+    box-shadow: 0 6px 20px rgba(0,0,0,.1);
+}
+[data-theme="japanese-light"] .btn-send:disabled {
+    background: #f0ece4;
+    color: #a8a090;
+}
+[data-theme="japanese-light"] .output::-webkit-scrollbar-thumb {
+    background: rgba(0,0,0,.12);
+}
+[data-theme="japanese-light"] .output::-webkit-scrollbar-thumb:hover {
+    background: rgba(0,0,0,.2);
+}
+[data-theme="japanese-light"] .wsl-auto-slider {
+    background: #c0b8a4;
+}
+[data-theme="japanese-light"] .wsl-auto-slider::before {
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0,0,0,.12);
+}
+[data-theme="japanese-light"] .wsl-checkbox {
+    border-color: #988c7c;
+    background: #ffffff;
+}
+[data-theme="japanese-light"] .wsl-mon-resize {
+    background: #d8d0c0;
+}
+
+/* 日本风 浅色 ANSI */
+[data-theme="japanese-light"] .ansi-0 { color: #2c2418; }
+[data-theme="japanese-light"] .ansi-1 { color: #2c2418; font-weight:bold; }
+[data-theme="japanese-light"] .ansi-2 { color: #b84c2c; }
+[data-theme="japanese-light"] .ansi-3 { color: #b08020; }
+[data-theme="japanese-light"] .ansi-4 { color: #7850a0; }
+[data-theme="japanese-light"] .ansi-5 { color: #4878a0; }
+[data-theme="japanese-light"] .ansi-6 { color: #4c7838; }
+[data-theme="japanese-light"] .ansi-7 { color: #605848; }
+[data-theme="japanese-light"] .ansi-30 { color: #988c7c; }
+[data-theme="japanese-light"] .ansi-31 { color: #c04428; }
+[data-theme="japanese-light"] .ansi-32 { color: #4c7838; }
+[data-theme="japanese-light"] .ansi-33 { color: #b08020; }
+[data-theme="japanese-light"] .ansi-34 { color: #b84c2c; }
+[data-theme="japanese-light"] .ansi-35 { color: #7850a0; }
+[data-theme="japanese-light"] .ansi-36 { color: #4c7838; }
+[data-theme="japanese-light"] .ansi-37 { color: #2c2418; }
+[data-theme="japanese-light"] .ansi-90 { color: #988c7c; }
+[data-theme="japanese-light"] .ansi-91 { color: #c04428; }
+[data-theme="japanese-light"] .ansi-92 { color: #4c7838; }
+[data-theme="japanese-light"] .ansi-93 { color: #b08020; }
+[data-theme="japanese-light"] .ansi-94 { color: #b84c2c; }
+[data-theme="japanese-light"] .ansi-95 { color: #7850a0; }
+[data-theme="japanese-light"] .ansi-96 { color: #4c7838; }
+[data-theme="japanese-light"] .ansi-97 { color: #2c2418; }

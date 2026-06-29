@@ -5,6 +5,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Seahi Serial</title>
 <style>
+
+@property --bg { syntax: '<color>'; inherits: true; initial-value: #1c1e22; }
+@property --editor-bg { syntax: '<color>'; inherits: true; initial-value: #1c1e22; }
+@property --toolbar-bg { syntax: '<color>'; inherits: true; initial-value: #22252a; }
+@property --input-bg { syntax: '<color>'; inherits: true; initial-value: #2e3138; }
+@property --border { syntax: '<color>'; inherits: true; initial-value: #2e3138; }
+@property --border-h { syntax: '<color>'; inherits: true; initial-value: #3a3e46; }
+@property --text { syntax: '<color>'; inherits: true; initial-value: #b8bcc4; }
+@property --text-b { syntax: '<color>'; inherits: true; initial-value: #dce0e8; }
+@property --text-d { syntax: '<color>'; inherits: true; initial-value: #6b7280; }
+@property --link { syntax: '<color>'; inherits: true; initial-value: #6a9fd8; }
+@property --btn-p { syntax: '<color>'; inherits: true; initial-value: #4a7ab5; }
+@property --btn-ph { syntax: '<color>'; inherits: true; initial-value: #5888c0; }
+@property --btn-pa { syntax: '<color>'; inherits: true; initial-value: #3c6aa5; }
+@property --split-line { syntax: '<color>'; inherits: true; initial-value: #4a7ab5; }
+@property --surface-1 { syntax: '<color>'; inherits: true; initial-value: #262930; }
+@property --surface-2 { syntax: '<color>'; inherits: true; initial-value: #22252a; }
+@property --surface-3 { syntax: '<color>'; inherits: true; initial-value: #1c1e22; }
+@property --text-soft { syntax: '<color>'; inherits: true; initial-value: #8b919a; }
+@property --text-muted { syntax: '<color>'; inherits: true; initial-value: #5a6070; }
+@property --text-placeholder { syntax: '<color>'; inherits: true; initial-value: #454b56; }
+@property --accent-focus { syntax: '<color>'; inherits: true; initial-value: #4a7ab5; }
+@property --accent-green { syntax: '<color>'; inherits: true; initial-value: #5a9e6e; }
+@property --accent-red { syntax: '<color>'; inherits: true; initial-value: #c45c5c; }
+@property --accent-orange { syntax: '<color>'; inherits: true; initial-value: #c08040; }
+@property --send-bubble-bg { syntax: '<color>'; inherits: true; initial-value: #1e3050; }
+@property --send-bubble-text { syntax: '<color>'; inherits: true; initial-value: #dce0e8; }
+
 :root {
     --bg: #1c1e22;
     --editor-bg: #1c1e22;
@@ -33,182 +61,14 @@
     --send-bubble-bg: #1e3050;
     --send-bubble-text: #dce0e8;
 }
-[data-theme="light"] {
-    --bg: #eef0f3;
-    --editor-bg: #f5f6f8;
-    --toolbar-bg: #edf0f2;
-    --input-bg: #ffffff;
-    --border: #e2e5ea;
-    --border-h: #cdd1d8;
-    --text: #2c3038;
-    --text-b: #1a1d24;
-    --text-d: #7a8190;
-    --link: #5b8abf;
-    --btn-p: #6a95b8;
-    --btn-ph: #5d88ab;
-    --btn-pa: #4f7b9e;
-    --split-line: #6a95b8;
-    --surface-1: #e8eaee;
-    --surface-2: #f5f6f8;
-    --surface-3: #edf0f2;
-    --text-soft: #636b78;
-    --text-muted: #9399a4;
-    --text-placeholder: #b8bdc6;
-    --accent-focus: #5b8abf;
-    --accent-green: #4d9e6a;
-    --accent-red: #cd4f4f;
-    --accent-orange: #c87a35;
-    --send-bubble-bg: #dfe6ee;
-    --send-bubble-text: #2c3038;
+
+html.transitioning,
+html.transitioning *,
+html.transitioning *::before,
+html.transitioning *::after {
+    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
-/* 浅色主题 hover / 阴影 / ANSI 覆盖 */
-[data-theme="light"] .sel:hover,
-[data-theme="light"] .baud-input:hover,
-[data-theme="light"] .adv-row .sel:hover {
-    border-color: var(--border-h);
-}
-[data-theme="light"] .sel-drop,
-[data-theme="light"] .baud-dropdown,
-[data-theme="light"] .send-hist,
-[data-theme="light"] .send-as-drop,
-[data-theme="light"] .qcmd-dropdown {
-    border-color: var(--border);
-    box-shadow: 0 6px 16px rgba(0,0,0,.08);
-}
-[data-theme="light"] .sel-drop-up {
-    box-shadow: 0 -6px 16px rgba(0,0,0,.08);
-}
-[data-theme="light"] .sel-opt:hover,
-[data-theme="light"] .baud-opt:hover,
-[data-theme="light"] .send-hist-item:hover,
-[data-theme="light"] .send-as-opt:hover {
-    background: rgba(0,0,0,.04);
-}
-[data-theme="light"] .send-hist-item.selected {
-    background: rgba(106,149,184,.1);
-}
-[data-theme="light"] .qcmd-item {
-    border-bottom-color: rgba(0,0,0,.04);
-}
-[data-theme="light"] .qcmd-item:hover {
-    background: rgba(0,0,0,.03);
-}
-[data-theme="light"] .qcmd-item-label:focus {
-    background: rgba(0,0,0,.04);
-}
-[data-theme="light"] .ibtn:hover,
-[data-theme="light"] .btn-ref:hover {
-    background: rgba(0,0,0,.05);
-}
-[data-theme="light"] .ibtn.on {
-    background: rgba(106,149,184,.12);
-}
-[data-theme="light"] .btn-logdir:hover {
-    background: rgba(106,149,184,.08);
-}
-[data-theme="light"] .qcmd-dh-add:hover {
-    background: rgba(106,149,184,.08);
-}
-[data-theme="light"] .qcmd-item-send:hover {
-    background: rgba(106,149,184,.08);
-}
-[data-theme="light"] .qcmd-item-del:hover {
-    background: rgba(205,79,79,.06);
-}
-[data-theme="light"] .pane-close:hover {
-    background: rgba(0,0,0,.05);
-}
-[data-theme="light"] .wsl-device-row:hover {
-    background: rgba(0,0,0,.03) !important;
-}
-[data-theme="light"] .issue-btn:hover {
-    background: rgba(0,0,0,.06);
-}
-[data-theme="light"] .wsl-spinner {
-    border-color: rgba(51,112,255,.2);
-    border-top-color: var(--btn-p);
-}
-[data-theme="light"] .wsl-loading-cell {
-    color: var(--btn-p);
-}
-[data-theme="light"] .toast {
-    box-shadow: 0 6px 20px rgba(0,0,0,.1);
-}
-[data-theme="light"] .btn-send:disabled {
-    background: #f0f1f3;
-    color: #b0b5bc;
-}
-[data-theme="light"] .output::-webkit-scrollbar-thumb {
-    background: rgba(0,0,0,.1);
-}
-[data-theme="light"] .output::-webkit-scrollbar-thumb:hover {
-    background: rgba(0,0,0,.16);
-}
-[data-theme="light"] .btn-send:disabled {
-    background: #f2f3f5;
-    color: #a0a8b4;
-}
-/* 浅色主题 WSL 开关 */
-[data-theme="light"] .wsl-auto-slider {
-    background: #c5c9d1;
-}
-[data-theme="light"] .wsl-auto-slider::before {
-    background: #ffffff;
-    box-shadow: 0 1px 3px rgba(0,0,0,.12);
-}
-[data-theme="light"] .wsl-checkbox {
-    border-color: #9399a4;
-    background: #ffffff;
-}
-[data-theme="light"] .wsl-spinner {
-    border-color: rgba(91,138,191,.2);
-    border-top-color: var(--btn-p);
-}
-[data-theme="light"] .wsl-loading-cell {
-    color: var(--btn-p);
-}
-[data-theme="light"] .wsl-auto-slider::before {
-    background: #ffffff;
-    box-shadow: 0 1px 3px rgba(0,0,0,.12);
-}
-[data-theme="light"] .wsl-checkbox {
-    border-color: #8b919a;
-    background: #ffffff;
-}
-[data-theme="light"] .wsl-mon-resize {
-    background: #e5e6eb;
-}
-[data-theme="light"] .output::-webkit-scrollbar-thumb {
-    background: rgba(0,0,0,.12);
-}
-[data-theme="light"] .output::-webkit-scrollbar-thumb:hover {
-    background: rgba(0,0,0,.2);
-}
-/* 浅色主题 ANSI 颜色 */
-[data-theme="light"] .ansi-0 { color: #2c3038; }
-[data-theme="light"] .ansi-1 { color: #2c3038; font-weight:bold; }
-[data-theme="light"] .ansi-2 { color: #5b8abf; }
-[data-theme="light"] .ansi-3 { color: #8a7a3a; }
-[data-theme="light"] .ansi-4 { color: #8b6aad; }
-[data-theme="light"] .ansi-5 { color: #5b8abf; }
-[data-theme="light"] .ansi-6 { color: #3a8a7a; }
-[data-theme="light"] .ansi-7 { color: #636b78; }
-[data-theme="light"] .ansi-30 { color: #9399a4; }
-[data-theme="light"] .ansi-31 { color: #cd4f4f; }
-[data-theme="light"] .ansi-32 { color: #4d9e6a; }
-[data-theme="light"] .ansi-33 { color: #8a7a3a; }
-[data-theme="light"] .ansi-34 { color: #5b8abf; }
-[data-theme="light"] .ansi-35 { color: #8b6aad; }
-[data-theme="light"] .ansi-36 { color: #3a8a7a; }
-[data-theme="light"] .ansi-37 { color: #2c3038; }
-[data-theme="light"] .ansi-90 { color: #9399a4; }
-[data-theme="light"] .ansi-91 { color: #cd4f4f; }
-[data-theme="light"] .ansi-92 { color: #4d9e6a; }
-[data-theme="light"] .ansi-93 { color: #8a7a3a; }
-[data-theme="light"] .ansi-94 { color: #5b8abf; }
-[data-theme="light"] .ansi-95 { color: #8b6aad; }
-[data-theme="light"] .ansi-96 { color: #3a8a7a; }
-[data-theme="light"] .ansi-97 { color: #2c3038; }
+
 * { margin:0; padding:0; box-sizing:border-box; }
 html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(--text); height:100vh; overflow:hidden; font-size:14px; }
 
@@ -747,6 +607,14 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
         <span id="wslToggleText">WSL 端口映射</span>
     </span>
     <span style="flex:1;"></span>
+    <span id="themeStyleWrap" class="sel" style="height:24px;width:auto;padding:0 4px;justify-content:center;" onclick="toggleThemeStyleDrop(event)" title="主题风格: 默认">
+        <svg width="16" height="16" viewBox="0 0 1024 1024" fill="currentColor"><path d="M512 51.2a460.8 460.8 0 0 0 0 921.6c78.5408 0 133.12-40.0384 139.264-102.4 2.3552-23.6544-6.5536-44.9536-15.1552-65.6384-14.336-34.5088-24.6784-59.4944 9.216-93.2864s73.5232-27.4432 119.7056-20.48c29.7984 4.5056 60.416 9.0112 89.1904 1.2288C929.5872 672.0512 972.8 606.208 972.8 512A461.312 461.312 0 0 0 512 51.2z m331.3664 601.9072c-20.48 5.5296-45.568 1.8432-71.68-2.2528-47.4112-7.0656-106.496-15.9744-154.7264 31.9488-53.4528 53.248-33.0752 102.4-18.1248 138.1376a105.2672 105.2672 0 0 1 12.1856 45.8752C604.672 927.1296 533.6064 931.84 512 931.84a419.84 419.84 0 1 1 419.84-419.84c0 43.6224-11.4688 120.1152-88.4736 141.1072z"/><path d="M235.52 512m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M307.2 337.92m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M471.04 245.76m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M655.36 276.48m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M778.24 419.84m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/></svg>
+        <span class="sel-arrow">&#9662;</span>
+        <div id="themeStyleDrop" class="sel-drop">
+            <div class="sel-opt active" data-style="default" onclick="selectThemeStyle('default')">默认</div>
+            <div class="sel-opt" data-style="japanese" onclick="selectThemeStyle('japanese')">浮世绘彩</div>
+        </div>
+    </span>
     <span class="issue-btn" onclick="invoke('open_url',{url:'https://github.com/SeaHi-Mo/Seahi-Serial/issues/new'})">提交issue</span>
     <span id="updateBtn" class="update-btn" style="display:none;" onclick="downloadAndInstallUpdate()">更新</span>
     <span id="themeSwitch" class="theme-switch" onclick="toggleTheme()" title="主题: 浅色">
@@ -1850,7 +1718,7 @@ function collectConfig() {
         var m = mid.match(/^extra-(\d+)$/);
         if (m) { var n = parseInt(m[1], 10); if (n > maxExtra) maxExtra = n; }
     });
-    var cfg = { version: 1, extraCount: maxExtra, monitors: {}, logDir: logDirPath, wslAutoMap: _wslAutoMap, theme: _currentTheme };
+    var cfg = { version: 1, extraCount: maxExtra, monitors: {}, logDir: logDirPath, wslAutoMap: _wslAutoMap, theme: _currentTheme, themeStyle: _currentThemeStyle };
     if (_cachedWindowSize) {
         cfg.windowWidth = _cachedWindowSize[0];
         cfg.windowHeight = _cachedWindowSize[1];
@@ -2072,9 +1940,37 @@ function scheduleConfigSave() {
 
 /* ===== 主题切换 ===== */
 var _currentTheme = 'light';
+var _currentThemeStyle = 'default';
+var _themeStyleLinks = {};
+
+var _TITLE_BAR_COLORS = {
+    'default':      { dark: { r:28,g:30,b:34 }, light: { r:237,g:240,b:242 } },
+    'japanese':     { dark: { r:20,g:22,b:32 }, light: { r:244,g:240,b:232 } }
+};
 
 function getSystemTheme() {
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function getThemeDataAttr() {
+    if (_currentThemeStyle === 'default') return _currentTheme === 'light' ? 'default-light' : 'default';
+    if (_currentThemeStyle === 'japanese') return _currentTheme === 'light' ? 'japanese-light' : 'japanese';
+    return 'default';
+}
+
+function loadThemeCSS(style) {
+    if (_themeStyleLinks[style]) return;
+    var link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'themes/' + style + '.css';
+    document.head.appendChild(link);
+    _themeStyleLinks[style] = link;
+}
+
+function unloadOtherThemeCSS(activeStyle) {
+    Object.keys(_themeStyleLinks).forEach(function(key) {
+        if (key !== activeStyle) { _themeStyleLinks[key].remove(); delete _themeStyleLinks[key]; }
+    });
 }
 
 function syncThemeUI() {
@@ -2083,24 +1979,53 @@ function syncThemeUI() {
         sw.classList.toggle('on', _currentTheme === 'dark');
         sw.title = _currentTheme === 'dark' ? '主题: 深色' : '主题: 浅色';
     }
+    var drop = document.getElementById('themeStyleDrop');
+    if (drop) {
+        drop.querySelectorAll('.sel-opt').forEach(function(o) {
+            o.classList.toggle('active', o.getAttribute('data-style') === _currentThemeStyle);
+        });
+    }
+    var wrap = document.getElementById('themeStyleWrap');
+    if (wrap) wrap.title = '主题风格: ' + (_currentThemeStyle === 'japanese' ? '浮世绘彩' : '默认');
 }
 
 function applyTheme(theme) {
     _currentTheme = theme;
-    document.documentElement.setAttribute('data-theme', theme);
+    loadThemeCSS(_currentThemeStyle);
+    var el = document.documentElement;
+    el.classList.add('transitioning');
+    el.setAttribute('data-theme', getThemeDataAttr());
     syncThemeUI();
-    syncTitleBarColor(theme);
+    var palette = _TITLE_BAR_COLORS[_currentThemeStyle] || _TITLE_BAR_COLORS['default'];
+    animateTitleBar(palette[_currentTheme] || palette.dark, 300);
+    clearTimeout(el._transTid);
+    el._transTid = setTimeout(function() { el.classList.remove('transitioning'); }, 350);
 }
 
+var _titleBarCur = { r: 28, g: 30, b: 34 };
+
+function easeOut(t) { return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t; }
+
+function animateTitleBar(target, duration) {
+    var start = { r: _titleBarCur.r, g: _titleBarCur.g, b: _titleBarCur.b };
+    var startTime = Date.now();
+    if (_titleBarAnim) clearInterval(_titleBarAnim);
+    _titleBarAnim = setInterval(function() {
+        var elapsed = Date.now() - startTime;
+        var t = Math.min(elapsed / duration, 1);
+        var et = easeOut(t);
+        var r = Math.round(start.r + (target.r - start.r) * et);
+        var g = Math.round(start.g + (target.g - start.g) * et);
+        var b = Math.round(start.b + (target.b - start.b) * et);
+        try { invoke('set_title_bar_color', { r: r, g: g, b: b }); } catch(_) {}
+        if (t >= 1) { clearInterval(_titleBarAnim); _titleBarAnim = null; _titleBarCur = { r: target.r, g: target.g, b: target.b }; }
+    }, 16);
+}
+var _titleBarAnim = null;
+
 function syncTitleBarColor(theme) {
-    var r, g, b;
-    if (theme === 'dark') { r = 28; g = 30; b = 34; }
-    else { r = 237; g = 240; b = 242; }
-    try {
-        invoke('set_title_bar_color', { r: r, g: g, b: b }).catch(function(e) {
-            console.warn('set_title_bar_color 失败:', e);
-        });
-    } catch(_) {}
+    var palette = _TITLE_BAR_COLORS[_currentThemeStyle] || _TITLE_BAR_COLORS['default'];
+    animateTitleBar(palette[theme] || palette.dark, 300);
 }
 
 function toggleTheme() {
@@ -2108,8 +2033,38 @@ function toggleTheme() {
     scheduleConfigSave();
 }
 
+function toggleThemeStyleDrop(e) {
+    e.stopPropagation();
+    var drop = document.getElementById('themeStyleDrop');
+    if (drop) drop.classList.toggle('open');
+}
+
+function selectThemeStyle(style) {
+    _currentThemeStyle = style;
+    loadThemeCSS(style);
+    unloadOtherThemeCSS(style);
+    var el = document.documentElement;
+    el.classList.add('transitioning');
+    el.setAttribute('data-theme', getThemeDataAttr());
+    syncThemeUI();
+    var palette = _TITLE_BAR_COLORS[_currentThemeStyle] || _TITLE_BAR_COLORS['default'];
+    animateTitleBar(palette[_currentTheme] || palette.dark, 300);
+    clearTimeout(el._transTid);
+    el._transTid = setTimeout(function() { el.classList.remove('transitioning'); }, 350);
+    var drop = document.getElementById('themeStyleDrop');
+    if (drop) drop.classList.remove('open');
+    scheduleConfigSave();
+}
+
+document.addEventListener('click', function(e) {
+    var drop = document.getElementById('themeStyleDrop');
+    var wrap = document.getElementById('themeStyleWrap');
+    if (drop && wrap && !wrap.contains(e.target)) drop.classList.remove('open');
+});
+
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function() {
     applyTheme(getSystemTheme());
+    scheduleConfigSave();
 });
 
 // 启动时跟随系统主题
@@ -2129,6 +2084,8 @@ async function loadAndApplyConfig() {
         var cfg = JSON.parse(raw);
         if (!cfg || cfg.version !== 1) { _loadingConfig = false; return; }
         // 恢复主题
+        if (cfg.themeStyle) _currentThemeStyle = cfg.themeStyle;
+        loadThemeCSS(_currentThemeStyle);
         if (cfg.theme) applyTheme(cfg.theme);
         // 恢复日志目录
         if (cfg.logDir) logDirPath = cfg.logDir;

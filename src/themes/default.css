@@ -1,0 +1,153 @@
+/* ===== 默认主题 浅色 ===== */
+[data-theme="default-light"] {
+    --bg: #eef0f3;
+    --editor-bg: #f5f6f8;
+    --toolbar-bg: #edf0f2;
+    --input-bg: #ffffff;
+    --border: #e2e5ea;
+    --border-h: #cdd1d8;
+    --text: #2c3038;
+    --text-b: #1a1d24;
+    --text-d: #7a8190;
+    --link: #5b8abf;
+    --btn-p: #6a95b8;
+    --btn-ph: #5d88ab;
+    --btn-pa: #4f7b9e;
+    --split-line: #6a95b8;
+    --surface-1: #e8eaee;
+    --surface-2: #f5f6f8;
+    --surface-3: #edf0f2;
+    --text-soft: #636b78;
+    --text-muted: #9399a4;
+    --text-placeholder: #b8bdc6;
+    --accent-focus: #5b8abf;
+    --accent-green: #4d9e6a;
+    --accent-red: #cd4f4f;
+    --accent-orange: #c87a35;
+    --send-bubble-bg: #dfe6ee;
+    --send-bubble-text: #2c3038;
+}
+
+/* hover / 阴影 / 组件覆盖 */
+[data-theme="default-light"] .sel:hover,
+[data-theme="default-light"] .baud-input:hover,
+[data-theme="default-light"] .adv-row .sel:hover {
+    border-color: var(--border-h);
+}
+[data-theme="default-light"] .sel-drop,
+[data-theme="default-light"] .baud-dropdown,
+[data-theme="default-light"] .send-hist,
+[data-theme="default-light"] .send-as-drop,
+[data-theme="default-light"] .qcmd-dropdown {
+    border-color: var(--border);
+    box-shadow: 0 6px 16px rgba(0,0,0,.08);
+}
+[data-theme="default-light"] .sel-drop-up {
+    box-shadow: 0 -6px 16px rgba(0,0,0,.08);
+}
+[data-theme="default-light"] .sel-opt:hover,
+[data-theme="default-light"] .baud-opt:hover,
+[data-theme="default-light"] .send-hist-item:hover,
+[data-theme="default-light"] .send-as-opt:hover {
+    background: rgba(0,0,0,.04);
+}
+[data-theme="default-light"] .send-hist-item.selected {
+    background: rgba(106,149,184,.1);
+}
+[data-theme="default-light"] .qcmd-item {
+    border-bottom-color: rgba(0,0,0,.04);
+}
+[data-theme="default-light"] .qcmd-item:hover {
+    background: rgba(0,0,0,.03);
+}
+[data-theme="default-light"] .qcmd-item-label:focus {
+    background: rgba(0,0,0,.04);
+}
+[data-theme="default-light"] .ibtn:hover,
+[data-theme="default-light"] .btn-ref:hover {
+    background: rgba(0,0,0,.05);
+}
+[data-theme="default-light"] .ibtn.on {
+    background: rgba(106,149,184,.12);
+}
+[data-theme="default-light"] .btn-logdir:hover {
+    background: rgba(106,149,184,.08);
+}
+[data-theme="default-light"] .qcmd-dh-add:hover {
+    background: rgba(106,149,184,.08);
+}
+[data-theme="default-light"] .qcmd-item-send:hover {
+    background: rgba(106,149,184,.08);
+}
+[data-theme="default-light"] .qcmd-item-del:hover {
+    background: rgba(205,79,79,.06);
+}
+[data-theme="default-light"] .pane-close:hover {
+    background: rgba(0,0,0,.05);
+}
+[data-theme="default-light"] .wsl-device-row:hover {
+    background: rgba(0,0,0,.03) !important;
+}
+[data-theme="default-light"] .issue-btn:hover {
+    background: rgba(0,0,0,.06);
+}
+[data-theme="default-light"] .wsl-spinner {
+    border-color: rgba(51,112,255,.2);
+    border-top-color: var(--btn-p);
+}
+[data-theme="default-light"] .wsl-loading-cell {
+    color: var(--btn-p);
+}
+[data-theme="default-light"] .toast {
+    box-shadow: 0 6px 20px rgba(0,0,0,.1);
+}
+[data-theme="default-light"] .btn-send:disabled {
+    background: #f2f3f5;
+    color: #a0a8b4;
+}
+[data-theme="default-light"] .output::-webkit-scrollbar-thumb {
+    background: rgba(0,0,0,.12);
+}
+[data-theme="default-light"] .output::-webkit-scrollbar-thumb:hover {
+    background: rgba(0,0,0,.2);
+}
+[data-theme="default-light"] .wsl-auto-slider {
+    background: #c5c9d1;
+}
+[data-theme="default-light"] .wsl-auto-slider::before {
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0,0,0,.12);
+}
+[data-theme="default-light"] .wsl-checkbox {
+    border-color: #8b919a;
+    background: #ffffff;
+}
+[data-theme="default-light"] .wsl-mon-resize {
+    background: #e5e6eb;
+}
+
+/* ANSI 颜色 */
+[data-theme="default-light"] .ansi-0 { color: #2c3038; }
+[data-theme="default-light"] .ansi-1 { color: #2c3038; font-weight:bold; }
+[data-theme="default-light"] .ansi-2 { color: #5b8abf; }
+[data-theme="default-light"] .ansi-3 { color: #8a7a3a; }
+[data-theme="default-light"] .ansi-4 { color: #8b6aad; }
+[data-theme="default-light"] .ansi-5 { color: #5b8abf; }
+[data-theme="default-light"] .ansi-6 { color: #3a8a7a; }
+[data-theme="default-light"] .ansi-7 { color: #636b78; }
+[data-theme="default-light"] .ansi-30 { color: #9399a4; }
+[data-theme="default-light"] .ansi-31 { color: #cd4f4f; }
+[data-theme="default-light"] .ansi-32 { color: #4d9e6a; }
+[data-theme="default-light"] .ansi-33 { color: #8a7a3a; }
+[data-theme="default-light"] .ansi-34 { color: #5b8abf; }
+[data-theme="default-light"] .ansi-35 { color: #8b6aad; }
+[data-theme="default-light"] .ansi-36 { color: #3a8a7a; }
+[data-theme="default-light"] .ansi-37 { color: #2c3038; }
+[data-theme="default-light"] .ansi-90 { color: #9399a4; }
+[data-theme="default-light"] .ansi-91 { color: #cd4f4f; }
+[data-theme="default-light"] .ansi-92 { color: #4d9e6a; }
+[data-theme="default-light"] .ansi-93 { color: #8a7a3a; }
+[data-theme="default-light"] .ansi-94 { color: #5b8abf; }
+[data-theme="default-light"] .ansi-95 { color: #8b6aad; }
+[data-theme="default-light"] .ansi-96 { color: #3a8a7a; }
+[data-theme="default-light"] .ansi-97 { color: #2c3038; }
