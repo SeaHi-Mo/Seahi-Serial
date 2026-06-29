@@ -1,0 +1,173 @@
+/* ===== 水墨丹青 浅色 — 宣纸丹青 ===== */
+/* 石青绿浓彩，墨色文字，宣纸底，山水画意境 */
+[data-theme="ink"] {
+    --bg: #f0ebe0;
+    --editor-bg: #f6f2e8;
+    --toolbar-bg: #e8e2d8;
+    --input-bg: #fffefa;
+    --border: #ccc4b4;
+    --border-h: #b0a898;
+    --text: #141008;
+    --text-b: #080604;
+    --text-d: #605848;
+    --link: #1a8880;
+    --btn-p: #1a8880;
+    --btn-ph: #249890;
+    --btn-pa: #107870;
+    --split-line: #1a8880;
+    --surface-1: #e0d8cc;
+    --surface-2: #f6f2e8;
+    --surface-3: #e8e2d8;
+    --text-soft: #484038;
+    --text-muted: #787068;
+    --text-placeholder: #a8a098;
+    --accent-focus: #1a8880;
+    --accent-green: #1a8880;
+    --accent-red: #b83828;
+    --accent-orange: #a08020;
+    --send-bubble-bg: #c8e8e0;
+    --send-bubble-text: #141008;
+    --mapped-bg: rgba(26,136,128,0.1);
+    --mapped-border: rgba(26,136,128,0.3);
+    --wsl-dist-border: rgba(26,136,128,0.35);
+    --wsl-dist-bg: rgba(26,136,128,0.1);
+    --wsl-dist-stop-bg: rgba(160,128,32,0.1);
+    --wsl-dist-start-bg: rgba(26,136,128,0.12);
+}
+[data-theme="ink"] .sel-drop,
+[data-theme="ink"] .baud-dropdown,
+[data-theme="ink"] .send-hist,
+[data-theme="ink"] .send-as-drop,
+[data-theme="ink"] .qcmd-dropdown {
+    border-color: var(--border);
+    box-shadow: 0 6px 16px rgba(0,0,0,.1);
+}
+[data-theme="ink"] .sel-drop-up { box-shadow: 0 -6px 16px rgba(0,0,0,.1); }
+[data-theme="ink"] .sel-opt:hover,
+[data-theme="ink"] .baud-opt:hover,
+[data-theme="ink"] .send-hist-item:hover,
+[data-theme="ink"] .send-as-opt:hover { background: rgba(0,0,0,.05); }
+[data-theme="ink"] .send-hist-item.selected { background: rgba(26,136,128,.12); }
+[data-theme="ink"] .qcmd-item { border-bottom-color: rgba(0,0,0,.05); }
+[data-theme="ink"] .qcmd-item:hover { background: rgba(0,0,0,.04); }
+[data-theme="ink"] .qcmd-item-label:focus { background: rgba(0,0,0,.05); }
+[data-theme="ink"] .ibtn:hover,
+[data-theme="ink"] .btn-ref:hover { background: rgba(0,0,0,.06); }
+[data-theme="ink"] .ibtn.on { background: rgba(26,136,128,.14); }
+[data-theme="ink"] .btn-logdir:hover { background: rgba(26,136,128,.1); }
+[data-theme="ink"] .qcmd-dh-add:hover { background: rgba(26,136,128,.1); }
+[data-theme="ink"] .qcmd-item-send:hover { background: rgba(26,136,128,.1); }
+[data-theme="ink"] .qcmd-item-del:hover { background: rgba(184,56,40,.08); }
+[data-theme="ink"] .pane-close:hover { background: rgba(0,0,0,.06); }
+[data-theme="ink"] .wsl-device-row:hover { background: rgba(0,0,0,.04) !important; }
+[data-theme="ink"] .issue-btn:hover { background: rgba(0,0,0,.07); }
+[data-theme="ink"] .wsl-spinner { border-color: rgba(26,136,128,.25); border-top-color: var(--btn-p); }
+[data-theme="ink"] .wsl-loading-cell { color: var(--btn-p); }
+[data-theme="ink"] .toast { box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+[data-theme="ink"] .btn-send:disabled { background: #ece8e0; color: #989088; }
+[data-theme="ink"] .output::-webkit-scrollbar-thumb { background: rgba(0,0,0,.14); }
+[data-theme="ink"] .output::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,.24); }
+[data-theme="ink"] .wsl-auto-slider { background: #b0a898; }
+[data-theme="ink"] .wsl-auto-slider::before { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
+[data-theme="ink"] .wsl-checkbox { border-color: #787068; background: #fff; }
+[data-theme="ink"] .wsl-checkbox:checked { background: var(--btn-p); border-color: var(--btn-p); }
+[data-theme="ink"] .wsl-mon-resize { background: #ccc4b4; }
+/* 水墨丹青 浅色 ANSI */
+[data-theme="ink"] .ansi-0 { color: #141008; }
+[data-theme="ink"] .ansi-1 { color: #141008; font-weight:bold; }
+[data-theme="ink"] .ansi-2 { color: #1a8880; }
+[data-theme="ink"] .ansi-3 { color: #a08020; }
+[data-theme="ink"] .ansi-4 { color: #684888; }
+[data-theme="ink"] .ansi-5 { color: #2898a0; }
+[data-theme="ink"] .ansi-6 { color: #1a8880; }
+[data-theme="ink"] .ansi-7 { color: #484038; }
+[data-theme="ink"] .ansi-30 { color: #787068; }
+[data-theme="ink"] .ansi-31 { color: #b83828; }
+[data-theme="ink"] .ansi-32 { color: #1a8880; }
+[data-theme="ink"] .ansi-33 { color: #a08020; }
+[data-theme="ink"] .ansi-34 { color: #2898a0; }
+[data-theme="ink"] .ansi-35 { color: #684888; }
+[data-theme="ink"] .ansi-36 { color: #1a8880; }
+[data-theme="ink"] .ansi-37 { color: #141008; }
+[data-theme="ink"] .ansi-90 { color: #787068; }
+[data-theme="ink"] .ansi-91 { color: #b83828; }
+[data-theme="ink"] .ansi-92 { color: #1a8880; }
+[data-theme="ink"] .ansi-93 { color: #a08020; }
+[data-theme="ink"] .ansi-94 { color: #2898a0; }
+[data-theme="ink"] .ansi-95 { color: #684888; }
+[data-theme="ink"] .ansi-96 { color: #1a8880; }
+[data-theme="ink"] .ansi-97 { color: #141008; }
+
+/* ===== 水墨丹青 深色 — 浓墨丹青 ===== */
+/* 深墨底，石青亮色，矿物色点缀 */
+[data-theme="ink-dark"] {
+    --bg: #101214;
+    --editor-bg: #16181a;
+    --toolbar-bg: #1a1c1e;
+    --input-bg: #222426;
+    --border: #2e3032;
+    --border-h: #3e4042;
+    --text: #b8c0c0;
+    --text-b: #d8e0e0;
+    --text-d: #505858;
+    --link: #40b8b0;
+    --btn-p: #30a8a0;
+    --btn-ph: #40b8b0;
+    --btn-pa: #209890;
+    --split-line: #30a8a0;
+    --surface-1: #1c1e20;
+    --surface-2: #1a1c1e;
+    --surface-3: #16181a;
+    --text-soft: #708080;
+    --text-muted: #384040;
+    --text-placeholder: #283030;
+    --accent-focus: #40b8b0;
+    --accent-green: #30a8a0;
+    --accent-red: #c84838;
+    --accent-orange: #c09028;
+    --send-bubble-bg: #182828;
+    --send-bubble-text: #d8e0e0;
+    --mapped-bg: rgba(48,168,160,0.08);
+    --mapped-border: rgba(48,168,160,0.25);
+    --wsl-dist-border: rgba(48,168,160,0.35);
+    --wsl-dist-bg: rgba(48,168,160,0.1);
+    --wsl-dist-stop-bg: rgba(192,144,40,0.1);
+    --wsl-dist-start-bg: rgba(48,168,160,0.12);
+}
+[data-theme="ink-dark"] .sel-drop,
+[data-theme="ink-dark"] .baud-dropdown,
+[data-theme="ink-dark"] .send-hist,
+[data-theme="ink-dark"] .send-as-drop,
+[data-theme="ink-dark"] .qcmd-dropdown { box-shadow: 0 4px 16px rgba(0,0,0,.7); }
+[data-theme="ink-dark"] .send-hist-item.selected { background: rgba(48,168,160,.18); }
+[data-theme="ink-dark"] .ibtn.on { background: rgba(48,168,160,.22); }
+[data-theme="ink-dark"] .toast { box-shadow: 0 4px 16px rgba(0,0,0,.6); }
+[data-theme="ink-dark"] .wsl-spinner { border-color: rgba(64,184,176,.3); border-top-color: var(--btn-p); }
+[data-theme="ink-dark"] .wsl-loading-cell { color: var(--btn-p); }
+[data-theme="ink-dark"] .output::-webkit-scrollbar-thumb { background: rgba(60,80,80,.35); }
+[data-theme="ink-dark"] .output::-webkit-scrollbar-thumb:hover { background: rgba(60,80,80,.55); }
+/* 水墨丹青 深色 ANSI */
+[data-theme="ink-dark"] .ansi-0 { color: #b8c0c0; }
+[data-theme="ink-dark"] .ansi-1 { color: #b8c0c0; font-weight:bold; }
+[data-theme="ink-dark"] .ansi-2 { color: #40b8b0; }
+[data-theme="ink-dark"] .ansi-3 { color: #c09028; }
+[data-theme="ink-dark"] .ansi-4 { color: #9068b0; }
+[data-theme="ink-dark"] .ansi-5 { color: #50a8b0; }
+[data-theme="ink-dark"] .ansi-6 { color: #30a8a0; }
+[data-theme="ink-dark"] .ansi-7 { color: #708080; }
+[data-theme="ink-dark"] .ansi-30 { color: #384040; }
+[data-theme="ink-dark"] .ansi-31 { color: #c84838; }
+[data-theme="ink-dark"] .ansi-32 { color: #30a8a0; }
+[data-theme="ink-dark"] .ansi-33 { color: #c09028; }
+[data-theme="ink-dark"] .ansi-34 { color: #40b8b0; }
+[data-theme="ink-dark"] .ansi-35 { color: #9068b0; }
+[data-theme="ink-dark"] .ansi-36 { color: #30a8a0; }
+[data-theme="ink-dark"] .ansi-37 { color: #b8c0c0; }
+[data-theme="ink-dark"] .ansi-90 { color: #505858; }
+[data-theme="ink-dark"] .ansi-91 { color: #c84838; }
+[data-theme="ink-dark"] .ansi-92 { color: #30a8a0; }
+[data-theme="ink-dark"] .ansi-93 { color: #c09028; }
+[data-theme="ink-dark"] .ansi-94 { color: #40b8b0; }
+[data-theme="ink-dark"] .ansi-95 { color: #9068b0; }
+[data-theme="ink-dark"] .ansi-96 { color: #30a8a0; }
+[data-theme="ink-dark"] .ansi-97 { color: #b8c0c0; }

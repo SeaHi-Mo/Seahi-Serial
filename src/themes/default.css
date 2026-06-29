@@ -26,6 +26,12 @@
     --accent-orange: #c87a35;
     --send-bubble-bg: #dfe6ee;
     --send-bubble-text: #2c3038;
+    --mapped-bg: rgba(106,149,184,0.08);
+    --mapped-border: rgba(106,149,184,0.25);
+    --wsl-dist-border: rgba(106,149,184,0.3);
+    --wsl-dist-bg: rgba(106,149,184,0.08);
+    --wsl-dist-stop-bg: rgba(192,128,64,0.1);
+    --wsl-dist-start-bg: rgba(106,149,184,0.1);
 }
 
 /* hover / 阴影 / 组件覆盖 */
@@ -121,6 +127,10 @@
 [data-theme="default-light"] .wsl-checkbox {
     border-color: #8b919a;
     background: #ffffff;
+}
+[data-theme="default-light"] .wsl-checkbox:checked {
+    background: var(--btn-p);
+    border-color: var(--btn-p);
 }
 [data-theme="default-light"] .wsl-mon-resize {
     background: #e5e6eb;

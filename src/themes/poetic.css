@@ -1,0 +1,173 @@
+/* ===== 诗意东方 浅色 — 东方既白 ===== */
+/* 云霭青靛浓彩，暮山紫辅色，月白纸底，烟霞粉点缀 */
+[data-theme="poetic"] {
+    --bg: #eae4e0;
+    --editor-bg: #f0eae6;
+    --toolbar-bg: #e2dcd8;
+    --input-bg: #fffcf8;
+    --border: #c8c0bc;
+    --border-h: #aca4a0;
+    --text: #1a1418;
+    --text-b: #0a0608;
+    --text-d: #60585c;
+    --link: #3a7098;
+    --btn-p: #3a7098;
+    --btn-ph: #4a80a8;
+    --btn-pa: #2c6088;
+    --split-line: #3a7098;
+    --surface-1: #dcd4d0;
+    --surface-2: #f0eae6;
+    --surface-3: #e2dcd8;
+    --text-soft: #484050;
+    --text-muted: #807880;
+    --text-placeholder: #a8a0a8;
+    --accent-focus: #3a7098;
+    --accent-green: #3a7098;
+    --accent-red: #b04858;
+    --accent-orange: #a08030;
+    --send-bubble-bg: #c8d0dc;
+    --send-bubble-text: #1a1418;
+    --mapped-bg: rgba(58,112,152,0.1);
+    --mapped-border: rgba(58,112,152,0.3);
+    --wsl-dist-border: rgba(58,112,152,0.35);
+    --wsl-dist-bg: rgba(58,112,152,0.1);
+    --wsl-dist-stop-bg: rgba(160,128,48,0.1);
+    --wsl-dist-start-bg: rgba(58,112,152,0.12);
+}
+[data-theme="poetic"] .sel-drop,
+[data-theme="poetic"] .baud-dropdown,
+[data-theme="poetic"] .send-hist,
+[data-theme="poetic"] .send-as-drop,
+[data-theme="poetic"] .qcmd-dropdown {
+    border-color: var(--border);
+    box-shadow: 0 6px 16px rgba(0,0,0,.1);
+}
+[data-theme="poetic"] .sel-drop-up { box-shadow: 0 -6px 16px rgba(0,0,0,.1); }
+[data-theme="poetic"] .sel-opt:hover,
+[data-theme="poetic"] .baud-opt:hover,
+[data-theme="poetic"] .send-hist-item:hover,
+[data-theme="poetic"] .send-as-opt:hover { background: rgba(0,0,0,.05); }
+[data-theme="poetic"] .send-hist-item.selected { background: rgba(58,112,152,.12); }
+[data-theme="poetic"] .qcmd-item { border-bottom-color: rgba(0,0,0,.05); }
+[data-theme="poetic"] .qcmd-item:hover { background: rgba(0,0,0,.04); }
+[data-theme="poetic"] .qcmd-item-label:focus { background: rgba(0,0,0,.05); }
+[data-theme="poetic"] .ibtn:hover,
+[data-theme="poetic"] .btn-ref:hover { background: rgba(0,0,0,.06); }
+[data-theme="poetic"] .ibtn.on { background: rgba(58,112,152,.14); }
+[data-theme="poetic"] .btn-logdir:hover { background: rgba(58,112,152,.1); }
+[data-theme="poetic"] .qcmd-dh-add:hover { background: rgba(58,112,152,.1); }
+[data-theme="poetic"] .qcmd-item-send:hover { background: rgba(58,112,152,.1); }
+[data-theme="poetic"] .qcmd-item-del:hover { background: rgba(176,72,88,.08); }
+[data-theme="poetic"] .pane-close:hover { background: rgba(0,0,0,.06); }
+[data-theme="poetic"] .wsl-device-row:hover { background: rgba(0,0,0,.04) !important; }
+[data-theme="poetic"] .issue-btn:hover { background: rgba(0,0,0,.07); }
+[data-theme="poetic"] .wsl-spinner { border-color: rgba(58,112,152,.25); border-top-color: var(--btn-p); }
+[data-theme="poetic"] .wsl-loading-cell { color: var(--btn-p); }
+[data-theme="poetic"] .toast { box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+[data-theme="poetic"] .btn-send:disabled { background: #e8e2de; color: #989098; }
+[data-theme="poetic"] .output::-webkit-scrollbar-thumb { background: rgba(0,0,0,.14); }
+[data-theme="poetic"] .output::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,.24); }
+[data-theme="poetic"] .wsl-auto-slider { background: #aca4a0; }
+[data-theme="poetic"] .wsl-auto-slider::before { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
+[data-theme="poetic"] .wsl-checkbox { border-color: #807880; background: #fff; }
+[data-theme="poetic"] .wsl-checkbox:checked { background: var(--btn-p); border-color: var(--btn-p); }
+[data-theme="poetic"] .wsl-mon-resize { background: #c8c0bc; }
+/* 诗意东方 浅色 ANSI */
+[data-theme="poetic"] .ansi-0 { color: #1a1418; }
+[data-theme="poetic"] .ansi-1 { color: #1a1418; font-weight:bold; }
+[data-theme="poetic"] .ansi-2 { color: #3a7098; }
+[data-theme="poetic"] .ansi-3 { color: #a08030; }
+[data-theme="poetic"] .ansi-4 { color: #705898; }
+[data-theme="poetic"] .ansi-5 { color: #4888a8; }
+[data-theme="poetic"] .ansi-6 { color: #3a7098; }
+[data-theme="poetic"] .ansi-7 { color: #484050; }
+[data-theme="poetic"] .ansi-30 { color: #807880; }
+[data-theme="poetic"] .ansi-31 { color: #b04858; }
+[data-theme="poetic"] .ansi-32 { color: #3a7098; }
+[data-theme="poetic"] .ansi-33 { color: #a08030; }
+[data-theme="poetic"] .ansi-34 { color: #4888a8; }
+[data-theme="poetic"] .ansi-35 { color: #705898; }
+[data-theme="poetic"] .ansi-36 { color: #3a7098; }
+[data-theme="poetic"] .ansi-37 { color: #1a1418; }
+[data-theme="poetic"] .ansi-90 { color: #807880; }
+[data-theme="poetic"] .ansi-91 { color: #b04858; }
+[data-theme="poetic"] .ansi-92 { color: #3a7098; }
+[data-theme="poetic"] .ansi-93 { color: #a08030; }
+[data-theme="poetic"] .ansi-94 { color: #4888a8; }
+[data-theme="poetic"] .ansi-95 { color: #705898; }
+[data-theme="poetic"] .ansi-96 { color: #3a7098; }
+[data-theme="poetic"] .ansi-97 { color: #1a1418; }
+
+/* ===== 诗意东方 深色 — 暮山凝紫 ===== */
+/* 玄英黑底，云霭青靛亮色，暮山紫辅助，烟霞粉点缀 */
+[data-theme="poetic-dark"] {
+    --bg: #121014;
+    --editor-bg: #181618;
+    --toolbar-bg: #1c1a1e;
+    --input-bg: #242226;
+    --border: #302e34;
+    --border-h: #403e48;
+    --text: #b8b4c0;
+    --text-b: #d8d4e0;
+    --text-d: #585068;
+    --link: #60a0c8;
+    --btn-p: #5090b8;
+    --btn-ph: #60a0c8;
+    --btn-pa: #4080a8;
+    --split-line: #5090b8;
+    --surface-1: #1e1c20;
+    --surface-2: #1c1a1e;
+    --surface-3: #181618;
+    --text-soft: #787090;
+    --text-muted: #403850;
+    --text-placeholder: #302840;
+    --accent-focus: #60a0c8;
+    --accent-green: #5090b8;
+    --accent-red: #c05060;
+    --accent-orange: #b89030;
+    --send-bubble-bg: #1c2030;
+    --send-bubble-text: #d8d4e0;
+    --mapped-bg: rgba(80,144,184,0.08);
+    --mapped-border: rgba(80,144,184,0.25);
+    --wsl-dist-border: rgba(80,144,184,0.35);
+    --wsl-dist-bg: rgba(80,144,184,0.1);
+    --wsl-dist-stop-bg: rgba(184,144,48,0.1);
+    --wsl-dist-start-bg: rgba(80,144,184,0.12);
+}
+[data-theme="poetic-dark"] .sel-drop,
+[data-theme="poetic-dark"] .baud-dropdown,
+[data-theme="poetic-dark"] .send-hist,
+[data-theme="poetic-dark"] .send-as-drop,
+[data-theme="poetic-dark"] .qcmd-dropdown { box-shadow: 0 4px 16px rgba(0,0,0,.7); }
+[data-theme="poetic-dark"] .send-hist-item.selected { background: rgba(80,144,184,.18); }
+[data-theme="poetic-dark"] .ibtn.on { background: rgba(80,144,184,.22); }
+[data-theme="poetic-dark"] .toast { box-shadow: 0 4px 16px rgba(0,0,0,.6); }
+[data-theme="poetic-dark"] .wsl-spinner { border-color: rgba(96,160,200,.3); border-top-color: var(--btn-p); }
+[data-theme="poetic-dark"] .wsl-loading-cell { color: var(--btn-p); }
+[data-theme="poetic-dark"] .output::-webkit-scrollbar-thumb { background: rgba(70,60,90,.35); }
+[data-theme="poetic-dark"] .output::-webkit-scrollbar-thumb:hover { background: rgba(70,60,90,.55); }
+/* 诗意东方 深色 ANSI */
+[data-theme="poetic-dark"] .ansi-0 { color: #b8b4c0; }
+[data-theme="poetic-dark"] .ansi-1 { color: #b8b4c0; font-weight:bold; }
+[data-theme="poetic-dark"] .ansi-2 { color: #60a0c8; }
+[data-theme="poetic-dark"] .ansi-3 { color: #b89030; }
+[data-theme="poetic-dark"] .ansi-4 { color: #9068c0; }
+[data-theme="poetic-dark"] .ansi-5 { color: #60a0c8; }
+[data-theme="poetic-dark"] .ansi-6 { color: #5090b8; }
+[data-theme="poetic-dark"] .ansi-7 { color: #787090; }
+[data-theme="poetic-dark"] .ansi-30 { color: #403850; }
+[data-theme="poetic-dark"] .ansi-31 { color: #c05060; }
+[data-theme="poetic-dark"] .ansi-32 { color: #5090b8; }
+[data-theme="poetic-dark"] .ansi-33 { color: #b89030; }
+[data-theme="poetic-dark"] .ansi-34 { color: #60a0c8; }
+[data-theme="poetic-dark"] .ansi-35 { color: #9068c0; }
+[data-theme="poetic-dark"] .ansi-36 { color: #5090b8; }
+[data-theme="poetic-dark"] .ansi-37 { color: #b8b4c0; }
+[data-theme="poetic-dark"] .ansi-90 { color: #585068; }
+[data-theme="poetic-dark"] .ansi-91 { color: #c05060; }
+[data-theme="poetic-dark"] .ansi-92 { color: #5090b8; }
+[data-theme="poetic-dark"] .ansi-93 { color: #b89030; }
+[data-theme="poetic-dark"] .ansi-94 { color: #60a0c8; }
+[data-theme="poetic-dark"] .ansi-95 { color: #9068c0; }
+[data-theme="poetic-dark"] .ansi-96 { color: #5090b8; }
+[data-theme="poetic-dark"] .ansi-97 { color: #b8b4c0; }

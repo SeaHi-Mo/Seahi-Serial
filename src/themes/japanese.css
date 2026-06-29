@@ -27,6 +27,12 @@
     --accent-orange: #c8982c;
     --send-bubble-bg: #2c2440;
     --send-bubble-text: #f0e8dc;
+    --mapped-bg: rgba(200,72,48,0.06);
+    --mapped-border: rgba(200,72,48,0.2);
+    --wsl-dist-border: rgba(200,72,48,0.3);
+    --wsl-dist-bg: rgba(200,72,48,0.08);
+    --wsl-dist-stop-bg: rgba(196,152,44,0.1);
+    --wsl-dist-start-bg: rgba(200,72,48,0.1);
 }
 [data-theme="japanese"] .sel-drop,
 [data-theme="japanese"] .baud-dropdown,
@@ -113,6 +119,12 @@
     --accent-orange: #b08020;
     --send-bubble-bg: #e8dcd0;
     --send-bubble-text: #2c2418;
+    --mapped-bg: rgba(168,76,44,0.08);
+    --mapped-border: rgba(168,76,44,0.25);
+    --wsl-dist-border: rgba(168,76,44,0.3);
+    --wsl-dist-bg: rgba(168,76,44,0.08);
+    --wsl-dist-stop-bg: rgba(176,128,32,0.1);
+    --wsl-dist-start-bg: rgba(168,76,44,0.1);
 }
 [data-theme="japanese-light"] .sel-drop,
 [data-theme="japanese-light"] .baud-dropdown,
@@ -201,6 +213,10 @@
 [data-theme="japanese-light"] .wsl-checkbox {
     border-color: #988c7c;
     background: #ffffff;
+}
+[data-theme="japanese-light"] .wsl-checkbox:checked {
+    background: var(--btn-p);
+    border-color: var(--btn-p);
 }
 [data-theme="japanese-light"] .wsl-mon-resize {
     background: #d8d0c0;
