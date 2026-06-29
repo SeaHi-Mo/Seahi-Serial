@@ -31,6 +31,7 @@
     --accent-green: #5a9e6e;
     --accent-red: #c45c5c;
     --accent-orange: #c08040;
+    --accent-contrast: #2a4878;
     --send-bubble-bg: #1e3050;
     --send-bubble-text: #dce0e8;
     --mapped-bg: rgba(90,158,110,0.06);
@@ -39,6 +40,8 @@
     --wsl-dist-bg: rgba(90,158,110,0.08);
     --wsl-dist-stop-bg: rgba(192,128,64,0.1);
     --wsl-dist-start-bg: rgba(74,122,181,0.1);
+    --font-ui: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    --font-mono: "Cascadia Code", "JetBrains Mono", "Fira Code", "Consolas", monospace;
 }
 
 /* ===== 默认 浅色 ===== */
@@ -67,6 +70,7 @@
     --accent-green: #4d9e6a;
     --accent-red: #cd4f4f;
     --accent-orange: #c87a35;
+    --accent-contrast: #3a6890;
     --send-bubble-bg: #dfe6ee;
     --send-bubble-text: #2c3038;
     --mapped-bg: rgba(106,149,184,0.08);
@@ -114,6 +118,7 @@
 [data-theme="default-light"] .wsl-checkbox { border-color: #8b919a; background: #fff; }
 [data-theme="default-light"] .wsl-checkbox:checked { background: var(--btn-p); border-color: var(--btn-p); }
 [data-theme="default-light"] .wsl-mon-resize { background: #e5e6eb; }
+[data-theme="default-light"] button[onclick^="wslDistAction"]:hover { opacity: 0.85; }
 [data-theme="default-light"] .ansi-0 { color: #2c3038; }
 [data-theme="default-light"] .ansi-1 { color: #2c3038; font-weight:bold; }
 [data-theme="default-light"] .ansi-2 { color: #5b8abf; }
@@ -165,6 +170,7 @@
     --accent-green: #5c8a48;
     --accent-red: #c84830;
     --accent-orange: #c8982c;
+    --accent-contrast: #802018;
     --send-bubble-bg: #2c2440;
     --send-bubble-text: #f0e8dc;
     --mapped-bg: rgba(200,72,48,0.06);
@@ -186,6 +192,7 @@
 [data-theme="japanese"] .wsl-loading-cell { color: var(--btn-p); }
 [data-theme="japanese"] .output::-webkit-scrollbar-thumb { background: rgba(140,130,110,.3); }
 [data-theme="japanese"] .output::-webkit-scrollbar-thumb:hover { background: rgba(140,130,110,.5); }
+[data-theme="japanese"] button[onclick^="wslDistAction"]:hover { opacity: 0.85; }
 [data-theme="japanese"] .ansi-0 { color: #d4c8b8; }
 [data-theme="japanese"] .ansi-1 { color: #d4c8b8; font-weight:bold; }
 [data-theme="japanese"] .ansi-2 { color: #d4603c; }
@@ -237,6 +244,7 @@
     --accent-green: #4c7838;
     --accent-red: #c04428;
     --accent-orange: #b08020;
+    --accent-contrast: #702018;
     --send-bubble-bg: #e8dcd0;
     --send-bubble-text: #2c2418;
     --mapped-bg: rgba(168,76,44,0.08);
@@ -281,6 +289,7 @@
 [data-theme="japanese-light"] .wsl-checkbox { border-color: #988c7c; background: #fff; }
 [data-theme="japanese-light"] .wsl-checkbox:checked { background: var(--btn-p); border-color: var(--btn-p); }
 [data-theme="japanese-light"] .wsl-mon-resize { background: #d8d0c0; }
+[data-theme="japanese-light"] button[onclick^="wslDistAction"]:hover { opacity: 0.85; }
 [data-theme="japanese-light"] .ansi-0 { color: #2c2418; }
 [data-theme="japanese-light"] .ansi-1 { color: #2c2418; font-weight:bold; }
 [data-theme="japanese-light"] .ansi-2 { color: #b84c2c; }
@@ -332,6 +341,7 @@
     --accent-green: #6858a0;
     --accent-red: #a84060;
     --accent-orange: #a08030;
+    --accent-contrast: #4a3068;
     --send-bubble-bg: #d4d0e0;
     --send-bubble-text: #18141c;
     --mapped-bg: rgba(58,112,152,0.1);
@@ -376,6 +386,7 @@
 [data-theme="poetic"] .wsl-checkbox { border-color: #787088; background: #fff; }
 [data-theme="poetic"] .wsl-checkbox:checked { background: var(--btn-p); border-color: var(--btn-p); }
 [data-theme="poetic"] .wsl-mon-resize { background: #c4bec8; }
+[data-theme="poetic"] button[onclick^="wslDistAction"]:hover { opacity: 0.85; }
 [data-theme="poetic"] .ansi-0 { color: #18141c; }
 [data-theme="poetic"] .ansi-1 { color: #18141c; font-weight:bold; }
 [data-theme="poetic"] .ansi-2 { color: #6858a0; }
@@ -427,6 +438,7 @@
     --accent-green: #7860b0;
     --accent-red: #c04870;
     --accent-orange: #b89030;
+    --accent-contrast: #503080;
     --send-bubble-bg: #201c30;
     --send-bubble-text: #d8d0e8;
     --mapped-bg: rgba(120,96,176,0.08);
@@ -448,6 +460,7 @@
 [data-theme="poetic-dark"] .wsl-loading-cell { color: var(--btn-p); }
 [data-theme="poetic-dark"] .output::-webkit-scrollbar-thumb { background: rgba(80,60,110,.35); }
 [data-theme="poetic-dark"] .output::-webkit-scrollbar-thumb:hover { background: rgba(80,60,110,.55); }
+[data-theme="poetic-dark"] button[onclick^="wslDistAction"]:hover { opacity: 0.85; }
 [data-theme="poetic-dark"] .ansi-0 { color: #b8b0c8; }
 [data-theme="poetic-dark"] .ansi-1 { color: #b8b0c8; font-weight:bold; }
 [data-theme="poetic-dark"] .ansi-2 { color: #9078c8; }
@@ -499,6 +512,7 @@
     --accent-green: #1a8880;
     --accent-red: #b83828;
     --accent-orange: #a08020;
+    --accent-contrast: #0a5850;
     --send-bubble-bg: #c8e8e0;
     --send-bubble-text: #141008;
     --mapped-bg: rgba(26,136,128,0.1);
@@ -543,6 +557,7 @@
 [data-theme="ink"] .wsl-checkbox { border-color: #787068; background: #fff; }
 [data-theme="ink"] .wsl-checkbox:checked { background: var(--btn-p); border-color: var(--btn-p); }
 [data-theme="ink"] .wsl-mon-resize { background: #ccc4b4; }
+[data-theme="ink"] button[onclick^="wslDistAction"]:hover { opacity: 0.85; }
 [data-theme="ink"] .ansi-0 { color: #141008; }
 [data-theme="ink"] .ansi-1 { color: #141008; font-weight:bold; }
 [data-theme="ink"] .ansi-2 { color: #1a8880; }
@@ -594,6 +609,7 @@
     --accent-green: #30a8a0;
     --accent-red: #c84838;
     --accent-orange: #c09028;
+    --accent-contrast: #187068;
     --send-bubble-bg: #182828;
     --send-bubble-text: #d8e0e0;
     --mapped-bg: rgba(48,168,160,0.08);
@@ -615,6 +631,7 @@
 [data-theme="ink-dark"] .wsl-loading-cell { color: var(--btn-p); }
 [data-theme="ink-dark"] .output::-webkit-scrollbar-thumb { background: rgba(60,80,80,.35); }
 [data-theme="ink-dark"] .output::-webkit-scrollbar-thumb:hover { background: rgba(60,80,80,.55); }
+[data-theme="ink-dark"] button[onclick^="wslDistAction"]:hover { opacity: 0.85; }
 [data-theme="ink-dark"] .ansi-0 { color: #b8c0c0; }
 [data-theme="ink-dark"] .ansi-1 { color: #b8c0c0; font-weight:bold; }
 [data-theme="ink-dark"] .ansi-2 { color: #40b8b0; }
@@ -639,6 +656,352 @@
 [data-theme="ink-dark"] .ansi-95 { color: #9068b0; }
 [data-theme="ink-dark"] .ansi-96 { color: #30a8a0; }
 [data-theme="ink-dark"] .ansi-97 { color: #b8c0c0; }
+
+/* ===== 桃之夭夭 浅色 — 灼灼其华 ===== */
+/* 桃花粉主色，嫩绿辅色，月白底 */
+[data-theme="peach"] {
+    --bg: #f6f0f2;
+    --editor-bg: #faf4f6;
+    --toolbar-bg: #eee8ea;
+    --input-bg: #fffbfc;
+    --border: #d8ccc8;
+    --border-h: #c0b0ac;
+    --text: #2a1c20;
+    --text-b: #140a0c;
+    --text-d: #786870;
+    --link: #b85870;
+    --btn-p: #b85870;
+    --btn-ph: #c86880;
+    --btn-pa: #a84860;
+    --split-line: #b85870;
+    --surface-1: #e8dcd8;
+    --surface-2: #faf4f6;
+    --surface-3: #eee8ea;
+    --text-soft: #584850;
+    --text-muted: #908088;
+    --text-placeholder: #b0a0a8;
+    --accent-focus: #b85870;
+    --accent-green: #589868;
+    --accent-red: #c04858;
+    --accent-orange: #b88030;
+    --accent-contrast: #803048;
+    --send-bubble-bg: #f0d8dc;
+    --send-bubble-text: #2a1c20;
+    --mapped-bg: rgba(184,88,112,0.1);
+    --mapped-border: rgba(184,88,112,0.3);
+    --wsl-dist-border: rgba(184,88,112,0.35);
+    --wsl-dist-bg: rgba(184,88,112,0.1);
+    --wsl-dist-stop-bg: rgba(88,152,104,0.1);
+    --wsl-dist-start-bg: rgba(184,88,112,0.12);
+}
+[data-theme="peach"] .sel-drop,
+[data-theme="peach"] .baud-dropdown,
+[data-theme="peach"] .send-hist,
+[data-theme="peach"] .send-as-drop,
+[data-theme="peach"] .qcmd-dropdown { border-color: var(--border); box-shadow: 0 6px 16px rgba(0,0,0,.1); }
+[data-theme="peach"] .sel-drop-up { box-shadow: 0 -6px 16px rgba(0,0,0,.1); }
+[data-theme="peach"] .sel-opt:hover,
+[data-theme="peach"] .baud-opt:hover,
+[data-theme="peach"] .send-hist-item:hover,
+[data-theme="peach"] .send-as-opt:hover { background: rgba(0,0,0,.05); }
+[data-theme="peach"] .send-hist-item.selected { background: rgba(184,88,112,.12); }
+[data-theme="peach"] .qcmd-item { border-bottom-color: rgba(0,0,0,.05); }
+[data-theme="peach"] .qcmd-item:hover { background: rgba(0,0,0,.04); }
+[data-theme="peach"] .qcmd-item-label:focus { background: rgba(0,0,0,.05); }
+[data-theme="peach"] .ibtn:hover,
+[data-theme="peach"] .btn-ref:hover { background: rgba(0,0,0,.06); }
+[data-theme="peach"] .ibtn.on { background: rgba(184,88,112,.14); }
+[data-theme="peach"] .btn-logdir:hover { background: rgba(184,88,112,.1); }
+[data-theme="peach"] .qcmd-dh-add:hover { background: rgba(184,88,112,.1); }
+[data-theme="peach"] .qcmd-item-send:hover { background: rgba(184,88,112,.1); }
+[data-theme="peach"] .qcmd-item-del:hover { background: rgba(192,72,88,.08); }
+[data-theme="peach"] .pane-close:hover { background: rgba(0,0,0,.06); }
+[data-theme="peach"] .wsl-device-row:hover { background: rgba(0,0,0,.04) !important; }
+[data-theme="peach"] .issue-btn:hover { background: rgba(0,0,0,.07); }
+[data-theme="peach"] .wsl-spinner { border-color: rgba(184,88,112,.25); border-top-color: var(--btn-p); }
+[data-theme="peach"] .wsl-loading-cell { color: var(--btn-p); }
+[data-theme="peach"] .toast { box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+[data-theme="peach"] .btn-send:disabled { background: #f0e8ea; color: #988890; }
+[data-theme="peach"] .output::-webkit-scrollbar-thumb { background: rgba(0,0,0,.14); }
+[data-theme="peach"] .output::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,.24); }
+[data-theme="peach"] .wsl-auto-slider { background: #c0b0ac; }
+[data-theme="peach"] .wsl-auto-slider::before { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
+[data-theme="peach"] .wsl-checkbox { border-color: #908088; background: #fff; }
+[data-theme="peach"] .wsl-checkbox:checked { background: var(--btn-p); border-color: var(--btn-p); }
+[data-theme="peach"] .wsl-mon-resize { background: #d8ccc8; }
+[data-theme="peach"] button[onclick^="wslDistAction"]:hover { opacity: 0.85; }
+[data-theme="peach"] .ansi-0 { color: #2a1c20; }
+[data-theme="peach"] .ansi-1 { color: #2a1c20; font-weight:bold; }
+[data-theme="peach"] .ansi-2 { color: #589868; }
+[data-theme="peach"] .ansi-3 { color: #b88030; }
+[data-theme="peach"] .ansi-4 { color: #9060a0; }
+[data-theme="peach"] .ansi-5 { color: #b85870; }
+[data-theme="peach"] .ansi-6 { color: #589868; }
+[data-theme="peach"] .ansi-7 { color: #584850; }
+[data-theme="peach"] .ansi-30 { color: #908088; }
+[data-theme="peach"] .ansi-31 { color: #c04858; }
+[data-theme="peach"] .ansi-32 { color: #589868; }
+[data-theme="peach"] .ansi-33 { color: #b88030; }
+[data-theme="peach"] .ansi-34 { color: #b85870; }
+[data-theme="peach"] .ansi-35 { color: #9060a0; }
+[data-theme="peach"] .ansi-36 { color: #589868; }
+[data-theme="peach"] .ansi-37 { color: #2a1c20; }
+[data-theme="peach"] .ansi-90 { color: #908088; }
+[data-theme="peach"] .ansi-91 { color: #c04858; }
+[data-theme="peach"] .ansi-92 { color: #589868; }
+[data-theme="peach"] .ansi-93 { color: #b88030; }
+[data-theme="peach"] .ansi-94 { color: #b85870; }
+[data-theme="peach"] .ansi-95 { color: #9060a0; }
+[data-theme="peach"] .ansi-96 { color: #589868; }
+[data-theme="peach"] .ansi-97 { color: #2a1c20; }
+
+/* ===== 桃之夭夭 深色 — 桃源暮色 ===== */
+/* 深褐底，桃花粉亮色，嫩绿点缀 */
+[data-theme="peach-dark"] {
+    --bg: #181014;
+    --editor-bg: #1e1618;
+    --toolbar-bg: #221a1c;
+    --input-bg: #2a2022;
+    --border: #362c2e;
+    --border-h: #463c3e;
+    --text: #c8b0b8;
+    --text-b: #e8d0d8;
+    --text-d: #685058;
+    --link: #d87890;
+    --btn-p: #c86880;
+    --btn-ph: #d87890;
+    --btn-pa: #b85870;
+    --split-line: #c86880;
+    --surface-1: #241c1e;
+    --surface-2: #221a1c;
+    --surface-3: #1e1618;
+    --text-soft: #907880;
+    --text-muted: #504048;
+    --text-placeholder: #403038;
+    --accent-focus: #d87890;
+    --accent-green: #68a878;
+    --accent-red: #d05060;
+    --accent-orange: #c89030;
+    --accent-contrast: #883048;
+    --send-bubble-bg: #2c1c22;
+    --send-bubble-text: #e8d0d8;
+    --mapped-bg: rgba(200,104,128,0.08);
+    --mapped-border: rgba(200,104,128,0.25);
+    --wsl-dist-border: rgba(200,104,128,0.35);
+    --wsl-dist-bg: rgba(200,104,128,0.1);
+    --wsl-dist-stop-bg: rgba(104,168,120,0.1);
+    --wsl-dist-start-bg: rgba(200,104,128,0.12);
+}
+[data-theme="peach-dark"] .sel-drop,
+[data-theme="peach-dark"] .baud-dropdown,
+[data-theme="peach-dark"] .send-hist,
+[data-theme="peach-dark"] .send-as-drop,
+[data-theme="peach-dark"] .qcmd-dropdown { box-shadow: 0 4px 16px rgba(0,0,0,.7); }
+[data-theme="peach-dark"] .send-hist-item.selected { background: rgba(200,104,128,.18); }
+[data-theme="peach-dark"] .ibtn.on { background: rgba(200,104,128,.22); }
+[data-theme="peach-dark"] .toast { box-shadow: 0 4px 16px rgba(0,0,0,.6); }
+[data-theme="peach-dark"] .wsl-spinner { border-color: rgba(216,120,144,.3); border-top-color: var(--btn-p); }
+[data-theme="peach-dark"] .wsl-loading-cell { color: var(--btn-p); }
+[data-theme="peach-dark"] .output::-webkit-scrollbar-thumb { background: rgba(100,70,80,.35); }
+[data-theme="peach-dark"] .output::-webkit-scrollbar-thumb:hover { background: rgba(100,70,80,.55); }
+[data-theme="peach-dark"] button[onclick^="wslDistAction"]:hover { opacity: 0.85; }
+[data-theme="peach-dark"] .ansi-0 { color: #c8b0b8; }
+[data-theme="peach-dark"] .ansi-1 { color: #c8b0b8; font-weight:bold; }
+[data-theme="peach-dark"] .ansi-2 { color: #68a878; }
+[data-theme="peach-dark"] .ansi-3 { color: #c89030; }
+[data-theme="peach-dark"] .ansi-4 { color: #a070b8; }
+[data-theme="peach-dark"] .ansi-5 { color: #d87890; }
+[data-theme="peach-dark"] .ansi-6 { color: #68a878; }
+[data-theme="peach-dark"] .ansi-7 { color: #907880; }
+[data-theme="peach-dark"] .ansi-30 { color: #504048; }
+[data-theme="peach-dark"] .ansi-31 { color: #d05060; }
+[data-theme="peach-dark"] .ansi-32 { color: #68a878; }
+[data-theme="peach-dark"] .ansi-33 { color: #c89030; }
+[data-theme="peach-dark"] .ansi-34 { color: #d87890; }
+[data-theme="peach-dark"] .ansi-35 { color: #a070b8; }
+[data-theme="peach-dark"] .ansi-36 { color: #68a878; }
+[data-theme="peach-dark"] .ansi-37 { color: #c8b0b8; }
+[data-theme="peach-dark"] .ansi-90 { color: #685058; }
+[data-theme="peach-dark"] .ansi-91 { color: #d05060; }
+[data-theme="peach-dark"] .ansi-92 { color: #68a878; }
+[data-theme="peach-dark"] .ansi-93 { color: #c89030; }
+[data-theme="peach-dark"] .ansi-94 { color: #d87890; }
+[data-theme="peach-dark"] .ansi-95 { color: #a070b8; }
+[data-theme="peach-dark"] .ansi-96 { color: #68a878; }
+[data-theme="peach-dark"] .ansi-97 { color: #c8b0b8; }
+
+/* ===== 金风玉露 浅色 — 秋水长天 ===== */
+/* 琥珀金主色，秋褐辅色，暖纸底 */
+[data-theme="autumn"] {
+    --bg: #f2ebe0;
+    --editor-bg: #f8f2e6;
+    --toolbar-bg: #eae2d4;
+    --input-bg: #fffefa;
+    --border: #d4c8b4;
+    --border-h: #b8ac98;
+    --text: #1a1208;
+    --text-b: #0a0604;
+    --text-d: #706450;
+    --link: #a87818;
+    --btn-p: #a87818;
+    --btn-ph: #b88828;
+    --btn-pa: #986810;
+    --split-line: #a87818;
+    --surface-1: #e4dacc;
+    --surface-2: #f8f2e6;
+    --surface-3: #eae2d4;
+    --text-soft: #504838;
+    --text-muted: #888070;
+    --text-placeholder: #b0a898;
+    --accent-focus: #a87818;
+    --accent-green: #607830;
+    --accent-red: #b83828;
+    --accent-orange: #c08820;
+    --accent-contrast: #705010;
+    --send-bubble-bg: #e8dcc0;
+    --send-bubble-text: #1a1208;
+    --mapped-bg: rgba(168,120,24,0.1);
+    --mapped-border: rgba(168,120,24,0.3);
+    --wsl-dist-border: rgba(168,120,24,0.35);
+    --wsl-dist-bg: rgba(168,120,24,0.1);
+    --wsl-dist-stop-bg: rgba(96,120,48,0.1);
+    --wsl-dist-start-bg: rgba(168,120,24,0.12);
+}
+[data-theme="autumn"] .sel-drop,
+[data-theme="autumn"] .baud-dropdown,
+[data-theme="autumn"] .send-hist,
+[data-theme="autumn"] .send-as-drop,
+[data-theme="autumn"] .qcmd-dropdown { border-color: var(--border); box-shadow: 0 6px 16px rgba(0,0,0,.1); }
+[data-theme="autumn"] .sel-drop-up { box-shadow: 0 -6px 16px rgba(0,0,0,.1); }
+[data-theme="autumn"] .sel-opt:hover,
+[data-theme="autumn"] .baud-opt:hover,
+[data-theme="autumn"] .send-hist-item:hover,
+[data-theme="autumn"] .send-as-opt:hover { background: rgba(0,0,0,.05); }
+[data-theme="autumn"] .send-hist-item.selected { background: rgba(168,120,24,.12); }
+[data-theme="autumn"] .qcmd-item { border-bottom-color: rgba(0,0,0,.05); }
+[data-theme="autumn"] .qcmd-item:hover { background: rgba(0,0,0,.04); }
+[data-theme="autumn"] .qcmd-item-label:focus { background: rgba(0,0,0,.05); }
+[data-theme="autumn"] .ibtn:hover,
+[data-theme="autumn"] .btn-ref:hover { background: rgba(0,0,0,.06); }
+[data-theme="autumn"] .ibtn.on { background: rgba(168,120,24,.14); }
+[data-theme="autumn"] .btn-logdir:hover { background: rgba(168,120,24,.1); }
+[data-theme="autumn"] .qcmd-dh-add:hover { background: rgba(168,120,24,.1); }
+[data-theme="autumn"] .qcmd-item-send:hover { background: rgba(168,120,24,.1); }
+[data-theme="autumn"] .qcmd-item-del:hover { background: rgba(184,56,40,.08); }
+[data-theme="autumn"] .pane-close:hover { background: rgba(0,0,0,.06); }
+[data-theme="autumn"] .wsl-device-row:hover { background: rgba(0,0,0,.04) !important; }
+[data-theme="autumn"] .issue-btn:hover { background: rgba(0,0,0,.07); }
+[data-theme="autumn"] .wsl-spinner { border-color: rgba(168,120,24,.25); border-top-color: var(--btn-p); }
+[data-theme="autumn"] .wsl-loading-cell { color: var(--btn-p); }
+[data-theme="autumn"] .toast { box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+[data-theme="autumn"] .btn-send:disabled { background: #ece4d8; color: #989080; }
+[data-theme="autumn"] .output::-webkit-scrollbar-thumb { background: rgba(0,0,0,.14); }
+[data-theme="autumn"] .output::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,.24); }
+[data-theme="autumn"] .wsl-auto-slider { background: #b8ac98; }
+[data-theme="autumn"] .wsl-auto-slider::before { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
+[data-theme="autumn"] .wsl-checkbox { border-color: #888070; background: #fff; }
+[data-theme="autumn"] .wsl-checkbox:checked { background: var(--btn-p); border-color: var(--btn-p); }
+[data-theme="autumn"] .wsl-mon-resize { background: #d4c8b4; }
+[data-theme="autumn"] button[onclick^="wslDistAction"]:hover { opacity: 0.85; }
+[data-theme="autumn"] .ansi-0 { color: #1a1208; }
+[data-theme="autumn"] .ansi-1 { color: #1a1208; font-weight:bold; }
+[data-theme="autumn"] .ansi-2 { color: #607830; }
+[data-theme="autumn"] .ansi-3 { color: #c08820; }
+[data-theme="autumn"] .ansi-4 { color: #805890; }
+[data-theme="autumn"] .ansi-5 { color: #a87818; }
+[data-theme="autumn"] .ansi-6 { color: #607830; }
+[data-theme="autumn"] .ansi-7 { color: #504838; }
+[data-theme="autumn"] .ansi-30 { color: #888070; }
+[data-theme="autumn"] .ansi-31 { color: #b83828; }
+[data-theme="autumn"] .ansi-32 { color: #607830; }
+[data-theme="autumn"] .ansi-33 { color: #c08820; }
+[data-theme="autumn"] .ansi-34 { color: #a87818; }
+[data-theme="autumn"] .ansi-35 { color: #805890; }
+[data-theme="autumn"] .ansi-36 { color: #607830; }
+[data-theme="autumn"] .ansi-37 { color: #1a1208; }
+[data-theme="autumn"] .ansi-90 { color: #888070; }
+[data-theme="autumn"] .ansi-91 { color: #b83828; }
+[data-theme="autumn"] .ansi-92 { color: #607830; }
+[data-theme="autumn"] .ansi-93 { color: #c08820; }
+[data-theme="autumn"] .ansi-94 { color: #a87818; }
+[data-theme="autumn"] .ansi-95 { color: #805890; }
+[data-theme="autumn"] .ansi-96 { color: #607830; }
+[data-theme="autumn"] .ansi-97 { color: #1a1208; }
+
+/* ===== 金风玉露 深色 — 玉露凝霜 ===== */
+/* 深褐底，琥珀金亮色，秋绿点缀 */
+[data-theme="autumn-dark"] {
+    --bg: #141008;
+    --editor-bg: #1a1610;
+    --toolbar-bg: #1e1a14;
+    --input-bg: #262218;
+    --border: #343028;
+    --border-h: #444038;
+    --text: #c8bca8;
+    --text-b: #e8dcc8;
+    --text-d: #686050;
+    --link: #d0a030;
+    --btn-p: #c09020;
+    --btn-ph: #d0a030;
+    --btn-pa: #a87818;
+    --split-line: #c09020;
+    --surface-1: #201c14;
+    --surface-2: #1e1a14;
+    --surface-3: #1a1610;
+    --text-soft: #908878;
+    --text-muted: #504838;
+    --text-placeholder: #403828;
+    --accent-focus: #d0a030;
+    --accent-green: #708838;
+    --accent-red: #c84030;
+    --accent-orange: #d09828;
+    --accent-contrast: #705010;
+    --send-bubble-bg: #282010;
+    --send-bubble-text: #e8dcc8;
+    --mapped-bg: rgba(192,144,32,0.08);
+    --mapped-border: rgba(192,144,32,0.25);
+    --wsl-dist-border: rgba(192,144,32,0.35);
+    --wsl-dist-bg: rgba(192,144,32,0.1);
+    --wsl-dist-stop-bg: rgba(112,136,56,0.1);
+    --wsl-dist-start-bg: rgba(192,144,32,0.12);
+}
+[data-theme="autumn-dark"] .sel-drop,
+[data-theme="autumn-dark"] .baud-dropdown,
+[data-theme="autumn-dark"] .send-hist,
+[data-theme="autumn-dark"] .send-as-drop,
+[data-theme="autumn-dark"] .qcmd-dropdown { box-shadow: 0 4px 16px rgba(0,0,0,.7); }
+[data-theme="autumn-dark"] .send-hist-item.selected { background: rgba(192,144,32,.18); }
+[data-theme="autumn-dark"] .ibtn.on { background: rgba(192,144,32,.22); }
+[data-theme="autumn-dark"] .toast { box-shadow: 0 4px 16px rgba(0,0,0,.6); }
+[data-theme="autumn-dark"] .wsl-spinner { border-color: rgba(208,160,48,.3); border-top-color: var(--btn-p); }
+[data-theme="autumn-dark"] .wsl-loading-cell { color: var(--btn-p); }
+[data-theme="autumn-dark"] .output::-webkit-scrollbar-thumb { background: rgba(100,90,60,.35); }
+[data-theme="autumn-dark"] .output::-webkit-scrollbar-thumb:hover { background: rgba(100,90,60,.55); }
+[data-theme="autumn-dark"] button[onclick^="wslDistAction"]:hover { opacity: 0.85; }
+[data-theme="autumn-dark"] .ansi-0 { color: #c8bca8; }
+[data-theme="autumn-dark"] .ansi-1 { color: #c8bca8; font-weight:bold; }
+[data-theme="autumn-dark"] .ansi-2 { color: #708838; }
+[data-theme="autumn-dark"] .ansi-3 { color: #d09828; }
+[data-theme="autumn-dark"] .ansi-4 { color: #a070b8; }
+[data-theme="autumn-dark"] .ansi-5 { color: #d0a030; }
+[data-theme="autumn-dark"] .ansi-6 { color: #708838; }
+[data-theme="autumn-dark"] .ansi-7 { color: #908878; }
+[data-theme="autumn-dark"] .ansi-30 { color: #504838; }
+[data-theme="autumn-dark"] .ansi-31 { color: #c84030; }
+[data-theme="autumn-dark"] .ansi-32 { color: #708838; }
+[data-theme="autumn-dark"] .ansi-33 { color: #d09828; }
+[data-theme="autumn-dark"] .ansi-34 { color: #d0a030; }
+[data-theme="autumn-dark"] .ansi-35 { color: #a070b8; }
+[data-theme="autumn-dark"] .ansi-36 { color: #708838; }
+[data-theme="autumn-dark"] .ansi-37 { color: #c8bca8; }
+[data-theme="autumn-dark"] .ansi-90 { color: #686050; }
+[data-theme="autumn-dark"] .ansi-91 { color: #c84030; }
+[data-theme="autumn-dark"] .ansi-92 { color: #708838; }
+[data-theme="autumn-dark"] .ansi-93 { color: #d09828; }
+[data-theme="autumn-dark"] .ansi-94 { color: #d0a030; }
+[data-theme="autumn-dark"] .ansi-95 { color: #a070b8; }
+[data-theme="autumn-dark"] .ansi-96 { color: #708838; }
+[data-theme="autumn-dark"] .ansi-97 { color: #c8bca8; }
 
 html.transitioning,
 html.transitioning *,
@@ -758,8 +1121,8 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 }
 .btn-main.start { background:var(--btn-p); color:#fff; }
 .btn-main.start:hover { background:var(--btn-ph); }
-.btn-main.stop { background:var(--accent-red); color:#fff; }
-.btn-main.stop:hover { background:var(--accent-orange); }
+.btn-main.stop { background:var(--accent-contrast); color:#fff; }
+.btn-main.stop:hover { filter: brightness(0.85); }
 
 /* 工具栏分隔线 */
 .tsep { width:1px; height:18px; background:var(--border); flex-shrink:0; margin:0 3px; }
@@ -929,7 +1292,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     transition: background .15s, color .15s;
 }
 .qcmd-trigger:hover { background:rgba(255,255,255,.05); color:var(--text); }
-.qcmd-trigger.on { color:#4ec9b0; }
+.qcmd-trigger.on { color:var(--accent-green); }
 .qcmd-trigger svg { flex-shrink:0; }
 .qcmd-arrow { font-size:8px; opacity:.6; }
 /* 下拉列表容器 */
@@ -1193,6 +1556,8 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
             <div class="sel-opt" data-style="japanese" onclick="event.stopPropagation();selectThemeStyle('japanese')">浮世绘彩</div>
             <div class="sel-opt" data-style="poetic" onclick="event.stopPropagation();selectThemeStyle('poetic')">诗意东方</div>
             <div class="sel-opt" data-style="ink" onclick="event.stopPropagation();selectThemeStyle('ink')">水墨丹青</div>
+            <div class="sel-opt" data-style="peach" onclick="event.stopPropagation();selectThemeStyle('peach')">桃之夭夭</div>
+            <div class="sel-opt" data-style="autumn" onclick="event.stopPropagation();selectThemeStyle('autumn')">金风玉露</div>
         </div>
     </span>
     <span class="issue-btn" onclick="invoke('open_url',{url:'https://github.com/SeaHi-Mo/Seahi-Serial/issues/new'})">提交issue</span>
@@ -2526,7 +2891,9 @@ var _TITLE_BAR_COLORS = {
     'default':      { dark: { r:28,g:30,b:34 }, light: { r:237,g:240,b:242 } },
     'japanese':     { dark: { r:20,g:22,b:32 }, light: { r:244,g:240,b:232 } },
     'poetic':       { dark: { r:18,g:16,b:20 }, light: { r:232,g:226,b:240 } },
-    'ink':          { dark: { r:20,g:22,b:24 }, light: { r:244,g:240,b:232 } }
+    'ink':          { dark: { r:20,g:22,b:24 }, light: { r:244,g:240,b:232 } },
+    'peach':        { dark: { r:24,g:16,b:20 }, light: { r:246,g:240,b:242 } },
+    'autumn':       { dark: { r:20,g:16,b:8 }, light: { r:242,g:235,b:224 } }
 };
 
 function getSystemTheme() {
@@ -2538,6 +2905,8 @@ function getThemeDataAttr() {
     if (_currentThemeStyle === 'japanese') return _currentTheme === 'light' ? 'japanese-light' : 'japanese';
     if (_currentThemeStyle === 'poetic') return _currentTheme === 'light' ? 'poetic' : 'poetic-dark';
     if (_currentThemeStyle === 'ink') return _currentTheme === 'light' ? 'ink' : 'ink-dark';
+    if (_currentThemeStyle === 'peach') return _currentTheme === 'light' ? 'peach' : 'peach-dark';
+    if (_currentThemeStyle === 'autumn') return _currentTheme === 'light' ? 'autumn' : 'autumn-dark';
     return 'default';
 }
 
@@ -2554,7 +2923,7 @@ function syncThemeUI() {
         });
     }
     var wrap = document.getElementById('themeStyleWrap');
-    var names = { 'default': '默认', 'japanese': '浮世绘彩', 'poetic': '诗意东方', 'ink': '水墨丹青' };
+    var names = { 'default': '默认', 'japanese': '浮世绘彩', 'poetic': '诗意东方', 'ink': '水墨丹青', 'peach': '桃之夭夭', 'autumn': '金风玉露' };
     if (wrap) wrap.title = '主题风格: ' + (names[_currentThemeStyle] || '默认');
 }
 
@@ -3316,8 +3685,8 @@ function renderWslDistroCards(mid, distros) {
         var mem = running && d.memTotalMB > 0 ? d.memUsedMB + ' / ' + d.memTotalMB + ' MB' : '—';
         var btnText = running ? '关闭' : '启动';
         var btnBg = running ? 'var(--wsl-dist-stop-bg)' : 'var(--wsl-dist-start-bg)';
-        var btnBorder = running ? 'var(--accent-orange)' : 'var(--btn-p)';
-        var btnColor = running ? 'var(--accent-orange)' : 'var(--link)';
+        var btnBorder = running ? 'var(--accent-contrast)' : 'var(--btn-p)';
+        var btnColor = running ? 'var(--accent-contrast)' : 'var(--link)';
         var btnAction = running
             ? "wslDistAction('shutdown_wsl','" + d.name.replace(/'/g, "\\'") + "')"
             : "wslDistAction('launch_wsl','" + d.name.replace(/'/g, "\\'") + "')";
