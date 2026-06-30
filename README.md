@@ -8,7 +8,7 @@
 
 <center>
 
-![alt text](doc/IMG/SeahiSerial.png)
+![alt text](./doc/IMG/SeahiSerial.png)
 </center>
 
 ## 功能特性
@@ -140,7 +140,7 @@ steps:
 
 <center>
 
-![主界面](doc/IMG/SeahiSerial.png)
+![主界面](./doc/IMG/SeahiSerial.png)
 
 </center>
 
