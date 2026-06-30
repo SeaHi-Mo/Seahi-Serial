@@ -6,10 +6,10 @@
 ![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Windows-blue?logo=windows&logoColor=white)
 
-<center>
-
-![alt text](./doc/IMG/SeahiSerial.png)
-</center>
+<div align="center">
+<img src="./doc/IMG/SeahiSerial_main.png" width="30%">
+<img src="./doc/IMG/SeahiSerial_wsl.png" width="30%">
+</div>
 
 ## 功能特性
 
@@ -138,11 +138,10 @@ steps:
 
 下图展示了 SeaHi Serial 的主界面：
 
-<center>
-
-![主界面](./doc/IMG/SeahiSerial.png)
-
-</center>
+<div align="center">
+<img src="./doc/IMG/SeahiSerial_main.png" width="30%" title="主界面">
+<img src="./doc/IMG/SeahiSerial_wsl.png" width="30%" title="WSL端口映射界面">
+</div>
 
 界面分为以下区域：
 
