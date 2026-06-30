@@ -1478,13 +1478,7 @@ fn parse_version(ver: &str) -> (u32, u32, u32) {
 
 /// 将 GitHub URL 转换为镜像 URL（用于国内网络环境）
 fn mirror_github_url(url: &str) -> String {
-    // 使用 GitHub 镜像加速（保留完整URL作为代理路径）
-    if url.starts_with("https://github.com/") {
-        return format!("https://mirror.ghproxy.com/{}", url);
-    }
-    if url.starts_with("https://api.github.com/") {
-        return format!("https://mirror.ghproxy.com/{}", url);
-    }
+    // ghproxy.com 已失效，使用 direct URL
     url.to_string()
 }
 
@@ -1510,21 +1504,28 @@ async fn check_update() -> Result<UpdateInfo, String> {
     let api_url = "https://api.github.com/repos/SeaHi-Mo/Seahi-Serial/releases/latest";
     let mirror_url = mirror_github_url(api_url);
 
-    // 先直连，失败再走镜像
-    let resp = match client
+    // 尝试多个来源检查更新
+    let mut resp = None;
+
+    // 1. 直连 GitHub API
+    let direct = client
         .get(api_url)
         .header("User-Agent", "seahi-serial-updater")
         .send()
-        .await
-    {
-        Ok(r) if r.status().is_success() => r,
-        _ => client
-            .get(&mirror_url)
-            .header("User-Agent", "seahi-serial-updater")
-            .send()
-            .await
-            .map_err(|e| format!("请求 GitHub API 失败: {}", e))?,
-    };
+        .await;
+    if let Ok(r) = direct {
+        if r.status().is_success() {
+            resp = Some(r);
+        }
+    }
+
+    // 2. 尝试镜像（ghproxy 已失效，跳过）
+    if resp.is_none() {
+        // 暂无可用镜像，静默失败
+        return Err("无法连接 GitHub，请检查网络".to_string());
+    }
+
+    let resp = resp.unwrap();
 
     if !resp.status().is_success() {
         return Err(format!("GitHub API 返回错误状态码: {}", resp.status()));
@@ -1571,24 +1572,14 @@ async fn download_update(download_url: String) -> Result<String, String> {
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
-    
-    let mirror_url = mirror_github_url(&download_url);
 
-    // 先直连，失败再走镜像
-    let resp = match client
+    // 直连下载
+    let resp = client
         .get(&download_url)
         .header("User-Agent", "seahi-serial-updater")
         .send()
         .await
-    {
-        Ok(r) if r.status().is_success() => r,
-        _ => client
-            .get(&mirror_url)
-            .header("User-Agent", "seahi-serial-updater")
-            .send()
-            .await
-            .map_err(|e| format!("下载失败: {}", e))?,
-    };
+        .map_err(|e| format!("下载失败: {}", e))?;
 
     if !resp.status().is_success() {
         return Err(format!("下载失败，HTTP 状态码: {}", resp.status()));
