@@ -1540,7 +1540,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 /* ===== 首次使用引导 ===== */
 #onboarding-overlay {
     position: fixed; inset: 0; z-index: 10000;
-    background: rgba(0,0,0,0.6);
+    background: transparent;
     opacity: 0; transition: opacity .3s ease;
     pointer-events: none;
 }
@@ -1552,7 +1552,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     border-radius: 8px;
     padding: 16px 20px;
     min-width: 220px; max-width: 320px;
-    box-shadow: 0 0 0 9999px rgba(0,0,0,0.6), 0 4px 20px rgba(0,0,0,.4);
+    box-shadow: 0 4px 20px rgba(0,0,0,.4);
     transition: transform .25s ease, opacity .25s ease;
 }
 .onboard-step.anim-in { animation: onboard-in .3s ease forwards; }
@@ -1570,9 +1570,10 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     background: var(--surface-1, #262930);
     border: 1px solid var(--accent-focus, #4a7ab5);
     transform: rotate(45deg);
+    left: 24px;
 }
-.onboard-arrow.top { bottom: -7px; left: 24px; border-top: none; border-left: none; }
-.onboard-arrow.bottom { top: -7px; left: 24px; border-bottom: none; border-right: none; }
+.onboard-arrow.top { top: -7px; border-bottom: none; border-right: none; }
+.onboard-arrow.bottom { bottom: -7px; border-top: none; border-left: none; }
 .onboard-nav {
     position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
     z-index: 10003;
@@ -4256,38 +4257,53 @@ var _onboardSteps = [
     {
         target: '.global-bar',
         pos: 'bottom',
-        title: '1 / 5 — 全局操作栏',
+        title: '1 / 7 — 全局操作栏',
         desc: '在这里打开额外监视器、映射 WSL 串口，或切换主题风格。'
     },
     {
         target: '#main-portSelect',
         pos: 'bottom',
-        title: '2 / 5 — 选择串口',
+        title: '2 / 7 — 选择串口',
         desc: '点击下拉选择串口设备。插拔设备后会自动刷新列表。'
     },
     {
         target: '#main-btnStart',
         pos: 'bottom',
-        title: '3 / 5 — 波特率 & 启动',
-        desc: '设置波特率（默认 115200），确认无误后点击「开始监控」连接串口。'
-    },
-    {
-        target: '#main-sendBar',
-        pos: 'top',
-        title: '4 / 5 — 发送数据',
-        desc: '在输入框输入内容后发送。支持 Text / HEX 双模式、发送历史和快速指令。'
+        title: '3 / 7 — 波特率 & 启动',
+        desc: '左侧设置波特率（默认 115200），确认无误后点击「开始监控」连接串口。'
     },
     {
         target: '#main-btnAdv',
         pos: 'bottom',
-        title: '5 / 5 — 高级设置',
-        desc: '点击展开：数据位、停止位、校验位、DTR/RTS 控制、日志保存。'
+        arrowAlign: 'right',
+        title: '4 / 7 — 工具栏按钮',
+        desc: '清空内容、自动滚动、自动重连、终端模式、行号、时间戳、消息回显，以及更多设置。'
+    },
+    {
+        target: '#main-sendBar',
+        pos: 'top',
+        title: '5 / 7 — 发送数据',
+        desc: '在输入框输入内容后发送。支持 Text / HEX 双模式、发送历史和快速指令。'
+    },
+    {
+        target: '#main-btnAdv',
+        pos: 'top',
+        arrowAlign: 'right',
+        title: '6 / 7 — 高级设置',
+        desc: '点击齿轮图标展开：数据位、停止位、校验位、DTR/RTS 控制、日志保存。'
+    },
+    {
+        target: '.global-bar',
+        pos: 'bottom',
+        title: '7 / 7 — 开始使用',
+        desc: '以上就是核心功能。点击「跳过」或此处外部区域可随时关闭引导。'
     }
 ];
 var _onboardIdx = 0;
 
 function showOnboarding() {
     _onboardIdx = 0;
+    _onboardPrevTarget = null;
     var overlay = document.getElementById('onboarding-overlay');
     var nav = document.getElementById('onboard-nav');
     var dotsEl = document.getElementById('onboard-dots');
@@ -4299,14 +4315,27 @@ function showOnboarding() {
     });
     overlay.classList.add('show');
     nav.style.display = 'flex';
+    overlay.onclick = function(e) {
+        if (e.target === overlay) closeOnboarding();
+    };
     goStep(0);
 }
+
+var _onboardPrevTarget = null;
 
 function goStep(idx) {
     _onboardIdx = idx;
     var step = _onboardSteps[idx];
+    // 清除上一个目标的高亮
+    if (_onboardPrevTarget) {
+        _onboardPrevTarget.style.boxShadow = '';
+        _onboardPrevTarget.style.position = '';
+        _onboardPrevTarget.style.zIndex = '';
+        _onboardPrevTarget.style.borderRadius = '';
+    }
     var el = document.querySelector(step.target);
     if (!el) { nextStep(); return; }
+    _onboardPrevTarget = el;
     var rect = el.getBoundingClientRect();
     var card = document.getElementById('onboard-step');
     var title = document.getElementById('onboard-title');
@@ -4316,29 +4345,56 @@ function goStep(idx) {
     title.textContent = step.title;
     desc.textContent = step.desc;
     nextBtn.textContent = idx === _onboardSteps.length - 1 ? '开始使用' : '下一步';
-    // position card
-    var gap = 12;
-    var top, left;
+    // 聚光灯：给目标元素加 box-shadow（更深更亮）
+    el.style.boxShadow = '0 0 0 4px var(--accent-focus, #4a7ab5), 0 0 24px 4px rgba(74,122,181,0.5), 0 0 0 9999px rgba(0,0,0,0.65)';
+    el.style.position = 'relative';
+    el.style.zIndex = '10001';
+    el.style.borderRadius = '4px';
+    // 先渲染内容，再测量卡片实际尺寸
+    card.classList.remove('anim-in');
+    card.style.top = '-9999px';
+    card.style.left = '-9999px';
+    card.style.visibility = 'hidden';
+    card.style.display = '';
     arrow.className = 'onboard-arrow';
+    arrow.style.left = '0px';
+    var gap = 14;
     if (step.pos === 'bottom') {
-        top = rect.bottom + gap;
-        left = rect.left + rect.width / 2 - 110;
         arrow.classList.add('top');
     } else {
-        top = rect.top - gap - 110;
-        left = rect.left + rect.width / 2 - 110;
         arrow.classList.add('bottom');
     }
-    left = Math.max(16, Math.min(left, window.innerWidth - 340));
-    card.style.top = top + 'px';
-    card.style.left = left + 'px';
-    card.classList.remove('anim-in');
+    // 测量卡片实际尺寸
+    var cardW = card.offsetWidth;
+    var cardH = card.offsetHeight;
+    // 目标元素水平中心点（或右侧对齐点）
+    var targetCX = step.arrowAlign === 'right'
+        ? rect.left + rect.width - 15
+        : rect.left + rect.width / 2;
+    // 理想卡片位置：水平居中对齐目标中心
+    var idealLeft = targetCX - cardW / 2;
+    var idealTop;
+    if (step.pos === 'bottom') {
+        idealTop = rect.bottom + gap;
+    } else {
+        idealTop = rect.top - gap - cardH;
+    }
+    // 边界 clamp
+    var vpW = window.innerWidth;
+    var vpH = window.innerHeight;
+    var clampedLeft = Math.max(12, Math.min(idealLeft, vpW - cardW - 12));
+    var clampedTop = Math.max(12, Math.min(idealTop, vpH - cardH - 12));
+    // 箭头在卡片内的 X 偏移 = 目标中心点 - 卡片左边界，限制在卡片范围内
+    var arrowX = targetCX - clampedLeft;
+    arrowX = Math.max(16, Math.min(arrowX, cardW - 16));
+    arrow.style.left = arrowX + 'px';
+    // 应用位置
+    card.style.visibility = '';
+    card.style.top = clampedTop + 'px';
+    card.style.left = clampedLeft + 'px';
     void card.offsetWidth;
     card.classList.add('anim-in');
-    // highlight element
-    el.style.position = 'relative';
-    el.style.zIndex = '10002';
-    // update dots
+    // 更新步骤指示点
     var dots = document.querySelectorAll('.onboard-dot');
     dots.forEach(function(d, i) { d.classList.toggle('active', i === idx); });
 }
@@ -4354,14 +4410,20 @@ function nextStep() {
 function closeOnboarding() {
     var overlay = document.getElementById('onboarding-overlay');
     var nav = document.getElementById('onboard-nav');
+    if (!overlay.classList.contains('show')) return;
     overlay.classList.remove('show');
+    overlay.onclick = null;
     nav.style.display = 'none';
+    nav.onclick = null;
     localStorage.setItem('onboarding_done', '1');
-    // restore z-index
-    _onboardSteps.forEach(function(s) {
-        var el = document.querySelector(s.target);
-        if (el) { el.style.position = ''; el.style.zIndex = ''; }
-    });
+    // 清除当前目标的高亮
+    if (_onboardPrevTarget) {
+        _onboardPrevTarget.style.boxShadow = '';
+        _onboardPrevTarget.style.position = '';
+        _onboardPrevTarget.style.zIndex = '';
+        _onboardPrevTarget.style.borderRadius = '';
+        _onboardPrevTarget = null;
+    }
 }
 </script>
 </body>
