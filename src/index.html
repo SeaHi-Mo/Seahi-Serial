@@ -1029,6 +1029,8 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .monitor-pane { flex:1; display:flex; flex-direction:column; min-width:280px; min-height:0; }
 .monitor-pane + .monitor-pane { border-left:2px solid var(--split-line); }
 .pane-header { display:flex; align-items:center; padding:0 10px; height:28px; background:var(--toolbar-bg); border-bottom:1px solid var(--border); flex-shrink:0; font-size:12px; color:var(--text-d); justify-content:space-between; }
+.pane-header-thin { height:6px; padding:0; cursor:pointer; position:relative; }
+.pane-header-thin .pane-close { position:absolute; right:4px; top:-1px; }
 .pane-title { white-space:nowrap; font-size:13px; }
 .pane-close { width:18px; height:18px; border:none; background:transparent; color:var(--text-d); cursor:pointer; border-radius:4px; display:inline-flex; align-items:center; justify-content:center; font-size:14px; }
 .pane-close:hover { background:rgba(128,128,128,.1); color:var(--accent-orange); }
@@ -1202,6 +1204,8 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ol .lc { flex:1; min-width:0; }
 .ol.recv { color:var(--text); }
 .ol.send { display:block; width:fit-content; max-width:100%; color:var(--send-bubble-text); background:var(--send-bubble-bg); padding:2px 6px; border-radius:3px; margin:1px 0; word-break:break-all; white-space:pre-wrap; }
+.output.with-line-num .ol.send { display:flex; align-items:flex-start; background:transparent; padding:0; margin-left:0; }
+.output.with-line-num .ol.send .lc { background:var(--send-bubble-bg); color:var(--send-bubble-text); padding:2px 6px; border-radius:3px; word-break:break-all; white-space:pre-wrap; flex:none; }
 .ol.err  { color:var(--accent-orange); }
 .ol.sys  { color:var(--text-soft); }
 .ol.empty-line { height:1.6em; }
@@ -1753,10 +1757,7 @@ function createMonitorPane(mid, title, closable) {
     pane.className = 'monitor-pane';
     pane.id = 'pane-' + mid;
     pane.innerHTML =
-        '<div class="pane-header">' +
-            '<span class="pane-title">' + title + '</span>' +
-            closeBtn +
-        '</div>' +
+        (closable ? '<div class="pane-header pane-header-thin" id="' + mid + '-paneHeader">' + closeBtn + '</div>' : '') +
         '<div class="toolbar-wrap" id="' + mid + '-tbWrap"><div class="toolbar">' +
             '<span class="lbl">查看</span>' +
             '<div class="sel" id="' + mid + '-viewMode" data-val="text" onclick="toggleSelDrop(this)">' +
@@ -2133,11 +2134,13 @@ function toggleAdv(mid) {
 function toggleToolbarCollapse(mid) {
     var wrap = document.getElementById(mid + '-tbWrap');
     var btn = document.getElementById(mid + '-btnCollapseTb');
+    var header = document.getElementById(mid + '-paneHeader');
     if (!wrap) return;
     // 如果自动隐藏已激活（鼠标悬停展开中），点击按钮 = 关闭自动隐藏并保持展开
     if (wrap.onmouseleave) {
         wrap.onmouseenter = null;
         wrap.onmouseleave = null;
+        if (header) { header.onmouseenter = null; header.onmouseleave = null; }
         btn.innerHTML = ICONS.chevronUp;
         btn.title = '折叠工具栏';
         btn.classList.remove('on');
@@ -2152,19 +2155,22 @@ function toggleToolbarCollapse(mid) {
     btn.classList.toggle('on', collapsing);
     if (collapsing) {
         var hoverTimer = null;
-        wrap.onmouseenter = function() {
+        function expand() {
             hoverTimer = setTimeout(function() {
                 wrap.classList.remove('collapsed');
                 btn.innerHTML = ICONS.chevronUp;
                 btn.title = '折叠工具栏';
             }, 100);
-        };
-        wrap.onmouseleave = function() {
+        }
+        function collapse() {
             if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
             wrap.classList.add('collapsed');
             btn.innerHTML = ICONS.chevronDown;
             btn.title = '展开工具栏';
-        };
+        }
+        wrap.onmouseenter = expand;
+        wrap.onmouseleave = collapse;
+        if (header) { header.onmouseenter = expand; header.onmouseleave = collapse; }
     }
 }
 function toggleIbtn(btn) { btn.classList.toggle('on'); scheduleConfigSave(); }
@@ -2459,7 +2465,6 @@ function addMonitor() {
 }
 
 function closeMonitor(mid) {
-    if (!confirm('确定关闭此监视器？所有输出内容将丢失。')) return;
     stopReading(mid);
     if (monitors[mid] && monitors[mid].isConnected) {
         invoke('close_port', { monitorId: mid }).catch(function() {});
@@ -3207,7 +3212,7 @@ function getWslMappingHtml(mid) {
         return '<div class="baud-opt' + (v===115200?' active':'') + '" onclick="setBaud(\'' + wmid + '\',' + v + ')">' + v + '</div>';
     }).join('');
     return '<div style="display:flex;flex-direction:column;width:100%;height:100%;min-height:0;background:var(--bg);">' +
-        '<div style="background:var(--toolbar-bg);border-bottom:1px solid var(--border);padding:8px 16px;display:flex;align-items:center;gap:20px;flex-shrink:0;">' +
+        '<div id="' + wmid + '-paneHeader" style="background:var(--toolbar-bg);border-bottom:1px solid var(--border);padding:8px 16px;display:flex;align-items:center;gap:20px;flex-shrink:0;">' +
             '<div style="font-size:13px;font-weight:600;color:var(--text-b);white-space:nowrap;flex-shrink:0;">WSL 端口映射</div>' +
             '<div id="' + mid + '-wslDistroList" style="display:flex;flex-wrap:wrap;gap:6px;flex:1;min-width:0;justify-content:flex-end;"></div>' +
         '</div>' +
