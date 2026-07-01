@@ -1757,7 +1757,7 @@ function createMonitorPane(mid, title, closable) {
                 '</div>' +
             '</div>' +
             '<span class="lbl">端口</span>' +
-            '<div class="sel sel-port" id="' + mid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:220px;">' +
+            '<div class="sel sel-port" id="' + mid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:192px;">' +
                 '<span class="sel-text">加载中...</span><span class="sel-arrow">&#9660;</span>' +
                 '<div class="sel-drop" id="' + mid + '-portDrop"></div>' +
             '</div>' +
@@ -3157,8 +3157,8 @@ function getWslMappingHtml(mid) {
     var baudOpts = [50,75,110,134,150,200,300,600,1200,1800,2400,4800,7200,9600,14400,19200,28800,38400,57600,115200,230400,460800,500000,576000,921600,1000000,1152000,1500000,2000000,2500000,3000000,3500000,4000000].map(function(v) {
         return '<div class="baud-opt' + (v===115200?' active':'') + '" onclick="setBaud(\'' + wmid + '\',' + v + ')">' + v + '</div>';
     }).join('');
-    return '<div style="display:flex;flex-direction:column;height:100%;background:var(--bg);">' +
-        '<div style="background:var(--toolbar-bg);border-bottom:1px solid var(--border);padding:8px 16px;display:flex;align-items:center;gap:20px;">' +
+    return '<div style="display:flex;flex-direction:column;width:100%;height:100%;min-height:0;background:var(--bg);">' +
+        '<div style="background:var(--toolbar-bg);border-bottom:1px solid var(--border);padding:8px 16px;display:flex;align-items:center;gap:20px;flex-shrink:0;">' +
             '<div style="font-size:13px;font-weight:600;color:var(--text-b);white-space:nowrap;flex-shrink:0;">WSL 端口映射</div>' +
             '<div id="' + mid + '-wslDistroList" style="display:flex;flex-wrap:wrap;gap:6px;flex:1;min-width:0;justify-content:flex-end;"></div>' +
         '</div>' +
@@ -3168,7 +3168,7 @@ function getWslMappingHtml(mid) {
             '</div>' +
         '</div>' +
         '<div class="wsl-mon-resize" id="' + mid + '-wslMonResize"></div>' +
-        '<div style="flex:0 0 300px;min-height:120px;display:flex;flex-direction:column;background:var(--editor-bg);" id="' + mid + '-wslMonPanel">' +
+        '<div style="flex:0 1 300px;min-height:120px;display:flex;flex-direction:column;overflow:hidden;background:var(--editor-bg);" id="' + mid + '-wslMonPanel">' +
             '<div class="toolbar" id="' + wmid + '-toolbar">' +
                 '<span class="lbl">查看</span>' +
                 '<div class="sel" id="' + wmid + '-viewMode" data-val="text" onclick="toggleSelDrop(this)">' +
@@ -3687,8 +3687,12 @@ function initWslMonResize(mid) {
         var dy = e.clientY - startY;
         var parentH = monPanel.parentElement.offsetHeight || window.innerHeight;
         var handleH = handle.offsetHeight || 5;
+        // 减去 WSL 标题栏（发行版卡片行）的占用高度
+        var headerBar = topPanel.previousElementSibling;
+        var headerBarH = headerBar ? headerBar.offsetHeight : 0;
         var minTopH = 100; // 表头 ~30px + 1行设备 ~40px + 余量
-        var maxMonH = Math.max(120, parentH - handleH - minTopH - 10);
+        var availableH = parentH - headerBarH - handleH - 10;
+        var maxMonH = Math.max(120, availableH - minTopH);
         var newTopH = Math.max(minTopH, startTopH + dy);
         var newMonH = Math.max(120, Math.min(maxMonH, startMonH - dy));
         // 拖拽期间用固定高度，松手后会切换为 flex-basis
@@ -3702,7 +3706,7 @@ function initWslMonResize(mid) {
         // 松手后：去掉固定 height，改用 flex-basis，让 flex 容器在窗口缩小时自动缩小面板
         var finalH = monPanel.offsetHeight;
         monPanel.style.height = '';
-        monPanel.style.flex = '0 0 ' + finalH + 'px';
+        monPanel.style.flex = '0 1 ' + finalH + 'px';
         monPanel.style.minHeight = '120px';
         topPanel.style.flex = '1';
         topPanel.style.height = '';
