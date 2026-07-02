@@ -92,16 +92,22 @@ fn start_device_watcher(app: tauri::AppHandle) {
 struct WslShell {
     writer: std::sync::Mutex<std::io::BufWriter<std::process::ChildStdin>>,
     reader: std::sync::Mutex<std::io::BufReader<std::process::ChildStdout>>,
-    child: std::process::Child,
+    _child: std::process::Child,
 }
 
 static WSL_SHELL: Mutex<Option<WslShell>> = Mutex::new(None);
+/// 标记 shell 需要重建（超时/进程退出后设置，get_wsl_shell 检查此标记）
+static WSL_SHELL_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// 获取或创建持久化 WSL shell
 fn get_wsl_shell(distro: &str) -> Result<&'static Mutex<Option<WslShell>>, String> {
     let mut shell = WSL_SHELL.lock().unwrap();
-    if shell.is_some() {
-        return Ok(&WSL_SHELL);
+    if let Some(ref s) = *shell {
+        if !WSL_SHELL_DIRTY.load(std::sync::atomic::Ordering::Relaxed) && is_process_alive(s._child.id()) {
+            return Ok(&WSL_SHELL);
+        }
+        *shell = None;
+        WSL_SHELL_DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
     }
     // 在锁内创建，避免 TOCTOU 竞态
     let mut child = hidden_command("wsl")
@@ -116,7 +122,7 @@ fn get_wsl_shell(distro: &str) -> Result<&'static Mutex<Option<WslShell>>, Strin
     *shell = Some(WslShell {
         writer: std::sync::Mutex::new(std::io::BufWriter::new(stdin)),
         reader: std::sync::Mutex::new(std::io::BufReader::new(stdout)),
-        child,
+        _child: child,
     });
     Ok(&WSL_SHELL)
 }
@@ -143,11 +149,17 @@ fn wsl_shell_exec(distro: &str, cmd: &str, timeout_ms: u64) -> Result<String, St
     let start = std::time::Instant::now();
     loop {
         if start.elapsed().as_millis() > timeout_ms as u128 {
+            WSL_SHELL_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+            dbg_log(&format!("wsl_shell_exec: timeout after {}ms", timeout_ms));
             return Err("WSL shell 命令超时".into());
         }
         let mut line = String::new();
         match r.read_line(&mut line) {
-            Ok(0) => return Err("WSL shell 进程已退出".into()), // EOF
+            Ok(0) => {
+                WSL_SHELL_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+                dbg_log("wsl_shell_exec: EOF");
+                return Err("WSL shell 进程已退出".into());
+            }
             Ok(_) => {}
             Err(e) => return Err(format!("读取失败: {}", e)),
         }
@@ -171,8 +183,6 @@ struct WslSerialSession {
     child: std::sync::Mutex<std::process::Child>,
     writer: std::sync::Mutex<std::io::BufWriter<std::process::ChildStdin>>,
     reader: std::sync::Mutex<std::io::BufReader<std::process::ChildStdout>>,
-    device_path: String,
-    distro: String,
 }
 
 /// 全局状态：WSL 串口连接（key = monitor_id）
@@ -188,29 +198,9 @@ fn hidden_command(program: &str) -> std::process::Command {
     cmd
 }
 
-/// 带超时执行 Command::output()
-fn output_with_timeout(cmd: &mut std::process::Command, timeout_secs: u64) -> Result<std::process::Output, String> {
-    use std::sync::mpsc;
-    let (tx, rx) = mpsc::channel();
-    let child = cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-        .spawn().map_err(|e| format!("启动进程失败: {}", e))?;
-    let child_id = child.id();
-    std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-    match rx.recv_timeout(std::time::Duration::from_secs(timeout_secs)) {
-        Ok(result) => result.map_err(|e| format!("进程执行失败: {}", e)),
-        Err(_) => {
-            unsafe { windows_sys::Win32::System::Threading::TerminateProcess(child_id as *mut _, 1); }
-            Err(format!("命令执行超时（{}秒）", timeout_secs))
-        }
-    }
-}
-
 /// 嵌入的 bridge 脚本 base64
 const BRIDGE_B64: &str = include_str!("../wsl-daemon/bridge_b64.txt");
 const BRIDGE_SCRIPT_PATH: &str = "/tmp/seahi_serial_bridge.py";
-const BRIDGE_TIMEOUT_SECS: u64 = 5;
 
 /// 串口信息（发给前端）
 #[derive(Debug, serde::Serialize, Clone)]
@@ -766,19 +756,23 @@ fn launch_wsl(dist: Option<String>) -> Result<(), String> {
     Ok(())
 }
 
-/// 关闭指定 WSL 发行版
+/// 关闭指定 WSL 发行版（异步，不阻塞 UI）
 #[tauri::command]
-fn shutdown_wsl(dist: String) -> Result<(), String> {
-    let out = hidden_command("wsl")
-        .args(["-t", &dist])
-        .output()
-        .map_err(|e| format!("{}", e))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("关闭 WSL 发行版失败: {}", stderr.trim()));
-    }
+async fn shutdown_wsl(dist: String) -> Result<(), String> {
     *WSL_TERMINAL_PID.lock().unwrap() = None;
-    Ok(())
+    tauri::async_runtime::spawn_blocking(move || {
+        let out = hidden_command("wsl")
+            .args(["-t", &dist])
+            .output()
+            .map_err(|e| format!("{}", e))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("关闭 WSL 发行版失败: {}", stderr.trim()));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 /// 获取所有 WSL 分发版信息
@@ -1029,7 +1023,7 @@ fn open_wsl_serial(
     let stdin = child.stdin.take().ok_or("无法获取 stdin")?;
     let writer = std::sync::Mutex::new(std::io::BufWriter::new(stdin));
     let reader = std::sync::Mutex::new(std::io::BufReader::new(stdout));
-    let session = WslSerialSession { child: std::sync::Mutex::new(child), writer, reader, device_path: device_path.clone(), distro };
+    let session = WslSerialSession { child: std::sync::Mutex::new(child), writer, reader };
     let resp = bridge_command(&session, &json!({"cmd":"open","id":&monitor_id,"path":&device_path,"baud":baud_rate}))?;
     if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         state.sessions.lock().unwrap().insert(monitor_id, session);
@@ -1096,7 +1090,10 @@ fn set_wsl_signal_cmd(state: tauri::State<'_, WslSerialState>, monitor_id: Strin
 fn get_wsl_serial_devices() -> Result<Vec<String>, String> {
     let distros = check_wsl_running().unwrap_or_default();
     let distro = distros.first().cloned().unwrap_or_default();
-    if distro.is_empty() { return Ok(vec![]); }
+    if distro.is_empty() {
+        dbg_log("get_wsl_serial_devices: no running distro");
+        return Ok(vec![]);
+    }
 
     let output = wsl_shell_exec(&distro, "ls /dev/ttyACM* /dev/ttyUSB* /dev/ttyS* 2>/dev/null || true", 2000)?;
     let devices: Vec<String> = output
@@ -1104,6 +1101,7 @@ fn get_wsl_serial_devices() -> Result<Vec<String>, String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty() && s.starts_with("/dev/tty"))
         .collect();
+    dbg_log(&format!("get_wsl_serial_devices: distro={}, raw={}, devices={:?}", distro, output.trim(), devices));
     Ok(devices)
 }
 
@@ -1476,11 +1474,7 @@ fn parse_version(ver: &str) -> (u32, u32, u32) {
     (major, minor, patch)
 }
 
-/// 将 GitHub URL 转换为镜像 URL（用于国内网络环境）
-fn mirror_github_url(url: &str) -> String {
-    // ghproxy.com 已失效，使用 direct URL
-    url.to_string()
-}
+
 
 /// 比较版本号：如果 latest > current，返回 true
 fn is_newer_version(current: &str, latest: &str) -> bool {
@@ -1502,7 +1496,6 @@ async fn check_update() -> Result<UpdateInfo, String> {
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
     let api_url = "https://api.github.com/repos/SeaHi-Mo/Seahi-Serial/releases/latest";
-    let mirror_url = mirror_github_url(api_url);
 
     // 尝试多个来源检查更新
     let mut resp = None;

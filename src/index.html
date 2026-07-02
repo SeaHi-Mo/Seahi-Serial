@@ -3407,10 +3407,21 @@ function openWslMapping() {
         console.log('[WSL] updateWslStatusUI:', running);
         _wslRunning = running;
         loadWslDistros();
-        renderWslDeviceList('main');
         setWslMonitorEnabled(running);
         if (!running) {
-            autoDetachAllDevices('main');
+            // WSL 关闭时：强制将所有已映射设备标记为 unmapped（detach 可能已随 WSL 关闭失效）
+            var changed = false;
+            _wslDevices.forEach(function(d) {
+                if (d.status === 'mapped') {
+                    d.status = 'unmapped';
+                    delete _wslBusy[d.busid];
+                    changed = true;
+                }
+            });
+            if (changed) renderWslDeviceList('main');
+        } else {
+            // WSL 重启时：从 usbipd 重新获取设备真实状态
+            loadWslDevices('main');
         }
     }
     if (_wslStatusUnlisten) _wslStatusUnlisten();
@@ -3975,6 +3986,7 @@ function wslDistAction(cmd, dist) {
                     });
                     invoke('check_wsl_status').then(function(dists) {
                         _wslRunning = dists && dists.length > 0;
+                        setWslMonitorEnabled(_wslRunning);
                         renderWslDeviceList(mid);
                     });
                 }
