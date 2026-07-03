@@ -2870,6 +2870,10 @@ function collectConfig() {
             panelHeight:  saved.panelHeight || 0,
         };
     });
+    // WSL 面板为懒加载，未初始化时用缓存的配置，防止主监视器保存时丢失 WSL 快捷指令
+    if (!monitors['wsl'] && _wslSavedConfig) {
+        cfg.monitors['wsl'] = _wslSavedConfig;
+    }
     return cfg;
 }
 
@@ -3201,6 +3205,10 @@ async function loadAndApplyConfig() {
         if (cfg.monitors && cfg.monitors['main']) {
             applyMonitorConfig('main', cfg.monitors['main']);
         }
+        // 缓存 WSL 监视器配置（WSL 面板为懒加载，需在保存时合并回去）
+        if (cfg.monitors && cfg.monitors['wsl']) {
+            _wslSavedConfig = cfg.monitors['wsl'];
+        }
         // 恢复额外监视器
         var savedExtra = cfg.extraCount || 0;
         for (var i = 1; i <= savedExtra; i++) {
@@ -3375,18 +3383,21 @@ function openWslMapping() {
         initWslMonitor();
         initWslMonResize('main');
 
-        // 从配置文件恢复设置
+        // 从配置文件恢复设置（加锁防止恢复期间配置被覆盖）
         var wmid = 'wsl';
+        _loadingConfig = true;
         (async function() {
             try {
                 var raw = await invoke('load_config');
                 if (raw) {
                     var cfg = JSON.parse(raw);
                     if (cfg && cfg.monitors && cfg.monitors[wmid]) {
+                        _wslSavedConfig = cfg.monitors[wmid];
                         applyMonitorConfig(wmid, cfg.monitors[wmid]);
                     }
                 }
             } catch (_) {}
+            _loadingConfig = false;
         })();
     }
 
@@ -4024,6 +4035,7 @@ var _wslDevices = [];
 var _wslBusy = {}; // { busid: true } 正在操作中的设备
 var _wslAutoMap = {}; // { busid: portName } 开启自动映射的设备
 var _wslAutoMapTimer = null;
+var _wslSavedConfig = null; // 缓存从配置文件加载的 WSL 监视器配置，防止主监视器保存时丢失
 var _wslStatusUnlisten = null; // WSL 状态事件监听取消函数
 var _wslRunning = false; // WSL 是否正在运行
 var _wslUptimeTimer = null; // 运行时间秒级更新定时器

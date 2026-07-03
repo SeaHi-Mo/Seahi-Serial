@@ -482,28 +482,6 @@ fn choose_log_directory() -> Result<Option<String>, String> {
         .map(|path| path.to_string_lossy().to_string()))
 }
 
-/// 查询 WSL 内实际存在的 USB 串口设备（/dev/ttyUSB* 和 /dev/ttyACM*）
-/// 返回设备数量，用于验证 usbipd "Attached" 状态是否真实有效
-fn count_wsl_usb_serial_devices() -> usize {
-    let distros = check_wsl_running().unwrap_or_default();
-    if distros.is_empty() {
-        return 0;
-    }
-    // 使用第一个运行中的发行版来检测
-    let dist = &distros[0];
-    let output = hidden_command("wsl")
-        .args(["-d", dist, "--", "sh", "-c",
-            "ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | wc -l"])
-        .output();
-    match output {
-        Ok(out) if out.status.success() => {
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            s.parse::<usize>().unwrap_or(0)
-        }
-        _ => 0
-    }
-}
-
 /// 获取所有串口（包括已映射到WSL的）
 #[tauri::command]
 fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
@@ -518,16 +496,6 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
 
     // 检查 WSL 是否正在运行
     let wsl_running = check_wsl_running().map(|d| !d.is_empty()).unwrap_or(false);
-
-    // 验证 WSL 内是否真有 USB 串口设备（防止 usbipd 残留 Attached 状态导致误判）
-    let wsl_has_usb_serial = if wsl_running {
-        count_wsl_usb_serial_devices() > 0
-    } else {
-        false
-    };
-    if wsl_running {
-        dbg_log(&format!("list_wsl_devices: wsl_running=true, wsl_has_usb_serial={}", wsl_has_usb_serial));
-    }
 
     let output = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(Ok(out)) => Some(out),
@@ -610,10 +578,8 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                         String::from("-")
                     };
 
-                    // usbipd 报告 "Attached" 不等于设备在 WSL 内可访问。
-                    // WSL 重启后 usbipd 可能残留旧的 Attached 状态，
-                    // 此时需检查 WSL 内是否真有 /dev/ttyUSB* 或 /dev/ttyACM* 才算已映射。
-                    let is_mapped = status == "attached" && wsl_running && wsl_has_usb_serial;
+                    // usbipd 报告 "Attached" 且 WSL 正在运行时视为已映射
+                    let is_mapped = status == "attached" && wsl_running;
 
                     devices.push(serde_json::json!({
                         "busid": busid,
