@@ -482,6 +482,28 @@ fn choose_log_directory() -> Result<Option<String>, String> {
         .map(|path| path.to_string_lossy().to_string()))
 }
 
+/// 查询 WSL 内实际存在的 USB 串口设备（/dev/ttyUSB* 和 /dev/ttyACM*）
+/// 返回设备数量，用于验证 usbipd "Attached" 状态是否真实有效
+fn count_wsl_usb_serial_devices() -> usize {
+    let distros = check_wsl_running().unwrap_or_default();
+    if distros.is_empty() {
+        return 0;
+    }
+    // 使用第一个运行中的发行版来检测
+    let dist = &distros[0];
+    let output = hidden_command("wsl")
+        .args(["-d", dist, "--", "sh", "-c",
+            "ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | wc -l"])
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            s.parse::<usize>().unwrap_or(0)
+        }
+        _ => 0
+    }
+}
+
 /// 获取所有串口（包括已映射到WSL的）
 #[tauri::command]
 fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
@@ -493,10 +515,20 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
             .output();
         let _ = tx.send(result);
     });
-    
+
     // 检查 WSL 是否正在运行
     let wsl_running = check_wsl_running().map(|d| !d.is_empty()).unwrap_or(false);
-    
+
+    // 验证 WSL 内是否真有 USB 串口设备（防止 usbipd 残留 Attached 状态导致误判）
+    let wsl_has_usb_serial = if wsl_running {
+        count_wsl_usb_serial_devices() > 0
+    } else {
+        false
+    };
+    if wsl_running {
+        dbg_log(&format!("list_wsl_devices: wsl_running=true, wsl_has_usb_serial={}", wsl_has_usb_serial));
+    }
+
     let output = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(Ok(out)) => Some(out),
         Ok(Err(e)) => {
@@ -508,19 +540,19 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
             None
         }
     };
-    
+
     let mut devices: Vec<serde_json::Value> = Vec::new();
-    
+
     if let Some(out) = output {
         if out.status.success() {
             let list_str = String::from_utf8_lossy(&out.stdout).to_string();
-            
+
             for line in list_str.lines() {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 3 && parts[0].contains('-') {
                     let busid = parts[0].to_string();
                     let line_upper = line.to_uppercase();
-                    
+
                     let status = if line_upper.contains("ATTACHED") {
                         "attached"
                     } else if line_upper.contains("CONNECTED") || line_upper.contains("SHARED") {
@@ -528,11 +560,11 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                     } else {
                         "other"
                     };
-                    
+
                     if status == "other" {
                         continue;
                     }
-                    
+
                     // usbipd list 格式: BUSID VID:PID DEVICE... STATE
                     // STATE 可能是 "Shared" / "Attached" / "Connected" / "Not shared"
                     let name = {
@@ -555,7 +587,7 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                             format!("USB Device ({})", busid)
                         }
                     };
-                    
+
                     static FILTERS: &[&str] = &[
                         "通信端口", "通讯端口", "communicationsport",
                         "蓝牙", "bluetooth",
@@ -565,7 +597,7 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                     if FILTERS.iter().any(|f| name_lower.contains(f)) {
                         continue;
                     }
-                    
+
                     let has_com = line.find("COM").is_some();
                     let port = if let Some(com_match) = line.find("COM") {
                         let rest = &line[com_match..];
@@ -577,19 +609,24 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                     } else {
                         String::from("-")
                     };
-                    
+
+                    // usbipd 报告 "Attached" 不等于设备在 WSL 内可访问。
+                    // WSL 重启后 usbipd 可能残留旧的 Attached 状态，
+                    // 此时需检查 WSL 内是否真有 /dev/ttyUSB* 或 /dev/ttyACM* 才算已映射。
+                    let is_mapped = status == "attached" && wsl_running && wsl_has_usb_serial;
+
                     devices.push(serde_json::json!({
                         "busid": busid,
                         "port": port,
                         "name": name,
                         "hasCom": has_com,
-                        "status": if status == "attached" && wsl_running { "mapped" } else { "unmapped" }
+                        "status": if is_mapped { "mapped" } else { "unmapped" }
                     }));
                 }
             }
         }
     }
-    
+
     Ok(devices)
 }
 
@@ -742,17 +779,71 @@ fn start_wsl_watcher(app: tauri::AppHandle) {
 }
 
 /// 启动 WSL 终端（可指定分发版）
+/// 直接启动 wsl.exe 并分配独立控制台窗口，避免 PowerShell 参数传递问题
 #[tauri::command]
 fn launch_wsl(dist: Option<String>) -> Result<(), String> {
-    let mut cmd = std::process::Command::new("powershell");
-    cmd.args(["-NoExit", "-Command"]);
-    if let Some(ref d) = dist {
-        cmd.args(["wsl", "-d", d]);
+    dbg_log(&format!("launch_wsl: dist={:?}", dist));
+    // 通过 Windows Terminal (wt.exe) 启动，支持多标签。
+    // 仅首次调用时检测 wt.exe 是否存在，后续复用缓存结果。
+    static USE_WT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let use_wt = *USE_WT.get_or_init(|| {
+        // 用 where 命令静默检测 wt.exe 是否存在，避免 --version 弹出对话框
+        std::process::Command::new("cmd")
+            .args(["/c", "where", "wt.exe"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    });
+    let mut cmd = if use_wt {
+        let dist_name = dist.as_deref().unwrap_or("Ubuntu-20.04");
+        // 获取 WSL 用户主目录，用于设置终端启动路径
+        let home = std::process::Command::new("wsl.exe")
+            .args(["-d", dist_name, "--", "printenv", "HOME"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                } else {
+                    None
+                }
+            });
+        let mut c = std::process::Command::new("wt.exe");
+        // 使用 Windows Terminal 的 WSL 配置文件（带图标和正确配色）
+        c.args(["-p", dist_name]);
+        // 设置启动目录为 WSL 主目录
+        if let Some(ref h) = home {
+            c.args(["--startingDirectory", h]);
+        }
+        c
     } else {
-        cmd.args(["wsl"]);
+        // conhost.exe 回退：确保控制台窗口正确初始化
+        let mut args: Vec<String> = Vec::new();
+        args.push("wsl.exe".to_string());
+        if let Some(ref d) = dist {
+            args.push("-d".to_string());
+            args.push(d.clone());
+        }
+        let mut c = std::process::Command::new("conhost.exe");
+        c.args(&args);
+        c
+    };
+    #[cfg(windows)]
+    cmd.creation_flags(0x10);
+    let child = cmd.spawn().map_err(|e| {
+        let msg = format!("launch_wsl spawn failed: {}", e);
+        dbg_log(&msg);
+        msg
+    })?;
+    dbg_log(&format!("launch_wsl: spawned pid={}, use_wt={}", child.id(), use_wt));
+    if use_wt {
+        // wt.exe 会立即退出，不追踪其 PID，让 watcher 以 WSL 实际状态为准
+        *WSL_TERMINAL_PID.lock().unwrap() = None;
+    } else {
+        *WSL_TERMINAL_PID.lock().unwrap() = Some(child.id());
     }
-    let child = cmd.spawn().map_err(|e| format!("{}", e))?;
-    *WSL_TERMINAL_PID.lock().unwrap() = Some(child.id());
     Ok(())
 }
 
@@ -778,6 +869,15 @@ async fn shutdown_wsl(dist: String) -> Result<(), String> {
 /// 获取所有 WSL 分发版信息
 #[tauri::command]
 fn get_wsl_distributions() -> Result<Vec<serde_json::Value>, String> {
+    // 检查由 launch_wsl 启动的终端进程是否仍然存活
+    let terminal_alive = {
+        let pid = WSL_TERMINAL_PID.lock().unwrap();
+        match *pid {
+            Some(p) => is_process_alive(p),
+            None => true, // 未跟踪终端进程时，以 WSL 实际状态为准
+        }
+    };
+
     let output = hidden_command("wsl")
         .args(["--list", "--verbose"])
         .output()
@@ -801,9 +901,11 @@ fn get_wsl_distributions() -> Result<Vec<serde_json::Value>, String> {
 
         let name = parts[0].to_string();
         let state_str = parts[1].to_lowercase();
-        let running = state_str.contains("running") || state_str.contains("运行");
+        let wsl_says_running = state_str.contains("running") || state_str.contains("运行");
+        // 终端窗口已关闭时，即使 WSL 发行版仍在后台运行，也视为未启动
+        let running = wsl_says_running && terminal_alive;
 
-        let (uptime, mem_used, mem_total) = if running {
+        let (uptime, mem_used, mem_total) = if wsl_says_running {
             // 用 timeout 避免命令阻塞，且不启动已停止的发行版
             let uptime_out = hidden_command("wsl")
                 .args(["-d", &name, "--", "cat", "/proc/uptime"])
