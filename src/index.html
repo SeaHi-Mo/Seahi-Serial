@@ -2497,7 +2497,7 @@ async function sendData(mid) {
     var bytes;
     try {
         if (hexMode) { bytes = hexToBytes(text); }
-        else { text += leStr(mid); bytes = new TextEncoder().encode(text); }
+        else { text = parseEscapes(text); text += leStr(mid); bytes = new TextEncoder().encode(text); }
     } catch (e) { appendOutput(mid, 'err', '格式错误: ' + e); return; }
     try {
         await invoke('send_data', { monitorId: mid, data: Array.from(bytes) });
@@ -2634,6 +2634,17 @@ function clearLog(mid) {
 }
 
 /* ===== 工具函数 ===== */
+// 解析转义序列：\r\n -> CR+LF, \n -> LF, \r -> CR, \t -> TAB, \\ -> \
+function parseEscapes(s) {
+    return s.replace(/\\(r|n|t|\\)/g, function(m, ch) {
+        if (ch === 'r') return '\r';
+        if (ch === 'n') return '\n';
+        if (ch === 't') return '\t';
+        if (ch === '\\') return '\\';
+        return m;
+    });
+}
+
 function hexToBytes(s) {
     s = s.replace(/\s+/g,'');
     if (s.length%2!==0) throw new Error('Hex长度必须为偶数');
@@ -2759,7 +2770,7 @@ async function sendQcmdItem(mid, idx) {
     var bytes;
     try {
         if (hexMode) { bytes = hexToBytes(text); }
-        else { text += leStr(mid); bytes = new TextEncoder().encode(text); }
+        else { text = parseEscapes(text); text += leStr(mid); bytes = new TextEncoder().encode(text); }
     } catch (e) { appendOutput(mid, 'err', '格式错误: ' + e); return; }
     try {
         var isWsl = monitors[mid].isWsl;
@@ -3586,7 +3597,7 @@ async function sendWslData(mid) {
     var bytes;
     try {
         if (hexMode) { bytes = hexToBytes(text); }
-        else { text += leStr(mid); bytes = new TextEncoder().encode(text); }
+        else { text = parseEscapes(text); text += leStr(mid); bytes = new TextEncoder().encode(text); }
     } catch (e) { appendOutput(mid, 'err', '格式错误: ' + e); return; }
     try {
         await invoke('send_wsl_serial', { monitorId: mid, data: Array.from(bytes) });
