@@ -2673,7 +2673,7 @@ function makeQcmdItem(mid, idx, label, value) {
     labelInp.placeholder = '名称';
     labelInp.title = '点击编辑名称';
     labelInp.addEventListener('click', function(e) { e.stopPropagation(); });
-    labelInp.addEventListener('change', function() {
+    labelInp.addEventListener('input', function() {
         monitors[mid].quickCmds[idx].label = this.value;
         scheduleConfigSave();
     });
@@ -2686,7 +2686,7 @@ function makeQcmdItem(mid, idx, label, value) {
     valInp.setAttribute('autocomplete', 'off');
     valInp.setAttribute('spellcheck', 'false');
     valInp.addEventListener('click', function(e) { e.stopPropagation(); });
-    valInp.addEventListener('change', function() {
+    valInp.addEventListener('input', function() {
         monitors[mid].quickCmds[idx].value = this.value;
         scheduleConfigSave();
     });
@@ -4373,6 +4373,13 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!localStorage.getItem('onboarding_done')) {
         setTimeout(showOnboarding, 600);
     }
+
+    // 窗口关闭前强制保存配置，防止未提交的编辑丢失
+    window.addEventListener('beforeunload', function() {
+        if (_saveConfigTimer) { clearTimeout(_saveConfigTimer); _saveConfigTimer = null; }
+        var cfg = collectConfig();
+        invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function() {});
+    });
 });
 
 /* ===== 首次使用引导 ===== */
