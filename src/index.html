@@ -2364,6 +2364,8 @@ async function connectPort(mid, silent) {
         updateMonitorUI(mid, true);
         startReading(mid);
     } catch (e) {
+        monitors[mid].isConnected = false;
+        stopReading(mid);
         if (btn) { btn.disabled = false; }
         updateMonitorUI(mid, false);
         if (!silent) showToast('连接失败: ' + e, 'error');
@@ -2375,14 +2377,14 @@ async function disconnectPort(mid) {
     if (btn) { btn.disabled = true; btn.innerHTML = '<span style="font-size:11px;">⏳</span> 断开中...'; }
     try {
         await invoke('close_port', { monitorId: mid });
-        monitors[mid].isConnected = false;
-        monitors[mid].portName = '';
-        stopReading(mid);
-        updateMonitorUI(mid, false);
     } catch (e) {
-        updateMonitorUI(mid, false);
         showToast('断开失败: ' + e, 'error');
     }
+    // 无论 close_port 是否成功，都重置前端状态
+    monitors[mid].isConnected = false;
+    monitors[mid].portName = '';
+    stopReading(mid);
+    updateMonitorUI(mid, false);
 }
 
 function updateMonitorUI(mid, connected) {
@@ -2457,6 +2459,14 @@ async function reconnectPort(mid, portName, attempt) {
     await refreshPorts(mid, true);
     var sel = document.getElementById(mid + '-portSelect');
     if (sel && [...sel.querySelectorAll('.sel-opt')].some(function(o) { return o.getAttribute('data-val') === portName; })) {
+        // 显式设置下拉框为目标端口，防止 refreshPorts 将其重置为第一个端口
+        var matchEl = sel.parentElement.querySelector('.sel-drop .sel-opt[data-val="' + portName + '"]');
+        if (matchEl) {
+            sel.querySelector('.sel-text').textContent = matchEl.textContent;
+            sel.setAttribute('data-val', portName);
+            sel.parentElement.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
+            matchEl.classList.add('active');
+        }
         await connectPort(mid, true);
         if (monitors[mid].isConnected) return;
     }
