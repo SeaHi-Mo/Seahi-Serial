@@ -2942,7 +2942,15 @@ function applyMonitorConfig(mid, mc) {
     if (!mc) return;
     // 波特率
     var baudInp = document.getElementById(mid + '-baudRate');
-    if (baudInp && mc.baud) baudInp.value = mc.baud;
+    if (baudInp && mc.baud) {
+        baudInp.value = mc.baud;
+        var baudDrop = document.getElementById(mid + '-baudDropdown');
+        if (baudDrop) {
+            baudDrop.querySelectorAll('.baud-opt').forEach(function(o) {
+                o.classList.toggle('active', o.textContent.trim() === String(mc.baud));
+            });
+        }
+    }
     // 行尾
     if (mc.lineEnding) {
         var lineEnd = document.getElementById(mid + '-lineEnding');
