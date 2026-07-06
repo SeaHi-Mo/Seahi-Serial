@@ -1,6 +1,6 @@
 [package]
 name = "seahi-serial"
-version = "0.1.17"
+version = "0.1.18"
 description = "Seahi 串口调试器"
 authors = ["Seahi"]
 edition = "2021"

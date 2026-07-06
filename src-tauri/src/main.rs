@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use serde_json::json;
 
 fn dbg_log(msg: &str) {
@@ -1574,6 +1574,24 @@ fn get_current_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// 返回应用版本号和 commit hash（前6位），用于前端 tooltip 显示
+#[derive(Debug, serde::Serialize)]
+struct AppInfo {
+    version: String,
+    commit: String,
+}
+
+#[tauri::command]
+fn get_app_info() -> AppInfo {
+    let commit = option_env!("GIT_COMMIT_HASH")
+        .unwrap_or("dev")
+        .to_string();
+    AppInfo {
+        version: get_current_version(),
+        commit,
+    }
+}
+
 /// 检查 GitHub Releases 是否有新版本
 #[tauri::command]
 async fn check_update() -> Result<UpdateInfo, String> {
@@ -1814,10 +1832,16 @@ fn main() {
             set_wsl_rts,
             open_url,
             set_title_bar_color,
+            get_app_info,
         ])
         .setup(|app| {
             #[cfg(windows)]
-            start_device_watcher(app.handle().clone());
+            {
+                start_device_watcher(app.handle().clone());
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_min_size(Some(tauri::LogicalSize::new(1000.0, 650.0)));
+                }
+            }
             start_wsl_watcher(app.handle().clone());
             Ok(())
         })

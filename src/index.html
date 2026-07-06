@@ -1024,14 +1024,31 @@ html.transitioning *::after {
 * { margin:0; padding:0; box-sizing:border-box; }
 html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(--text); height:100vh; overflow:hidden; font-size:14px; }
 
-/* ===== 全局操作栏 ===== */
+/* ===== 全局操作栏（自定义标题栏） ===== */
 .global-bar {
-    display:flex; align-items:center; padding:5px 14px;
-    background:var(--toolbar-bg); height:32px; flex-shrink:0;
+    display:flex; align-items:center; padding:0 0 0 12px;
+    background:var(--toolbar-bg); height:36px; flex-shrink:0;
     border-bottom:1px solid var(--border);
+    -webkit-app-region:drag;
+    app-region:drag;
 }
+.global-bar > * { -webkit-app-region:no-drag; app-region:no-drag; }
 .add-btn { color:var(--link); font-size:12px; cursor:pointer; display:inline-flex; align-items:center; gap:4px; padding:2px 6px; border-radius:4px; transition: opacity .15s; }
 .add-btn:hover { text-decoration:underline; }
+.app-info { display:inline-flex; align-items:center; gap:6px; margin-right:10px; cursor:default; flex-shrink:0; }
+.app-info-icon { width:18px; height:18px; flex-shrink:0; border-radius:3px; object-fit:cover; }
+.app-info-name { font-size:12px; font-weight:600; color:var(--text-b); white-space:nowrap; }
+
+/* ===== 窗口控制按钮 ===== */
+.win-ctrl { display:inline-flex; align-items:center; height:100%; flex-shrink:0; margin-left:auto; }
+.win-ctrl-btn {
+    width:46px; height:36px; border:none; background:transparent; color:var(--text-d);
+    cursor:pointer; display:inline-flex; align-items:center; justify-content:center;
+    transition: background .1s, color .1s;
+}
+.win-ctrl-btn:hover { background:rgba(255,255,255,.08); color:var(--text); }
+.win-ctrl-btn.close:hover { background:#e81123; color:#fff; }
+.win-ctrl-btn svg { width:12px; height:12px; }
 
 /* ===== 分栏容器 ===== */
 .pane-container { flex:1; display:flex; flex-direction:row; overflow:hidden; min-height:0; }
@@ -1087,7 +1104,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .sel-opt { padding:4px 10px; font-size:12px; color:var(--text); cursor:pointer; white-space:nowrap; }
 .sel-opt:hover { background:rgba(255,255,255,.05); }
 .sel-opt.active { background:var(--btn-p); color:#fff; }
-.sel-port .sel-drop { min-width:260px; }
+.sel-port .sel-drop { min-width:340px; }
 .wsl-port-drop { max-height:180px; min-height:60px; overflow-y:auto; -ms-overflow-style:none; scrollbar-width:none; }
 .wsl-port-drop::-webkit-scrollbar { display:none; }
 
@@ -1633,11 +1650,15 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 </head>
 <body style="display:flex;flex-direction:column;height:100vh;">
 
-<!-- 全局操作栏 -->
-<div class="global-bar">
+<!-- 全局操作栏（自定义标题栏） -->
+<div class="global-bar" id="globalBar">
+    <span id="appInfoWrap" class="app-info" title="加载中...">
+        <img class="app-info-icon" src="app-icon.png" alt="Seahi Serial">
+        <span id="appInfoName" class="app-info-name">Seahi Serial</span>
+    </span>
     <span class="add-btn" onclick="addMonitor()">＋ 打开额外监视器</span>
     <span id="wslToggleBtn" class="add-btn" onclick="openWslMapping()" style="margin-left:12px;">
-        <svg id="wslToggleIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y="17" x2="12" y="21"/></svg>
+        <svg id="wslToggleIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         <span id="wslToggleText">WSL 端口映射</span>
     </span>
     <span style="flex:1;"></span>
@@ -1660,6 +1681,18 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
         <span class="theme-switch-track"><span class="theme-switch-thumb"></span></span>
         <span class="theme-switch-icon moon"><svg width="14" height="14" viewBox="0 0 1024 1024" fill="currentColor"><path d="M507.58 162.84c190 0 344.09 154 344.09 344.09S697.62 851 507.58 851 163.49 697 163.49 506.93s154.05-344.09 344.09-344.09z m-98.07 129C283.27 338.39 218.63 478.45 265.15 604.7S451.73 795.58 578 749.05a243.61 243.61 0 0 0 144.64-145.17c-126.73 46-266.79-19.36-312.83-146.09a244.14 244.14 0 0 1-0.3-165.92z"/></svg></span>
     </span>
+    <!-- 窗口控制按钮 -->
+    <div class="win-ctrl">
+        <button class="win-ctrl-btn" onclick="winMinimize()" title="最小化">
+            <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1"><line x1="2" y1="5" x2="8" y2="5"/></svg>
+        </button>
+        <button class="win-ctrl-btn" id="winMaxBtn" onclick="winToggleMaximize()" title="最大化">
+            <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1"><rect x="1.5" y="1.5" width="7" height="7" rx="0.5"/></svg>
+        </button>
+        <button class="win-ctrl-btn close" onclick="winClose()" title="关闭">
+            <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><line x1="2" y1="2" x2="8" y2="8"/><line x1="8" y1="2" x2="2" y2="8"/></svg>
+        </button>
+    </div>
 </div>
 
 <!-- 分栏容器 -->
@@ -1779,7 +1812,7 @@ function createMonitorPane(mid, title, closable) {
                 '</div>' +
             '</div>' +
             '<span class="lbl">端口</span>' +
-            '<div class="sel sel-port" id="' + mid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:192px;">' +
+            '<div class="sel sel-port" id="' + mid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:280px;">' +
                 '<span class="sel-text">加载中...</span><span class="sel-arrow">&#9660;</span>' +
                 '<div class="sel-drop" id="' + mid + '-portDrop"></div>' +
             '</div>' +
@@ -2387,7 +2420,7 @@ async function disconnectPort(mid) {
     updateMonitorUI(mid, false);
 }
 
-function updateMonitorUI(mid, connected) {
+function updateMonitorUI(mid, connected, waiting) {
     var m = monitors[mid];
     var btn = document.getElementById(mid + '-btnStart');
     var sendBtn = document.getElementById(mid + '-btnSend');
@@ -2397,6 +2430,12 @@ function updateMonitorUI(mid, connected) {
         btn.className = 'btn-main stop';
         btn.disabled = false;
         sendBtn.disabled = false;
+        ps.disabled = true;
+    } else if (waiting) {
+        btn.innerHTML = '<span style="font-size:11px;">&#9654;</span> 等待接入';
+        btn.className = 'btn-main start waiting';
+        btn.disabled = true;
+        sendBtn.disabled = true;
         ps.disabled = true;
     } else {
         btn.innerHTML = '<span style="font-size:11px;">&#9654;</span> 开始监控';
@@ -2435,7 +2474,7 @@ function startReading(mid) {
                 } catch (_) {}
                 monitors[mid].isConnected = false;
                 stopReading(mid);
-                updateMonitorUI(mid, false);
+                updateMonitorUI(mid, false, true);
                 var savedPort = monitors[mid].portName;
                 appendOutput(mid, 'sys', '连接断开，正在自动重连...');
                 reconnectPort(mid, savedPort, 1);
@@ -2453,7 +2492,10 @@ function startReading(mid) {
 
 async function reconnectPort(mid, portName, attempt) {
     if (!portName || attempt > 10) {
-        if (attempt > 10) appendOutput(mid, 'err', '重连失败，已达到最大重试次数');
+        if (attempt > 10) {
+            appendOutput(mid, 'err', '重连失败，已达到最大重试次数');
+            updateMonitorUI(mid, false, false);
+        }
         return;
     }
     await refreshPorts(mid, true);
@@ -3669,7 +3711,7 @@ function startWslReading(mid) {
                 try { await invoke('close_wsl_serial', { monitorId: mid }); } catch (_) {}
                 monitors[mid].isConnected = false;
                 stopReading(mid);
-                updateMonitorUI(mid, false);
+                updateMonitorUI(mid, false, true);
                 var savedPort = monitors[mid].portName;
                 appendOutput(mid, 'sys', '连接断开，3秒后自动重连...');
                 setTimeout(function() { reconnectWslPort(mid, savedPort); }, 3000);
@@ -3685,7 +3727,11 @@ function startWslReading(mid) {
 async function reconnectWslPort(mid, portName, attempt) {
     if (!portName) return;
     attempt = attempt || 1;
-    if (attempt > 10) { appendOutput(mid, 'err', '重连失败，已达到最大重试次数'); return; }
+    if (attempt > 10) {
+        appendOutput(mid, 'err', '重连失败，已达到最大重试次数');
+        updateMonitorUI(mid, false, false);
+        return;
+    }
     var baud = parseInt(document.getElementById(mid + '-baudRate').value) || 115200;
     try {
         appendOutput(mid, 'sys', '正在重连 (' + attempt + '/10): ' + portName);
@@ -4339,8 +4385,19 @@ function refreshWslDevices() {
     }
 }
 
+/* ===== 窗口控制 ===== */
+function winMinimize() { window.__TAURI__.window.getCurrentWindow().minimize(); }
+function winToggleMaximize() { window.__TAURI__.window.getCurrentWindow().toggleMaximize(); }
+function winClose() { window.__TAURI__.window.getCurrentWindow().close(); }
+
 /* ===== 初始化 ===== */
 document.addEventListener('DOMContentLoaded', function() {
+    // 加载应用信息（版本号 + commit hash），设置到 tooltip
+    invoke('get_app_info').then(function(info) {
+        var wrap = document.getElementById('appInfoWrap');
+        if (wrap) wrap.title = 'Seahi Serial v' + info.version + ' (' + info.commit + ')';
+    }).catch(function() {});
+
     createMonitorPane('main', '主监视器', false);
     setInterval(function() { if (!monitors.main || !monitors.main.isConnected) refreshPorts('main'); }, 10000);
 
