@@ -180,9 +180,9 @@ struct PortState {
 
 /// WSL 串口会话：通过管道与 bridge 脚本通信
 struct WslSerialSession {
-    child: std::sync::Mutex<std::process::Child>,
+    child: std::sync::Arc<std::sync::Mutex<std::process::Child>>,
     writer: std::sync::Mutex<std::io::BufWriter<std::process::ChildStdin>>,
-    reader: std::sync::Mutex<std::io::BufReader<std::process::ChildStdout>>,
+    reader: std::sync::Arc<std::sync::Mutex<std::io::BufReader<std::process::ChildStdout>>>,
 }
 
 /// 全局状态：WSL 串口连接（key = monitor_id）
@@ -1039,6 +1039,7 @@ fn spawn_bridge(distro: &str) -> Result<std::process::Child, String> {
 }
 fn bridge_command(session: &WslSerialSession, cmd: &serde_json::Value) -> Result<serde_json::Value, String> {
     use std::io::{BufRead, Write};
+    use std::sync::mpsc;
     let mut msg = serde_json::to_string(cmd).map_err(|e| format!("序列化失败: {}", e))?;
     msg.push('\n');
     {
@@ -1046,18 +1047,37 @@ fn bridge_command(session: &WslSerialSession, cmd: &serde_json::Value) -> Result
         w.write_all(msg.as_bytes()).map_err(|e| format!("写入失败: {}", e))?;
         w.flush().map_err(|e| format!("刷新失败: {}", e))?;
     }
-    let mut r = session.reader.lock().map_err(|e| format!("锁失败: {}", e))?;
-    let mut resp_line = String::new();
-    match r.read_line(&mut resp_line) {
-        Ok(0) => {
-            let mut c = session.child.lock().map_err(|e| format!("锁失败: {}", e))?;
-            let _ = c.kill();
-            Err("bridge 进程已退出".into())
-        }
-        Ok(_) => {
+    // 在独立线程中读取，通过 channel 超时保护，防止 bridge 挂起导致永久阻塞
+    let reader = session.reader.clone();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = (|| -> Result<String, String> {
+            let mut r = reader.lock().map_err(|e| format!("锁失败: {}", e))?;
+            let mut resp_line = String::new();
+            match r.read_line(&mut resp_line) {
+                Ok(0) => Err("bridge 进程已退出".into()),
+                Ok(_) => Ok(resp_line),
+                Err(e) => Err(format!("读取 bridge 响应失败: {}", e)),
+            }
+        })();
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(Ok(resp_line)) => {
             serde_json::from_str(resp_line.trim()).map_err(|e| format!("解析响应失败: {}", e))
         }
-        Err(e) => Err(format!("读取 bridge 响应失败: {}", e)),
+        Ok(Err(e)) => {
+            if e.contains("bridge 进程已退出") {
+                let mut c = session.child.lock().map_err(|e| format!("锁失败: {}", e))?;
+                let _ = c.kill();
+            }
+            Err(e)
+        }
+        Err(_) => {
+            let mut c = session.child.lock().map_err(|e| format!("锁失败: {}", e))?;
+            let _ = c.kill();
+            Err("bridge 响应超时(5s)".into())
+        }
     }
 }
 
@@ -1090,8 +1110,8 @@ fn open_wsl_serial(
     let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
     let stdin = child.stdin.take().ok_or("无法获取 stdin")?;
     let writer = std::sync::Mutex::new(std::io::BufWriter::new(stdin));
-    let reader = std::sync::Mutex::new(std::io::BufReader::new(stdout));
-    let session = WslSerialSession { child: std::sync::Mutex::new(child), writer, reader };
+    let reader = std::sync::Arc::new(std::sync::Mutex::new(std::io::BufReader::new(stdout)));
+    let session = WslSerialSession { child: std::sync::Arc::new(std::sync::Mutex::new(child)), writer, reader };
     let resp = bridge_command(&session, &json!({"cmd":"open","id":&monitor_id,"path":&device_path,"baud":baud_rate}))?;
     if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         state.sessions.lock().unwrap().insert(monitor_id, session);
@@ -1666,7 +1686,7 @@ async fn download_update(download_url: String) -> Result<String, String> {
 
 /// 启动安装包并退出当前程序
 #[tauri::command]
-fn install_update(file_path: String) -> Result<(), String> {
+fn install_update(app: tauri::AppHandle, file_path: String) -> Result<(), String> {
     #[cfg(windows)]
     {
         // Windows: 启动安装包，不等待其完成
@@ -1683,9 +1703,9 @@ fn install_update(file_path: String) -> Result<(), String> {
             .map_err(|e| format!("启动安装程序失败: {}", e))?;
     }
 
-    // 给安装程序一点时间启动，然后退出当前程序
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    // 使用 tauri 的退出机制而非 process::exit，确保 Drop 被执行
+    // 通知前端保存配置（beforeunload 可能被 process::exit 跳过）
+    let _ = app.emit("save-before-exit", ());
+    std::thread::sleep(std::time::Duration::from_millis(300));
     std::process::exit(0);
 }
 

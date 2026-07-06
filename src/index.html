@@ -4187,7 +4187,10 @@ async function toggleWslMapping(mid, idx, checked) {
         try {
             await invoke('attach_port_to_wsl', { portName: attachId });
             device.status = 'mapped';
-        } catch (e) { console.error('[WSL] 映射失败:', e); }
+        } catch (e) {
+            console.error('[WSL] 映射失败:', e);
+            showToast('映射失败: ' + e, 'error');
+        }
     } else {
         try {
             // 如果 WSL 监视器正在使用该设备的 WSL 端口，先关闭连接释放资源
@@ -4202,7 +4205,7 @@ async function toggleWslMapping(mid, idx, checked) {
             }
             await invoke('detach_port_from_wsl', { busid: device.busid });
             device.status = 'unmapped';
-        } catch (e) { console.error('[WSL] 断开失败:', e); }
+        } catch (e) { console.error('[WSL] 断开失败:', e); showToast('断开失败: ' + e, 'error'); }
     }
     
     delete _wslBusy[device.busid];
@@ -4367,6 +4370,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     loadWslDevices(wslMid);
                 }
             }, 150);
+        });
+        // 安装更新前强制保存配置（process::exit 会跳过 beforeunload）
+        window.__TAURI__.event.listen('save-before-exit', function() {
+            if (_saveConfigTimer) { clearTimeout(_saveConfigTimer); _saveConfigTimer = null; }
+            var cfg = collectConfig();
+            invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function() {});
         });
     }
 
