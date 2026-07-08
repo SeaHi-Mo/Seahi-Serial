@@ -1,6 +1,7 @@
 // Release 模式下隐藏命令行窗口
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use regex::Regex;
 use serialport::{ClearBuffer, DataBits, Parity, SerialPort, StopBits};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -188,6 +189,132 @@ struct WslSerialSession {
 /// 全局状态：WSL 串口连接（key = monitor_id）
 struct WslSerialState {
     sessions: Mutex<HashMap<String, WslSerialSession>>,
+}
+
+// ===== 自动化工作流 =====
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct WorkflowCondition {
+    #[serde(rename = "type")]
+    cond_type: String,
+    value: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct WorkflowAction {
+    #[serde(rename = "type")]
+    action_type: String,
+    #[serde(default)]
+    data: String,
+    #[serde(default = "default_encoding")]
+    encoding: String,
+    #[serde(default)]
+    signal: String,
+    #[serde(default)]
+    level: bool,
+    #[serde(default)]
+    delay_before: u64,
+}
+
+fn default_encoding() -> String { "text".to_string() }
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct WorkflowRule {
+    id: String,
+    name: String,
+    enabled: bool,
+    conditions: Vec<WorkflowCondition>,
+    actions: Vec<WorkflowAction>,
+}
+
+struct WorkflowState {
+    rules: Mutex<HashMap<String, Vec<WorkflowRule>>>,
+    log_dirs: Mutex<HashMap<String, String>>,
+}
+
+/// 解析 HEX 字符串为字节序列（支持空格分隔如 "FF 01 02" 或连续 "FF0102"）
+fn parse_hex_bytes(s: &str) -> Vec<u8> {
+    let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    if cleaned.len() % 2 != 0 { return vec![]; }
+    cleaned.as_bytes().chunks(2)
+        .filter_map(|chunk| {
+            let hex_str = std::str::from_utf8(chunk).ok()?;
+            u8::from_str_radix(hex_str, 16).ok()
+        })
+        .collect()
+}
+
+/// 检查单个条件是否匹配
+fn match_condition(cond: &WorkflowCondition, raw: &[u8]) -> bool {
+    match cond.cond_type.as_str() {
+        "string_contains" => {
+            String::from_utf8_lossy(raw).contains(&cond.value)
+        }
+        "regex" => {
+            let text = String::from_utf8_lossy(raw);
+            match Regex::new(&cond.value) {
+                Ok(re) => re.is_match(&text),
+                Err(_) => false,
+            }
+        }
+        "exact_bytes" => {
+            let expected = parse_hex_bytes(&cond.value);
+            if expected.is_empty() { return false; }
+            raw.windows(expected.len()).any(|w| w == expected.as_slice())
+        }
+        _ => false,
+    }
+}
+
+/// 执行工作流动作序列（每个动作单独加锁，不长时间持有）
+fn execute_workflow_actions(
+    actions: &[WorkflowAction],
+    monitor_id: &str,
+    ports: &Mutex<HashMap<String, Box<dyn SerialPort>>>,
+    log_dir: &str,
+    received: &[u8],
+) {
+    for action in actions {
+        if action.delay_before > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(action.delay_before));
+        }
+        match action.action_type.as_str() {
+            "send_data" => {
+                let bytes = if action.encoding == "hex" {
+                    parse_hex_bytes(&action.data)
+                } else {
+                    action.data.as_bytes().to_vec()
+                };
+                if bytes.is_empty() { continue; }
+                let mut map = ports.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(ref mut port) = map.get_mut(monitor_id) {
+                    let _ = port.write_all(&bytes);
+                }
+            }
+            "toggle_dtr_rts" => {
+                let mut map = ports.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(ref mut port) = map.get_mut(monitor_id) {
+                    match action.signal.as_str() {
+                        "dtr" => { let _ = port.write_data_terminal_ready(action.level); }
+                        "rts" => { let _ = port.write_request_to_send(action.level); }
+                        _ => {}
+                    }
+                }
+            }
+            "save_log" => {
+                if !log_dir.is_empty() && !received.is_empty() {
+                    let filepath = std::path::Path::new(log_dir).join("workflow_log.txt");
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true).append(true)
+                        .open(&filepath)
+                    {
+                        let _ = f.write_all(received);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// 创建不显示控制台窗口的 Command
@@ -472,6 +599,100 @@ fn set_rts(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) 
     }
 }
 
+// ===== 自动化工作流命令 =====
+
+/// 检查收到的数据是否匹配工作流规则，匹配则执行动作
+#[tauri::command]
+fn check_workflow_matches(
+    wf_state: tauri::State<'_, WorkflowState>,
+    port_state: tauri::State<'_, PortState>,
+    monitor_id: String,
+    data: Vec<u8>,
+) -> Vec<serde_json::Value> {
+    let rules = wf_state.rules.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(monitor_rules) = rules.get(&monitor_id) else {
+        return vec![];
+    };
+    let log_dirs = wf_state.log_dirs.lock().unwrap_or_else(|e| e.into_inner());
+    let log_dir = log_dirs.get(&monitor_id).cloned().unwrap_or_default();
+
+    let mut matched = vec![];
+    for rule in monitor_rules {
+        if !rule.enabled || rule.conditions.is_empty() { continue; }
+        let all_match = rule.conditions.iter().all(|c| match_condition(c, &data));
+        if all_match {
+            execute_workflow_actions(
+                &rule.actions, &monitor_id, &port_state.ports, &log_dir, &data,
+            );
+            matched.push(serde_json::json!({ "id": rule.id, "name": rule.name }));
+        }
+    }
+    matched
+}
+
+/// 保存工作流规则到内存（前端编辑后调用）
+#[tauri::command]
+fn save_workflows(
+    state: tauri::State<'_, WorkflowState>,
+    monitor_id: String,
+    workflows_json: String,
+) -> Result<(), String> {
+    let rules: Vec<WorkflowRule> = serde_json::from_str(&workflows_json)
+        .map_err(|e| format!("解析工作流数据失败: {}", e))?;
+    let mut map = state.rules.lock().unwrap_or_else(|e| e.into_inner());
+    map.insert(monitor_id, rules);
+    Ok(())
+}
+
+/// 加载工作流规则（返回 JSON 字符串）
+#[tauri::command]
+fn load_workflows(
+    state: tauri::State<'_, WorkflowState>,
+    monitor_id: String,
+) -> String {
+    let map = state.rules.lock().unwrap_or_else(|e| e.into_inner());
+    let rules = map.get(&monitor_id).cloned().unwrap_or_default();
+    serde_json::to_string(&rules).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// 启动时从配置初始化所有监视器的工作流规则
+#[tauri::command]
+fn init_workflows(
+    state: tauri::State<'_, WorkflowState>,
+    config_json: String,
+) -> Result<(), String> {
+    let cfg: serde_json::Value = serde_json::from_str(&config_json)
+        .map_err(|e| format!("解析配置失败: {}", e))?;
+    let mut map = state.rules.lock().unwrap_or_else(|e| e.into_inner());
+    let mut dirs = state.log_dirs.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(monitors) = cfg.get("monitors").and_then(|m| m.as_object()) {
+        for (mid, mc) in monitors {
+            if let Some(wf_arr) = mc.get("workflows").and_then(|w| w.as_array()) {
+                let rules: Vec<WorkflowRule> = wf_arr.iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect();
+                map.insert(mid.clone(), rules);
+            }
+            if let Some(ld) = mc.get("logDir").and_then(|l| l.as_str()) {
+                if !ld.is_empty() {
+                    dirs.insert(mid.clone(), ld.to_string());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 更新监视器的日志目录
+#[tauri::command]
+fn update_workflow_log_dir(
+    state: tauri::State<'_, WorkflowState>,
+    monitor_id: String,
+    log_dir: String,
+) {
+    let mut dirs = state.log_dirs.lock().unwrap_or_else(|e| e.into_inner());
+    dirs.insert(monitor_id, log_dir);
+}
 
 /// 选择日志文件目录（使用原生对话框）
 #[tauri::command]
@@ -483,6 +704,43 @@ fn choose_log_directory() -> Result<Option<String>, String> {
 }
 
 /// 获取所有串口（包括已映射到WSL的）
+#[tauri::command]
+/// 通过 UAC 提权执行 usbipd list，返回 stdout 内容
+fn run_usbipd_list_elevated() -> Option<String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LIST_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let unique_id = LIST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_result = std::env::temp_dir().join(format!("usbipd_list_{}_{}.txt", std::process::id(), unique_id));
+    let tmp_result_str = tmp_result.to_str().unwrap_or("C:\\Temp\\usbipd_list.txt").replace('\'', "''");
+
+    let ps_script = format!(
+        "try {{ \
+           $out = & usbipd.exe list 2>&1 | Out-String; \
+           $out | Out-File -FilePath '{result}' -Encoding UTF8; \
+         }} catch {{ \
+           $_.Exception.Message | Out-File -FilePath '{result}' -Encoding UTF8; \
+         }}",
+        result = tmp_result_str
+    );
+
+    let tmp_script = std::env::temp_dir().join(format!("usbipd_list_script_{}_{}.ps1", std::process::id(), unique_id));
+    let _ = std::fs::remove_file(&tmp_result);
+    let _ = std::fs::write(&tmp_script, &ps_script);
+
+    let script_path_str = tmp_script.to_str().unwrap_or("");
+    let sp = script_path_str.replace('\'', "''");
+    let _ = hidden_command("powershell")
+        .args(["-NonInteractive", "-Command"])
+        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-File','{}' -Verb RunAs -Wait", sp))
+        .status();
+    let _ = std::fs::remove_file(&tmp_script);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let result = std::fs::read_to_string(&tmp_result).ok();
+    let _ = std::fs::remove_file(&tmp_result);
+    result
+}
+
 #[tauri::command]
 fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
     use std::sync::mpsc;
@@ -509,12 +767,26 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
         }
     };
 
+    // 如果普通模式失败或输出为空，尝试管理员权限执行
+    let list_str = match output {
+        Some(out) if out.status.success() => {
+            let s = String::from_utf8_lossy(&out.stdout).to_string();
+            if s.lines().any(|l| l.split_whitespace().count() >= 3 && l.contains('-')) {
+                s
+            } else {
+                dbg_log("usbipd list 输出为空，尝试提权执行");
+                run_usbipd_list_elevated().unwrap_or_default()
+            }
+        }
+        _ => {
+            dbg_log("usbipd list 失败，尝试提权执行");
+            run_usbipd_list_elevated().unwrap_or_default()
+        }
+    };
+
     let mut devices: Vec<serde_json::Value> = Vec::new();
 
-    if let Some(out) = output {
-        if out.status.success() {
-            let list_str = String::from_utf8_lossy(&out.stdout).to_string();
-
+    if !list_str.is_empty() {
             for line in list_str.lines() {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 3 && parts[0].contains('-') {
@@ -590,7 +862,6 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                     }));
                 }
             }
-        }
     }
 
     Ok(devices)
@@ -1433,20 +1704,64 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
 #[tauri::command]
 async fn detach_port_from_wsl(busid: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // 先尝试普通权限
         let output = hidden_command("usbipd")
             .args(["detach", "--busid", &busid])
             .output()
             .map_err(|e| format!("执行 usbipd detach 失败: {}", e))?;
 
         if output.status.success() {
-            Ok(format!("已断开 {} 的WSL映射", busid))
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            Err(format!("断开失败: {}", stderr))
+            return Ok(format!("已断开 {} 的WSL映射", busid));
+        }
+
+        // 普通权限失败，尝试管理员权限
+        dbg_log(&format!("usbipd detach 失败，尝试提权: {}", String::from_utf8_lossy(&output.stderr)));
+        let result = run_usbipd_detach_elevated(&busid);
+        match result {
+            Some(s) if s.contains("成功") || s.is_empty() => Ok(format!("已断开 {} 的WSL映射", busid)),
+            Some(s) => Err(format!("断开失败: {}", s)),
+            None => Err("断开失败，可能用户取消了管理员权限请求".to_string()),
         }
     })
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
+}
+
+/// 通过 UAC 提权执行 usbipd detach
+fn run_usbipd_detach_elevated(busid: &str) -> Option<String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static DETACH_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let unique_id = DETACH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_result = std::env::temp_dir().join(format!("usbipd_detach_{}_{}.txt", std::process::id(), unique_id));
+    let tmp_result_str = tmp_result.to_str().unwrap_or("C:\\Temp\\usbipd_detach.txt").replace('\'', "''");
+
+    let ps_script = format!(
+        "try {{ \
+           $out = & usbipd.exe detach --busid {busid} 2>&1 | Out-String; \
+           $out | Out-File -FilePath '{result}' -Encoding UTF8; \
+         }} catch {{ \
+           $_.Exception.Message | Out-File -FilePath '{result}' -Encoding UTF8; \
+         }}",
+        busid = busid,
+        result = tmp_result_str
+    );
+
+    let tmp_script = std::env::temp_dir().join(format!("usbipd_detach_script_{}_{}.ps1", std::process::id(), unique_id));
+    let _ = std::fs::remove_file(&tmp_result);
+    let _ = std::fs::write(&tmp_script, &ps_script);
+
+    let script_path_str = tmp_script.to_str().unwrap_or("");
+    let sp = script_path_str.replace('\'', "''");
+    let _ = hidden_command("powershell")
+        .args(["-NonInteractive", "-Command"])
+        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-File','{}' -Verb RunAs -Wait", sp))
+        .status();
+    let _ = std::fs::remove_file(&tmp_script);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let result = std::fs::read_to_string(&tmp_result).ok();
+    let _ = std::fs::remove_file(&tmp_result);
+    result
 }
 
 /// 保存用户配置到 AppData 目录
@@ -1799,6 +2114,10 @@ fn main() {
         .manage(WslSerialState {
             sessions: Mutex::new(HashMap::new()),
         })
+        .manage(WorkflowState {
+            rules: Mutex::new(HashMap::new()),
+            log_dirs: Mutex::new(HashMap::new()),
+        })
         .invoke_handler(tauri::generate_handler![
             list_ports,
             list_wsl_devices,
@@ -1830,6 +2149,11 @@ fn main() {
             get_wsl_serial_devices,
             set_wsl_dtr,
             set_wsl_rts,
+            check_workflow_matches,
+            save_workflows,
+            load_workflows,
+            init_workflows,
+            update_workflow_log_dir,
             open_url,
             set_title_bar_color,
             get_app_info,

@@ -1075,6 +1075,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     transition: max-height .3s ease;
 }
 .toolbar-wrap.collapsed { max-height:6px; border-bottom:none; overflow:hidden; }
+.toolbar-wrap.collapsed ~ .adv-wf-wrap { display:none !important; }
 .toolbar-wrap .toolbar { border-bottom:none; }
 .lbl { color:var(--text); font-size:12px; white-space:nowrap; flex-shrink:0; font-weight:500; }
 
@@ -1211,6 +1212,73 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     transition: background .15s;
 }
 .btn-logdir:hover { background:rgba(14,99,156,.15); }
+
+/* ===== 自动化工作流（更多设置内） ===== */
+.adv-wf-wrap {
+    display:none; padding:6px 10px; background:var(--toolbar-bg);
+    border-bottom:1px solid var(--border); max-height:300px; overflow-y:scroll;
+}
+.adv-wf-wrap.vis { display:block; }
+.adv-wf-wrap::-webkit-scrollbar { width:6px; }
+.adv-wf-wrap::-webkit-scrollbar-track { background:transparent; }
+.adv-wf-wrap::-webkit-scrollbar-thumb { background:rgba(100,106,118,.4); border-radius:3px; }
+.adv-wf-wrap::-webkit-scrollbar-thumb:hover { background:rgba(100,106,118,.6); }
+.wf-add-btn {
+    background:transparent; color:var(--btn-p); border:none; cursor:pointer;
+    font-size:12px; padding:2px 8px; border-radius:3px; font-family:inherit; white-space:nowrap;
+}
+.wf-add-btn:hover { background:rgba(255,255,255,.05); }
+.wf-rule { background:var(--surface-1); border:1px solid var(--border); border-radius:4px; margin-bottom:6px; overflow:hidden; }
+.wf-rule:last-child { margin-bottom:0; }
+.wf-rule-header { display:flex; align-items:center; gap:6px; padding:5px 8px; border-bottom:1px solid var(--border); }
+.wf-rule-header input[type="checkbox"] { accent-color:var(--btn-p); cursor:pointer; }
+.wf-rule-name {
+    background:var(--input-bg); border:1px solid var(--border); border-radius:3px;
+    color:var(--text-b); font-size:12px; flex:1; outline:none; font-family:inherit; min-width:0;
+    height:22px; padding:0 6px;
+}
+.wf-rule-name:focus { border-color:var(--accent-focus); }
+.wf-rule-btn {
+    width:22px; height:22px; border:none; background:transparent;
+    color:var(--text-d); cursor:pointer; border-radius:3px; font-size:12px;
+    display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; padding:0;
+}
+.wf-rule-btn:hover { background:rgba(255,255,255,.05); color:var(--text); }
+.wf-rule-btn.del:hover { color:var(--accent-red); }
+.wf-section { padding:4px 8px 6px; }
+.wf-section-title { font-size:11px; color:var(--text-d); margin-bottom:4px; user-select:none; }
+.wf-row { display:flex; align-items:center; gap:4px; margin-bottom:3px; }
+.wf-row .sel { height:22px; font-size:11px; min-width:80px; }
+.wf-row input[type="text"], .wf-row input[type="number"] {
+    background:var(--input-bg); border:1px solid var(--border); border-radius:3px;
+    color:var(--text); font-size:11px; height:22px; padding:0 6px; outline:none;
+    font-family:inherit; flex:1; min-width:0;
+}
+.wf-row input:focus { border-color:var(--accent-focus); }
+.wf-row input[type="number"] { width:50px; flex:none; -moz-appearance:textfield; }
+.wf-row input[type="number"]::-webkit-outer-spin-button,
+.wf-row input[type="number"]::-webkit-inner-spin-button { -webkit-appearance:none; }
+.wf-row-btn {
+    width:20px; height:20px; border:none; background:transparent;
+    color:var(--text-d); cursor:pointer; border-radius:2px; font-size:13px;
+    display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; padding:0;
+}
+.wf-row-btn:hover { background:rgba(255,255,255,.05); color:var(--text); }
+.wf-row-btn.del:hover { color:var(--accent-red); }
+.wf-rule.collapsed .wf-rule-body { display:none; }
+.wf-rule.collapsed .wf-rule-header { border-bottom:none; }
+
+/* 浅色主题适配 */
+[data-theme="default-light"] .wf-rule-btn:hover,
+[data-theme="japanese-light"] .wf-rule-btn:hover,
+[data-theme="poetic"] .wf-rule-btn:hover,
+[data-theme="ink"] .wf-rule-btn:hover,
+[data-theme="peach"] .wf-rule-btn:hover,
+[data-theme="autumn"] .wf-rule-btn:hover { background:rgba(0,0,0,.05); }
+[data-theme="default-light"] .wf-add-btn:hover,
+[data-theme="japanese-light"] .wf-add-btn:hover { background:rgba(106,149,184,.08); }
+[data-theme="default-light"] .wf-row-btn:hover,
+[data-theme="japanese-light"] .wf-row-btn:hover { background:rgba(0,0,0,.04); }
 
 /* ===== 输出区 ===== */
 .output {
@@ -1882,7 +1950,13 @@ function createMonitorPane(mid, title, closable) {
             '<button class="ibtn" onclick="saveLogToFile(\'' + mid + '\')" title="保存日志">' + ICONS.saveLog + '</button>' +
             '<button class="ibtn" onclick="copyOutput(\'' + mid + '\')" title="复制全部">' + ICONS.copyAll + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnCollapseTb" onclick="toggleToolbarCollapse(\'' + mid + '\')" title="折叠工具栏">' + ICONS.chevronUp + '</button>' +
-        '</div></div>' +
+            '<div style="flex:1;"></div>' +
+            '<button class="wf-add-btn" onclick="addWorkflowRule(\'' + mid + '\')">+ 添加规则</button>' +
+        '</div>' +
+        '</div>' +
+        '<div class="adv-wf-wrap" id="' + mid + '-advWf">' +
+            '<div class="wf-list" id="' + mid + '-wfList"></div>' +
+        '</div>' +
         '<div class="output" contenteditable="true" id="' + mid + '-output"></div>' +
         '<div class="send-bar" id="' + mid + '-sendBar">' +
             '<div class="send-wrap" id="' + mid + '-sendWrap">' +
@@ -1919,7 +1993,7 @@ function createMonitorPane(mid, title, closable) {
     monitors[mid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, _editing: false, quickCmds: [
         {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
         {label:'指令4', value:''}, {label:'指令5', value:''}
-    ]};
+    ], workflows: []};
 
     // 输出区域编辑状态检测
     var outputEl = document.getElementById(mid + '-output');
@@ -2170,8 +2244,13 @@ function setPortSel(mid, val, el) {
 function toggleAdv(mid) {
     var row = document.getElementById(mid + '-advRow');
     var btn = document.getElementById(mid + '-btnAdv');
+    var wfWrap = document.getElementById(mid + '-advWf');
     row.classList.toggle('vis');
     btn.classList.toggle('on', row.classList.contains('vis'));
+    // 工作流面板跟随更多设置栏显隐
+    if (wfWrap && wfWrap.classList.contains('has-rules')) {
+        wfWrap.classList.toggle('vis', row.classList.contains('vis'));
+    }
     scheduleConfigSave();
 }
 /* ===== 工具栏折叠 ===== */
@@ -2191,7 +2270,7 @@ function toggleToolbarCollapse(mid) {
         wrap.classList.remove('collapsed');
         return;
     }
-    // 切换折叠状态
+    // 切换折叠状态（CSS 兄弟选择器自动隐藏/显示工作流面板）
     var collapsing = !wrap.classList.contains('collapsed');
     wrap.classList.toggle('collapsed');
     btn.innerHTML = collapsing ? ICONS.chevronDown : ICONS.chevronUp;
@@ -2447,6 +2526,25 @@ function updateMonitorUI(mid, connected, waiting) {
     updateQcmdSendBtns(mid, connected);
 }
 
+// ===== 自动化工作流 =====
+
+async function checkWorkflowMatches(mid, rawBytes) {
+    if (!monitors[mid] || !monitors[mid].workflows || monitors[mid].workflows.length === 0) return;
+    try {
+        var matched = await invoke('check_workflow_matches', {
+            monitorId: mid,
+            data: Array.from(rawBytes),
+        });
+        if (matched && matched.length > 0) {
+            matched.forEach(function(rule) {
+                appendOutput(mid, 'sys', '[Workflow] 触发: ' + rule.name);
+            });
+        }
+    } catch (e) {
+        console.warn('Workflow check failed:', e);
+    }
+}
+
 function startReading(mid) {
     stopReading(mid);
     var reading = false;
@@ -2457,6 +2555,7 @@ function startReading(mid) {
         try {
             var data = await invoke('read_data', { monitorId: mid });
             if (data && data.length > 0) {
+                checkWorkflowMatches(mid, data);
                 var decoded = decodeData(mid, data);
                 decoded = decoded.replace(/[\r\n]+$/, '');
                 if (decoded) {
@@ -2601,7 +2700,11 @@ async function chooseLogDir(mid) {
     mid = mid || 'main';
     try {
         var result = await invoke('choose_log_directory');
-        if (result) { logDirPath = result; appendOutput(mid, 'sys', '日志目录: ' + logDirPath); }
+        if (result) {
+            logDirPath = result;
+            appendOutput(mid, 'sys', '日志目录: ' + logDirPath);
+            invoke('update_workflow_log_dir', { monitorId: mid, logDir: logDirPath }).catch(function() {});
+        }
     } catch (e) { appendOutput(mid, 'err', '选择目录失败: ' + e); }
 }
 async function saveLogToFile(mid) {
@@ -2845,6 +2948,281 @@ function updateQcmdSendBtns(mid, connected) {
     });
 }
 
+/* ===== 自动化工作流 UI ===== */
+
+function genWfId() { return 'wf_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4); }
+
+function addWorkflowRule(mid) {
+    if (!monitors[mid]) return;
+    if (!monitors[mid].workflows) monitors[mid].workflows = [];
+    monitors[mid].workflows.push({
+        id: genWfId(), name: '新规则', enabled: true,
+        conditions: [{ type: 'string_contains', value: '' }],
+        actions: [{ type: 'send_data', data: '', encoding: 'text', delayBefore: 0 }]
+    });
+    // 确保更多设置栏和工作流面板都展开
+    var advRow = document.getElementById(mid + '-advRow');
+    if (advRow && !advRow.classList.contains('vis')) {
+        var advBtn = document.getElementById(mid + '-btnAdv');
+        if (advBtn) advBtn.classList.add('on');
+        advRow.classList.add('vis');
+    }
+    var wfWrap = document.getElementById(mid + '-advWf');
+    if (wfWrap) wfWrap.classList.add('vis');
+    renderWorkflowList(mid);
+    saveWorkflowConfig(mid);
+}
+
+function deleteWorkflowRule(mid, ruleId) {
+    if (!monitors[mid] || !monitors[mid].workflows) return;
+    monitors[mid].workflows = monitors[mid].workflows.filter(function(r) { return r.id !== ruleId; });
+    renderWorkflowList(mid);
+    saveWorkflowConfig(mid);
+}
+
+function toggleWorkflowEnabled(mid, ruleId, enabled) {
+    var rule = findWfRule(mid, ruleId);
+    if (rule) { rule.enabled = enabled; saveWorkflowConfig(mid); }
+}
+
+function renameWorkflowRule(mid, ruleId, name) {
+    var rule = findWfRule(mid, ruleId);
+    if (rule) { rule.name = name; saveWorkflowConfig(mid); }
+}
+
+function toggleWfRuleCollapse(mid, ruleId) {
+    var el = document.getElementById(mid + '-wfRule-' + ruleId);
+    if (!el) return;
+    el.classList.toggle('collapsed');
+    var arrow = el.querySelector('.wf-rule-arrow');
+    if (arrow) arrow.style.transform = el.classList.contains('collapsed') ? 'rotate(-90deg)' : '';
+}
+
+function findWfRule(mid, ruleId) {
+    if (!monitors[mid] || !monitors[mid].workflows) return null;
+    return monitors[mid].workflows.find(function(r) { return r.id === ruleId; });
+}
+
+function updateWfCondition(mid, ruleId, idx, field, value) {
+    var rule = findWfRule(mid, ruleId);
+    if (rule && rule.conditions[idx]) { rule.conditions[idx][field] = value; saveWorkflowConfig(mid); }
+}
+
+function addWfCondition(mid, ruleId) {
+    var rule = findWfRule(mid, ruleId);
+    if (!rule) return;
+    rule.conditions.push({ type: 'string_contains', value: '' });
+    renderWorkflowList(mid);
+    saveWorkflowConfig(mid);
+}
+
+function removeWfCondition(mid, ruleId, idx) {
+    var rule = findWfRule(mid, ruleId);
+    if (!rule || rule.conditions.length <= 1) return;
+    rule.conditions.splice(idx, 1);
+    renderWorkflowList(mid);
+    saveWorkflowConfig(mid);
+}
+
+function updateWfAction(mid, ruleId, idx, field, value) {
+    var rule = findWfRule(mid, ruleId);
+    if (rule && rule.actions[idx]) { rule.actions[idx][field] = value; saveWorkflowConfig(mid); }
+}
+
+function addWfAction(mid, ruleId) {
+    var rule = findWfRule(mid, ruleId);
+    if (!rule) return;
+    rule.actions.push({ type: 'send_data', data: '', encoding: 'text', delayBefore: 0 });
+    renderWorkflowList(mid);
+    saveWorkflowConfig(mid);
+}
+
+function removeWfAction(mid, ruleId, idx) {
+    var rule = findWfRule(mid, ruleId);
+    if (!rule || rule.actions.length <= 1) return;
+    rule.actions.splice(idx, 1);
+    renderWorkflowList(mid);
+    saveWorkflowConfig(mid);
+}
+
+function saveWorkflowConfig(mid) {
+    if (!monitors[mid]) return;
+    var rules = monitors[mid].workflows || [];
+    invoke('save_workflows', { monitorId: mid, workflowsJson: JSON.stringify(rules) }).catch(function() {});
+    scheduleConfigSave();
+}
+
+function testWorkflowRule(mid, ruleId) {
+    appendOutput(mid, 'sys', '[Workflow] 测试规则: ' + (findWfRule(mid, ruleId) || {}).name + ' — 需要连接串口后接收数据时自动测试');
+}
+
+function renderWorkflowList(mid) {
+    var list = document.getElementById(mid + '-wfList');
+    var wfContainer = document.getElementById(mid + '-advWf');
+    var advRow = document.getElementById(mid + '-advRow');
+    if (!list) return;
+    var workflows = (monitors[mid] && monitors[mid].workflows) || [];
+    // 切换 has-rules 类
+    if (wfContainer) wfContainer.classList.toggle('has-rules', workflows.length > 0);
+    // 如果更多设置栏可见且有规则，显示工作流面板；无规则则隐藏
+    if (wfContainer && advRow && advRow.classList.contains('vis')) {
+        wfContainer.classList.toggle('vis', workflows.length > 0);
+    }
+    list.innerHTML = '';
+    if (workflows.length === 0) return;
+    workflows.forEach(function(rule) {
+        var card = document.createElement('div');
+        var isCollapsed = !rule.enabled;
+        card.className = 'wf-rule' + (isCollapsed ? ' collapsed' : '');
+        card.id = mid + '-wfRule-' + rule.id;
+
+        // Header
+        var header = document.createElement('div');
+        header.className = 'wf-rule-header';
+        header.innerHTML =
+            '<input type="checkbox"' + (rule.enabled ? ' checked' : '') + ' onchange="toggleWorkflowEnabled(\'' + mid + '\',\'' + rule.id + '\',this.checked)">' +
+            '<input class="wf-rule-name" value="' + escapeHtml(rule.name) + '" onchange="renameWorkflowRule(\'' + mid + '\',\'' + rule.id + '\',this.value)">' +
+            '<button class="wf-rule-btn" onclick="testWorkflowRule(\'' + mid + '\',\'' + rule.id + '\')" title="测试">&#9654;</button>' +
+            '<button class="wf-rule-btn wf-rule-arrow" onclick="toggleWfRuleCollapse(\'' + mid + '\',\'' + rule.id + '\')" title="折叠/展开" style="transition:transform .2s ease;' + (isCollapsed ? 'transform:rotate(-90deg);' : '') + '">' + ICONS.chevronDown + '</button>' +
+            '<button class="wf-rule-btn del" onclick="deleteWorkflowRule(\'' + mid + '\',\'' + rule.id + '\')" title="删除">&#xd7;</button>';
+        card.appendChild(header);
+
+        // Body
+        var body = document.createElement('div');
+        body.className = 'wf-rule-body';
+
+        // Conditions section
+        var condSection = document.createElement('div');
+        condSection.className = 'wf-section';
+        condSection.innerHTML = '<div class="wf-section-title">匹配条件 (全部满足)</div>';
+        rule.conditions.forEach(function(cond, ci) {
+            var row = document.createElement('div');
+            row.className = 'wf-row';
+            row.innerHTML =
+                '<div class="sel" onclick="toggleSelDrop(this)">' +
+                    '<span class="sel-text">' + wfCondLabel(cond.type) + '</span><span class="sel-arrow">&#9660;</span>' +
+                    '<div class="sel-drop">' +
+                        '<div class="sel-opt' + (cond.type==='string_contains'?' active':'') + '" data-val="string_contains" onclick="setWfCondType(this,\'' + mid + '\',\'' + rule.id + '\',' + ci + ',\'string_contains\',event)">字符串包含</div>' +
+                        '<div class="sel-opt' + (cond.type==='regex'?' active':'') + '" data-val="regex" onclick="setWfCondType(this,\'' + mid + '\',\'' + rule.id + '\',' + ci + ',\'regex\',event)">正则表达式</div>' +
+                        '<div class="sel-opt' + (cond.type==='exact_bytes'?' active':'') + '" data-val="exact_bytes" onclick="setWfCondType(this,\'' + mid + '\',\'' + rule.id + '\',' + ci + ',\'exact_bytes\',event)">精确字节(HEX)</div>' +
+                    '</div>' +
+                '</div>' +
+                '<input type="text" value="' + escapeHtml(cond.value) + '" placeholder="' + wfCondPlaceholder(cond.type) + '" oninput="updateWfCondition(\'' + mid + '\',\'' + rule.id + '\',' + ci + ',\'value\',this.value)">' +
+                '<button class="wf-row-btn" onclick="addWfCondition(\'' + mid + '\',\'' + rule.id + '\')" title="添加条件">+</button>' +
+                '<button class="wf-row-btn del" onclick="removeWfCondition(\'' + mid + '\',\'' + rule.id + '\',' + ci + ')" title="删除条件">&#xd7;</button>';
+            condSection.appendChild(row);
+        });
+        body.appendChild(condSection);
+
+        // Actions section
+        var actSection = document.createElement('div');
+        actSection.className = 'wf-section';
+        actSection.innerHTML = '<div class="wf-section-title">执行动作 (按顺序)</div>';
+        rule.actions.forEach(function(act, ai) {
+            var row = document.createElement('div');
+            row.className = 'wf-row';
+            var extraInputs = '';
+            if (act.type === 'send_data') {
+                extraInputs =
+                    '<div class="sel" onclick="toggleSelDrop(this)">' +
+                        '<span class="sel-text">' + (act.encoding==='hex'?'HEX':'文本') + '</span><span class="sel-arrow">&#9660;</span>' +
+                        '<div class="sel-drop">' +
+                            '<div class="sel-opt' + (act.encoding==='text'?' active':'') + '" onclick="setWfActEnc(this,\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'text\',event)">文本</div>' +
+                            '<div class="sel-opt' + (act.encoding==='hex'?' active':'') + '" onclick="setWfActEnc(this,\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'hex\',event)">HEX</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<input type="text" value="' + escapeHtml(act.data) + '" placeholder="发送内容" oninput="updateWfAction(\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'data\',this.value)">';
+            } else if (act.type === 'toggle_dtr_rts') {
+                extraInputs =
+                    '<div class="sel" onclick="toggleSelDrop(this)">' +
+                        '<span class="sel-text">' + (act.signal==='rts'?'RTS':'DTR') + '</span><span class="sel-arrow">&#9660;</span>' +
+                        '<div class="sel-drop">' +
+                            '<div class="sel-opt' + (act.signal!=='rts'?' active':'') + '" onclick="setWfActSig(this,\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'dtr\',event)">DTR</div>' +
+                            '<div class="sel-opt' + (act.signal==='rts'?' active':'') + '" onclick="setWfActSig(this,\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'rts\',event)">RTS</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="sel" onclick="toggleSelDrop(this)">' +
+                        '<span class="sel-text">' + (act.level?'高电平':'低电平') + '</span><span class="sel-arrow">&#9660;</span>' +
+                        '<div class="sel-drop">' +
+                            '<div class="sel-opt' + (act.level?' active':'') + '" onclick="setWfActLvl(this,\'' + mid + '\',\'' + rule.id + '\',' + ai + ',true,event)">高电平</div>' +
+                            '<div class="sel-opt' + (!act.level?' active':'') + '" onclick="setWfActLvl(this,\'' + mid + '\',\'' + rule.id + '\',' + ai + ',false,event)">低电平</div>' +
+                        '</div>' +
+                    '</div>';
+            }
+            row.innerHTML =
+                '<div class="sel" onclick="toggleSelDrop(this)">' +
+                    '<span class="sel-text">' + wfActLabel(act.type) + '</span><span class="sel-arrow">&#9660;</span>' +
+                    '<div class="sel-drop">' +
+                        '<div class="sel-opt' + (act.type==='send_data'?' active':'') + '" onclick="setWfActType(this,\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'send_data\',event)">发送数据</div>' +
+                        '<div class="sel-opt' + (act.type==='toggle_dtr_rts'?' active':'') + '" onclick="setWfActType(this,\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'toggle_dtr_rts\',event)">切换信号</div>' +
+                        '<div class="sel-opt' + (act.type==='save_log'?' active':'') + '" onclick="setWfActType(this,\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'save_log\',event)">保存日志</div>' +
+                    '</div>' +
+                '</div>' +
+                extraInputs +
+                '<input type="number" value="' + (act.delayBefore || 0) + '" min="0" step="100" title="延时(ms)" oninput="updateWfAction(\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'delayBefore\',parseInt(this.value)||0)">' +
+                '<span style="font-size:10px;color:var(--text-d);">ms</span>' +
+                '<button class="wf-row-btn del" onclick="removeWfAction(\'' + mid + '\',\'' + rule.id + '\',' + ai + ')" title="删除动作">&#xd7;</button>';
+            actSection.appendChild(row);
+        });
+        var addActBtn = document.createElement('div');
+        addActBtn.className = 'wf-row';
+        addActBtn.innerHTML = '<button class="wf-row-btn" onclick="addWfAction(\'' + mid + '\',\'' + rule.id + '\')" title="添加动作" style="font-size:11px;width:auto;padding:0 6px;">+ 添加动作</button>';
+        actSection.appendChild(addActBtn);
+        body.appendChild(actSection);
+
+        card.appendChild(body);
+        list.appendChild(card);
+    });
+}
+
+function wfCondLabel(type) {
+    return { string_contains: '字符串包含', regex: '正则表达式', exact_bytes: '精确字节' }[type] || type;
+}
+function wfCondPlaceholder(type) {
+    return { string_contains: '输入匹配字符串...', regex: '输入正则表达式...', exact_bytes: '输入HEX如 FF 01 02' }[type] || '';
+}
+function wfActLabel(type) {
+    return { send_data: '发送数据', toggle_dtr_rts: '切换信号', save_log: '保存日志' }[type] || type;
+}
+// Setter functions that update data + re-render
+function setWfCondType(el, mid, ruleId, idx, val, e) {
+    e.stopPropagation();
+    setSel(el, val, e);
+    updateWfCondition(mid, ruleId, idx, 'type', val);
+    renderWorkflowList(mid);
+}
+function setWfActType(el, mid, ruleId, idx, val, e) {
+    e.stopPropagation();
+    setSel(el, val, e);
+    var rule = findWfRule(mid, ruleId);
+    if (rule && rule.actions[idx]) {
+        rule.actions[idx].type = val;
+        // Reset type-specific fields
+        if (val === 'send_data') { rule.actions[idx].encoding = rule.actions[idx].encoding || 'text'; rule.actions[idx].data = rule.actions[idx].data || ''; }
+        if (val === 'toggle_dtr_rts') { rule.actions[idx].signal = rule.actions[idx].signal || 'dtr'; rule.actions[idx].level = rule.actions[idx].level || false; }
+    }
+    renderWorkflowList(mid);
+    saveWorkflowConfig(mid);
+}
+function setWfActEnc(el, mid, ruleId, idx, val, e) {
+    e.stopPropagation();
+    setSel(el, val, e);
+    updateWfAction(mid, ruleId, idx, 'encoding', val);
+    renderWorkflowList(mid);
+}
+function setWfActSig(el, mid, ruleId, idx, val, e) {
+    e.stopPropagation();
+    setSel(el, val, e);
+    updateWfAction(mid, ruleId, idx, 'signal', val);
+    renderWorkflowList(mid);
+}
+function setWfActLvl(el, mid, ruleId, idx, val, e) {
+    e.stopPropagation();
+    setSel(el, val ? 'true' : 'false', e);
+    updateWfAction(mid, ruleId, idx, 'level', val);
+    renderWorkflowList(mid);
+}
+
 
 /* ===== 自动更新 ===== */
 var _updateInfo = null;
@@ -2931,6 +3309,7 @@ function collectConfig() {
             quickCmds:    m.quickCmds ? JSON.parse(JSON.stringify(m.quickCmds)) : [],
             sendHistory:  m.sendHistory ? m.sendHistory.slice(0, 20) : [],
             panelHeight:  saved.panelHeight || 0,
+            workflows:    m.workflows ? JSON.parse(JSON.stringify(m.workflows)) : [],
         };
     });
     // WSL 面板为懒加载，未初始化时用缓存的配置，防止主监视器保存时丢失 WSL 快捷指令
@@ -2976,6 +3355,7 @@ function collectConfigForMonitor(mid) {
         btnLineNum:   btnOn(mid + '-btnLineNum'),
         quickCmds:    m.quickCmds ? JSON.parse(JSON.stringify(m.quickCmds)) : [],
         sendHistory:  m.sendHistory ? m.sendHistory.slice(0, 20) : [],
+        workflows:    m.workflows ? JSON.parse(JSON.stringify(m.workflows)) : [],
     };
 }
 
@@ -3101,6 +3481,10 @@ function applyMonitorConfig(mid, mc) {
     // 发送历史
     if (mc.sendHistory && mc.sendHistory.length > 0 && monitors[mid]) {
         monitors[mid].sendHistory = mc.sendHistory;
+    }
+    // 工作流规则
+    if (mc.workflows && mc.workflows.length > 0 && monitors[mid]) {
+        monitors[mid].workflows = mc.workflows;
     }
     // 端口选择（在 refreshPorts 回调中设置，避免端口未加载时失效）
     if (mc.port) {
@@ -3255,7 +3639,15 @@ async function loadAndApplyConfig() {
         var raw = await invoke('load_config');
         if (!raw) { _loadingConfig = false; return; }
         var cfg = JSON.parse(raw);
-        if (!cfg || cfg.version !== 1) { _loadingConfig = false; return; }
+        if (!cfg || (cfg.version !== 1 && cfg.version !== 2)) { _loadingConfig = false; return; }
+        // V1 → V2 迁移：添加空 workflows
+        if (cfg.version === 1) {
+            Object.keys(cfg.monitors || {}).forEach(function(mid) {
+                if (!cfg.monitors[mid].workflows) cfg.monitors[mid].workflows = [];
+            });
+            cfg.version = 2;
+            invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function() {});
+        }
         // 恢复主题
         if (cfg.themeStyle) _currentThemeStyle = cfg.themeStyle;
         if (cfg.theme) applyTheme(cfg.theme);
@@ -3289,6 +3681,8 @@ async function loadAndApplyConfig() {
                 applyMonitorConfig(emid, cfg.monitors[emid]);
             }
         }
+        // 初始化 Rust 端工作流状态
+        invoke('init_workflows', { configJson: JSON.stringify(cfg) }).catch(function() {});
     } catch (e) {
         console.warn('加载配置失败:', e);
     }
@@ -3696,6 +4090,7 @@ function startWslReading(mid) {
         try {
             var data = await invoke('read_wsl_serial', { monitorId: mid });
             if (data && data.length > 0) {
+                checkWorkflowMatches(mid, data);
                 var decoded = decodeData(mid, data);
                 decoded = decoded.replace(/[\r\n]+$/, '');
                 if (decoded) {
@@ -3894,6 +4289,7 @@ function renderWslDistroCards(mid, distros) {
         stopWslUptimeTicker();
         return;
     }
+    var termIcon = '<svg width="27" height="27" viewBox="0 0 1024 1024" fill="currentColor"><path d="M499.712 481.792l-128-128c-16.896-16.384-44.032-15.872-60.416 1.024-15.872 16.384-15.872 42.496 0 59.392L409.088 512l-97.792 97.792c-16.896 16.384-17.408 43.52-1.024 60.416s43.52 17.408 60.416 1.024l1.024-1.024 128-128c16.384-16.896 16.384-43.52 0-60.416zM682.496 597.504h-128c-23.552 0-42.496 18.944-42.496 42.496 0 23.552 18.944 42.496 42.496 42.496h128c23.552 0 42.496-18.944 42.496-42.496s-18.944-42.496-42.496-42.496z"/><path d="M810.496 128H213.504c-70.656 0-128 57.344-128 128v512c0 70.656 57.344 128 128 128h597.504c70.656 0 128-57.344 128-128V256c-0.512-70.656-57.856-128-128.512-128z m0 682.496H213.504c-23.552 0-42.496-18.944-42.496-42.496V256c0-23.552 18.944-42.496 42.496-42.496h597.504c23.552 0 42.496 18.944 42.496 42.496v512c0 23.552-19.456 42.496-43.008 42.496z"/></svg>';
     var html = '';
     distros.forEach(function(d) {
         var running = d.running;
@@ -3901,7 +4297,6 @@ function renderWslDistroCards(mid, distros) {
         var bgGrad = running ? 'linear-gradient(135deg,var(--wsl-dist-bg) 0%,var(--toolbar-bg) 100%)' : 'var(--toolbar-bg)';
         var dotColor = running ? 'var(--accent-green)' : 'var(--text-d)';
         var uptime = running && d.uptime ? d.uptime : '00:00:00';
-        var mem = running && d.memTotalMB > 0 ? d.memUsedMB + ' / ' + d.memTotalMB + ' MB' : '—';
         var btnText = running ? '关闭' : '启动';
         var btnBg = running ? 'var(--btn-p)' : 'var(--surface-1)';
         var btnBorder = running ? 'var(--btn-p)' : 'var(--border)';
@@ -3909,6 +4304,9 @@ function renderWslDistroCards(mid, distros) {
         var btnAction = running
             ? "wslDistAction('shutdown_wsl','" + d.name.replace(/'/g, "\\'") + "')"
             : "wslDistAction('launch_wsl','" + d.name.replace(/'/g, "\\'") + "')";
+        var escapedName = d.name.replace(/'/g, "\\'");
+        var termDisabled = running ? '' : 'disabled';
+        var termOpacity = running ? '1' : '0.35';
 
         if (running) {
             var parts = d.uptime.split(':').map(Number);
@@ -3924,9 +4322,8 @@ function renderWslDistroCards(mid, distros) {
         html += '<span style="width:1px;height:14px;background:var(--border);flex-shrink:0;margin:0 2px;"></span>';
         html += '<span style="font-size:10px;color:var(--text-muted);font-weight:500;">UP</span>';
         html += '<span id="uptime-' + mid + '-' + d.name + '" style="font-size:11px;color:var(--text);font-family:monospace;letter-spacing:0.3px;">' + uptime + '</span>';
-        html += '<span style="width:1px;height:14px;background:var(--border);flex-shrink:0;margin:0 2px;"></span>';
-        html += '<span style="font-size:10px;color:var(--text-muted);font-weight:500;">MEM</span>';
-        html += '<span style="font-size:11px;color:var(--text);font-family:monospace;">' + mem + '</span>';
+        html += '<div style="flex:1;"></div>';
+        html += '<button onclick="openWslTerminal(\'' + escapedName + '\')" ' + termDisabled + ' title="打开终端" style="flex-shrink:0;width:28px;height:28px;border:none;border-radius:4px;background:transparent;color:var(--btn-p);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;opacity:' + termOpacity + ';transition:opacity .15s;">' + termIcon + '</button>';
         html += '<button onclick="' + btnAction + '" onmousedown="this.style.transform=\'scale(0.90)\';this.style.filter=\'brightness(0.7)\';this.style.opacity=\'0.6\'" onmouseup="this.style.transform=\'\';this.style.filter=\'\';this.style.opacity=\'\'" onmouseleave="this.style.transform=\'\';this.style.filter=\'\';this.style.opacity=\'\'" style="flex-shrink:0;height:24px;padding:0 12px;border:1px solid ' + btnBorder + ';border-radius:4px;background:' + btnBg + ';color:' + btnColor + ';font-size:11px;cursor:pointer;font-weight:500;transition:all .1s ease;">' + btnText + '</button>';
         html += '</div>';
     });
@@ -3934,32 +4331,10 @@ function renderWslDistroCards(mid, distros) {
     startWslUptimeTicker(mid);
 }
 
-function wslFormatUptime(totalSeconds) {
-    var h = Math.floor(totalSeconds / 3600);
-    var m = Math.floor((totalSeconds % 3600) / 60);
-    var s = Math.floor(totalSeconds % 60);
-    return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
-}
-
-function startWslUptimeTicker(mid) {
-    if (_wslUptimeTimer) { clearInterval(_wslUptimeTimer); _wslUptimeTimer = null; }
-    if (Object.keys(_wslDistroBasetime).length === 0) return;
-    _wslUptimeTimer = setInterval(function() {
-        var now = Date.now();
-        Object.keys(_wslDistroBasetime).forEach(function(name) {
-            var bt = _wslDistroBasetime[name];
-            if (!bt) return;
-            var elapsed = Math.floor((now - bt.anchorMs) / 1000);
-            var total = bt.baseSeconds + elapsed;
-            var el = document.getElementById('uptime-' + mid + '-' + name);
-            if (el) el.textContent = wslFormatUptime(total);
-        });
-    }, 1000);
-}
-
-function stopWslUptimeTicker() {
-    if (_wslUptimeTimer) { clearInterval(_wslUptimeTimer); _wslUptimeTimer = null; }
-    _wslDistroBasetime = {};
+function openWslTerminal(dist) {
+    invoke('launch_wsl', { dist: dist }).catch(function(e) {
+        console.error('[WSL] 打开终端失败:', e);
+    });
 }
 
 // 绑定监视器事件监听器
@@ -4113,8 +4488,36 @@ var _wslAutoMapTimer = null;
 var _wslSavedConfig = null; // 缓存从配置文件加载的 WSL 监视器配置，防止主监视器保存时丢失
 var _wslStatusUnlisten = null; // WSL 状态事件监听取消函数
 var _wslRunning = false; // WSL 是否正在运行
-var _wslUptimeTimer = null; // 运行时间秒级更新定时器
-var _wslDistroBasetime = {}; // { distroName: { baseSeconds, anchorMs } } 运行时间基准
+var _wslUptimeTimer = null;
+var _wslDistroBasetime = {};
+
+function wslFormatUptime(totalSeconds) {
+    var h = Math.floor(totalSeconds / 3600);
+    var m = Math.floor((totalSeconds % 3600) / 60);
+    var s = Math.floor(totalSeconds % 60);
+    return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+function startWslUptimeTicker(mid) {
+    if (_wslUptimeTimer) { clearInterval(_wslUptimeTimer); _wslUptimeTimer = null; }
+    if (Object.keys(_wslDistroBasetime).length === 0) return;
+    _wslUptimeTimer = setInterval(function() {
+        var now = Date.now();
+        Object.keys(_wslDistroBasetime).forEach(function(name) {
+            var bt = _wslDistroBasetime[name];
+            if (!bt) return;
+            var elapsed = Math.floor((now - bt.anchorMs) / 1000);
+            var total = bt.baseSeconds + elapsed;
+            var el = document.getElementById('uptime-' + mid + '-' + name);
+            if (el) el.textContent = wslFormatUptime(total);
+        });
+    }, 1000);
+}
+
+function stopWslUptimeTicker() {
+    if (_wslUptimeTimer) { clearInterval(_wslUptimeTimer); _wslUptimeTimer = null; }
+    _wslDistroBasetime = {};
+}
 
 function sortWslDevices() {
     _wslDevices.sort(function(a, b) {
@@ -4162,6 +4565,7 @@ function renderWslDeviceList(mid) {
             '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--text-d)" stroke-width="1.5" style="margin-bottom:10px;"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>' +
             '<div style="font-size:13px;">未发现可用的 USB 设备</div>' +
             '<div style="font-size:11px;margin-top:4px;color:var(--text-muted);">连接设备后将自动刷新</div>' +
+            '<div style="font-size:11px;margin-top:8px;color:var(--text-muted);padding:0 20px;text-align:center;">如列表持续为空，可尝试<span style="color:var(--btn-p);">以管理员身份运行</span>本程序</div>' +
         '</div>';
         return;
     }
