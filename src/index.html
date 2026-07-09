@@ -2066,7 +2066,14 @@ function createMonitorPane(mid, title, closable) {
     // 绑定 select 变化 → 自动保存
     ['viewMode','portSelect','lineEnding','dataBits','stopBits','parity'].forEach(function(key) {
         var el = document.getElementById(mid + '-' + key);
-        if (el) el.addEventListener('change', function() { scheduleConfigSave(); });
+        if (el) el.addEventListener('change', function() {
+            scheduleConfigSave();
+            // 行尾设置同步到后台线程
+            if (key === 'lineEnding' && monitors[mid] && monitors[mid].isConnected) {
+                var val = el.getAttribute('data-val') || 'crlf';
+                invoke('update_workflow_line_ending', { monitorId: mid, lineEnding: val }).catch(function() {});
+            }
+        });
     });
     // 波特率手动输入 → 自动保存
     var baudInput = document.getElementById(mid + '-baudRate');
@@ -2473,6 +2480,10 @@ async function connectPort(mid, silent) {
         monitors[mid].portName = name;
         updateMonitorUI(mid, true);
         startReading(mid);
+        // 同步行尾设置到后台线程
+        var leEl = document.getElementById(mid + '-lineEnding');
+        var leVal = leEl ? (leEl.getAttribute('data-val') || 'crlf') : 'crlf';
+        invoke('update_workflow_line_ending', { monitorId: mid, lineEnding: leVal }).catch(function() {});
     } catch (e) {
         monitors[mid].isConnected = false;
         stopReading(mid);
@@ -3066,7 +3077,9 @@ function toggleWorkflowRun(mid, ruleId) {
     var rule = findWfRule(mid, ruleId);
     if (!rule) return;
     rule.running = !rule.running;
-    // 只更新按钮外观，不重新渲染整个列表
+    // 同步到后端
+    saveWorkflowConfig(mid);
+    // 只更新按钮外观
     var card = document.getElementById(mid + '-wfRule-' + ruleId);
     if (card) {
         var runBtn = card.querySelector('.wf-run-btn');
@@ -3084,7 +3097,6 @@ function toggleWorkflowRun(mid, ruleId) {
             }
         }
     }
-    scheduleConfigSave();
 }
 
 function renderWorkflowList(mid) {

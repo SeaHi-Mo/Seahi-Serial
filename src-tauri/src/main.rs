@@ -178,20 +178,24 @@ static WSL_TERMINAL_PID: Mutex<Option<u32>> = Mutex::new(None);
 struct PortReader {
     buffer: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    handle: Option<std::thread::JoinHandle<()>>,
+    read_handle: Option<std::thread::JoinHandle<()>>,
+    wf_handle: Option<std::thread::JoinHandle<()>>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     port: std::sync::Arc<std::sync::Mutex<Box<dyn SerialPort>>>,
     rules: std::sync::Arc<std::sync::Mutex<Vec<WorkflowRule>>>,
     log_dir: std::sync::Arc<std::sync::Mutex<String>>,
+    line_ending: std::sync::Arc<std::sync::Mutex<String>>,
+    regex_cache: std::sync::Arc<RegexCache>,
 }
 
 impl PortReader {
-    fn new(port: Box<dyn SerialPort>) -> Self {
+    fn new(port: Box<dyn SerialPort>, regex_cache: std::sync::Arc<RegexCache>) -> Self {
         let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::with_capacity(8192)));
         let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let rules = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log_dir = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let line_ending = std::sync::Arc::new(std::sync::Mutex::new(String::from("crlf")));
         let buf_clone = buffer.clone();
         let evt_clone = events.clone();
         let stop_clone = stop.clone();
@@ -199,13 +203,20 @@ impl PortReader {
         let port_clone = port_arc.clone();
         let rules_clone = rules.clone();
         let log_dir_clone = log_dir.clone();
+        let le_clone = line_ending.clone();
 
-        let handle = std::thread::spawn(move || {
+        // channel：读取线程 → 工作流工作线程
+        let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(2048);
+
+        // 读取线程：从串口读数据，存 buffer，发给工作流线程
+        let tx_clone = tx.clone();
+        let port_for_read = port_arc.clone();
+        let read_handle = std::thread::spawn(move || {
             let mut tmp = [0u8; 4096];
             loop {
                 if stop_clone.load(std::sync::atomic::Ordering::Relaxed) { break; }
                 let read_result = {
-                    let mut p = port_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut p = port_for_read.lock().unwrap_or_else(|e| e.into_inner());
                     p.read(&mut tmp)
                 };
                 match read_result {
@@ -218,15 +229,8 @@ impl PortReader {
                                 buf.drain(..drain);
                             }
                         }
-                        // 工作流检查放到独立线程，不阻塞读取循环
-                        let pending_clone = chunk.clone();
-                        let rules_c = rules_clone.clone();
-                        let log_c = log_dir_clone.clone();
-                        let port_c = port_clone.clone();
-                        let evt_c = evt_clone.clone();
-                        std::thread::spawn(move || {
-                            Self::check_workflows(&pending_clone, &rules_c, &log_c, &port_c, &evt_c);
-                        });
+                        // 非阻塞发送，channel 满则丢弃（避免背压阻塞读取）
+                        let _ = tx_clone.try_send(chunk).is_ok();
                     }
                     Ok(_) => continue,
                     Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
@@ -236,7 +240,15 @@ impl PortReader {
             }
         });
 
-        PortReader { buffer, events, handle: Some(handle), stop, port: port_arc, rules, log_dir }
+        // 工作流工作线程：单线程消费 channel，检查规则，执行动作
+        let rc_clone = regex_cache.clone();
+        let wf_handle = std::thread::spawn(move || {
+            while let Ok(data) = rx.recv() {
+                Self::check_workflows(&data, &rules_clone, &log_dir_clone, &port_clone, &evt_clone, &le_clone, &rc_clone);
+            }
+        });
+
+        PortReader { buffer, events, read_handle: Some(read_handle), wf_handle: Some(wf_handle), stop, port: port_arc, rules, log_dir, line_ending, regex_cache }
     }
 
     fn check_workflows(
@@ -245,72 +257,97 @@ impl PortReader {
         log_dir: &std::sync::Arc<std::sync::Mutex<String>>,
         port: &std::sync::Arc<std::sync::Mutex<Box<dyn SerialPort>>>,
         events: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        line_ending: &std::sync::Arc<std::sync::Mutex<String>>,
+        regex_cache: &RegexCache,
     ) {
         if pending.is_empty() { return; }
-        // 阶段1：短持锁，克隆匹配规则
-        let (ld, matched) = {
-            let rule_list = rules.lock().unwrap_or_else(|e| e.into_inner());
-            let ld = log_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let mut matched = vec![];
-            for rule in rule_list.iter() {
-                if !rule.running || rule.conditions.is_empty() { continue; }
-                if rule.conditions.iter().all(|c| match_condition(c, pending)) {
-                    matched.push(rule.actions.clone());
-                }
-            }
-            (ld, matched)
-        }; // 锁释放
 
-        // 阶段2：无锁执行动作
-        let mut all_sent = Vec::new();
-        for actions in &matched {
-            let mut sent_parts = Vec::new();
-            for action in actions {
-                if action.delay_before > 0 {
-                    std::thread::sleep(std::time::Duration::from_millis(action.delay_before));
-                }
-                match action.action_type.as_str() {
-                    "send_data" => {
-                        let bytes = if action.encoding == "hex" {
-                            parse_hex_bytes(&action.data)
-                        } else {
-                            action.data.as_bytes().to_vec()
-                        };
-                        if bytes.is_empty() { continue; }
-                        sent_parts.push(action.data.clone());
-                        let mut p = port.lock().unwrap_or_else(|e| e.into_inner());
-                        match p.write_all(&bytes) {
-                            Ok(()) => {}
-                            Err(e) => eprintln!("[Workflow] 发送失败: {}", e),
-                        }
-                    }
-                    "toggle_dtr_rts" => {
-                        let mut p = port.lock().unwrap_or_else(|e| e.into_inner());
-                        let ok = match action.signal.as_str() {
-                            "dtr" => p.write_data_terminal_ready(action.level).is_ok(),
-                            "rts" => p.write_request_to_send(action.level).is_ok(),
-                            _ => false,
-                        };
-                        if ok { sent_parts.push(format!("[{} {}]", action.signal.to_uppercase(), if action.level { "ON" } else { "OFF" })); }
-                    }
-                    "save_log" => {
-                        if !ld.is_empty() {
-                            let filepath = std::path::Path::new(&ld).join("workflow_log.txt");
-                            if let Ok(mut f) = std::fs::OpenOptions::new()
-                                .create(true).append(true).open(&filepath)
-                            { let _ = f.write_all(pending); }
-                        }
-                        sent_parts.push("[LOG]".to_string());
-                    }
-                    _ => {}
-                }
+        // 阶段1：极短持锁，仅克隆规则快照
+        let snapshot: Vec<WorkflowRule> = {
+            rules.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        };
+        let ld = log_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let le = line_ending.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+        // 阶段2：无锁匹配（正则编译不阻塞任何共享状态）
+        let mut matched_actions: Vec<Vec<WorkflowAction>> = Vec::new();
+        for rule in &snapshot {
+            if !rule.running || rule.conditions.is_empty() { continue; }
+            if rule.conditions.iter().all(|c| match_condition(c, pending, regex_cache)) {
+                matched_actions.push(rule.actions.clone());
             }
-            all_sent.extend(sent_parts);
         }
-        if !all_sent.is_empty() {
-            let msg = format!("[Auto] {}", all_sent.join(" "));
-            if let Ok(mut evts) = events.lock() { evts.push(msg); }
-        }
+
+        if matched_actions.is_empty() { return; }
+
+        let le_bytes: Vec<u8> = match le.as_str() {
+            "crlf" => vec![0x0D, 0x0A],
+            "lf" => vec![0x0A],
+            "cr" => vec![0x0D],
+            _ => vec![],
+        };
+
+        // 动作执行在独立线程，不阻塞工作流线程
+        let pending_clone = pending.to_vec();
+        let port_clone = port.clone();
+        let events_clone = events.clone();
+        std::thread::spawn(move || {
+            let mut all_sent = Vec::new();
+            for actions in &matched_actions {
+                let mut sent_parts = Vec::new();
+                for action in actions {
+                    if action.delay_before > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(action.delay_before));
+                    }
+                    match action.action_type.as_str() {
+                        "send_data" => {
+                            let mut bytes = if action.encoding == "hex" {
+                                parse_hex_bytes(&action.data)
+                            } else {
+                                action.data.as_bytes().to_vec()
+                            };
+                            if bytes.is_empty() { continue; }
+                            if action.encoding != "hex" && !le_bytes.is_empty() {
+                                bytes.extend_from_slice(&le_bytes);
+                            }
+                            sent_parts.push(action.data.clone());
+                            let mut p = port_clone.lock().unwrap_or_else(|e| e.into_inner());
+                            match p.write_all(&bytes) {
+                                Ok(()) => { let _ = p.flush(); }
+                                Err(e) => {
+                                    eprintln!("[Workflow] 写入串口失败: {}", e);
+                                    sent_parts.pop();
+                                }
+                            }
+                        }
+                        "toggle_dtr_rts" => {
+                            let mut p = port_clone.lock().unwrap_or_else(|e| e.into_inner());
+                            let ok = match action.signal.as_str() {
+                                "dtr" => p.write_data_terminal_ready(action.level).is_ok(),
+                                "rts" => p.write_request_to_send(action.level).is_ok(),
+                                _ => false,
+                            };
+                            if ok { sent_parts.push(format!("[{} {}]", action.signal.to_uppercase(), if action.level { "ON" } else { "OFF" })); }
+                        }
+                        "save_log" => {
+                            if !ld.is_empty() {
+                                let filepath = std::path::Path::new(&ld).join("workflow_log.txt");
+                                if let Ok(mut f) = std::fs::OpenOptions::new()
+                                    .create(true).append(true).open(&filepath)
+                                { let _ = f.write_all(&pending_clone); }
+                            }
+                            sent_parts.push("[LOG]".to_string());
+                        }
+                        _ => {}
+                    }
+                }
+                all_sent.extend(sent_parts);
+            }
+            if !all_sent.is_empty() {
+                let msg = format!("[Auto] {}", all_sent.join(" "));
+                if let Ok(mut evts) = events_clone.lock() { evts.push(msg); }
+            }
+        });
     }
 
     fn read_all(&self) -> Vec<u8> {
@@ -332,14 +369,17 @@ impl PortReader {
     fn update_log_dir(&self, dir: String) {
         if let Ok(mut d) = self.log_dir.lock() { *d = dir; }
     }
+
+    fn update_line_ending(&self, le: String) {
+        if let Ok(mut v) = self.line_ending.lock() { *v = le; }
+    }
 }
 
 impl Drop for PortReader {
     fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
+        if let Some(h) = self.read_handle.take() { let _ = h.join(); }
+        if let Some(h) = self.wf_handle.take() { let _ = h.join(); }
     }
 }
 
@@ -398,9 +438,42 @@ struct WorkflowRule {
     actions: Vec<WorkflowAction>,
 }
 
+/// 正则表达式编译缓存
+struct RegexCache {
+    cache: std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<Regex>>>,
+}
+
+impl RegexCache {
+    fn new() -> Self {
+        RegexCache { cache: std::sync::Mutex::new(std::collections::HashMap::new()) }
+    }
+
+    fn get_or_compile(&self, pattern: &str) -> Option<std::sync::Arc<Regex>> {
+        // 先查缓存
+        {
+            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(re) = cache.get(pattern) {
+                return Some(re.clone());
+            }
+        }
+        // 缓存未命中，编译并存入
+        match Regex::new(pattern) {
+            Ok(re) => {
+                let re = std::sync::Arc::new(re);
+                let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                cache.insert(pattern.to_string(), re.clone());
+                Some(re)
+            }
+            Err(_) => None,
+        }
+    }
+}
+
+/// 全局正则缓存（随 WorkflowState 一起管理）
 struct WorkflowState {
     rules: Mutex<HashMap<String, Vec<WorkflowRule>>>,
     log_dirs: Mutex<HashMap<String, String>>,
+    regex_cache: std::sync::Arc<RegexCache>,
 }
 
 /// 解析 HEX 字符串为字节序列（支持空格分隔如 "FF 01 02" 或连续 "FF0102"）
@@ -416,16 +489,16 @@ fn parse_hex_bytes(s: &str) -> Vec<u8> {
 }
 
 /// 检查单个条件是否匹配
-fn match_condition(cond: &WorkflowCondition, raw: &[u8]) -> bool {
+fn match_condition(cond: &WorkflowCondition, raw: &[u8], cache: &RegexCache) -> bool {
     match cond.cond_type.as_str() {
         "string_contains" => {
             String::from_utf8_lossy(raw).contains(&cond.value)
         }
         "regex" => {
             let text = String::from_utf8_lossy(raw);
-            match Regex::new(&cond.value) {
-                Ok(re) => re.is_match(&text),
-                Err(_) => false,
+            match cache.get_or_compile(&cond.value) {
+                Some(re) => re.is_match(&text),
+                None => false,
             }
         }
         "exact_bytes" => {
@@ -687,7 +760,7 @@ fn open_port(
     port.write_request_to_send(rts).map_err(|e| format!("RTS 设置失败: {}", e))?;
 
     // 创建读取线程，同步已有的工作流规则
-    let reader = PortReader::new(port);
+    let reader = PortReader::new(port, wf_state.regex_cache.clone());
     {
         let rules_map = wf_state.rules.lock().unwrap_or_else(|e| e.into_inner());
         let dirs_map = wf_state.log_dirs.lock().unwrap_or_else(|e| e.into_inner());
@@ -797,7 +870,7 @@ fn check_workflow_matches(
         let mut matched = vec![];
         for rule in monitor_rules {
             if !rule.running || rule.conditions.is_empty() { continue; }
-            if rule.conditions.iter().all(|c| match_condition(c, &data)) {
+            if rule.conditions.iter().all(|c| match_condition(c, &data, &wf_state.regex_cache)) {
                 matched.push((rule.id.clone(), rule.name.clone(), rule.actions.clone()));
             }
         }
@@ -901,6 +974,19 @@ fn update_workflow_log_dir(
     let readers = port_state.readers.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(reader) = readers.get(&monitor_id) {
         reader.update_log_dir(log_dir);
+    }
+}
+
+/// 更新监视器的行尾设置（供工作流使用）
+#[tauri::command]
+fn update_workflow_line_ending(
+    port_state: tauri::State<'_, PortState>,
+    monitor_id: String,
+    line_ending: String,
+) {
+    let readers = port_state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(reader) = readers.get(&monitor_id) {
+        reader.update_line_ending(line_ending);
     }
 }
 
@@ -2327,6 +2413,7 @@ fn main() {
         .manage(WorkflowState {
             rules: Mutex::new(HashMap::new()),
             log_dirs: Mutex::new(HashMap::new()),
+            regex_cache: std::sync::Arc::new(RegexCache::new()),
         })
         .invoke_handler(tauri::generate_handler![
             list_ports,
@@ -2365,6 +2452,7 @@ fn main() {
             load_workflows,
             init_workflows,
             update_workflow_log_dir,
+            update_workflow_line_ending,
             open_url,
             set_title_bar_color,
             get_app_info,
