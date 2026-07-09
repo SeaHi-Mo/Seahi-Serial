@@ -174,9 +174,178 @@ fn wsl_shell_exec(distro: &str, cmd: &str, timeout_ms: u64) -> Result<String, St
 /// WSL 终端进程 PID（由 launch_wsl 设置，用于检测用户关闭窗口）
 static WSL_TERMINAL_PID: Mutex<Option<u32>> = Mutex::new(None);
 
+/// 串口读取 + 工作流监控线程：后台持续读取数据，自动检查规则并执行动作
+struct PortReader {
+    buffer: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    port: std::sync::Arc<std::sync::Mutex<Box<dyn SerialPort>>>,
+    rules: std::sync::Arc<std::sync::Mutex<Vec<WorkflowRule>>>,
+    log_dir: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl PortReader {
+    fn new(port: Box<dyn SerialPort>) -> Self {
+        let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::with_capacity(8192)));
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let rules = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log_dir = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let buf_clone = buffer.clone();
+        let evt_clone = events.clone();
+        let stop_clone = stop.clone();
+        let port_arc = std::sync::Arc::new(std::sync::Mutex::new(port));
+        let port_clone = port_arc.clone();
+        let rules_clone = rules.clone();
+        let log_dir_clone = log_dir.clone();
+
+        let handle = std::thread::spawn(move || {
+            let mut tmp = [0u8; 4096];
+            loop {
+                if stop_clone.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                let read_result = {
+                    let mut p = port_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    p.read(&mut tmp)
+                };
+                match read_result {
+                    Ok(n) if n > 0 => {
+                        let chunk = tmp[..n].to_vec();
+                        if let Ok(mut buf) = buf_clone.lock() {
+                            buf.extend_from_slice(&chunk);
+                            if buf.len() > 262144 {
+                                let drain = buf.len() - 131072;
+                                buf.drain(..drain);
+                            }
+                        }
+                        // 工作流检查放到独立线程，不阻塞读取循环
+                        let pending_clone = chunk.clone();
+                        let rules_c = rules_clone.clone();
+                        let log_c = log_dir_clone.clone();
+                        let port_c = port_clone.clone();
+                        let evt_c = evt_clone.clone();
+                        std::thread::spawn(move || {
+                            Self::check_workflows(&pending_clone, &rules_c, &log_c, &port_c, &evt_c);
+                        });
+                    }
+                    Ok(_) => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(_) => break,
+                }
+            }
+        });
+
+        PortReader { buffer, events, handle: Some(handle), stop, port: port_arc, rules, log_dir }
+    }
+
+    fn check_workflows(
+        pending: &[u8],
+        rules: &std::sync::Arc<std::sync::Mutex<Vec<WorkflowRule>>>,
+        log_dir: &std::sync::Arc<std::sync::Mutex<String>>,
+        port: &std::sync::Arc<std::sync::Mutex<Box<dyn SerialPort>>>,
+        events: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        if pending.is_empty() { return; }
+        // 阶段1：短持锁，克隆匹配规则
+        let (ld, matched) = {
+            let rule_list = rules.lock().unwrap_or_else(|e| e.into_inner());
+            let ld = log_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let mut matched = vec![];
+            for rule in rule_list.iter() {
+                if !rule.running || rule.conditions.is_empty() { continue; }
+                if rule.conditions.iter().all(|c| match_condition(c, pending)) {
+                    matched.push(rule.actions.clone());
+                }
+            }
+            (ld, matched)
+        }; // 锁释放
+
+        // 阶段2：无锁执行动作
+        let mut all_sent = Vec::new();
+        for actions in &matched {
+            let mut sent_parts = Vec::new();
+            for action in actions {
+                if action.delay_before > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(action.delay_before));
+                }
+                match action.action_type.as_str() {
+                    "send_data" => {
+                        let bytes = if action.encoding == "hex" {
+                            parse_hex_bytes(&action.data)
+                        } else {
+                            action.data.as_bytes().to_vec()
+                        };
+                        if bytes.is_empty() { continue; }
+                        sent_parts.push(action.data.clone());
+                        let mut p = port.lock().unwrap_or_else(|e| e.into_inner());
+                        match p.write_all(&bytes) {
+                            Ok(()) => {}
+                            Err(e) => eprintln!("[Workflow] 发送失败: {}", e),
+                        }
+                    }
+                    "toggle_dtr_rts" => {
+                        let mut p = port.lock().unwrap_or_else(|e| e.into_inner());
+                        let ok = match action.signal.as_str() {
+                            "dtr" => p.write_data_terminal_ready(action.level).is_ok(),
+                            "rts" => p.write_request_to_send(action.level).is_ok(),
+                            _ => false,
+                        };
+                        if ok { sent_parts.push(format!("[{} {}]", action.signal.to_uppercase(), if action.level { "ON" } else { "OFF" })); }
+                    }
+                    "save_log" => {
+                        if !ld.is_empty() {
+                            let filepath = std::path::Path::new(&ld).join("workflow_log.txt");
+                            if let Ok(mut f) = std::fs::OpenOptions::new()
+                                .create(true).append(true).open(&filepath)
+                            { let _ = f.write_all(pending); }
+                        }
+                        sent_parts.push("[LOG]".to_string());
+                    }
+                    _ => {}
+                }
+            }
+            all_sent.extend(sent_parts);
+        }
+        if !all_sent.is_empty() {
+            let msg = format!("[Auto] {}", all_sent.join(" "));
+            if let Ok(mut evts) = events.lock() { evts.push(msg); }
+        }
+    }
+
+    fn read_all(&self) -> Vec<u8> {
+        if let Ok(mut buf) = self.buffer.lock() {
+            std::mem::take(&mut *buf)
+        } else { vec![] }
+    }
+
+    fn read_events(&self) -> Vec<String> {
+        if let Ok(mut evts) = self.events.lock() {
+            std::mem::take(&mut *evts)
+        } else { vec![] }
+    }
+
+    fn update_rules(&self, new_rules: Vec<WorkflowRule>) {
+        if let Ok(mut r) = self.rules.lock() { *r = new_rules; }
+    }
+
+    fn update_log_dir(&self, dir: String) {
+        if let Ok(mut d) = self.log_dir.lock() { *d = dir; }
+    }
+}
+
+impl Drop for PortReader {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
 /// 全局状态：多个独立串口连接（key = monitor_id）
 struct PortState {
-    ports: Mutex<HashMap<String, Box<dyn SerialPort>>>,
+    readers: Mutex<HashMap<String, PortReader>>,
 }
 
 /// WSL 串口会话：通过管道与 bridge 脚本通信
@@ -223,6 +392,8 @@ struct WorkflowRule {
     id: String,
     name: String,
     enabled: bool,
+    #[serde(default)]
+    running: bool,
     conditions: Vec<WorkflowCondition>,
     actions: Vec<WorkflowAction>,
 }
@@ -266,14 +437,15 @@ fn match_condition(cond: &WorkflowCondition, raw: &[u8]) -> bool {
     }
 }
 
-/// 执行工作流动作序列（每个动作单独加锁，不长时间持有）
+/// 执行工作流动作序列，返回所有发送的数据文本
 fn execute_workflow_actions(
     actions: &[WorkflowAction],
     monitor_id: &str,
-    ports: &Mutex<HashMap<String, Box<dyn SerialPort>>>,
+    readers: &Mutex<HashMap<String, PortReader>>,
     log_dir: &str,
     received: &[u8],
-) {
+) -> String {
+    let mut sent_parts = Vec::new();
     for action in actions {
         if action.delay_before > 0 {
             std::thread::sleep(std::time::Duration::from_millis(action.delay_before));
@@ -286,20 +458,24 @@ fn execute_workflow_actions(
                     action.data.as_bytes().to_vec()
                 };
                 if bytes.is_empty() { continue; }
-                let mut map = ports.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(ref mut port) = map.get_mut(monitor_id) {
+                sent_parts.push(action.data.clone());
+                let map = readers.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(reader) = map.get(monitor_id) {
+                    let mut port = reader.port.lock().unwrap_or_else(|e| e.into_inner());
                     let _ = port.write_all(&bytes);
                 }
             }
             "toggle_dtr_rts" => {
-                let mut map = ports.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(ref mut port) = map.get_mut(monitor_id) {
+                let map = readers.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(reader) = map.get(monitor_id) {
+                    let mut port = reader.port.lock().unwrap_or_else(|e| e.into_inner());
                     match action.signal.as_str() {
                         "dtr" => { let _ = port.write_data_terminal_ready(action.level); }
                         "rts" => { let _ = port.write_request_to_send(action.level); }
                         _ => {}
                     }
                 }
+                sent_parts.push(format!("[{} {}]", action.signal.to_uppercase(), if action.level { "ON" } else { "OFF" }));
             }
             "save_log" => {
                 if !log_dir.is_empty() && !received.is_empty() {
@@ -311,10 +487,12 @@ fn execute_workflow_actions(
                         let _ = f.write_all(received);
                     }
                 }
+                sent_parts.push("[LOG]".to_string());
             }
             _ => {}
         }
     }
+    sent_parts.join(" ")
 }
 
 /// 创建不显示控制台窗口的 Command
@@ -464,10 +642,11 @@ fn list_ports() -> Vec<PortInfo> {
         .collect()
 }
 
-/// 打开串口
+/// 打开串口（启动后台读取线程）
 #[tauri::command]
 fn open_port(
     state: tauri::State<'_, PortState>,
+    wf_state: tauri::State<'_, WorkflowState>,
     monitor_id: String,
     port_name: String,
     baud_rate: u32,
@@ -479,99 +658,94 @@ fn open_port(
 ) -> Result<(), String> {
     // 关闭该监视器已有的连接
     {
-        let mut map = state.ports.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(old) = map.remove(&monitor_id) {
-            let _ = old.clear(ClearBuffer::All);
-        }
+        let mut map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+        map.remove(&monitor_id);
     }
 
     let mut port: Box<dyn SerialPort> = serialport::open(&port_name)
             .map_err(|e| format!("打开失败: {}", e))?;
 
-    // 设置波特率
-    port.set_baud_rate(baud_rate)
-        .map_err(|e| format!("设置波特率失败: {}", e))?;
+    port.set_baud_rate(baud_rate).map_err(|e| format!("设置波特率失败: {}", e))?;
 
-    // 设置数据位
     let db = match data_bits {
-        5 => DataBits::Five,
-        6 => DataBits::Six,
-        7 => DataBits::Seven,
-        _ => DataBits::Eight,
+        5 => DataBits::Five, 6 => DataBits::Six, 7 => DataBits::Seven, _ => DataBits::Eight,
     };
-    port.set_data_bits(db)
-        .map_err(|e| format!("设置数据位失败: {}", e))?;
+    port.set_data_bits(db).map_err(|e| format!("设置数据位失败: {}", e))?;
 
-    // 设置停止位
-    let sb = match stop_bits {
-        2 => StopBits::Two,
-        _ => StopBits::One,
-    };
-    port.set_stop_bits(sb)
-        .map_err(|e| format!("设置停止位失败: {}", e))?;
+    let sb = match stop_bits { 2 => StopBits::Two, _ => StopBits::One };
+    port.set_stop_bits(sb).map_err(|e| format!("设置停止位失败: {}", e))?;
 
-    // 设置校验位
     let pr = match parity.as_str() {
-        "even" => Parity::Even,
-        "odd" => Parity::Odd,
-        _ => Parity::None,
+        "even" => Parity::Even, "odd" => Parity::Odd, _ => Parity::None,
     };
-    port.set_parity(pr)
-        .map_err(|e| format!("设置校验位失败: {}", e))?;
+    port.set_parity(pr).map_err(|e| format!("设置校验位失败: {}", e))?;
 
-    // 设置 DTR/RTS
-    port.write_data_terminal_ready(dtr)
-        .map_err(|e| format!("DTR 设置失败: {}", e))?;
-    port.write_request_to_send(rts)
-        .map_err(|e| format!("RTS 设置失败: {}", e))?;
+    port.set_timeout(std::time::Duration::from_millis(10))
+        .map_err(|e| format!("设置超时失败: {}", e))?;
 
-    let mut guard = state.ports.lock().unwrap_or_else(|e| e.into_inner());
-    guard.insert(monitor_id, port);
+    port.write_data_terminal_ready(dtr).map_err(|e| format!("DTR 设置失败: {}", e))?;
+    port.write_request_to_send(rts).map_err(|e| format!("RTS 设置失败: {}", e))?;
+
+    // 创建读取线程，同步已有的工作流规则
+    let reader = PortReader::new(port);
+    {
+        let rules_map = wf_state.rules.lock().unwrap_or_else(|e| e.into_inner());
+        let dirs_map = wf_state.log_dirs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(rules) = rules_map.get(&monitor_id) {
+            reader.update_rules(rules.clone());
+        }
+        if let Some(dir) = dirs_map.get(&monitor_id) {
+            reader.update_log_dir(dir.clone());
+        }
+    }
+    let mut guard = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    guard.insert(monitor_id, reader);
 
     Ok(())
 }
 
-/// 关闭串口
+/// 关闭串口（停止读取线程）
 #[tauri::command]
 fn close_port(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<(), String> {
-    let mut map = state.ports.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(mut port) = map.remove(&monitor_id) {
+    let mut map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(reader) = map.remove(&monitor_id) {
+        let mut port = reader.port.lock().unwrap_or_else(|e| e.into_inner());
         let _ = port.flush();
         let _ = port.clear(ClearBuffer::All);
     }
     Ok(())
 }
 
-/// 发送数据
+/// 从缓冲区读取数据（毫秒级，不阻塞）
 #[tauri::command]
-fn send_data(state: tauri::State<'_, PortState>, monitor_id: String, data: Vec<u8>) -> Result<usize, String> {
-    let mut map = state.ports.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(ref mut port) = map.get_mut(&monitor_id) {
-        port.write_all(&data).map_err(|e| format!("发送失败: {}", e))?;
-        Ok(data.len())
+fn read_data(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<Vec<u8>, String> {
+    let map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(reader) = map.get(&monitor_id) {
+        Ok(reader.read_all())
     } else {
         Err("未连接串口".into())
     }
 }
 
-/// 读取数据（非阻塞，返回所有可用字节）
+/// 读取工作流触发事件（前端轮询显示 [Auto] 消息）
 #[tauri::command]
-fn read_data(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<Vec<u8>, String> {
-    let mut map = state.ports.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(ref mut port) = map.get_mut(&monitor_id) {
-        let mut all_data = Vec::new();
-        let mut buf = [0u8; 4096];
-        loop {
-            match port.read(&mut buf) {
-                Ok(n) if n > 0 => all_data.extend_from_slice(&buf[..n]),
-                Ok(_) => break,
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(e) if all_data.is_empty() => return Err(format!("读取失败: {}", e)),
-                Err(_) => break,
-            }
-        }
-        Ok(all_data)
+fn read_workflow_events(state: tauri::State<'_, PortState>, monitor_id: String) -> Vec<String> {
+    let map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(reader) = map.get(&monitor_id) {
+        reader.read_events()
+    } else {
+        vec![]
+    }
+}
+
+/// 发送数据
+#[tauri::command]
+fn send_data(state: tauri::State<'_, PortState>, monitor_id: String, data: Vec<u8>) -> Result<usize, String> {
+    let map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(reader) = map.get(&monitor_id) {
+        let mut port = reader.port.lock().unwrap_or_else(|e| e.into_inner());
+        port.write_all(&data).map_err(|e| format!("发送失败: {}", e))?;
+        Ok(data.len())
     } else {
         Err("未连接串口".into())
     }
@@ -580,8 +754,9 @@ fn read_data(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<V
 /// 实时设置 DTR 信号
 #[tauri::command]
 fn set_dtr(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) -> Result<(), String> {
-    let mut map = state.ports.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(ref mut port) = map.get_mut(&monitor_id) {
+    let map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(reader) = map.get(&monitor_id) {
+        let mut port = reader.port.lock().unwrap_or_else(|e| e.into_inner());
         port.write_data_terminal_ready(level).map_err(|e| format!("DTR 设置失败: {}", e))
     } else {
         Err("未连接串口".into())
@@ -591,8 +766,9 @@ fn set_dtr(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) 
 /// 实时设置 RTS 信号
 #[tauri::command]
 fn set_rts(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) -> Result<(), String> {
-    let mut map = state.ports.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(ref mut port) = map.get_mut(&monitor_id) {
+    let map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(reader) = map.get(&monitor_id) {
+        let mut port = reader.port.lock().unwrap_or_else(|e| e.into_inner());
         port.write_request_to_send(level).map_err(|e| format!("RTS 设置失败: {}", e))
     } else {
         Err("未连接串口".into())
@@ -602,6 +778,7 @@ fn set_rts(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) 
 // ===== 自动化工作流命令 =====
 
 /// 检查收到的数据是否匹配工作流规则，匹配则执行动作
+/// 匹配阶段短暂持锁，执行阶段单独加锁避免阻塞串口读取
 #[tauri::command]
 fn check_workflow_matches(
     wf_state: tauri::State<'_, WorkflowState>,
@@ -609,38 +786,55 @@ fn check_workflow_matches(
     monitor_id: String,
     data: Vec<u8>,
 ) -> Vec<serde_json::Value> {
-    let rules = wf_state.rules.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(monitor_rules) = rules.get(&monitor_id) else {
-        return vec![];
-    };
-    let log_dirs = wf_state.log_dirs.lock().unwrap_or_else(|e| e.into_inner());
-    let log_dir = log_dirs.get(&monitor_id).cloned().unwrap_or_default();
-
-    let mut matched = vec![];
-    for rule in monitor_rules {
-        if !rule.enabled || rule.conditions.is_empty() { continue; }
-        let all_match = rule.conditions.iter().all(|c| match_condition(c, &data));
-        if all_match {
-            execute_workflow_actions(
-                &rule.actions, &monitor_id, &port_state.ports, &log_dir, &data,
-            );
-            matched.push(serde_json::json!({ "id": rule.id, "name": rule.name }));
+    // 阶段1：短暂持锁，收集匹配的规则（克隆动作数据）
+    let (log_dir, matched_rules) = {
+        let rules = wf_state.rules.lock().unwrap_or_else(|e| e.into_inner());
+        let log_dirs = wf_state.log_dirs.lock().unwrap_or_else(|e| e.into_inner());
+        let log_dir = log_dirs.get(&monitor_id).cloned().unwrap_or_default();
+        let Some(monitor_rules) = rules.get(&monitor_id) else {
+            return vec![];
+        };
+        let mut matched = vec![];
+        for rule in monitor_rules {
+            if !rule.running || rule.conditions.is_empty() { continue; }
+            if rule.conditions.iter().all(|c| match_condition(c, &data)) {
+                matched.push((rule.id.clone(), rule.name.clone(), rule.actions.clone()));
+            }
         }
+        (log_dir, matched)
+    }; // 锁在此释放
+
+    // 阶段2：无锁执行动作，每个动作单独加锁
+    let mut result = vec![];
+    for (id, name, actions) in matched_rules {
+        let sent = execute_workflow_actions(&actions, &monitor_id, &port_state.readers, &log_dir, &data);
+        result.push(serde_json::json!({ "id": id, "name": name, "sent": sent }));
     }
-    matched
+    result
 }
 
 /// 保存工作流规则到内存（前端编辑后调用）
 #[tauri::command]
 fn save_workflows(
     state: tauri::State<'_, WorkflowState>,
+    port_state: tauri::State<'_, PortState>,
     monitor_id: String,
     workflows_json: String,
 ) -> Result<(), String> {
     let rules: Vec<WorkflowRule> = serde_json::from_str(&workflows_json)
         .map_err(|e| format!("解析工作流数据失败: {}", e))?;
-    let mut map = state.rules.lock().unwrap_or_else(|e| e.into_inner());
-    map.insert(monitor_id, rules);
+    // 更新 WorkflowState（供前端读取）
+    {
+        let mut map = state.rules.lock().unwrap_or_else(|e| e.into_inner());
+        map.insert(monitor_id.clone(), rules.clone());
+    }
+    // 同步更新 PortReader 中的规则（供后台线程使用）
+    {
+        let map = port_state.readers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(reader) = map.get(&monitor_id) {
+            reader.update_rules(rules);
+        }
+    }
     Ok(())
 }
 
@@ -659,22 +853,31 @@ fn load_workflows(
 #[tauri::command]
 fn init_workflows(
     state: tauri::State<'_, WorkflowState>,
+    port_state: tauri::State<'_, PortState>,
     config_json: String,
 ) -> Result<(), String> {
     let cfg: serde_json::Value = serde_json::from_str(&config_json)
         .map_err(|e| format!("解析配置失败: {}", e))?;
     let mut map = state.rules.lock().unwrap_or_else(|e| e.into_inner());
     let mut dirs = state.log_dirs.lock().unwrap_or_else(|e| e.into_inner());
+    let readers = port_state.readers.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(monitors) = cfg.get("monitors").and_then(|m| m.as_object()) {
         for (mid, mc) in monitors {
             if let Some(wf_arr) = mc.get("workflows").and_then(|w| w.as_array()) {
                 let rules: Vec<WorkflowRule> = wf_arr.iter()
                     .filter_map(|v| serde_json::from_value(v.clone()).ok())
                     .collect();
+                // 同步到 PortReader
+                if let Some(reader) = readers.get(mid) {
+                    reader.update_rules(rules.clone());
+                }
                 map.insert(mid.clone(), rules);
             }
             if let Some(ld) = mc.get("logDir").and_then(|l| l.as_str()) {
                 if !ld.is_empty() {
+                    if let Some(reader) = readers.get(mid) {
+                        reader.update_log_dir(ld.to_string());
+                    }
                     dirs.insert(mid.clone(), ld.to_string());
                 }
             }
@@ -687,11 +890,18 @@ fn init_workflows(
 #[tauri::command]
 fn update_workflow_log_dir(
     state: tauri::State<'_, WorkflowState>,
+    port_state: tauri::State<'_, PortState>,
     monitor_id: String,
     log_dir: String,
 ) {
-    let mut dirs = state.log_dirs.lock().unwrap_or_else(|e| e.into_inner());
-    dirs.insert(monitor_id, log_dir);
+    {
+        let mut dirs = state.log_dirs.lock().unwrap_or_else(|e| e.into_inner());
+        dirs.insert(monitor_id.clone(), log_dir.clone());
+    }
+    let readers = port_state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(reader) = readers.get(&monitor_id) {
+        reader.update_log_dir(log_dir);
+    }
 }
 
 /// 选择日志文件目录（使用原生对话框）
@@ -2109,7 +2319,7 @@ fn set_title_bar_color(window: tauri::Window, r: u8, g: u8, b: u8) -> Result<(),
 fn main() {
     tauri::Builder::default()
         .manage(PortState {
-            ports: Mutex::new(HashMap::new()),
+            readers: Mutex::new(HashMap::new()),
         })
         .manage(WslSerialState {
             sessions: Mutex::new(HashMap::new()),
@@ -2125,6 +2335,7 @@ fn main() {
             close_port,
             send_data,
             read_data,
+            read_workflow_events,
             set_dtr,
             set_rts,
             choose_log_directory,
