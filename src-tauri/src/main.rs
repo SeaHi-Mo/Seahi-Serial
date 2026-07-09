@@ -185,7 +185,6 @@ struct PortReader {
     rules: std::sync::Arc<std::sync::Mutex<Vec<WorkflowRule>>>,
     log_dir: std::sync::Arc<std::sync::Mutex<String>>,
     line_ending: std::sync::Arc<std::sync::Mutex<String>>,
-    regex_cache: std::sync::Arc<RegexCache>,
 }
 
 impl PortReader {
@@ -248,7 +247,7 @@ impl PortReader {
             }
         });
 
-        PortReader { buffer, events, read_handle: Some(read_handle), wf_handle: Some(wf_handle), stop, port: port_arc, rules, log_dir, line_ending, regex_cache }
+        PortReader { buffer, events, read_handle: Some(read_handle), wf_handle: Some(wf_handle), stop, port: port_arc, rules, log_dir, line_ending }
     }
 
     fn check_workflows(

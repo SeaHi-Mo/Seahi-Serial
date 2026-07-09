@@ -1993,11 +1993,27 @@ function createMonitorPane(mid, title, closable) {
         {label:'指令4', value:''}, {label:'指令5', value:''}
     ], workflows: []};
 
-    // 输出区域编辑状态检测
+    // 输出区域编辑状态检测：进入编辑关自动滚动，退出恢复
     var outputEl = document.getElementById(mid + '-output');
     if (outputEl) {
-        outputEl.addEventListener('focus', function() { if (monitors[mid]) monitors[mid]._editing = true; });
-        outputEl.addEventListener('blur', function() { if (monitors[mid]) monitors[mid]._editing = false; });
+        outputEl.addEventListener('focus', function() {
+            if (!monitors[mid]) return;
+            monitors[mid]._editing = true;
+            var btn = document.getElementById(mid + '-btnScroll');
+            if (btn && btn.classList.contains('on')) {
+                monitors[mid]._autoScrollSaved = true;
+                btn.classList.remove('on');
+            }
+        });
+        outputEl.addEventListener('blur', function() {
+            if (!monitors[mid]) return;
+            monitors[mid]._editing = false;
+            if (monitors[mid]._autoScrollSaved) {
+                var btn = document.getElementById(mid + '-btnScroll');
+                if (btn) btn.classList.add('on');
+                monitors[mid]._autoScrollSaved = false;
+            }
+        });
     }
 
     // 初始化快速指令下拉列表
@@ -2564,7 +2580,6 @@ function startReading(mid) {
     var reading = false;
     monitors[mid].readTimer = setInterval(async function() {
         if (reading || !monitors[mid] || !monitors[mid].isConnected) { if (!monitors[mid] || !monitors[mid].isConnected) stopReading(mid); return; }
-        if (monitors[mid]._editing) return;
         reading = true;
         try {
             var data = await invoke('read_data', { monitorId: mid });
@@ -4056,11 +4071,27 @@ function initWslMonitor() {
             {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
             {label:'指令4', value:''}, {label:'指令5', value:''}
         ], isWsl: true };
-        // 输出区域编辑状态检测
+        // 输出区域编辑状态检测：进入编辑关自动滚动，退出恢复
         var wslOutputEl = document.getElementById(wmid + '-output');
         if (wslOutputEl) {
-            wslOutputEl.addEventListener('focus', function() { if (monitors[wmid]) monitors[wmid]._editing = true; });
-            wslOutputEl.addEventListener('blur', function() { if (monitors[wmid]) monitors[wmid]._editing = false; });
+            wslOutputEl.addEventListener('focus', function() {
+                if (!monitors[wmid]) return;
+                monitors[wmid]._editing = true;
+                var btn = document.getElementById(wmid + '-btnScroll');
+                if (btn && btn.classList.contains('on')) {
+                    monitors[wmid]._autoScrollSaved = true;
+                    btn.classList.remove('on');
+                }
+            });
+            wslOutputEl.addEventListener('blur', function() {
+                if (!monitors[wmid]) return;
+                monitors[wmid]._editing = false;
+                if (monitors[wmid]._autoScrollSaved) {
+                    var btn = document.getElementById(wmid + '-btnScroll');
+                    if (btn) btn.classList.add('on');
+                    monitors[wmid]._autoScrollSaved = false;
+                }
+            });
         }
     }
     // 初始化快速指令下拉列表
