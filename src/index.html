@@ -1878,7 +1878,7 @@ function createMonitorPane(mid, title, closable) {
                 '</div>' +
             '</div>' +
             '<span class="lbl">端口</span>' +
-            '<div class="sel sel-port" id="' + mid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:280px;">' +
+            '<div class="sel sel-port" id="' + mid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:252px;">' +
                 '<span class="sel-text">加载中...</span><span class="sel-arrow">&#9660;</span>' +
                 '<div class="sel-drop" id="' + mid + '-portDrop"></div>' +
             '</div>' +
@@ -1992,6 +1992,12 @@ function createMonitorPane(mid, title, closable) {
         {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
         {label:'指令4', value:''}, {label:'指令5', value:''}
     ], workflows: []};
+
+    // 新建监视器默认展开高级设置
+    var advRow = document.getElementById(mid + '-advRow');
+    if (advRow) advRow.classList.add('vis');
+    var advBtn = document.getElementById(mid + '-btnAdv');
+    if (advBtn) advBtn.classList.add('on');
 
     // 输出区域编辑状态检测：进入编辑关自动滚动，退出恢复
     var outputEl = document.getElementById(mid + '-output');
@@ -2656,6 +2662,14 @@ function stopReading(mid) {
 function addMonitor() {
     extraCount++;
     createMonitorPane('extra-' + extraCount, '监视器 ' + (extraCount + 1), true);
+    // 自动扩展窗口宽度以容纳新监视器
+    var panes = document.querySelectorAll('#paneContainer .monitor-pane');
+    var minWidth = panes.length * 524;
+    invoke('get_window_size').then(function(size) {
+        if (size.width < minWidth) {
+            invoke('set_window_size', { width: minWidth, height: size.height });
+        }
+    }).catch(function() {});
     scheduleConfigSave();
 }
 
@@ -3918,7 +3932,12 @@ function getWslMappingHtml(mid) {
                 '<button class="ibtn" onclick="saveLogToFile(\'' + wmid + '\')" title="保存日志">' + ICONS.saveLog + '</button>' +
                 '<button class="ibtn" onclick="copyOutput(\'' + wmid + '\')" title="复制全部">' + ICONS.copyAll + '</button>' +
                 '<button class="ibtn" id="' + wmid + '-btnCollapseTb" onclick="toggleToolbarCollapse(\'' + wmid + '\')" title="折叠工具栏">' + ICONS.chevronUp + '</button>' +
+                '<div style="flex:1;"></div>' +
+                '<button class="wf-add-btn" onclick="addWorkflowRule(\'' + wmid + '\')">+ 添加规则</button>' +
             '</div></div>' +
+            '<div class="adv-wf-wrap" id="' + wmid + '-advWf">' +
+                '<div class="wf-list" id="' + wmid + '-wfList"></div>' +
+            '</div>' +
             '<div class="output" contenteditable="true" id="' + wmid + '-output"></div>' +
             '<div class="send-bar" id="' + wmid + '-sendBar">' +
                 '<div class="send-wrap" id="' + wmid + '-sendWrap">' +
@@ -4070,7 +4089,7 @@ function initWslMonitor() {
         monitors[wmid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, _editing: false, quickCmds: [
             {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
             {label:'指令4', value:''}, {label:'指令5', value:''}
-        ], isWsl: true };
+        ], isWsl: true, workflows: [] };
         // 输出区域编辑状态检测：进入编辑关自动滚动，退出恢复
         var wslOutputEl = document.getElementById(wmid + '-output');
         if (wslOutputEl) {

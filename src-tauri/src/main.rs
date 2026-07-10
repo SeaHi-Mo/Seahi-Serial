@@ -2347,7 +2347,7 @@ fn get_window_size(window: tauri::Window) -> Result<(u32, u32), String> {
 /// 设置窗口大小
 #[tauri::command]
 fn set_window_size(window: tauri::Window, width: u32, height: u32) -> Result<(), String> {
-    let w = width.max(1000);
+    let w = width.max(1047);
     let h = height.max(650);
     window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: w, height: h }))
         .map_err(|e| format!("设置窗口大小失败: {}", e))
@@ -2461,7 +2461,7 @@ fn main() {
             {
                 start_device_watcher(app.handle().clone());
                 if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.set_min_size(Some(tauri::LogicalSize::new(1000.0, 650.0)));
+                    let _ = win.set_min_size(Some(tauri::LogicalSize::new(1047.0, 650.0)));
                 }
             }
             start_wsl_watcher(app.handle().clone());
