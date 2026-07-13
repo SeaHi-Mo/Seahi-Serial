@@ -82,9 +82,10 @@ fn start_device_watcher(app: tauri::AppHandle) {
             dbg_log(&format!("CM_Register_Notification failed: {}", result));
         }
 
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(3600));
+        while !DEVICE_WATCHER_STOP.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_secs(1));
         }
+        dbg_log("device_watcher: stopped");
     });
 }
 
@@ -1282,7 +1283,7 @@ fn is_process_alive(pid: u32) -> bool {
 fn start_wsl_watcher(app: tauri::AppHandle) {
     std::thread::spawn(move || {
         let mut last_running = false;
-        loop {
+        while !WSL_WATCHER_STOP.load(std::sync::atomic::Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_secs(2));
 
             let distros = check_wsl_running().unwrap_or_default();
@@ -1307,6 +1308,7 @@ fn start_wsl_watcher(app: tauri::AppHandle) {
                 let _ = app.emit("wsl-status-changed", running);
             }
         }
+        dbg_log("wsl_watcher: stopped");
     });
 }
 
@@ -2401,6 +2403,10 @@ fn set_title_bar_color(window: tauri::Window, r: u8, g: u8, b: u8) -> Result<(),
     Ok(())
 }
 
+/// 后台线程停止标志
+static DEVICE_WATCHER_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static WSL_WATCHER_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn main() {
     tauri::Builder::default()
         .manage(PortState {
@@ -2466,6 +2472,47 @@ fn main() {
             }
             start_wsl_watcher(app.handle().clone());
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                dbg_log("CloseRequested: cleaning up resources");
+                // 通知前端保存配置
+                let _ = window.emit("save-before-exit", ());
+                std::thread::sleep(std::time::Duration::from_millis(200));
+
+                // 停止后台线程
+                DEVICE_WATCHER_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+                WSL_WATCHER_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+
+                // 关闭所有串口
+                if let Some(state) = window.try_state::<PortState>() {
+                    let mut map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+                    for (_, reader) in map.drain() {
+                        drop(reader);
+                    }
+                }
+
+                // 关闭所有 WSL 串口会话并杀掉子进程
+                if let Some(state) = window.try_state::<WslSerialState>() {
+                    let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+                    for (_, session) in sessions.drain() {
+                        let _ = { use std::io::Write; if let Ok(mut w) = session.writer.lock() { let _ = w.write_all(b"{\"cmd\":\"close\"}\n"); let _ = w.flush(); } };
+                        let _ = { let mut c = session.child.lock().unwrap(); let _ = c.kill(); c.wait() };
+                    }
+                }
+
+                // 杀掉 WSL shell 进程
+                {
+                    let mut shell = WSL_SHELL.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(s) = shell.take() {
+                        let mut c = s._child;
+                        let _ = c.kill();
+                        let _ = c.wait();
+                    }
+                }
+
+                dbg_log("CloseRequested: cleanup done");
+            }
         })
         .run(tauri::generate_context!())
         .expect("启动应用失败");
