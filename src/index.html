@@ -1289,6 +1289,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .output.with-line-num .ln { display:inline-block; color:var(--text-d); user-select:none; width:auto; text-align:right; margin-right:8px; font-family:var(--font-mono); font-size:14px; padding-right:2px; flex-shrink:0; }
 .ol .lc { flex:1; min-width:0; }
 .ol.recv { color:var(--text); }
+.ol.recv.hex-view .lc { color:var(--text-d); }
 .ol.send { display:block; width:fit-content; max-width:100%; color:var(--send-bubble-text); background:var(--send-bubble-bg); padding:2px 6px; border-radius:3px; margin:1px 0; word-break:break-all; white-space:pre-wrap; }
 .output.with-line-num .ol.send { display:flex; align-items:flex-start; background:transparent; padding:0; margin-left:0; }
 .output.with-line-num .ol.send .lc { background:var(--send-bubble-bg); color:var(--send-bubble-text); padding:2px 6px; border-radius:3px; word-break:break-all; white-space:pre-wrap; flex:none; }
@@ -2590,12 +2591,23 @@ function startReading(mid) {
         try {
             var data = await invoke('read_data', { monitorId: mid });
             if (data && data.length > 0) {
-                var decoded = decodeData(mid, data);
-                decoded = decoded.replace(/[\r\n]+$/, '');
-                if (decoded) {
-                    var lines = decoded.split(/\r?\n/);
-                    for (var i = 0; i < lines.length; i++) {
-                        appendOutput(mid, 'recv', lines[i]);
+                var vm = document.getElementById(mid + '-viewMode');
+                var isHex = vm && vm.getAttribute('data-val') === 'hex';
+                if (isHex) {
+                    var hexStr = bytesToHex(new Uint8Array(data));
+                    var chunkSize = 192;
+                    for (var i = 0; i < hexStr.length; i += chunkSize) {
+                        var chunk = hexStr.substring(i, i + chunkSize);
+                        appendOutput(mid, 'recv', (i === 0 ? 'HEX: ' : '     ') + chunk, { hex: true });
+                    }
+                } else {
+                    var decoded = decodeData(mid, data);
+                    decoded = decoded.replace(/[\r\n]+$/, '');
+                    if (decoded) {
+                        var lines = decoded.split(/\r?\n/);
+                        for (var i = 0; i < lines.length; i++) {
+                            appendOutput(mid, 'recv', lines[i]);
+                        }
                     }
                 }
             }
@@ -2785,11 +2797,11 @@ function decodeData(mid, bytes) {
 function decodeRaw(bytes, mode) {
     mode = mode || 'text';
     var arr = new Uint8Array(bytes);
-    if (mode === 'hex') return '<span style="color:var(--text-d);">HEX:</span>' + bytesToHex(arr);
+    if (mode === 'hex') return bytesToHex(arr);
     return _textDecoder.decode(arr);
 }
 
-function appendOutput(mid, type, text) {
+function appendOutput(mid, type, text, opts) {
     var el = document.getElementById(mid + '-output');
     if (!el) return;
     var tsEl = document.getElementById(mid + '-btnTs');
@@ -2798,6 +2810,7 @@ function appendOutput(mid, type, text) {
     var ts = showTs ? '[' + now.toTimeString().slice(0,8) + '.' + String(now.getMilliseconds()).padStart(3,'0') + '] ' : '';
     var div = document.createElement('div');
     div.className = 'ol ' + type;
+    if (opts && opts.hex) div.classList.add('hex-view');
     var isEmpty = !text || text.trim() === '';
     var lnSpan = document.createElement('span');
     lnSpan.className = 'ln';
@@ -4257,12 +4270,23 @@ function startWslReading(mid) {
             var data = await invoke('read_wsl_serial', { monitorId: mid });
             if (data && data.length > 0) {
                 checkWorkflowMatches(mid, data);
-                var decoded = decodeData(mid, data);
-                decoded = decoded.replace(/[\r\n]+$/, '');
-                if (decoded) {
-                    var lines = decoded.split(/\r?\n/);
-                    for (var i = 0; i < lines.length; i++) {
-                        appendOutput(mid, 'recv', lines[i]);
+                var vm = document.getElementById(mid + '-viewMode');
+                var isHex = vm && vm.getAttribute('data-val') === 'hex';
+                if (isHex) {
+                    var hexStr = bytesToHex(new Uint8Array(data));
+                    var chunkSize = 192;
+                    for (var i = 0; i < hexStr.length; i += chunkSize) {
+                        var chunk = hexStr.substring(i, i + chunkSize);
+                        appendOutput(mid, 'recv', (i === 0 ? 'HEX: ' : '     ') + chunk, { hex: true });
+                    }
+                } else {
+                    var decoded = decodeData(mid, data);
+                    decoded = decoded.replace(/[\r\n]+$/, '');
+                    if (decoded) {
+                        var lines = decoded.split(/\r?\n/);
+                        for (var i = 0; i < lines.length; i++) {
+                            appendOutput(mid, 'recv', lines[i]);
+                        }
                     }
                 }
             }
