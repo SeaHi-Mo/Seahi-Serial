@@ -1,0 +1,225 @@
+{
+  "window": {
+    "hwnd": 13179908,
+    "title": "Seahi Serial",
+    "rect": [
+      756,
+      323,
+      2123,
+      1358
+    ]
+  },
+  "total_steps": 30,
+  "results": [
+    {
+      "step": 1,
+      "name": "baseline",
+      "file": "ut_01_baseline.png",
+      "description": "初始界面状态",
+      "timestamp": "20:36:51"
+    },
+    {
+      "step": 2,
+      "name": "port_dropdown",
+      "file": "ut_02_port_dropdown.png",
+      "description": "点击端口下拉框，预期显示COM口列表",
+      "timestamp": "20:36:53"
+    },
+    {
+      "step": 3,
+      "name": "baud_dropdown",
+      "file": "ut_03_baud_dropdown.png",
+      "description": "点击波特率下拉，预期显示常用波特率列表",
+      "timestamp": "20:36:56"
+    },
+    {
+      "step": 4,
+      "name": "view_mode",
+      "file": "ut_04_view_mode.png",
+      "description": "点击查看模式切换（文本/HEX）",
+      "timestamp": "20:36:59"
+    },
+    {
+      "step": 5,
+      "name": "line_ending",
+      "file": "ut_05_line_ending.png",
+      "description": "点击行尾下拉，预期显示CRLF/LF/CR/无",
+      "timestamp": "20:37:03"
+    },
+    {
+      "step": 6,
+      "name": "start_monitor_no_port",
+      "file": "ut_06_start_monitor_no_port.png",
+      "description": "未选端口时点击开始监控，预期显示错误提示",
+      "timestamp": "20:37:06"
+    },
+    {
+      "step": 7,
+      "name": "clear_button",
+      "file": "ut_07_clear_button.png",
+      "description": "点击清除按钮",
+      "timestamp": "20:37:10"
+    },
+    {
+      "step": 8,
+      "name": "auto_scroll_toggle",
+      "file": "ut_08_auto_scroll_toggle.png",
+      "description": "点击自动滚动按钮，预期切换高亮状态",
+      "timestamp": "20:37:12"
+    },
+    {
+      "step": 9,
+      "name": "auto_reconnect_toggle",
+      "file": "ut_09_auto_reconnect_toggle.png",
+      "description": "点击自动重连按钮",
+      "timestamp": "20:37:14"
+    },
+    {
+      "step": 10,
+      "name": "terminal_mode",
+      "file": "ut_10_terminal_mode.png",
+      "description": "点击终端模式按钮",
+      "timestamp": "20:37:16"
+    },
+    {
+      "step": 11,
+      "name": "line_numbers_toggle",
+      "file": "ut_11_line_numbers_toggle.png",
+      "description": "点击行号按钮",
+      "timestamp": "20:37:19"
+    },
+    {
+      "step": 12,
+      "name": "timestamp_toggle",
+      "file": "ut_12_timestamp_toggle.png",
+      "description": "点击时间戳按钮",
+      "timestamp": "20:37:22"
+    },
+    {
+      "step": 13,
+      "name": "echo_toggle",
+      "file": "ut_13_echo_toggle.png",
+      "description": "点击回显按钮",
+      "timestamp": "20:37:25"
+    },
+    {
+      "step": 14,
+      "name": "more_settings",
+      "file": "ut_14_more_settings.png",
+      "description": "点击更多设置按钮，预期展开/折叠高级设置行",
+      "timestamp": "20:37:28"
+    },
+    {
+      "step": 15,
+      "name": "collapse_toolbar",
+      "file": "ut_15_collapse_toolbar.png",
+      "description": "点击折叠工具栏按钮",
+      "timestamp": "20:37:30"
+    },
+    {
+      "step": 16,
+      "name": "add_rule",
+      "file": "ut_16_add_rule.png",
+      "description": "点击添加规则按钮",
+      "timestamp": "20:37:34"
+    },
+    {
+      "step": 17,
+      "name": "quick_commands_panel",
+      "file": "ut_17_quick_commands_panel.png",
+      "description": "点击快捷指令按钮，预期弹出面板",
+      "timestamp": "20:37:37"
+    },
+    {
+      "step": 18,
+      "name": "wsl_panel",
+      "file": "ut_18_wsl_panel.png",
+      "description": "点击WSL端口映射按钮，预期切换到WSL面板",
+      "timestamp": "20:37:41"
+    },
+    {
+      "step": 19,
+      "name": "wsl_back",
+      "file": "ut_19_wsl_back.png",
+      "description": "点击返回监视器按钮",
+      "timestamp": "20:37:44"
+    },
+    {
+      "step": 20,
+      "name": "theme_toggle",
+      "file": "ut_20_theme_toggle.png",
+      "description": "点击主题切换开关，预期深浅色切换",
+      "timestamp": "20:37:46"
+    },
+    {
+      "step": 21,
+      "name": "theme_style_dropdown",
+      "file": "ut_21_theme_style_dropdown.png",
+      "description": "点击主题风格下拉，预期显示6种风格",
+      "timestamp": "20:37:49"
+    },
+    {
+      "step": 22,
+      "name": "add_monitor",
+      "file": "ut_22_add_monitor.png",
+      "description": "点击打开额外监视器，预期分栏显示",
+      "timestamp": "20:37:52"
+    },
+    {
+      "step": 23,
+      "name": "close_monitor",
+      "file": "ut_23_close_monitor.png",
+      "description": "关闭额外监视器",
+      "timestamp": "20:37:55"
+    },
+    {
+      "step": 24,
+      "name": "input_text",
+      "file": "ut_24_input_text.png",
+      "description": "在输入框输入AT+VERSION?",
+      "timestamp": "20:37:59"
+    },
+    {
+      "step": 25,
+      "name": "send_mode_toggle",
+      "file": "ut_25_send_mode_toggle.png",
+      "description": "切换发送模式（文本/HEX）",
+      "timestamp": "20:38:01"
+    },
+    {
+      "step": 26,
+      "name": "send_no_connection",
+      "file": "ut_26_send_no_connection.png",
+      "description": "未连接时点击发送按钮",
+      "timestamp": "20:38:04"
+    },
+    {
+      "step": 27,
+      "name": "submit_issue",
+      "file": "ut_27_submit_issue.png",
+      "description": "点击提交issue按钮",
+      "timestamp": "20:38:07"
+    },
+    {
+      "step": 28,
+      "name": "theme_ukiyo",
+      "file": "ut_28_theme_ukiyo.png",
+      "description": "切换到浮世绘彩主题风格",
+      "timestamp": "20:38:12"
+    },
+    {
+      "step": 29,
+      "name": "theme_poetic",
+      "file": "ut_29_theme_poetic.png",
+      "description": "切换到诗意东方主题风格",
+      "timestamp": "20:38:15"
+    },
+    {
+      "step": 30,
+      "name": "theme_default",
+      "file": "ut_30_theme_default.png",
+      "description": "恢复默认主题风格",
+      "timestamp": "20:38:19"
+    }
+  ]
+}

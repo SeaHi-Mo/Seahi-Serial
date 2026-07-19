@@ -2233,14 +2233,16 @@ async function refreshPorts(mid, force) {
             sel.setAttribute('data-val', '');
             return;
         }
+        var frag = document.createDocumentFragment();
         ports.forEach(function(p) {
             var opt = document.createElement('div');
             opt.className = 'sel-opt';
             opt.setAttribute('data-val', p.port_name);
             opt.textContent = p.product_name ? p.product_name + ' (' + p.port_name + ')' : (p.friendly_name || p.port_name);
             opt.onclick = function(e) { e.stopPropagation(); setPortSel(mid, p.port_name, this); };
-            drop.appendChild(opt);
+            frag.appendChild(opt);
         });
+        drop.appendChild(frag);
         // 恢复之前选中的端口
         var matchPort = prev && ports.some(function(p) { return p.port_name === prev; }) ? prev : (ports[0] ? ports[0].port_name : '');
         if (matchPort) {
@@ -2502,6 +2504,7 @@ async function connectPort(mid, silent) {
         await invoke('open_port', { monitorId:mid, portName:name, baudRate:baud, dataBits:dataBits, stopBits:stopBits, parity:parity, dtr:dtr, rts:rts });
         monitors[mid].isConnected = true;
         monitors[mid].portName = name;
+        monitors[mid]._manuallyDisconnected = false;
         updateMonitorUI(mid, true);
         startReading(mid);
         // 同步行尾设置到后台线程
@@ -2520,15 +2523,16 @@ async function connectPort(mid, silent) {
 async function disconnectPort(mid) {
     var btn = document.getElementById(mid + '-btnStart');
     if (btn) { btn.disabled = true; btn.innerHTML = '<span style="font-size:11px;">⏳</span> 断开中...'; }
+    // 先停止轮询，防止 in-flight 的 timer 回调触发重连
+    stopReading(mid);
+    monitors[mid]._manuallyDisconnected = true;
     try {
         await invoke('close_port', { monitorId: mid });
     } catch (e) {
         showToast('断开失败: ' + e, 'error');
     }
-    // 无论 close_port 是否成功，都重置前端状态
     monitors[mid].isConnected = false;
     monitors[mid].portName = '';
-    stopReading(mid);
     updateMonitorUI(mid, false);
 }
 
@@ -2620,6 +2624,13 @@ function startReading(mid) {
                 appendOutput(mid, 'send', wfEvents[j]);
             }
         } catch (e) {
+            // 手动断开或正在重连时不触发自动重连
+            if (monitors[mid] && (monitors[mid]._manuallyDisconnected || monitors[mid]._reconnecting)) {
+                monitors[mid].isConnected = false;
+                stopReading(mid);
+                updateMonitorUI(mid, false);
+                return;
+            }
             var reconnectBtn = document.getElementById(mid + '-btnAutoReconnect');
             if (reconnectBtn && reconnectBtn.classList.contains('on')) {
                 try {
@@ -4242,6 +4253,7 @@ async function connectWslPort(mid) {
         await invoke('open_wsl_serial', { monitorId: mid, devicePath: devicePath, baudRate: baud });
         monitors[mid].isConnected = true;
         monitors[mid].portName = devicePath;
+        monitors[mid]._manuallyDisconnected = false;
         updateMonitorUI(mid, true);
         startWslReading(mid);
         showToast('WSL 串口已连接', 'success');
@@ -4337,6 +4349,13 @@ function startWslReading(mid) {
                 flushBatch(mid, frag);
             }
         } catch (e) {
+            // 手动断开或正在重连时不触发自动重连
+            if (monitors[mid] && (monitors[mid]._manuallyDisconnected || monitors[mid]._reconnecting)) {
+                monitors[mid].isConnected = false;
+                stopReading(mid);
+                updateMonitorUI(mid, false);
+                return;
+            }
             var reconnectBtn = document.getElementById(mid + '-btnAutoReconnect');
             if (reconnectBtn && reconnectBtn.classList.contains('on')) {
                 try { await invoke('close_wsl_serial', { monitorId: mid }); } catch (_) {}

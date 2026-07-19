@@ -1,0 +1,239 @@
+{
+  "window": {
+    "hwnd": 5375952,
+    "title": "Seahi Serial",
+    "rect": [
+      756,
+      323,
+      2123,
+      1358
+    ]
+  },
+  "total_steps": 32,
+  "results": [
+    {
+      "step": 1,
+      "name": "00_baseline",
+      "file": "v3_01_00_baseline.png",
+      "description": "初始基线",
+      "timestamp": "20:40:57"
+    },
+    {
+      "step": 2,
+      "name": "01_port_dropdown",
+      "file": "v3_02_01_port_dropdown.png",
+      "description": "点击端口下拉，预期显示COM口列表",
+      "timestamp": "20:40:58"
+    },
+    {
+      "step": 3,
+      "name": "02_baud_dropdown",
+      "file": "v3_03_02_baud_dropdown.png",
+      "description": "点击波特率下拉箭头",
+      "timestamp": "20:41:01"
+    },
+    {
+      "step": 4,
+      "name": "03_view_mode_toggle",
+      "file": "v3_04_03_view_mode_toggle.png",
+      "description": "点击查看模式(文本/HEX)",
+      "timestamp": "20:41:04"
+    },
+    {
+      "step": 5,
+      "name": "04_line_ending",
+      "file": "v3_05_04_line_ending.png",
+      "description": "点击行尾下拉",
+      "timestamp": "20:41:07"
+    },
+    {
+      "step": 6,
+      "name": "05_start_no_port",
+      "file": "v3_06_05_start_no_port.png",
+      "description": "未选端口点开始监控，预期toast错误",
+      "timestamp": "20:41:09"
+    },
+    {
+      "step": 7,
+      "name": "icon_btnClear",
+      "file": "v3_07_icon_btnClear.png",
+      "description": "点击btnClear按钮",
+      "timestamp": "20:41:13"
+    },
+    {
+      "step": 8,
+      "name": "icon_btnAutoScroll",
+      "file": "v3_08_icon_btnAutoScroll.png",
+      "description": "点击btnAutoScroll按钮",
+      "timestamp": "20:41:15"
+    },
+    {
+      "step": 9,
+      "name": "icon_btnAutoReconnect",
+      "file": "v3_09_icon_btnAutoReconnect.png",
+      "description": "点击btnAutoReconnect按钮",
+      "timestamp": "20:41:16"
+    },
+    {
+      "step": 10,
+      "name": "icon_btnTerminal",
+      "file": "v3_10_icon_btnTerminal.png",
+      "description": "点击btnTerminal按钮",
+      "timestamp": "20:41:18"
+    },
+    {
+      "step": 11,
+      "name": "icon_btnLineNum",
+      "file": "v3_11_icon_btnLineNum.png",
+      "description": "点击btnLineNum按钮",
+      "timestamp": "20:41:20"
+    },
+    {
+      "step": 12,
+      "name": "icon_btnTimestamp",
+      "file": "v3_12_icon_btnTimestamp.png",
+      "description": "点击btnTimestamp按钮",
+      "timestamp": "20:41:21"
+    },
+    {
+      "step": 13,
+      "name": "icon_btnEcho",
+      "file": "v3_13_icon_btnEcho.png",
+      "description": "点击btnEcho按钮",
+      "timestamp": "20:41:23"
+    },
+    {
+      "step": 14,
+      "name": "10_advanced_settings",
+      "file": "v3_14_10_advanced_settings.png",
+      "description": "点击更多设置，预期展开高级设置行",
+      "timestamp": "20:41:26"
+    },
+    {
+      "step": 15,
+      "name": "11_dtr_check",
+      "file": "v3_15_11_dtr_check.png",
+      "description": "勾选DTR",
+      "timestamp": "20:41:28"
+    },
+    {
+      "step": 16,
+      "name": "12_rts_check",
+      "file": "v3_16_12_rts_check.png",
+      "description": "勾选RTS",
+      "timestamp": "20:41:30"
+    },
+    {
+      "step": 17,
+      "name": "13_log_dir",
+      "file": "v3_17_13_log_dir.png",
+      "description": "点击选择日志目录",
+      "timestamp": "20:41:31"
+    },
+    {
+      "step": 18,
+      "name": "14_collapse_toolbar",
+      "file": "v3_18_14_collapse_toolbar.png",
+      "description": "点击折叠工具栏",
+      "timestamp": "20:41:35"
+    },
+    {
+      "step": 19,
+      "name": "15_add_rule",
+      "file": "v3_19_15_add_rule.png",
+      "description": "点击添加规则",
+      "timestamp": "20:41:38"
+    },
+    {
+      "step": 20,
+      "name": "20_quick_cmd_panel",
+      "file": "v3_20_20_quick_cmd_panel.png",
+      "description": "点击快捷指令按钮，预期弹出面板",
+      "timestamp": "20:41:42"
+    },
+    {
+      "step": 21,
+      "name": "21_quick_cmd_add",
+      "file": "v3_21_21_quick_cmd_add.png",
+      "description": "点击+添加按钮",
+      "timestamp": "20:41:43"
+    },
+    {
+      "step": 22,
+      "name": "30_wsl_panel",
+      "file": "v3_22_30_wsl_panel.png",
+      "description": "点击WSL端口映射，预期切换面板",
+      "timestamp": "20:41:47"
+    },
+    {
+      "step": 23,
+      "name": "31_wsl_distro_start",
+      "file": "v3_23_31_wsl_distro_start.png",
+      "description": "点击Ubuntu-24.04启动",
+      "timestamp": "20:41:50"
+    },
+    {
+      "step": 24,
+      "name": "32_wsl_back",
+      "file": "v3_24_32_wsl_back.png",
+      "description": "点击返回监视器",
+      "timestamp": "20:41:53"
+    },
+    {
+      "step": 25,
+      "name": "40_theme_toggle",
+      "file": "v3_25_40_theme_toggle.png",
+      "description": "点击主题切换开关",
+      "timestamp": "20:41:55"
+    },
+    {
+      "step": 26,
+      "name": "41_theme_style_drop",
+      "file": "v3_26_41_theme_style_drop.png",
+      "description": "点击主题风格下拉，预期6种风格",
+      "timestamp": "20:41:58"
+    },
+    {
+      "step": 27,
+      "name": "50_add_monitor",
+      "file": "v3_27_50_add_monitor.png",
+      "description": "点击打开额外监视器，预期分栏",
+      "timestamp": "20:42:02"
+    },
+    {
+      "step": 28,
+      "name": "51_close_monitor",
+      "file": "v3_28_51_close_monitor.png",
+      "description": "关闭额外监视器",
+      "timestamp": "20:42:04"
+    },
+    {
+      "step": 29,
+      "name": "60_input_text",
+      "file": "v3_29_60_input_text.png",
+      "description": "在输入框输入AT+VERSION?",
+      "timestamp": "20:42:08"
+    },
+    {
+      "step": 30,
+      "name": "61_send_no_conn",
+      "file": "v3_30_61_send_no_conn.png",
+      "description": "未连接时点击发送按钮",
+      "timestamp": "20:42:09"
+    },
+    {
+      "step": 31,
+      "name": "62_send_mode_toggle",
+      "file": "v3_31_62_send_mode_toggle.png",
+      "description": "切换发送模式",
+      "timestamp": "20:42:13"
+    },
+    {
+      "step": 32,
+      "name": "70_submit_issue",
+      "file": "v3_32_70_submit_issue.png",
+      "description": "点击提交issue",
+      "timestamp": "20:42:16"
+    }
+  ]
+}
