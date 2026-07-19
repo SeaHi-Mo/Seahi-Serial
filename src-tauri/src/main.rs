@@ -1147,6 +1147,7 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                         "通信端口", "通讯端口", "communicationsport",
                         "蓝牙", "bluetooth",
                         "usb输入设备", "usb-baseddslinstrument",
+                        "ethernet", "网络适配器", "networkadapter", "lan",
                     ];
                     let name_lower = name.to_lowercase().replace(" ", "");
                     if FILTERS.iter().any(|f| name_lower.contains(f)) {
