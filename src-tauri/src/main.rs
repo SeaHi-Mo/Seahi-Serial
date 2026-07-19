@@ -6,7 +6,7 @@ use serialport::{ClearBuffer, DataBits, Parity, SerialPort, StopBits};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -182,6 +182,7 @@ struct PortReader {
     read_handle: Option<std::thread::JoinHandle<()>>,
     wf_handle: Option<std::thread::JoinHandle<()>>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    disconnected: std::sync::Arc<std::sync::atomic::AtomicBool>,
     port: std::sync::Arc<std::sync::Mutex<Box<dyn SerialPort>>>,
     rules: std::sync::Arc<std::sync::Mutex<Vec<WorkflowRule>>>,
     log_dir: std::sync::Arc<std::sync::Mutex<String>>,
@@ -193,12 +194,14 @@ impl PortReader {
         let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::with_capacity(8192)));
         let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let disconnected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let rules = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log_dir = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let line_ending = std::sync::Arc::new(std::sync::Mutex::new(String::from("crlf")));
         let buf_clone = buffer.clone();
         let evt_clone = events.clone();
         let stop_clone = stop.clone();
+        let disconnected_clone = disconnected.clone();
         let port_arc = std::sync::Arc::new(std::sync::Mutex::new(port));
         let port_clone = port_arc.clone();
         let rules_clone = rules.clone();
@@ -229,7 +232,6 @@ impl PortReader {
                                 buf.drain(..drain);
                             }
                         }
-                        // 非阻塞发送，channel 满则丢弃（避免背压阻塞读取）
                         let _ = tx_clone.try_send(chunk).is_ok();
                     }
                     Ok(_) => continue,
@@ -237,6 +239,10 @@ impl PortReader {
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(_) => break,
                 }
+            }
+            // 非正常停止（设备断开）时设置标志
+            if !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                disconnected_clone.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         });
 
@@ -248,7 +254,7 @@ impl PortReader {
             }
         });
 
-        PortReader { buffer, events, read_handle: Some(read_handle), wf_handle: Some(wf_handle), stop, port: port_arc, rules, log_dir, line_ending }
+        PortReader { buffer, events, read_handle: Some(read_handle), wf_handle: Some(wf_handle), stop, disconnected, port: port_arc, rules, log_dir, line_ending }
     }
 
     fn check_workflows(
@@ -385,7 +391,7 @@ impl Drop for PortReader {
 
 /// 全局状态：多个独立串口连接（key = monitor_id）
 struct PortState {
-    readers: Mutex<HashMap<String, PortReader>>,
+    readers: RwLock<HashMap<String, PortReader>>,
 }
 
 /// WSL 串口会话：通过管道与 bridge 脚本通信
@@ -514,7 +520,7 @@ fn match_condition(cond: &WorkflowCondition, raw: &[u8], cache: &RegexCache) -> 
 fn execute_workflow_actions(
     actions: &[WorkflowAction],
     monitor_id: &str,
-    readers: &Mutex<HashMap<String, PortReader>>,
+    readers: &RwLock<HashMap<String, PortReader>>,
     log_dir: &str,
     received: &[u8],
 ) -> String {
@@ -532,16 +538,20 @@ fn execute_workflow_actions(
                 };
                 if bytes.is_empty() { continue; }
                 sent_parts.push(action.data.clone());
-                let map = readers.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(reader) = map.get(monitor_id) {
-                    let mut port = reader.port.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(port_arc) = {
+                    let map = readers.read().unwrap_or_else(|e| e.into_inner());
+                    map.get(monitor_id).map(|r| r.port.clone())
+                } {
+                    let mut port = port_arc.lock().unwrap_or_else(|e| e.into_inner());
                     let _ = port.write_all(&bytes);
                 }
             }
             "toggle_dtr_rts" => {
-                let map = readers.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(reader) = map.get(monitor_id) {
-                    let mut port = reader.port.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(port_arc) = {
+                    let map = readers.read().unwrap_or_else(|e| e.into_inner());
+                    map.get(monitor_id).map(|r| r.port.clone())
+                } {
+                    let mut port = port_arc.lock().unwrap_or_else(|e| e.into_inner());
                     match action.signal.as_str() {
                         "dtr" => { let _ = port.write_data_terminal_ready(action.level); }
                         "rts" => { let _ = port.write_request_to_send(action.level); }
@@ -731,7 +741,7 @@ fn open_port(
 ) -> Result<(), String> {
     // 关闭该监视器已有的连接
     {
-        let mut map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = state.readers.write().unwrap_or_else(|e| e.into_inner());
         map.remove(&monitor_id);
     }
 
@@ -771,7 +781,7 @@ fn open_port(
             reader.update_log_dir(dir.clone());
         }
     }
-    let mut guard = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = state.readers.write().unwrap_or_else(|e| e.into_inner());
     guard.insert(monitor_id, reader);
 
     Ok(())
@@ -780,7 +790,7 @@ fn open_port(
 /// 关闭串口（停止读取线程）
 #[tauri::command]
 fn close_port(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<(), String> {
-    let mut map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    let mut map = state.readers.write().unwrap_or_else(|e| e.into_inner());
     if let Some(reader) = map.remove(&monitor_id) {
         let mut port = reader.port.lock().unwrap_or_else(|e| e.into_inner());
         let _ = port.flush();
@@ -792,8 +802,11 @@ fn close_port(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<
 /// 从缓冲区读取数据（毫秒级，不阻塞）
 #[tauri::command]
 fn read_data(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<Vec<u8>, String> {
-    let map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
     if let Some(reader) = map.get(&monitor_id) {
+        if reader.disconnected.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("设备已断开连接".into());
+        }
         Ok(reader.read_all())
     } else {
         Err("未连接串口".into())
@@ -803,7 +816,7 @@ fn read_data(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<V
 /// 读取工作流触发事件（前端轮询显示 [Auto] 消息）
 #[tauri::command]
 fn read_workflow_events(state: tauri::State<'_, PortState>, monitor_id: String) -> Vec<String> {
-    let map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
     if let Some(reader) = map.get(&monitor_id) {
         reader.read_events()
     } else {
@@ -814,38 +827,44 @@ fn read_workflow_events(state: tauri::State<'_, PortState>, monitor_id: String) 
 /// 发送数据
 #[tauri::command]
 fn send_data(state: tauri::State<'_, PortState>, monitor_id: String, data: Vec<u8>) -> Result<usize, String> {
-    let map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(reader) = map.get(&monitor_id) {
-        let mut port = reader.port.lock().unwrap_or_else(|e| e.into_inner());
-        port.write_all(&data).map_err(|e| format!("发送失败: {}", e))?;
-        Ok(data.len())
-    } else {
-        Err("未连接串口".into())
-    }
+    let port_arc = {
+        let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
+        match map.get(&monitor_id) {
+            Some(reader) => reader.port.clone(),
+            None => return Err("未连接串口".into()),
+        }
+    };
+    let mut port = port_arc.lock().unwrap_or_else(|e| e.into_inner());
+    port.write_all(&data).map_err(|e| format!("发送失败: {}", e))?;
+    Ok(data.len())
 }
 
 /// 实时设置 DTR 信号
 #[tauri::command]
 fn set_dtr(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) -> Result<(), String> {
-    let map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(reader) = map.get(&monitor_id) {
-        let mut port = reader.port.lock().unwrap_or_else(|e| e.into_inner());
-        port.write_data_terminal_ready(level).map_err(|e| format!("DTR 设置失败: {}", e))
-    } else {
-        Err("未连接串口".into())
-    }
+    let port_arc = {
+        let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
+        match map.get(&monitor_id) {
+            Some(reader) => reader.port.clone(),
+            None => return Err("未连接串口".into()),
+        }
+    };
+    let mut port = port_arc.lock().unwrap_or_else(|e| e.into_inner());
+    port.write_data_terminal_ready(level).map_err(|e| format!("DTR 设置失败: {}", e))
 }
 
 /// 实时设置 RTS 信号
 #[tauri::command]
 fn set_rts(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) -> Result<(), String> {
-    let map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(reader) = map.get(&monitor_id) {
-        let mut port = reader.port.lock().unwrap_or_else(|e| e.into_inner());
-        port.write_request_to_send(level).map_err(|e| format!("RTS 设置失败: {}", e))
-    } else {
-        Err("未连接串口".into())
-    }
+    let port_arc = {
+        let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
+        match map.get(&monitor_id) {
+            Some(reader) => reader.port.clone(),
+            None => return Err("未连接串口".into()),
+        }
+    };
+    let mut port = port_arc.lock().unwrap_or_else(|e| e.into_inner());
+    port.write_request_to_send(level).map_err(|e| format!("RTS 设置失败: {}", e))
 }
 
 // ===== 自动化工作流命令 =====
@@ -903,7 +922,7 @@ fn save_workflows(
     }
     // 同步更新 PortReader 中的规则（供后台线程使用）
     {
-        let map = port_state.readers.lock().unwrap_or_else(|e| e.into_inner());
+        let map = port_state.readers.read().unwrap_or_else(|e| e.into_inner());
         if let Some(reader) = map.get(&monitor_id) {
             reader.update_rules(rules);
         }
@@ -933,7 +952,7 @@ fn init_workflows(
         .map_err(|e| format!("解析配置失败: {}", e))?;
     let mut map = state.rules.lock().unwrap_or_else(|e| e.into_inner());
     let mut dirs = state.log_dirs.lock().unwrap_or_else(|e| e.into_inner());
-    let readers = port_state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    let readers = port_state.readers.read().unwrap_or_else(|e| e.into_inner());
     if let Some(monitors) = cfg.get("monitors").and_then(|m| m.as_object()) {
         for (mid, mc) in monitors {
             if let Some(wf_arr) = mc.get("workflows").and_then(|w| w.as_array()) {
@@ -971,7 +990,7 @@ fn update_workflow_log_dir(
         let mut dirs = state.log_dirs.lock().unwrap_or_else(|e| e.into_inner());
         dirs.insert(monitor_id.clone(), log_dir.clone());
     }
-    let readers = port_state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    let readers = port_state.readers.read().unwrap_or_else(|e| e.into_inner());
     if let Some(reader) = readers.get(&monitor_id) {
         reader.update_log_dir(log_dir);
     }
@@ -984,7 +1003,7 @@ fn update_workflow_line_ending(
     monitor_id: String,
     line_ending: String,
 ) {
-    let readers = port_state.readers.lock().unwrap_or_else(|e| e.into_inner());
+    let readers = port_state.readers.read().unwrap_or_else(|e| e.into_inner());
     if let Some(reader) = readers.get(&monitor_id) {
         reader.update_line_ending(line_ending);
     }
@@ -2410,7 +2429,7 @@ static WSL_WATCHER_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 fn main() {
     tauri::Builder::default()
         .manage(PortState {
-            readers: Mutex::new(HashMap::new()),
+            readers: RwLock::new(HashMap::new()),
         })
         .manage(WslSerialState {
             sessions: Mutex::new(HashMap::new()),
@@ -2486,7 +2505,7 @@ fn main() {
 
                 // 关闭所有串口
                 if let Some(state) = window.try_state::<PortState>() {
-                    let mut map = state.readers.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut map = state.readers.write().unwrap_or_else(|e| e.into_inner());
                     for (_, reader) in map.drain() {
                         drop(reader);
                     }

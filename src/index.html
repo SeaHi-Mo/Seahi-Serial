@@ -2409,6 +2409,7 @@ function initTerminalMode(mid) {
                 buf.lineEl.className = 'ol recv';
                 var lnSpan = document.createElement('span');
                 lnSpan.className = 'ln';
+                lnSpan.setAttribute('contenteditable', 'false');
                 buf.lineEl.appendChild(lnSpan);
                 var contentSpan = document.createElement('span');
                 contentSpan.className = 'lc';
@@ -2424,10 +2425,10 @@ function initTerminalMode(mid) {
             if (lc) lc.textContent = buf.line;
             
             var scrollBtn = document.getElementById(mid + '-btnScroll');
-            if (scrollBtn && scrollBtn.classList.contains('on')) output.scrollTop = output.scrollHeight;
+            if (scrollBtn && scrollBtn.classList.contains('on')) requestScroll(output);
         }
     });
-    
+
     output.addEventListener('click', function() {
         var btn = document.getElementById(mid + '-btnSendLE');
         if (btn && btn.classList.contains('on')) {
@@ -2452,7 +2453,7 @@ function toggleTerminalMode(btn, mid) {
             buf.cursorEl.className = 'terminal-cursor';
             output.appendChild(buf.cursorEl);
             var scrollBtn = document.getElementById(mid + '-btnScroll');
-            if (scrollBtn && scrollBtn.classList.contains('on')) output.scrollTop = output.scrollHeight;
+            if (scrollBtn && scrollBtn.classList.contains('on')) requestScroll(output);
         } else {
             output.style.cursor = 'default';
             if (sendBar) sendBar.style.display = '';
@@ -2591,6 +2592,7 @@ function startReading(mid) {
         try {
             var data = await invoke('read_data', { monitorId: mid });
             if (data && data.length > 0) {
+                var frag = document.createDocumentFragment();
                 var vm = document.getElementById(mid + '-viewMode');
                 var isHex = vm && vm.getAttribute('data-val') === 'hex';
                 if (isHex) {
@@ -2598,7 +2600,7 @@ function startReading(mid) {
                     var chunkSize = 192;
                     for (var i = 0; i < hexStr.length; i += chunkSize) {
                         var chunk = hexStr.substring(i, i + chunkSize);
-                        appendOutput(mid, 'recv', (i === 0 ? 'HEX: ' : '     ') + chunk, { hex: true });
+                        appendOutput(mid, 'recv', (i === 0 ? 'HEX: ' : '     ') + chunk, { hex: true, fragment: frag });
                     }
                 } else {
                     var decoded = decodeData(mid, data);
@@ -2606,10 +2608,11 @@ function startReading(mid) {
                     if (decoded) {
                         var lines = decoded.split(/\r?\n/);
                         for (var i = 0; i < lines.length; i++) {
-                            appendOutput(mid, 'recv', lines[i]);
+                            appendOutput(mid, 'recv', lines[i], { fragment: frag });
                         }
                     }
                 }
+                flushBatch(mid, frag);
             }
             // 读取工作流触发事件
             var wfEvents = await invoke('read_workflow_events', { monitorId: mid });
@@ -2801,6 +2804,15 @@ function decodeRaw(bytes, mode) {
     return _textDecoder.decode(arr);
 }
 
+var _scrollRaf = {}; // { elementId: rafId }
+function requestScroll(el) {
+    if (_scrollRaf[el.id]) return;
+    _scrollRaf[el.id] = requestAnimationFrame(function() {
+        _scrollRaf[el.id] = 0;
+        el.scrollTop = el.scrollHeight;
+    });
+}
+
 function appendOutput(mid, type, text, opts) {
     var el = document.getElementById(mid + '-output');
     if (!el) return;
@@ -2814,6 +2826,7 @@ function appendOutput(mid, type, text, opts) {
     var isEmpty = !text || text.trim() === '';
     var lnSpan = document.createElement('span');
     lnSpan.className = 'ln';
+    lnSpan.setAttribute('contenteditable', 'false');
     if (!isEmpty) {
         if (!el._lineCount) el._lineCount = 0;
         el._lineCount++;
@@ -2824,22 +2837,53 @@ function appendOutput(mid, type, text, opts) {
     var contentSpan = document.createElement('span');
     contentSpan.className = 'lc';
     if (type === 'recv') {
-        contentSpan.innerHTML = escapeHtml(ts) + parseAnsi(text);
+        if (opts && opts.hex) {
+            contentSpan.textContent = ts + text;
+        } else if (text.indexOf('\x1b') === -1) {
+            contentSpan.textContent = ts + text;
+        } else {
+            contentSpan.innerHTML = escapeHtml(ts) + parseAnsi(text);
+        }
     } else if (type === 'send') {
         contentSpan.innerHTML = escapeHtml(ts) + text;
     } else {
         contentSpan.textContent = ts + text;
     }
     div.appendChild(contentSpan);
-    el.appendChild(div);
-    var maxLines = 10000;
+    var target = (opts && opts.fragment) ? opts.fragment : el;
+    target.appendChild(div);
+    if (!(opts && opts.fragment)) {
+        var maxLines = 100000;
+        if (el.children.length > maxLines) {
+            var removeCount = el.children.length - maxLines;
+            var removedNonEmpty = 0;
+            for (var r = 0; r < removeCount; r++) {
+                if (!el.firstChild.classList.contains('empty-line')) removedNonEmpty++;
+                el.removeChild(el.firstChild);
+            }
+            if (el._lineCount > removedNonEmpty) el._lineCount -= removedNonEmpty; else el._lineCount = 0;
+        }
+        var scrollBtn = document.getElementById(mid + '-btnScroll');
+        if (scrollBtn && scrollBtn.classList.contains('on')) requestScroll(el);
+    }
+}
+
+function flushBatch(mid, fragment) {
+    var el = document.getElementById(mid + '-output');
+    if (!el || !fragment) return;
+    el.appendChild(fragment);
+    var maxLines = 100000;
     if (el.children.length > maxLines) {
         var removeCount = el.children.length - maxLines;
-        for (var r = 0; r < removeCount; r++) el.removeChild(el.firstChild);
-        if (el._lineCount > removeCount) el._lineCount -= removeCount; else el._lineCount = 0;
+        var removedNonEmpty = 0;
+        for (var r = 0; r < removeCount; r++) {
+            if (!el.firstChild.classList.contains('empty-line')) removedNonEmpty++;
+            el.removeChild(el.firstChild);
+        }
+        if (el._lineCount > removedNonEmpty) el._lineCount -= removedNonEmpty; else el._lineCount = 0;
     }
     var scrollBtn = document.getElementById(mid + '-btnScroll');
-    if (scrollBtn && scrollBtn.classList.contains('on')) el.scrollTop = el.scrollHeight;
+    if (scrollBtn && scrollBtn.classList.contains('on')) requestScroll(el);
 }
 
 function clearLog(mid) {
@@ -2861,7 +2905,7 @@ function parseEscapes(s) {
 }
 
 function hexToBytes(s) {
-    s = s.replace(/\s+/g,'');
+    s = s.replace(/0[xX]/g,'').replace(/\s+/g,'');
     if (s.length%2!==0) throw new Error('Hex长度必须为偶数');
     var out = [];
     for (var i=0; i<s.length; i+=2) {
@@ -4270,6 +4314,7 @@ function startWslReading(mid) {
             var data = await invoke('read_wsl_serial', { monitorId: mid });
             if (data && data.length > 0) {
                 checkWorkflowMatches(mid, data);
+                var frag = document.createDocumentFragment();
                 var vm = document.getElementById(mid + '-viewMode');
                 var isHex = vm && vm.getAttribute('data-val') === 'hex';
                 if (isHex) {
@@ -4277,7 +4322,7 @@ function startWslReading(mid) {
                     var chunkSize = 192;
                     for (var i = 0; i < hexStr.length; i += chunkSize) {
                         var chunk = hexStr.substring(i, i + chunkSize);
-                        appendOutput(mid, 'recv', (i === 0 ? 'HEX: ' : '     ') + chunk, { hex: true });
+                        appendOutput(mid, 'recv', (i === 0 ? 'HEX: ' : '     ') + chunk, { hex: true, fragment: frag });
                     }
                 } else {
                     var decoded = decodeData(mid, data);
@@ -4285,10 +4330,11 @@ function startWslReading(mid) {
                     if (decoded) {
                         var lines = decoded.split(/\r?\n/);
                         for (var i = 0; i < lines.length; i++) {
-                            appendOutput(mid, 'recv', lines[i]);
+                            appendOutput(mid, 'recv', lines[i], { fragment: frag });
                         }
                     }
                 }
+                flushBatch(mid, frag);
             }
         } catch (e) {
             var reconnectBtn = document.getElementById(mid + '-btnAutoReconnect');
