@@ -5341,6 +5341,16 @@ function closeOnboarding() {
         _onboardPrevTarget = null;
     }
 }
+
+// 测试错误上报功能
+async function testErrorReport() {
+    try {
+        var result = await window.__TAURI__.core.invoke('test_error_report');
+        showToast('测试错误上报成功: ' + result, 'success');
+    } catch (e) {
+        showToast('测试失败: ' + e, 'error');
+    }
+}
 </script>
 </body>
 </html>

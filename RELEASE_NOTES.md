@@ -1,3 +1,27 @@
+## v0.2.2
+
+### ✨ 新增
+
+- **错误上报系统** — 应用异常自动上报到云端，支持 Sentry 和自建服务两种后端
+- **Cloudflare Workers 错误收集** — 免费全球部署的错误收集服务，带 Web 管理界面
+- **Panic Hook 捕获** — Rust panic 自动上报，包含线程、堆栈、位置信息
+- **WSL 路径转换修复** — Windows Terminal 启动 WSL 时正确转换路径格式
+
+### 🔧 改进
+
+- 错误上报静默执行，不影响用户体验
+- 错误自动去重，相同错误只计数不重复存储
+- 本地日志始终写入，离线时可追溯
+
+### 📦 下载
+
+| 文件 | 说明 |
+|------|------|
+| `Seahi-Serial-Setup-{VERSION}.exe` | Inno Setup 安装程序（推荐） |
+| `Seahi.Serial_{VERSION}_x64_en-US.msi` | MSI 安装包 |
+
+---
+
 ## v0.2.0
 
 ### ✨ 新增

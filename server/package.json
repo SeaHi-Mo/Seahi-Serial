@@ -1,0 +1,24 @@
+{
+  "name": "seahi-serial-error-server",
+  "version": "1.0.0",
+  "description": "Seahi Serial 错误收集服务",
+  "main": "error-server.js",
+  "scripts": {
+    "start": "node error-server.js",
+    "start:sentry": "node sentry-webhook.js",
+    "dev": "nodemon error-server.js"
+  },
+  "dependencies": {
+    "sqlite3": "^5.1.6"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  },
+  "keywords": [
+    "error-tracking",
+    "self-hosted",
+    "sqlite"
+  ],
+  "author": "Seahi",
+  "license": "MIT"
+}

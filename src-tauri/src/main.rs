@@ -25,6 +25,90 @@ fn dbg_log(msg: &str) {
         .and_then(|mut f| f.write_all(line.as_bytes()));
 }
 
+/// 上报错误到 Sentry（带上下文信息）
+fn report_error_to_sentry(error: &str, context: &str) {
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("component", "seahi-serial");
+            scope.set_extra("context", context.into());
+            scope.set_extra("app_version", env!("CARGO_PKG_VERSION").into());
+            scope.set_extra("os", std::env::consts::OS.into());
+        },
+        || {
+            sentry::capture_message(error, sentry::Level::Error);
+        },
+    );
+}
+
+/// 上报错误到自建服务
+fn report_to_self_hosted(error: &str, context: &str) {
+    // 默认 URL，可通过环境变量覆盖（用于开发调试）
+    let server_url = std::env::var("ERROR_SERVER_URL")
+        .unwrap_or_else(|_| "https://seahi-error-server.seahi-mo.workers.dev".to_string());
+
+    let payload = serde_json::json!({
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "os": std::env::consts::OS,
+        "error": error,
+        "context": context,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    });
+
+    // 异步发送，不阻塞主线程
+    std::thread::spawn(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build();
+
+        if let Ok(client) = client {
+            let _ = client.post(format!("{}/report", server_url))
+                .json(&payload)
+                .send();
+        }
+    });
+}
+
+/// 统一错误上报入口（根据配置选择上报方式）
+fn report_error(error: &str, context: &str) {
+    // 始终写入本地日志
+    dbg_log(&format!("[ERROR] {}: {}", context, error));
+    
+    // 上报到 Sentry（如果配置了 DSN）
+    if std::env::var("SENTRY_DSN").is_ok() {
+        report_error_to_sentry(error, context);
+    }
+    
+    // 上报到自建服务（如果配置了服务器地址）
+    report_to_self_hosted(error, context);
+}
+
+/// 捕获 panic 并上报
+fn set_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("<unnamed>");
+        
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Box<dyn Any>".to_string()
+        };
+        
+        let location = info.location().map(|l| {
+            format!("{}:{}:{}", l.file(), l.line(), l.column())
+        }).unwrap_or_default();
+        
+        let msg = format!("Panic in thread '{}': {} at {}", thread_name, payload, location);
+        report_error(&msg, "panic_handler");
+        
+        // 调用原始 hook（输出到 stderr）
+        default_hook(info);
+    }));
+}
+
 #[cfg(windows)]
 fn start_device_watcher(app: tauri::AppHandle) {
     use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
@@ -805,10 +889,12 @@ fn read_data(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<V
     let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
     if let Some(reader) = map.get(&monitor_id) {
         if reader.disconnected.load(std::sync::atomic::Ordering::Relaxed) {
+            report_error("设备已断开连接", "read_data");
             return Err("设备已断开连接".into());
         }
         Ok(reader.read_all())
     } else {
+        report_error("未连接串口", "read_data");
         Err("未连接串口".into())
     }
 }
@@ -831,11 +917,17 @@ fn send_data(state: tauri::State<'_, PortState>, monitor_id: String, data: Vec<u
         let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
         match map.get(&monitor_id) {
             Some(reader) => reader.port.clone(),
-            None => return Err("未连接串口".into()),
+            None => {
+                report_error("未连接串口", "send_data");
+                return Err("未连接串口".into());
+            }
         }
     };
     let mut port = port_arc.lock().unwrap_or_else(|e| e.into_inner());
-    port.write_all(&data).map_err(|e| format!("发送失败: {}", e))?;
+    port.write_all(&data).map_err(|e| {
+        report_error(&format!("发送失败: {}", e), "send_data");
+        format!("发送失败: {}", e)
+    })?;
     Ok(data.len())
 }
 
@@ -846,11 +938,17 @@ fn set_dtr(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) 
         let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
         match map.get(&monitor_id) {
             Some(reader) => reader.port.clone(),
-            None => return Err("未连接串口".into()),
+            None => {
+                report_error("未连接串口", "set_dtr");
+                return Err("未连接串口".into());
+            }
         }
     };
     let mut port = port_arc.lock().unwrap_or_else(|e| e.into_inner());
-    port.write_data_terminal_ready(level).map_err(|e| format!("DTR 设置失败: {}", e))
+    port.write_data_terminal_ready(level).map_err(|e| {
+        report_error(&format!("DTR 设置失败: {}", e), "set_dtr");
+        format!("DTR 设置失败: {}", e)
+    })
 }
 
 /// 实时设置 RTS 信号
@@ -860,11 +958,17 @@ fn set_rts(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) 
         let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
         match map.get(&monitor_id) {
             Some(reader) => reader.port.clone(),
-            None => return Err("未连接串口".into()),
+            None => {
+                report_error("未连接串口", "set_rts");
+                return Err("未连接串口".into());
+            }
         }
     };
     let mut port = port_arc.lock().unwrap_or_else(|e| e.into_inner());
-    port.write_request_to_send(level).map_err(|e| format!("RTS 设置失败: {}", e))
+    port.write_request_to_send(level).map_err(|e| {
+        report_error(&format!("RTS 设置失败: {}", e), "set_rts");
+        format!("RTS 设置失败: {}", e)
+    })
 }
 
 // ===== 自动化工作流命令 =====
@@ -1332,6 +1436,24 @@ fn start_wsl_watcher(app: tauri::AppHandle) {
     });
 }
 
+/// 将 WSL 路径转换为 Windows 可识别的路径
+/// 例如: /home/seahi -> \\wsl$\Ubuntu-20.04\home\seahi
+///       /mnt/c/Users/seahi -> C:\Users\seahi
+fn wsl_path_to_win(wsl_path: &str, dist_name: &str) -> Option<String> {
+    if wsl_path.starts_with("/mnt/") && wsl_path.len() >= 6 {
+        // /mnt/c/... -> C:\...
+        let drive = wsl_path[5..6].to_uppercase();
+        let rest = &wsl_path[6..];
+        // 将正斜杠转换为反斜杠
+        let win_rest: String = rest.replace('/', "\\");
+        Some(format!("{}:{}", drive, win_rest))
+    } else {
+        // 其他路径使用 \\wsl$\格式
+        let win_path: String = wsl_path.replace('/', "\\");
+        Some(format!("\\\\wsl$\\{}{}", dist_name, win_path))
+    }
+}
+
 /// 启动 WSL 终端（可指定分发版）
 /// 直接启动 wsl.exe 并分配独立控制台窗口，避免 PowerShell 参数传递问题
 #[tauri::command]
@@ -1367,9 +1489,14 @@ fn launch_wsl(dist: Option<String>) -> Result<(), String> {
         let mut c = std::process::Command::new("wt.exe");
         // 使用 Windows Terminal 的 WSL 配置文件（带图标和正确配色）
         c.args(["-p", dist_name]);
-        // 设置启动目录为 WSL 主目录
+        // 设置启动目录为 WSL 主目录（转换为 Windows 可识别的路径）
         if let Some(ref h) = home {
-            c.args(["--startingDirectory", h]);
+            if let Some(win_path) = wsl_path_to_win(h, dist_name) {
+                dbg_log(&format!("launch_wsl: converting {} -> {}", h, win_path));
+                c.args(["--startingDirectory", &win_path]);
+            } else {
+                dbg_log(&format!("launch_wsl: failed to convert WSL path: {}", h));
+            }
         }
         c
     } else {
@@ -1613,7 +1740,11 @@ fn deploy_bridge(distro: &str) -> Result<(), String> {
         .output()
         .map_err(|e| format!("解码失败: {}", e))?;
     let _ = std::fs::remove_file(&tmp_b64);
-    if out.status.success() { Ok(()) } else { Err(format!("部署 bridge 失败: {}", String::from_utf8_lossy(&out.stderr))) }
+    if out.status.success() { Ok(()) } else {
+        let msg = format!("部署 bridge 失败: {}", String::from_utf8_lossy(&out.stderr));
+        report_error(&msg, "deploy_bridge");
+        Err(msg)
+    }
 }
 
 /// 启动 bridge 进程（使用 hidden_command 隐藏窗口 + sg dialout 切换组）
@@ -1622,7 +1753,10 @@ fn spawn_bridge(distro: &str) -> Result<std::process::Child, String> {
         .args(["-d", distro, "-e", "sg", "dialout", "-c", &format!("python3 {}", BRIDGE_SCRIPT_PATH)])
         .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).stdin(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("启动 bridge 失败: {}", e))?;
+        .map_err(|e| {
+            report_error(&format!("启动 bridge 失败: {}", e), "spawn_bridge");
+            format!("启动 bridge 失败: {}", e)
+        })?;
     Ok(child)
 }
 fn bridge_command(session: &WslSerialSession, cmd: &serde_json::Value) -> Result<serde_json::Value, String> {
@@ -1664,6 +1798,7 @@ fn bridge_command(session: &WslSerialSession, cmd: &serde_json::Value) -> Result
         Err(_) => {
             let mut c = session.child.lock().map_err(|e| format!("锁失败: {}", e))?;
             let _ = c.kill();
+            report_error("bridge 响应超时(5s)", "bridge_command");
             Err("bridge 响应超时(5s)".into())
         }
     }
@@ -1694,7 +1829,12 @@ fn open_wsl_serial(
         }
         false
     }).join().unwrap_or(false);
-    if !ready { let _ = child.kill(); let _ = child.wait(); return Err("bridge 启动超时".into()); }
+    if !ready {
+        let _ = child.kill();
+        let _ = child.wait();
+        report_error("bridge 启动超时", "open_wsl_serial");
+        return Err("bridge 启动超时".into());
+    }
     let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
     let stdin = child.stdin.take().ok_or("无法获取 stdin")?;
     let writer = std::sync::Mutex::new(std::io::BufWriter::new(stdin));
@@ -1706,6 +1846,7 @@ fn open_wsl_serial(
         Ok(())
     } else {
         let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("打开失败").to_string();
+        report_error(&format!("WSL串口打开失败: {}", err), "open_wsl_serial");
         { let mut c = session.child.lock().unwrap(); let _ = c.kill(); let _ = c.wait(); }
         Err(err)
     }
@@ -1817,10 +1958,12 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
                     !l.is_empty() && !l.contains("Distributions") && !l.contains("分发")
                 });
             if !has_running {
+                report_error("WSL 未运行", "attach_port_to_wsl");
                 return Err("WSL 未运行，请先打开一个 WSL 终端窗口再进行映射".to_string());
             }
         }
         Err(e) => {
+            report_error(&format!("检测 WSL 状态失败: {}", e), "attach_port_to_wsl");
             return Err(format!("检测 WSL 状态失败: {}，请确认 WSL 已安装", e));
         }
     }
@@ -1837,8 +1980,14 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
 
     let list_out = match rx.recv_timeout(std::time::Duration::from_secs(3)) {
         Ok(Ok(out)) => out,
-        Ok(Err(e)) => return Err(format!("执行 usbipd list 失败: {}", e)),
-        Err(_) => return Err("usbipd list 执行超时（3 秒），请确认 usbipd-win 已正确安装".to_string()),
+        Ok(Err(e)) => {
+            report_error(&format!("执行 usbipd list 失败: {}", e), "attach_port_to_wsl");
+            return Err(format!("执行 usbipd list 失败: {}", e));
+        }
+        Err(_) => {
+            report_error("usbipd list 执行超时", "attach_port_to_wsl");
+            return Err("usbipd list 执行超时（3 秒），请确认 usbipd-win 已正确安装".to_string());
+        }
     };
 
     if !list_out.status.success() {
@@ -1915,6 +2064,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
             }
             Err(e) => {
                 dbg_log(&format!("Direct attach command error for {}: {}", busid, e));
+                report_error(&format!("执行 usbipd attach 失败: {}", e), "attach_port_to_wsl");
                 return Err(format!("执行 usbipd attach 失败: {}", e));
             }
         }
@@ -2008,11 +2158,13 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
     if result_content.contains("操作成功") {
         Ok(format!("已将 {} (busid: {}) 绑定并映射到 WSL", port_name, busid))
     } else if result_content.contains("绑定失败") || result_content.contains("附加失败") {
+        report_error(&format!("WSL映射失败: {}", result_content), "wsl_attach");
         Err(format!("映射失败: {}", result_content))
     } else if !status.success() {
+        report_error("WSL映射操作失败或用户取消管理员权限", "wsl_attach");
         Err("操作失败或用户取消了管理员权限请求".to_string())
     } else {
-        // status.success() 但结果不明确，可能是用户取消了UAC
+        report_error("WSL映射操作未完成，可能用户取消了UAC", "wsl_attach");
         Err("操作未完成，可能用户取消了管理员权限请求".to_string())
     }
 }
@@ -2036,8 +2188,14 @@ async fn detach_port_from_wsl(busid: String) -> Result<String, String> {
         let result = run_usbipd_detach_elevated(&busid);
         match result {
             Some(s) if s.contains("成功") || s.is_empty() => Ok(format!("已断开 {} 的WSL映射", busid)),
-            Some(s) => Err(format!("断开失败: {}", s)),
-            None => Err("断开失败，可能用户取消了管理员权限请求".to_string()),
+            Some(s) => {
+                report_error(&format!("WSL断开映射失败: {}", s), "detach_port_from_wsl");
+                Err(format!("断开失败: {}", s))
+            }
+            None => {
+                report_error("WSL断开映射失败，用户可能取消了管理员权限请求", "detach_port_from_wsl");
+                Err("断开失败，可能用户取消了管理员权限请求".to_string())
+            }
         }
     })
     .await
@@ -2252,20 +2410,25 @@ async fn check_update() -> Result<UpdateInfo, String> {
 
     // 2. 尝试镜像（ghproxy 已失效，跳过）
     if resp.is_none() {
-        // 暂无可用镜像，静默失败
+        report_error("无法连接 GitHub，检查更新失败", "check_update");
         return Err("无法连接 GitHub，请检查网络".to_string());
     }
 
     let resp = resp.unwrap();
 
     if !resp.status().is_success() {
-        return Err(format!("GitHub API 返回错误状态码: {}", resp.status()));
+        let msg = format!("GitHub API 返回错误状态码: {}", resp.status());
+        report_error(&msg, "check_update");
+        return Err(msg);
     }
 
     let release: GitHubRelease = resp
         .json()
         .await
-        .map_err(|e| format!("解析 GitHub 响应失败: {}", e))?;
+        .map_err(|e| {
+            report_error(&format!("解析 GitHub 响应失败: {}", e), "check_update");
+            format!("解析 GitHub 响应失败: {}", e)
+        })?;
 
     let has_update = is_newer_version(&current, &release.tag_name);
 
@@ -2310,10 +2473,15 @@ async fn download_update(download_url: String) -> Result<String, String> {
         .header("User-Agent", "seahi-serial-updater")
         .send()
         .await
-        .map_err(|e| format!("下载失败: {}", e))?;
+        .map_err(|e| {
+            report_error(&format!("下载更新包失败: {}", e), "download_update");
+            format!("下载失败: {}", e)
+        })?;
 
     if !resp.status().is_success() {
-        return Err(format!("下载失败，HTTP 状态码: {}", resp.status()));
+        let msg = format!("下载失败，HTTP 状态码: {}", resp.status());
+        report_error(&msg, "download_update");
+        return Err(msg);
     }
 
     // 获取文件名
@@ -2385,6 +2553,17 @@ fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 测试错误上报功能（仅用于开发测试）
+#[tauri::command]
+fn test_error_report() -> Result<String, String> {
+    let test_error = "Test error from Tauri application";
+    let test_context = "test_error_report_function";
+    
+    report_error(test_error, test_context);
+    
+    Ok(format!("已上报测试错误: {}", test_error))
+}
+
 /// 设置标题栏颜色 (R, G, B)
 #[tauri::command]
 fn set_title_bar_color(window: tauri::Window, r: u8, g: u8, b: u8) -> Result<(), String> {
@@ -2428,6 +2607,28 @@ static DEVICE_WATCHER_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::A
 static WSL_WATCHER_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn main() {
+    // 设置 panic hook，捕获 panic 并上报（Debug/Release 均生效）
+    set_panic_hook();
+
+    // Sentry 初始化仅在 Release 模式
+    let _sentry_guard = if cfg!(not(debug_assertions)) {
+        let dsn = std::env::var("SENTRY_DSN").unwrap_or_default();
+        if !dsn.is_empty() {
+            Some(sentry::init((
+                dsn.as_str(),
+                sentry::ClientOptions {
+                    release: sentry::release_name!(),
+                    environment: Some("production".into()),
+                    ..Default::default()
+                },
+            )))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     tauri::Builder::default()
         .manage(PortState {
             readers: RwLock::new(HashMap::new()),
@@ -2481,6 +2682,7 @@ fn main() {
             open_url,
             set_title_bar_color,
             get_app_info,
+            test_error_report,
         ])
         .setup(|app| {
             #[cfg(windows)]

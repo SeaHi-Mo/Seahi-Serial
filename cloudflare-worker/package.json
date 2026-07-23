@@ -1,0 +1,24 @@
+{
+  "name": "seahi-error-server",
+  "version": "1.0.0",
+  "description": "Cloudflare Workers 错误收集服务",
+  "main": "worker.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "logs": "wrangler tail",
+    "db:init": "wrangler d1 execute seahi-errors --file=./schema.sql",
+    "db:list": "wrangler d1 execute seahi-errors --command \"SELECT * FROM errors LIMIT 10\""
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  },
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "d1",
+    "error-tracking"
+  ],
+  "author": "Seahi",
+  "license": "MIT"
+}

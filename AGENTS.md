@@ -46,3 +46,79 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 ## CI/CD
 
 GitHub Actions 工作流位于 `.github/workflows/build.yml`：推送 `v*` tag 触发 Windows 构建并生成 Draft Release，也支持手动触发。
+
+## 错误上报系统
+
+项目支持两种错误上报方案：
+
+### 方案 1：自建错误收集服务（推荐）
+```
+Tauri 应用 → 自建服务 (SQLite)
+```
+
+### 方案 2：Sentry + GitHub Webhook
+```
+Tauri 应用 → Sentry → Webhook 服务 → GitHub Issue
+```
+
+### 文件结构
+- `server/error-server.js` — 自建错误收集服务（SQLite 存储）
+- `server/sentry-webhook.js` — Sentry Webhook 服务
+- `server/package.json` — 服务依赖配置
+- `server/INSTALL.md` — 安装部署指南
+- `cloudflare-worker/` — Cloudflare Workers 版本（推荐，免费全球部署）
+- `.env.example` — 环境变量示例
+
+### 自建服务配置（本地）
+```bash
+cd server
+npm install
+node error-server.js
+```
+
+访问 http://localhost:3000 查看错误列表
+
+### Cloudflare Workers 部署（推荐）
+```bash
+cd cloudflare-worker
+npm install -g wrangler
+wrangler login
+wrangler d1 create seahi-errors
+# 更新 wrangler.toml 中的 database_id
+wrangler d1 execute seahi-errors --file=./schema.sql
+wrangler deploy
+```
+
+部署后访问 `https://seahi-error-server.xxx.workers.dev` 查看错误列表
+
+### Sentry 配置（可选）
+1. 创建 Sentry 账号（免费版，5,000 事件/月）
+2. 获取 Sentry DSN
+3. 创建 GitHub Personal Access Token
+4. 部署 Webhook 服务
+5. 在 Sentry 项目中配置 Webhook URL
+
+### 使用方式
+```bash
+# 设置环境变量（自建服务）
+set ERROR_SERVER_URL=http://localhost:3000
+
+# 设置环境变量（Sentry）
+set SENTRY_DSN=https://xxx@sentry.io/xxx
+
+# 构建 Release 版本
+cargo build --release
+
+# 启动 Webhook 服务
+cd server
+node sentry-webhook.js
+```
+
+### 功能特性
+- 自动捕获 Panic 和运行时错误
+- 错误自动去重，避免重复创建 Issue
+- 详细的错误上下文（堆栈、环境信息、操作记录）
+- 自动添加 `bug`, `auto-reported` 标签
+- 支持离线缓存，网络恢复后上报
+
+详见 `server/README.md`。

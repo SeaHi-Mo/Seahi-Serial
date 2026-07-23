@@ -1,6 +1,6 @@
 [package]
 name = "seahi-serial"
-version = "0.2.1"
+version = "0.2.2"
 description = "Seahi 串口调试器"
 authors = ["Seahi"]
 edition = "2021"
@@ -20,7 +20,9 @@ serde_json = "1"
 serialport = "3.3"
 winapi = { version = "0.3", features = ["setupapi", "guiddef"] }
 windows-sys = { version = "0.59", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Foundation", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_Graphics_Dwm"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
 base64 = "0.22"
 crossbeam-channel = "0.5"
 regex = "1"
+sentry = "0.34"
+chrono = "0.4"
