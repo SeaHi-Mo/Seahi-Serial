@@ -627,7 +627,10 @@ fn execute_workflow_actions(
                     map.get(monitor_id).map(|r| r.port.clone())
                 } {
                     let mut port = port_arc.lock().unwrap_or_else(|e| e.into_inner());
-                    let _ = port.write_all(&bytes);
+                    if let Err(e) = port.write_all(&bytes) {
+                        eprintln!("[Workflow] 写入串口失败: {}", e);
+                    }
+                    port.flush().ok();
                 }
             }
             "toggle_dtr_rts" => {
@@ -637,8 +640,8 @@ fn execute_workflow_actions(
                 } {
                     let mut port = port_arc.lock().unwrap_or_else(|e| e.into_inner());
                     match action.signal.as_str() {
-                        "dtr" => { let _ = port.write_data_terminal_ready(action.level); }
-                        "rts" => { let _ = port.write_request_to_send(action.level); }
+                        "dtr" => { if let Err(e) = port.write_data_terminal_ready(action.level) { eprintln!("[Workflow] DTR 设置失败: {}", e); } }
+                        "rts" => { if let Err(e) = port.write_request_to_send(action.level) { eprintln!("[Workflow] RTS 设置失败: {}", e); } }
                         _ => {}
                     }
                 }
@@ -928,6 +931,7 @@ fn send_data(state: tauri::State<'_, PortState>, monitor_id: String, data: Vec<u
         report_error(&format!("发送失败: {}", e), "send_data");
         format!("发送失败: {}", e)
     })?;
+    port.flush().ok();
     Ok(data.len())
 }
 
@@ -1226,6 +1230,7 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
 
                     // usbipd list 格式: BUSID VID:PID DEVICE... STATE
                     // STATE 可能是 "Shared" / "Attached" / "Connected" / "Not shared"
+                    let vidpid = parts.get(1).unwrap_or(&"").to_string();
                     let name = {
                         let name_parts = &parts[2..];
                         let end = if name_parts.last().map(|s| s.to_lowercase()) == Some("shared".into()) {
@@ -1275,6 +1280,7 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
 
                     devices.push(serde_json::json!({
                         "busid": busid,
+                        "vidpid": vidpid,
                         "port": port,
                         "name": name,
                         "hasCom": has_com,
