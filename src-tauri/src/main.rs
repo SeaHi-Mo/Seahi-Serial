@@ -2603,12 +2603,20 @@ fn report_js_error(error: String, context: String) {
     report_error(&error, &context);
 }
 
+/// DWM 标题栏颜色是否支持（缓存，避免在不支持的系统上反复失败）
+static DWM_CAPTION_COLOR_SUPPORTED: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(0); // 0=未知, 1=支持, -1=不支持
+
 /// 设置标题栏颜色 (R, G, B)
 #[tauri::command]
 fn set_title_bar_color(window: tauri::Window, r: u8, g: u8, b: u8) -> Result<(), String> {
     dbg_log(&format!("set_title_bar_color: r={} g={} b={}", r, g, b));
     #[cfg(windows)]
     {
+        // 已知不支持，直接跳过
+        if DWM_CAPTION_COLOR_SUPPORTED.load(std::sync::atomic::Ordering::Relaxed) == -1 {
+            return Ok(());
+        }
+
         use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE};
 
         unsafe {
@@ -2634,7 +2642,12 @@ fn set_title_bar_color(window: tauri::Window, r: u8, g: u8, b: u8) -> Result<(),
             );
             dbg_log(&format!("DWMWA_CAPTION_COLOR hr={} color=0x{:06X}", hr, color));
             if hr != 0 {
-                return Err(format!("DwmSetWindowAttribute 失败: hr={}", hr));
+                // 标记为不支持，后续调用直接跳过
+                DWM_CAPTION_COLOR_SUPPORTED.store(-1, std::sync::atomic::Ordering::Relaxed);
+                dbg_log("DWMWA_CAPTION_COLOR 不支持，已禁用后续调用");
+                return Ok(());
+            } else {
+                DWM_CAPTION_COLOR_SUPPORTED.store(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }

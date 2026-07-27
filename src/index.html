@@ -2838,9 +2838,28 @@ async function saveLogToFile(mid) {
     } catch (e) { showToast('保存失败: ' + e, 'error'); }
 }
 function copyOutput(mid) {
-    navigator.clipboard.writeText(getOutputText(mid)).then(function() {
-        appendOutput(mid, 'sys', '已复制。');
-    }).catch(function() { appendOutput(mid, 'err', '复制失败。'); });
+    var text = getOutputText(mid);
+    if (!text) { appendOutput(mid, 'err', '没有可复制的内容。'); return; }
+    // 优先使用 Clipboard API
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function() {
+            appendOutput(mid, 'sys', '已复制。');
+        }).catch(function() { fallbackCopy(mid, text); });
+    } else {
+        fallbackCopy(mid, text);
+    }
+}
+function fallbackCopy(mid, text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try {
+        document.execCommand('copy') ? appendOutput(mid, 'sys', '已复制。') : appendOutput(mid, 'err', '复制失败。');
+    } catch(e) { appendOutput(mid, 'err', '复制失败: ' + e); }
+    document.body.removeChild(ta);
 }
 function getOutputText(mid) {
     var output = document.getElementById(mid + '-output');
