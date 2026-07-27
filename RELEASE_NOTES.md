@@ -1,3 +1,46 @@
+## v0.2.4
+
+### 🔒 安全修复
+
+- **XSS 漏洞修复** — 错误管理 Web UI 所有用户可控字段（`app_version`、`os`、`count`）过 `escapeHtml()` 转义
+- **API Key 认证** — 错误上报 `/report` 端点支持 `X-API-Key` 验证，未配置时向后兼容放行
+- **CORS 收紧** — `/api/*` 接口 CORS 限制为配置域名，不再通配 `*`
+- **Sentry Webhook 签名验证** — 实现 HMAC-SHA256 签名校验
+- **Body 大小限制** — 错误上报接口限制 1MB，防止 DoS 攻击
+- **Debug 模式隔离** — 开发构建不再往生产错误服务器上报
+- **敏感文件忽略** — `.gitignore` 添加 `.env`、`errors.db`
+
+### ✨ 新增
+
+- **WSL 多监视器支持** — WSL 端口映射页面支持打开多个串口监视器，共享设备列表
+- **上下文感知"打开额外监视器"** — 按钮根据当前页面自动判断：主监视器页面创建主监视器，WSL 页面创建 WSL 监视器
+- **前端错误自动上报** — JavaScript 未捕获错误通过 `window.onerror` + `unhandledrejection` 自动上报到错误服务器
+
+### 🔧 改进
+
+- 错误上报改为 channel + 单线程消费，避免每次错误 spawn 新线程
+- 哈希算法统一为 SHA-256，与 Cloudflare Worker 版本一致
+- `sentry` 依赖改为 optional feature gate，默认不编译，减小 exe 体积
+- `error_details` 表限制每个错误最多 100 条详情记录
+- 错误去重 Map 添加 24 小时 TTL 过期，防止内存泄漏
+- SQLite 数据库路径改为绝对路径，避免 CWD 依赖
+- 前端错误上报附加监视器连接状态，帮助复现问题
+
+### 🐛 修复
+
+- 修复 WSL 设备列表 `renderWslDeviceList` 中 `d.vidpid` 未定义导致页面崩溃
+- 修复自定义 tooltip 被屏幕边缘截断的问题
+- 修复 `test_error_report` 命令在 Release 构建中可被调用
+
+### 📦 下载
+
+| 文件 | 说明 |
+|------|------|
+| `Seahi-Serial-Setup-{VERSION}.exe` | Inno Setup 安装程序（推荐） |
+| `Seahi.Serial_{VERSION}_x64_en-US.msi` | MSI 安装包 |
+
+---
+
 ## v0.2.2
 
 ### ✨ 新增
