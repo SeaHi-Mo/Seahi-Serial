@@ -2686,6 +2686,12 @@ function stopReading(mid) {
 
 /* ===== 额外监视器 ===== */
 function addMonitor() {
+    // 上下文感知：WSL 页面下创建 WSL 监视器
+    var wslPane = document.getElementById('wsl-pane');
+    if (wslPane && wslPane.style.display !== 'none') {
+        addWslMonitor();
+        return;
+    }
     extraCount++;
     createMonitorPane('extra-' + extraCount, '监视器 ' + (extraCount + 1), true);
     // 自动扩展窗口宽度以容纳新监视器
@@ -2696,6 +2702,48 @@ function addMonitor() {
             invoke('set_window_size', { width: minWidth, height: size.height });
         }
     }).catch(function() {});
+    scheduleConfigSave();
+}
+
+// 添加 WSL 额外串口监视器
+function addWslMonitor() {
+    _wslExtraCount++;
+    var wmid = 'wsl-x' + _wslExtraCount;
+    var area = document.getElementById('wsl-monitorArea');
+    if (!area) return;
+
+    var pane = document.createElement('div');
+    pane.className = 'monitor-pane';
+    pane.id = 'pane-' + wmid;
+    pane.style.flex = '1';
+    pane.style.minWidth = '0';
+    pane.style.borderLeft = '2px solid var(--split-line)';
+    pane.innerHTML = '<div class="pane-header pane-header-thin" style="display:flex;justify-content:flex-end;">' +
+        '<button class="pane-close" onclick="closeWslMonitor(\'' + wmid + '\')" title="关闭">\u2715</button>' +
+        '</div>' + getWslMonitorHtml(wmid);
+    area.appendChild(pane);
+
+    monitors[wmid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, _editing: false, quickCmds: [
+        {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
+        {label:'指令4', value:''}, {label:'指令5', value:''}
+    ], isWsl: true, workflows: [] };
+    initWslMonitor(wmid);
+
+    if (_wslRunning) {
+        setWslMonitorEnabled(true, wmid);
+    }
+    scheduleConfigSave();
+}
+
+// 关闭 WSL 额外串口监视器
+function closeWslMonitor(wmid) {
+    if (monitors[wmid] && monitors[wmid].isConnected) {
+        invoke('close_wsl_serial', { monitorId: wmid }).catch(function() {});
+    }
+    stopReading(wmid);
+    delete monitors[wmid];
+    var pane = document.getElementById('pane-' + wmid);
+    if (pane) pane.remove();
     scheduleConfigSave();
 }
 
@@ -3476,7 +3524,7 @@ function collectConfig() {
         var m = mid.match(/^extra-(\d+)$/);
         if (m) { var n = parseInt(m[1], 10); if (n > maxExtra) maxExtra = n; }
     });
-    var cfg = { version: 1, extraCount: maxExtra, monitors: {}, logDir: logDirPath, wslAutoMap: _wslAutoMap, theme: _currentTheme, themeStyle: _currentThemeStyle };
+    var cfg = { version: 1, extraCount: maxExtra, wslExtraCount: _wslExtraCount, monitors: {}, logDir: logDirPath, wslAutoMap: _wslAutoMap, theme: _currentTheme, themeStyle: _currentThemeStyle };
     if (_cachedWindowSize) {
         cfg.windowWidth = _cachedWindowSize[0];
         cfg.windowHeight = _cachedWindowSize[1];
@@ -3910,23 +3958,27 @@ async function loadAndApplyConfig() {
 }
 
 /* ===== WSL 映射页面 ===== */
-function getWslMappingHtml(mid) {
-    var wmid = 'wsl';
+var _wslExtraCount = 0;
+
+// WSL 设备区域 HTML（共享，单实例）
+function getWslDeviceAreaHtml() {
+    return '<div id="wsl-paneHeader" style="background:var(--toolbar-bg);border-bottom:1px solid var(--border);padding:8px 16px;display:flex;align-items:center;gap:20px;flex-shrink:0;">' +
+            '<div style="font-size:13px;font-weight:600;color:var(--text-b);white-space:nowrap;flex-shrink:0;">WSL 端口映射</div>' +
+            '<div id="main-wslDistroList" style="display:flex;flex-wrap:wrap;gap:6px;flex:1;min-width:0;justify-content:flex-end;"></div>' +
+        '</div>' +
+        '<div style="flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0;" id="main-wslTop">' +
+            '<div class="no-scrollbar" style="flex:1;overflow-y:auto;min-height:0;" id="main-wslDeviceList">' +
+                '<div style="color:var(--text-d);text-align:center;padding:20px;">正在加载设备列表...</div>' +
+            '</div>' +
+        '</div>';
+}
+
+// WSL 串口监视器 HTML（可多实例）
+function getWslMonitorHtml(wmid) {
     var baudOpts = [50,75,110,134,150,200,300,600,1200,1800,2400,4800,7200,9600,14400,19200,28800,38400,57600,115200,230400,460800,500000,576000,921600,1000000,1152000,1500000,2000000,2500000,3000000,3500000,4000000].map(function(v) {
         return '<div class="baud-opt' + (v===115200?' active':'') + '" onclick="setBaud(\'' + wmid + '\',' + v + ')">' + v + '</div>';
     }).join('');
-    return '<div style="display:flex;flex-direction:column;width:100%;height:100%;min-height:0;background:var(--bg);">' +
-        '<div id="' + wmid + '-paneHeader" style="background:var(--toolbar-bg);border-bottom:1px solid var(--border);padding:8px 16px;display:flex;align-items:center;gap:20px;flex-shrink:0;">' +
-            '<div style="font-size:13px;font-weight:600;color:var(--text-b);white-space:nowrap;flex-shrink:0;">WSL 端口映射</div>' +
-            '<div id="' + mid + '-wslDistroList" style="display:flex;flex-wrap:wrap;gap:6px;flex:1;min-width:0;justify-content:flex-end;"></div>' +
-        '</div>' +
-        '<div style="flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0;" id="' + mid + '-wslTop">' +
-            '<div class="no-scrollbar" style="flex:1;overflow-y:auto;min-height:0;" id="' + mid + '-wslDeviceList">' +
-                '<div style="color:var(--text-d);text-align:center;padding:20px;">正在加载设备列表...</div>' +
-            '</div>' +
-        '</div>' +
-        '<div class="wsl-mon-resize" id="' + mid + '-wslMonResize"></div>' +
-        '<div style="flex:0 1 300px;min-height:120px;display:flex;flex-direction:column;overflow:hidden;background:var(--editor-bg);" id="' + mid + '-wslMonPanel">' +
+    return '<div style="display:flex;flex-direction:column;width:100%;height:100%;min-height:0;background:var(--editor-bg);">' +
             '<div class="toolbar-wrap" id="' + wmid + '-tbWrap"><div class="toolbar" id="' + wmid + '-toolbar">' +
                 '<span class="lbl">查看</span>' +
                 '<div class="sel" id="' + wmid + '-viewMode" data-val="text" onclick="toggleSelDrop(this)">' +
@@ -3941,7 +3993,7 @@ function getWslMappingHtml(mid) {
                     '<span class="sel-text">无可用端口</span><span class="sel-arrow">&#9660;</span>' +
                     '<div class="sel-drop wsl-port-drop" id="' + wmid + '-portDrop"></div>' +
                 '</div>' +
-                '<button class="btn-ref" onclick="refreshWslMonPorts()" title="刷新端口">' + ICONS.refresh + '</button>' +
+                '<button class="btn-ref" onclick="refreshWslMonPorts(\'' + wmid + '\')" title="刷新端口">' + ICONS.refresh + '</button>' +
                 '<span class="lbl">波特率</span>' +
                 '<div class="baud-wrap" id="' + wmid + '-baudWrap">' +
                     '<input class="baud-input" id="' + wmid + '-baudRate" type="number" value="115200" min="110" max="4000000" autocomplete="off">' +
@@ -3958,7 +4010,7 @@ function getWslMappingHtml(mid) {
                         '<div class="sel-opt" data-val="none" onclick="setSel(this,\'none\',event)">无</div>' +
                     '</div>' +
                 '</div>' +
-                '<button class="btn-main start" id="' + wmid + '-btnStart" onclick="toggleConnection(\'' + wmid + '\')">' +
+                '<button class="btn-main start" id="' + wmid + '-btnStart" onclick="toggleWslConnection(\'' + wmid + '\')">' +
                     '<span style="font-size:11px;">&#9654;</span> 开始监控' +
                 '</button>' +
                 '<div class="tsep"></div>' +
@@ -4001,8 +4053,8 @@ function getWslMappingHtml(mid) {
                         '<div class="sel-opt" data-val="even" onclick="setSel(this,\'even\',event)">偶校验</div>' +
                     '</div>' +
                 '</div>' +
-                '<div class="chk-wrap"><input type="checkbox" id="' + wmid + '-chkDTR" onchange="toggleWslDTR(this.checked)"><label for="' + wmid + '-chkDTR">DTR</label></div>' +
-                '<div class="chk-wrap"><input type="checkbox" id="' + wmid + '-chkRTS" checked onchange="toggleWslRTS(this.checked)"><label for="' + wmid + '-chkRTS">RTS</label></div>' +
+                '<div class="chk-wrap"><input type="checkbox" id="' + wmid + '-chkDTR" onchange="toggleWslDTR(this.checked,\'' + wmid + '\')"><label for="' + wmid + '-chkDTR">DTR</label></div>' +
+                '<div class="chk-wrap"><input type="checkbox" id="' + wmid + '-chkRTS" checked onchange="toggleWslRTS(this.checked,\'' + wmid + '\')"><label for="' + wmid + '-chkRTS">RTS</label></div>' +
                 '<button class="btn-logdir" onclick="chooseLogDir(\'' + wmid + '\')">&#128193; 选择日志目录</button>' +
                 '<button class="ibtn" onclick="saveLogToFile(\'' + wmid + '\')" title="保存日志">' + ICONS.saveLog + '</button>' +
                 '<button class="ibtn" onclick="copyOutput(\'' + wmid + '\')" title="复制全部">' + ICONS.copyAll + '</button>' +
@@ -4044,8 +4096,7 @@ function getWslMappingHtml(mid) {
                     '</div>' +
                 '</div>' +
             '</div>' +
-        '</div>' +
-    '</div>';
+        '</div>';
 }
 
 function openWslMapping() {
@@ -4065,25 +4116,44 @@ function openWslMapping() {
         if (icon) icon.innerHTML = '<rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><polyline points="9 3 9 21" fill="none" stroke="currentColor" stroke-width="2"/><line x1="3" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="2"/>';
     }
 
-    // 首次打开时初始化 WSL 面板内容
+    // 首次打开时初始化 WSL 面板内容（设备区 + 监视器区）
     var wslPane = document.getElementById('wsl-pane');
     if (!wslPane._initialized) {
-        wslPane.innerHTML = getWslMappingHtml('main');
+        wslPane.style.flexDirection = 'column';
+        wslPane.innerHTML =
+            '<div style="flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0;" id="wsl-deviceArea">' +
+                getWslDeviceAreaHtml() +
+            '</div>' +
+            '<div class="wsl-mon-resize" id="main-wslMonResize"></div>' +
+            '<div style="flex:0 1 300px;min-height:120px;display:flex;flex-direction:row;overflow:hidden;" id="wsl-monitorArea">' +
+                '<div class="monitor-pane" id="pane-wsl" style="flex:1;min-width:0;">' +
+                    getWslMonitorHtml('wsl') +
+                '</div>' +
+            '</div>';
         wslPane._initialized = true;
-        initWslMonitor();
+        initWslMonitor('wsl');
         initWslMonResize('main');
 
         // 从配置文件恢复设置（加锁防止恢复期间配置被覆盖）
-        var wmid = 'wsl';
         _loadingConfig = true;
         (async function() {
             try {
                 var raw = await invoke('load_config');
                 if (raw) {
                     var cfg = JSON.parse(raw);
-                    if (cfg && cfg.monitors && cfg.monitors[wmid]) {
-                        _wslSavedConfig = cfg.monitors[wmid];
-                        applyMonitorConfig(wmid, cfg.monitors[wmid]);
+                    if (cfg && cfg.monitors && cfg.monitors['wsl']) {
+                        _wslSavedConfig = cfg.monitors['wsl'];
+                        applyMonitorConfig('wsl', cfg.monitors['wsl']);
+                    }
+                    // 恢复 WSL 额外监视器
+                    if (cfg && cfg.wslExtraCount) {
+                        for (var i = 1; i <= cfg.wslExtraCount; i++) {
+                            var xmid = 'wsl-x' + i;
+                            addWslMonitor();
+                            if (cfg.monitors && cfg.monitors[xmid]) {
+                                applyMonitorConfig(xmid, cfg.monitors[xmid]);
+                            }
+                        }
                     }
                 }
             } catch (_) {}
@@ -4091,18 +4161,18 @@ function openWslMapping() {
         })();
     }
 
-    var wmid = 'wsl';
-
-    // 如果 WSL 串口之前已连接，恢复读取
-    if (monitors[wmid] && monitors[wmid].isConnected && monitors[wmid].portName) {
-        updateMonitorUI(wmid, true);
-        startWslReading(wmid);
-    }
+    // 恢复所有 WSL 监视器的连接状态
+    getWslMonitorIds().forEach(function(wmid) {
+        if (monitors[wmid] && monitors[wmid].isConnected && monitors[wmid].portName) {
+            updateMonitorUI(wmid, true);
+            startWslReading(wmid);
+        }
+    });
 
     // 恢复面板高度
-    var monPanel = document.getElementById('main-wslMonPanel');
-    if (monPanel && monitors[wmid] && monitors[wmid]._savedSettings && monitors[wmid]._savedSettings.panelHeight > 120) {
-        monPanel.style.flex = '0 0 ' + monitors[wmid]._savedSettings.panelHeight + 'px';
+    var monPanel = document.getElementById('wsl-monitorArea');
+    if (monPanel && monitors['wsl'] && monitors['wsl']._savedSettings && monitors['wsl']._savedSettings.panelHeight > 120) {
+        monPanel.style.flex = '0 0 ' + monitors['wsl']._savedSettings.panelHeight + 'px';
         monPanel.style.minHeight = '120px';
     }
 
@@ -4119,9 +4189,11 @@ function openWslMapping() {
         console.log('[WSL] updateWslStatusUI:', running);
         _wslRunning = running;
         loadWslDistros();
-        setWslMonitorEnabled(running);
+        // 启用/禁用所有 WSL 监视器
+        getWslMonitorIds().forEach(function(wmid) {
+            setWslMonitorEnabled(running, wmid);
+        });
         if (!running) {
-            // WSL 关闭时：强制将所有已映射设备标记为 unmapped（detach 可能已随 WSL 关闭失效）
             var changed = false;
             _wslDevices.forEach(function(d) {
                 if (d.status === 'mapped') {
@@ -4132,7 +4204,6 @@ function openWslMapping() {
             });
             if (changed) renderWslDeviceList('main');
         } else {
-            // WSL 重启时：从 usbipd 重新获取设备真实状态
             loadWslDevices('main');
         }
     }
@@ -4158,35 +4229,45 @@ function openWslMapping() {
 }
 
 /* ===== WSL 串口监视器 ===== */
-function initWslMonitor() {
-    var wmid = 'wsl';
+// 获取所有 WSL 监视器 ID 列表
+function getWslMonitorIds() {
+    var ids = [];
+    Object.keys(monitors).forEach(function(k) {
+        if (monitors[k] && monitors[k].isWsl) ids.push(k);
+    });
+    return ids;
+}
+
+function initWslMonitor(wmid) {
+    wmid = wmid || 'wsl';
     if (!monitors[wmid]) {
         monitors[wmid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, _editing: false, quickCmds: [
             {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
             {label:'指令4', value:''}, {label:'指令5', value:''}
         ], isWsl: true, workflows: [] };
-        // 输出区域编辑状态检测：进入编辑关自动滚动，退出恢复
-        var wslOutputEl = document.getElementById(wmid + '-output');
-        if (wslOutputEl) {
-            wslOutputEl.addEventListener('focus', function() {
-                if (!monitors[wmid]) return;
-                monitors[wmid]._editing = true;
+    }
+    // 输出区域编辑状态检测：进入编辑关自动滚动，退出恢复
+    var wslOutputEl = document.getElementById(wmid + '-output');
+    if (wslOutputEl && !wslOutputEl._bound) {
+        wslOutputEl._bound = true;
+        wslOutputEl.addEventListener('focus', function() {
+            if (!monitors[wmid]) return;
+            monitors[wmid]._editing = true;
+            var btn = document.getElementById(wmid + '-btnScroll');
+            if (btn && btn.classList.contains('on')) {
+                monitors[wmid]._autoScrollSaved = true;
+                btn.classList.remove('on');
+            }
+        });
+        wslOutputEl.addEventListener('blur', function() {
+            if (!monitors[wmid]) return;
+            monitors[wmid]._editing = false;
+            if (monitors[wmid]._autoScrollSaved) {
                 var btn = document.getElementById(wmid + '-btnScroll');
-                if (btn && btn.classList.contains('on')) {
-                    monitors[wmid]._autoScrollSaved = true;
-                    btn.classList.remove('on');
-                }
-            });
-            wslOutputEl.addEventListener('blur', function() {
-                if (!monitors[wmid]) return;
-                monitors[wmid]._editing = false;
-                if (monitors[wmid]._autoScrollSaved) {
-                    var btn = document.getElementById(wmid + '-btnScroll');
-                    if (btn) btn.classList.add('on');
-                    monitors[wmid]._autoScrollSaved = false;
-                }
-            });
-        }
+                if (btn) btn.classList.add('on');
+                monitors[wmid]._autoScrollSaved = false;
+            }
+        });
     }
     // 初始化快速指令下拉列表
     var qlist = document.getElementById(wmid + '-qcmdList');
@@ -4198,7 +4279,8 @@ function initWslMonitor() {
     }
     // 绑定键盘事件
     var sendInput = document.getElementById(wmid + '-sendInput');
-    if (sendInput) {
+    if (sendInput && !sendInput._bound) {
+        sendInput._bound = true;
         sendInput.addEventListener('keydown', function(e) {
             var hist = monitors[wmid].sendHistory;
             var histEl = document.getElementById(wmid + '-sendHist');
@@ -4230,17 +4312,17 @@ function initWslMonitor() {
     // 重写开始/停止按钮的 onclick
     var btnStart = document.getElementById(wmid + '-btnStart');
     if (btnStart) {
-        btnStart.setAttribute('onclick', "toggleWslConnection()");
+        btnStart.setAttribute('onclick', "toggleWslConnection('" + wmid + "')");
     }
     // 初始禁用（等WSL状态确认后再启用）
-    setWslMonitorEnabled(false);
+    setWslMonitorEnabled(false, wmid);
     // 初始化终端模式（不刷新端口，等WSL确认运行后再刷新）
     initTerminalMode(wmid);
 }
 
 // WSL 串口连接/断开切换
-async function toggleWslConnection() {
-    var wmid = 'wsl';
+async function toggleWslConnection(wmid) {
+    wmid = wmid || 'wsl';
     if (monitors[wmid] && monitors[wmid].isConnected) {
         await disconnectWslPort(wmid);
     } else {
@@ -4314,13 +4396,15 @@ async function sendWslData(mid) {
 }
 
 // WSL DTR/RTS 控制
-async function toggleWslDTR(level) {
-    if (!monitors['wsl'] || !monitors['wsl'].isConnected) return;
-    try { await invoke('set_wsl_dtr', { monitorId: 'wsl', level: level }); } catch (e) { showToast('DTR 设置失败: ' + e, 'error'); }
+async function toggleWslDTR(level, wmid) {
+    wmid = wmid || 'wsl';
+    if (!monitors[wmid] || !monitors[wmid].isConnected) return;
+    try { await invoke('set_wsl_dtr', { monitorId: wmid, level: level }); } catch (e) { showToast('DTR 设置失败: ' + e, 'error'); }
 }
-async function toggleWslRTS(level) {
-    if (!monitors['wsl'] || !monitors['wsl'].isConnected) return;
-    try { await invoke('set_wsl_rts', { monitorId: 'wsl', level: level }); } catch (e) { showToast('RTS 设置失败: ' + e, 'error'); }
+async function toggleWslRTS(level, wmid) {
+    wmid = wmid || 'wsl';
+    if (!monitors[wmid] || !monitors[wmid].isConnected) return;
+    try { await invoke('set_wsl_rts', { monitorId: wmid, level: level }); } catch (e) { showToast('RTS 设置失败: ' + e, 'error'); }
 }
 
 // WSL 串口数据读取轮询
@@ -4427,29 +4511,28 @@ async function autoDetachAllDevices(mid) {
     if (detached.length > 0) {
         console.log('[WSL] 已自动释放:', detached);
         renderWslDeviceList(mid);
-        // 自动断开后刷新 WSL 串口端口列表
-        setTimeout(function() { refreshWslMonPorts(); }, 1000);
+        // 自动断开后刷新所有 WSL 监视器的端口列表
+        setTimeout(function() { getWslMonitorIds().forEach(function(wmid) { refreshWslMonPorts(wmid); }); }, 1000);
     }
 }
 
-function setWslMonitorEnabled(enabled) {
-    var wmid = 'wsl';
-    var panel = document.querySelector('[id$="-wslMonPanel"]');
-    console.log('[WSL] setWslMonitorEnabled:', enabled, 'panel:', panel);
-    if (!panel) return;
+function setWslMonitorEnabled(enabled, wmid) {
+    wmid = wmid || 'wsl';
+    var pane = document.getElementById('pane-' + wmid);
+    if (!pane) return;
     if (enabled) {
-        panel.classList.remove('wsl-mon-disabled');
-        refreshWslMonPorts();
+        pane.classList.remove('wsl-mon-disabled');
+        refreshWslMonPorts(wmid);
     } else {
-        panel.classList.add('wsl-mon-disabled');
+        pane.classList.add('wsl-mon-disabled');
         if (monitors[wmid] && monitors[wmid].isConnected) {
             disconnectWslPort(wmid);
         }
     }
 }
 
-async function refreshWslMonPorts() {
-    var wmid = 'wsl';
+async function refreshWslMonPorts(wmid) {
+    wmid = wmid || 'wsl';
     var drop = document.getElementById(wmid + '-portDrop');
     if (!drop) return;
     // 记住当前选中的端口
@@ -4491,8 +4574,8 @@ async function refreshWslMonPorts() {
 
 function initWslMonResize(mid) {
     var handle = document.getElementById(mid + '-wslMonResize');
-    var topPanel = document.getElementById(mid + '-wslTop');
-    var monPanel = document.getElementById(mid + '-wslMonPanel');
+    var topPanel = document.getElementById('wsl-deviceArea');
+    var monPanel = document.getElementById('wsl-monitorArea');
     if (!handle || !topPanel || !monPanel) return;
     var startY = 0, startTopH = 0, startMonH = 0;
     function onMouseDown(e) {
@@ -4661,8 +4744,8 @@ function bindMonitorEvents(mid) {
 }
 
 // 快照 WSL 监视器的当前设置到状态中（DOM 即将被替换时调用）
-function snapshotWslSettings() {
-    var wmid = 'wsl';
+function snapshotWslSettings(wmid) {
+    wmid = wmid || 'wsl';
     if (!monitors[wmid]) return;
     var portSel   = document.getElementById(wmid + '-portSelect');
     var baudInp   = document.getElementById(wmid + '-baudRate');
@@ -4670,7 +4753,7 @@ function snapshotWslSettings() {
     var viewMode  = document.getElementById(wmid + '-viewMode');
     var chkDTR    = document.getElementById(wmid + '-chkDTR');
     var chkRTS    = document.getElementById(wmid + '-chkRTS');
-    var monPanel  = document.querySelector('[id$="-wslMonPanel"]');
+    var monPanel  = document.getElementById('wsl-monitorArea');
     monitors[wmid]._savedSettings = {
         port:         portSel  ? (portSel.getAttribute('data-val') || '') : '',
         baud:         baudInp  ? baudInp.value : '115200',
@@ -4689,10 +4772,13 @@ function snapshotWslSettings() {
 function restoreMonitorPane() {
     console.log('[WSL] 返回监视器页面');
     if (_wslStatusUnlisten) { _wslStatusUnlisten(); _wslStatusUnlisten = null; }
-    var wmid = 'wsl';
-    if (monitors[wmid] && monitors[wmid].readTimer) {
-        stopReading(wmid);
-    }
+    // 快照所有 WSL 监视器设置并停止读取
+    getWslMonitorIds().forEach(function(wmid) {
+        snapshotWslSettings(wmid);
+        if (monitors[wmid] && monitors[wmid].readTimer) {
+            stopReading(wmid);
+        }
+    });
     // 切换面板显示
     document.getElementById('wsl-pane').style.display = 'none';
     document.getElementById('paneContainer').style.display = 'flex';
@@ -4870,10 +4956,10 @@ function renderWslDeviceList(mid) {
         // 设备名称
         html += '<span style="flex:1;min-width:0;font-size:12px;color:var(--text-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.4;" title="' + safeName + '">' + safeName + '</span>';
         // 自动映射（按 VID:PID 匹配）
-        var autoOn = d.vidpid ? !!_wslAutoMap[d.vidpid] : false;
+        var autoOn = device.vidpid ? !!_wslAutoMap[device.vidpid] : false;
         var autoDisabled = isMapped || !_wslRunning;
         html += '<span style="width:60px;flex-shrink:0;text-align:center;">';
-        html += '<label class="wsl-auto-toggle"><input type="checkbox" ' + (autoOn ? 'checked' : '') + ' ' + (autoDisabled ? 'disabled' : '') + ' onchange="toggleAutoMap(\'' + (d.vidpid||'').replace(/'/g,"\\'") + '\', \'' + safePort.replace(/'/g,"\\'") + '\', this.checked)"><span class="wsl-auto-slider"></span></label>';
+        html += '<label class="wsl-auto-toggle"><input type="checkbox" ' + (autoOn ? 'checked' : '') + ' ' + (autoDisabled ? 'disabled' : '') + ' onchange="toggleAutoMap(\'' + (device.vidpid||'').replace(/'/g,"\\'") + '\', \'' + safePort.replace(/'/g,"\\'") + '\', this.checked)"><span class="wsl-auto-slider"></span></label>';
         html += '</span>';
         // 映射
         var mapDisabled = isBusy || !_wslRunning;
@@ -4907,15 +4993,16 @@ async function toggleWslMapping(mid, idx, checked) {
     } else {
         try {
             // 如果 WSL 监视器正在使用该设备的 WSL 端口，先关闭连接释放资源
-            var wmid = 'wsl';
-            if (monitors[wmid] && monitors[wmid].isConnected) {
-                var wslPath = device.wslPath || '';
-                var portName = monitors[wmid].portName || '';
-                if (wslPath && portName && (portName === wslPath || portName.indexOf(wslPath) !== -1 || wslPath.indexOf(portName) !== -1)) {
-                    appendOutput(wmid, 'sys', '取消映射：正在关闭 WSL 串口连接...');
-                    await disconnectWslPort(wmid);
+            getWslMonitorIds().forEach(async function(wmid) {
+                if (monitors[wmid] && monitors[wmid].isConnected) {
+                    var wslPath = device.wslPath || '';
+                    var portName = monitors[wmid].portName || '';
+                    if (wslPath && portName && (portName === wslPath || portName.indexOf(wslPath) !== -1 || wslPath.indexOf(portName) !== -1)) {
+                        appendOutput(wmid, 'sys', '取消映射：正在关闭 WSL 串口连接...');
+                        await disconnectWslPort(wmid);
+                    }
                 }
-            }
+            });
             await invoke('detach_port_from_wsl', { busid: device.busid });
             device.status = 'unmapped';
         } catch (e) { console.error('[WSL] 断开失败:', e); showToast('断开失败: ' + e, 'error'); }
@@ -4923,8 +5010,8 @@ async function toggleWslMapping(mid, idx, checked) {
     
     delete _wslBusy[device.busid];
     renderWslDeviceList(mid);
-    // 映射/断开后自动刷新 WSL 串口端口列表
-    setTimeout(function() { refreshWslMonPorts(); }, 1000);
+    // 映射/断开后自动刷新所有 WSL 监视器的端口列表
+    setTimeout(function() { getWslMonitorIds().forEach(function(wmid) { refreshWslMonPorts(wmid); }); }, 1000);
     // 后台静默刷新：合并数据，保留当前列表中的设备
     try {
         var fresh = await invoke('list_wsl_devices');
@@ -5073,7 +5160,12 @@ function winClose() { window.__TAURI__.window.getCurrentWindow().close(); }
         tip.textContent = text;
         tip.classList.add('show');
         var r = el.getBoundingClientRect();
-        tip.style.left = r.left + r.width / 2 - tip.offsetWidth / 2 + 'px';
+        var tw = tip.offsetWidth;
+        var left = r.left + r.width / 2 - tw / 2;
+        // 水平边界检测：防止 tooltip 超出屏幕
+        if (left < 4) left = 4;
+        else if (left + tw > window.innerWidth - 4) left = window.innerWidth - tw - 4;
+        tip.style.left = left + 'px';
         // 下拉触发器（.sel 等）提示显示在上方，避免遮挡下拉菜单
         if (el.classList.contains('sel') || el.classList.contains('baud-wrap') || el.classList.contains('send-as') || el.classList.contains('qcmd-trigger')) {
             tip.style.top = r.top - tip.offsetHeight - 6 + 'px';
@@ -5094,6 +5186,24 @@ document.addEventListener('DOMContentLoaded', function() {
         var wrap = document.getElementById('appInfoWrap');
         if (wrap) wrap.title = 'Seahi Serial v' + info.version + ' (' + info.commit + ')';
     }).catch(function() {});
+
+    // 全局错误捕获，上报到错误收集服务器
+    window.onerror = function(msg, src, line, col, err) {
+        var ctx = (src||'').replace(/^.*[\\/]/,'') + ':' + line + ':' + col;
+        // 附加应用状态帮助复现
+        try {
+            var state = [];
+            Object.keys(monitors).forEach(function(mid) {
+                if (monitors[mid] && monitors[mid].isConnected) state.push(mid + ':connected');
+            });
+            if (state.length) ctx += ' | monitors=' + state.join(',');
+        } catch(_) {}
+        try { invoke('report_js_error', { error: String(msg), context: ctx }); } catch(_) {}
+    };
+    window.addEventListener('unhandledrejection', function(e) {
+        var reason = e.reason || 'unknown';
+        try { invoke('report_js_error', { error: 'UnhandledPromise: ' + String(reason), context: 'promise' }); } catch(_) {}
+    });
 
     createMonitorPane('main', '主监视器', false);
     setInterval(function() { if (!monitors.main || !monitors.main.isConnected) refreshPorts('main'); }, 10000);

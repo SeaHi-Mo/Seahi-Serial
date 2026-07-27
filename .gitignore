@@ -25,3 +25,15 @@ Thumbs.db
 *.app
 *.msi
 *.nsis
+
+# Cloudflare Workers local state
+cloudflare-worker/.wrangler/
+
+# Environment variables (contains secrets)
+.env
+.env.local
+.env.*.local
+
+# Error collection service local database
+server/errors.db
+server/errors.db-*

@@ -14,14 +14,23 @@
 
 export default {
   async fetch(request, env) {
-    const corsHeaders = {
+    const origin = request.headers.get('Origin') || '';
+    const allowedOrigin = env.ALLOWED_ORIGIN || 'http://localhost:3000';
+
+    // Web UI 和 API 使用不同的 CORS 策略
+    const publicCors = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     };
+    const apiCors = {
+      'Access-Control-Allow-Origin': allowedOrigin,
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    };
 
     if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: corsHeaders });
+      return new Response(null, { headers: publicCors });
     }
 
     const url = new URL(request.url);
@@ -29,18 +38,28 @@ export default {
     
     try {
       if (request.method === 'POST' && url.pathname === '/report') {
-        return await handleReport(request, DB, corsHeaders);
+        // /report 需要 API Key 认证（仅在配置了 ERROR_API_KEY 时验证）
+        if (env.ERROR_API_KEY) {
+          const apiKey = request.headers.get('X-API-Key');
+          if (apiKey !== env.ERROR_API_KEY) {
+            return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+              status: 401,
+              headers: { ...publicCors, 'Content-Type': 'application/json' }
+            });
+          }
+        }
+        return await handleReport(request, DB, publicCors);
       } else if (request.method === 'GET' && url.pathname === '/api/errors') {
-        return await handleList(request, DB, corsHeaders, url);
+        return await handleList(request, DB, apiCors, url);
       } else if (request.method === 'GET' && url.pathname.match(/^\/api\/errors\/\d+$/)) {
         const id = parseInt(url.pathname.split('/').pop());
-        return await handleErrorDetail(id, DB, corsHeaders);
+        return await handleErrorDetail(id, DB, apiCors);
       } else if (request.method === 'GET' && url.pathname === '/api/filters') {
-        return await handleFilters(DB, corsHeaders);
+        return await handleFilters(DB, apiCors);
       } else if (request.method === 'GET' && url.pathname === '/api/stats') {
-        return await handleStats(DB, corsHeaders);
+        return await handleStats(DB, apiCors);
       } else if (request.method === 'GET' && url.pathname === '/') {
-        return handleWebUI(corsHeaders);
+        return handleWebUI(publicCors);
       } else {
         return new Response(
           JSON.stringify({ error: 'Not found' }),
@@ -66,7 +85,7 @@ async function handleReport(request, DB, corsHeaders) {
     context = ''
   } = data;
   
-  const errorHash = await generateHash(error + stack);
+  const errorHash = await generateHash(`${error}\n${stack || ''}`);
   
   const existing = await DB.prepare(
     'SELECT id, count FROM errors WHERE error_hash = ?'
@@ -375,9 +394,9 @@ async function loadData(page) {
         return '<tr onclick="showDetail(' + e.id + ')">' +
           '<td>' + e.id + '</td>' +
           '<td class="error-msg" title="' + escapeHtml(e.error_message) + '">' + escapeHtml(e.error_message) + '</td>' +
-          '<td><span class="version-tag">' + (e.app_version || '-') + '</span></td>' +
-          '<td><span class="os-tag">' + (e.os || '-') + '</span></td>' +
-          '<td><span class="count-badge ' + countClass(e.count) + '">' + e.count + '</span></td>' +
+          '<td><span class="version-tag">' + escapeHtml(e.app_version || '-') + '</span></td>' +
+          '<td><span class="os-tag">' + escapeHtml(e.os || '-') + '</span></td>' +
+          '<td><span class="count-badge ' + countClass(e.count) + '">' + escapeHtml(String(e.count)) + '</span></td>' +
           '<td class="time-col">' + formatDate(e.first_seen) + '</td>' +
           '<td class="time-col">' + formatDate(e.last_seen) + '</td>' +
         '</tr>';
@@ -414,9 +433,9 @@ async function showDetail(id) {
 
     html += '<div class="detail-section"><h3>基本信息</h3>';
     html += '<div class="detail-row"><span class="detail-label">错误消息</span><span class="detail-value">' + escapeHtml(e.error_message || '') + '</span></div>';
-    html += '<div class="detail-row"><span class="detail-label">版本</span><span class="detail-value">' + (e.app_version || '-') + '</span></div>';
-    html += '<div class="detail-row"><span class="detail-label">系统</span><span class="detail-value">' + (e.os || '-') + '</span></div>';
-    html += '<div class="detail-row"><span class="detail-label">上报次数</span><span class="detail-value"><span class="count-badge ' + countClass(e.count) + '">' + e.count + '</span></span></div>';
+    html += '<div class="detail-row"><span class="detail-label">版本</span><span class="detail-value">' + escapeHtml(e.app_version || '-') + '</span></div>';
+    html += '<div class="detail-row"><span class="detail-label">系统</span><span class="detail-value">' + escapeHtml(e.os || '-') + '</span></div>';
+    html += '<div class="detail-row"><span class="detail-label">上报次数</span><span class="detail-value"><span class="count-badge ' + countClass(e.count) + '">' + escapeHtml(String(e.count)) + '</span></span></div>';
     html += '<div class="detail-row"><span class="detail-label">首次上报</span><span class="detail-value">' + formatDate(e.first_seen) + '</span></div>';
     html += '<div class="detail-row"><span class="detail-label">最近上报</span><span class="detail-value">' + formatDate(e.last_seen) + '</span></div>';
     html += '</div>';
@@ -432,7 +451,7 @@ async function showDetail(id) {
       html += '<div class="detail-section"><h3>上报记录 (' + e.details.length + ')</h3><div class="details-list">';
       e.details.forEach(d => {
         html += '<div class="detail-item">';
-        html += '<div class="detail-item-header"><span>' + formatDate(d.created_at) + '</span><span>' + (d.app_version||'') + ' / ' + (d.os||'') + '</span></div>';
+        html += '<div class="detail-item-header"><span>' + formatDate(d.created_at) + '</span><span>' + escapeHtml(d.app_version||'') + ' / ' + escapeHtml(d.os||'') + '</span></div>';
         if (d.stack_trace) html += '<div class="stack-trace" style="max-height:150px;margin-top:8px">' + escapeHtml(d.stack_trace) + '</div>';
         if (d.context) html += '<div class="context-text" style="max-height:100px;margin-top:8px">' + escapeHtml(d.context) + '</div>';
         html += '</div>';

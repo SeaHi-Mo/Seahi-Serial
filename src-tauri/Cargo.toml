@@ -1,6 +1,6 @@
 [package]
 name = "seahi-serial"
-version = "0.2.3"
+version = "0.2.4"
 description = "Seahi 串口调试器"
 authors = ["Seahi"]
 edition = "2021"
@@ -11,6 +11,10 @@ path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[features]
+default = []
+sentry = ["dep:sentry"]
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -24,5 +28,5 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 base64 = "0.22"
 crossbeam-channel = "0.5"
 regex = "1"
-sentry = "0.34"
+sentry = { version = "0.34", optional = true }
 chrono = "0.4"

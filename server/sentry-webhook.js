@@ -8,6 +8,7 @@
  */
 
 const http = require('http');
+const crypto = require('crypto');
 const https = require('https');
 
 const PORT = process.env.PORT || 3000;
@@ -19,8 +20,20 @@ if (!GITHUB_TOKEN || !GITHUB_REPO) {
   process.exit(1);
 }
 
-// 存储已创建的 Issue（避免重复）
+// 存储已创建的 Issue（避免重复，带 TTL 过期）
 const createdIssues = new Map();
+const ISSUE_TTL = 24 * 60 * 60 * 1000; // 24小时
+
+function checkAndSetIssue(key, value) {
+  const now = Date.now();
+  // 清理过期项
+  for (const [k, v] of createdIssues) {
+    if (now - v.time > ISSUE_TTL) createdIssues.delete(k);
+  }
+  if (createdIssues.has(key)) return true;
+  createdIssues.set(key, { number: value, time: now });
+  return false;
+}
 
 async function createGitHubIssue(title, body, labels = ['bug', 'auto-reported']) {
   const url = `https://api.github.com/repos/${GITHUB_REPO}/issues`;
@@ -123,23 +136,48 @@ ${tagsList || '无标签信息'}
 
 async function handleWebhook(req, res) {
   let body = '';
+  let size = 0;
+  const MAX_BODY = 1024 * 1024; // 1MB
   
-  req.on('data', chunk => body += chunk);
+  req.on('data', chunk => {
+    size += chunk.length;
+    if (size > MAX_BODY) {
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Body too large' }));
+      req.destroy();
+      return;
+    }
+    body += chunk;
+  });
   
   req.on('end', async () => {
     try {
       const payload = JSON.parse(body);
       
-      // 验证 Webhook 签名（可选）
-      // const signature = req.headers['sentry-hook-signature'];
+      // 验证 Webhook 签名（HMAC-SHA256）
+      const webhookSecret = process.env.SENTRY_WEBHOOK_SECRET;
+      if (webhookSecret) {
+        const signature = req.headers['sentry-hook-signature'];
+        if (!signature) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing signature' }));
+          return;
+        }
+        const expected = crypto.createHmac('sha256', webhookSecret).update(body).digest('hex');
+        if (signature !== expected) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid signature' }));
+          return;
+        }
+      }
       
       // Sentry Webhook 格式
       if (payload.event) {
         const event = payload.event;
         const issueKey = event.id || event.event_id;
         
-        // 检查是否已创建
-        if (createdIssues.has(issueKey)) {
+        // 检查是否已创建（带 TTL 过期）
+        if (checkAndSetIssue(issueKey, 0)) {
           console.log(`Issue already created for event ${issueKey}`);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ status: 'ignored', reason: 'duplicate' }));
@@ -156,7 +194,8 @@ async function handleWebhook(req, res) {
         const body = formatSentryEvent(event);
         
         const issue = await createGitHubIssue(title, body);
-        createdIssues.set(issueKey, issue.number);
+        // 更新 Issue 编号
+        createdIssues.set(issueKey, { number: issue.number, time: Date.now() });
         
         console.log(`Created GitHub Issue #${issue.number} for event ${issueKey}`);
         

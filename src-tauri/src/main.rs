@@ -25,7 +25,41 @@ fn dbg_log(msg: &str) {
         .and_then(|mut f| f.write_all(line.as_bytes()));
 }
 
+/// 全局错误上报通道（单线程消费，避免每次 spawn 新线程）
+static ERROR_SENDER: std::sync::OnceLock<std::sync::mpsc::Sender<(String, String)>> = std::sync::OnceLock::new();
+
+fn init_error_reporter() {
+    let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+    std::thread::spawn(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .ok();
+        if let Some(client) = client {
+            while let Ok((error, context)) = rx.recv() {
+                let server_url = std::env::var("ERROR_SERVER_URL")
+                    .unwrap_or_else(|_| "https://seahi-error-server.seahi-mo.workers.dev".to_string());
+                let api_key = std::env::var("ERROR_API_KEY").unwrap_or_default();
+                let payload = serde_json::json!({
+                    "app_version": env!("CARGO_PKG_VERSION"),
+                    "os": std::env::consts::OS,
+                    "error": error,
+                    "context": context,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                });
+                let mut req = client.post(format!("{}/report", server_url)).json(&payload);
+                if !api_key.is_empty() {
+                    req = req.header("X-API-Key", &api_key);
+                }
+                let _ = req.send();
+            }
+        }
+    });
+    let _ = ERROR_SENDER.set(tx);
+}
+
 /// 上报错误到 Sentry（带上下文信息）
+#[cfg(feature = "sentry")]
 fn report_error_to_sentry(error: &str, context: &str) {
     sentry::with_scope(
         |scope| {
@@ -42,30 +76,19 @@ fn report_error_to_sentry(error: &str, context: &str) {
 
 /// 上报错误到自建服务
 fn report_to_self_hosted(error: &str, context: &str) {
-    // 默认 URL，可通过环境变量覆盖（用于开发调试）
-    let server_url = std::env::var("ERROR_SERVER_URL")
-        .unwrap_or_else(|_| "https://seahi-error-server.seahi-mo.workers.dev".to_string());
-
-    let payload = serde_json::json!({
-        "app_version": env!("CARGO_PKG_VERSION"),
-        "os": std::env::consts::OS,
-        "error": error,
-        "context": context,
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-    });
-
-    // 异步发送，不阻塞主线程
-    std::thread::spawn(move || {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build();
-
-        if let Ok(client) = client {
-            let _ = client.post(format!("{}/report", server_url))
-                .json(&payload)
-                .send();
+    // Debug 模式不发往生产，除非显式设置了 ERROR_SERVER_URL
+    #[cfg(debug_assertions)]
+    {
+        if std::env::var("ERROR_SERVER_URL").is_err() {
+            dbg_log("[SKIP] Debug 模式未设置 ERROR_SERVER_URL，跳过上报");
+            return;
         }
-    });
+    }
+
+    // 通过通道发送到上报线程，避免每次 spawn 新线程
+    if let Some(tx) = ERROR_SENDER.get() {
+        let _ = tx.send((error.to_string(), context.to_string()));
+    }
 }
 
 /// 统一错误上报入口（根据配置选择上报方式）
@@ -73,9 +96,12 @@ fn report_error(error: &str, context: &str) {
     // 始终写入本地日志
     dbg_log(&format!("[ERROR] {}: {}", context, error));
     
-    // 上报到 Sentry（如果配置了 DSN）
-    if std::env::var("SENTRY_DSN").is_ok() {
-        report_error_to_sentry(error, context);
+    // 上报到 Sentry（如果配置了 DSN 且启用了 sentry feature）
+    #[cfg(feature = "sentry")]
+    {
+        if std::env::var("SENTRY_DSN").is_ok() {
+            report_error_to_sentry(error, context);
+        }
     }
     
     // 上报到自建服务（如果配置了服务器地址）
@@ -2560,6 +2586,7 @@ fn open_url(url: String) -> Result<(), String> {
 }
 
 /// 测试错误上报功能（仅用于开发测试）
+#[cfg(debug_assertions)]
 #[tauri::command]
 fn test_error_report() -> Result<String, String> {
     let test_error = "Test error from Tauri application";
@@ -2568,6 +2595,12 @@ fn test_error_report() -> Result<String, String> {
     report_error(test_error, test_context);
     
     Ok(format!("已上报测试错误: {}", test_error))
+}
+
+/// 接收前端 JS 错误并上报
+#[tauri::command]
+fn report_js_error(error: String, context: String) {
+    report_error(&error, &context);
 }
 
 /// 设置标题栏颜色 (R, G, B)
@@ -2613,10 +2646,14 @@ static DEVICE_WATCHER_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::A
 static WSL_WATCHER_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn main() {
+    // 初始化错误上报通道
+    init_error_reporter();
+
     // 设置 panic hook，捕获 panic 并上报（Debug/Release 均生效）
     set_panic_hook();
 
-    // Sentry 初始化仅在 Release 模式
+    // Sentry 初始化仅在 Release 模式且启用 sentry feature
+    #[cfg(feature = "sentry")]
     let _sentry_guard = if cfg!(not(debug_assertions)) {
         let dsn = std::env::var("SENTRY_DSN").unwrap_or_default();
         if !dsn.is_empty() {
@@ -2688,6 +2725,8 @@ fn main() {
             open_url,
             set_title_bar_color,
             get_app_info,
+            report_js_error,
+            #[cfg(debug_assertions)]
             test_error_report,
         ])
         .setup(|app| {

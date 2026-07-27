@@ -17,12 +17,13 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
+const crypto = require('crypto');
 
 // SQLite 数据库
 let db;
 try {
   const sqlite3 = require('sqlite3').verbose();
-  db = new sqlite3.Database('./errors.db');
+  db = new sqlite3.Database(path.join(__dirname, 'errors.db'));
   
   db.run(`CREATE TABLE IF NOT EXISTS errors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,8 +56,10 @@ try {
   
   console.log('SQLite 数据库初始化成功');
 } catch (e) {
-  console.error('SQLite 未安装，使用内存存储');
-  console.error('安装命令：npm install sqlite3');
+  console.warn('\n⚠️  警告：SQLite 未安装，使用内存存储模式');
+  console.warn('   - 数据不会持久化，重启后丢失');
+  console.warn('   - 搜索/筛选功能受限');
+  console.warn('   - 安装命令：npm install sqlite3\n');
   
   db = {
     _errors: [],
@@ -118,14 +121,22 @@ try {
 const PORT = process.env.PORT || 3000;
 
 function generateHash(error, stack) {
-  const crypto = require('crypto');
-  return crypto.createHash('md5').update(`${error}\n${stack || ''}`).digest('hex');
+  return crypto.createHash('sha256').update(`${error}\n${stack || ''}`).digest('hex');
 }
 
-function parseBody(req) {
+function parseBody(req, maxBytes = 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => body += chunk);
+    let size = 0;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(new Error('Body too large'));
+        req.destroy();
+        return;
+      }
+      body += chunk;
+    });
     req.on('end', () => {
       try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
     });
@@ -153,32 +164,37 @@ async function handleReport(req, res) {
     
     const errorHash = generateHash(error, stack);
     
-    db.get('SELECT id, count FROM errors WHERE error_hash = ?', [errorHash], (err, existing) => {
-      if (existing) {
-        db.run('UPDATE errors SET count = count + 1, last_seen = CURRENT_TIMESTAMP WHERE id = ?', [existing.id]);
-        db.run('INSERT INTO error_details (error_id, app_version, os, error_message, stack_trace, context) VALUES (?, ?, ?, ?, ?, ?)',
-          [existing.id, app_version, os, error, stack, context]);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'updated', error_id: existing.id, count: existing.count + 1 }));
-      } else {
-        db.run(
-          'INSERT INTO errors (app_version, os, error_hash, error_message, stack_trace, context) VALUES (?, ?, ?, ?, ?, ?)',
-          [app_version, os, errorHash, error, stack, context],
-          function(err) {
-            if (err) {
-              res.writeHead(500, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: err.message }));
-              return;
-            }
-            const errorId = this.lastID;
-            db.run('INSERT INTO error_details (error_id, app_version, os, error_message, stack_trace, context) VALUES (?, ?, ?, ?, ?, ?)',
-              [errorId, app_version, os, error, stack, context]);
-            res.writeHead(201, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ status: 'created', error_id: errorId }));
+    // 使用 INSERT OR REPLACE 原子操作，避免并发竞态
+    db.run(
+      `INSERT INTO errors (app_version, os, error_hash, error_message, stack_trace, context, count, first_seen, last_seen)
+       VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       ON CONFLICT(error_hash) DO UPDATE SET count = count + 1, last_seen = CURRENT_TIMESTAMP`,
+      [app_version, os, errorHash, error, stack, context],
+      function(err) {
+        if (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+          return;
+        }
+        // 获取 error_id（新插入或已存在）
+        db.get('SELECT id, count FROM errors WHERE error_hash = ?', [errorHash], (err2, row) => {
+          if (err2 || !row) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Failed to retrieve error' }));
+            return;
           }
-        );
+          const errorId = row.id;
+          db.run('INSERT INTO error_details (error_id, app_version, os, error_message, stack_trace, context) VALUES (?, ?, ?, ?, ?, ?)',
+            [errorId, app_version, os, error, stack, context]);
+          // 清理旧详情，每个 error 最多保留 100 条
+          db.run(`DELETE FROM error_details WHERE error_id = ? AND id NOT IN (
+            SELECT id FROM error_details WHERE error_id = ? ORDER BY created_at DESC LIMIT 100
+          )`, [errorId, errorId]);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: row.count > 1 ? 'updated' : 'created', error_id: errorId, count: row.count }));
+        });
       }
-    });
+    );
   } catch (e) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: e.message }));
@@ -480,9 +496,9 @@ async function loadData(page) {
         <tr onclick="showDetail(\\\${e.id})">
           <td>\\\${e.id}</td>
           <td class="error-msg" title="\\\${escapeHtml(e.error_message)}">\\\${escapeHtml(e.error_message)}</td>
-          <td><span class="version-tag">\\\${e.app_version || '-'}</span></td>
-          <td><span class="os-tag">\\\${e.os || '-'}</span></td>
-          <td><span class="count-badge \\\${countClass(e.count)}">\\\${e.count}</span></td>
+          <td><span class="version-tag">\\\${escapeHtml(e.app_version || '-')}</span></td>
+          <td><span class="os-tag">\\\${escapeHtml(e.os || '-')}</span></td>
+          <td><span class="count-badge \\\${countClass(e.count)}">\\\${escapeHtml(String(e.count))}</span></td>
           <td class="time-col">\\\${formatDate(e.first_seen)}</td>
           <td class="time-col">\\\${formatDate(e.last_seen)}</td>
         </tr>
@@ -520,9 +536,9 @@ async function showDetail(id) {
 
     html += '<div class="detail-section"><h3>基本信息</h3>';
     html += '<div class="detail-row"><span class="detail-label">错误消息</span><span class="detail-value">' + escapeHtml(e.error_message || '') + '</span></div>';
-    html += '<div class="detail-row"><span class="detail-label">版本</span><span class="detail-value">' + (e.app_version || '-') + '</span></div>';
-    html += '<div class="detail-row"><span class="detail-label">系统</span><span class="detail-value">' + (e.os || '-') + '</span></div>';
-    html += '<div class="detail-row"><span class="detail-label">上报次数</span><span class="detail-value"><span class="count-badge ' + countClass(e.count) + '">' + e.count + '</span></span></div>';
+    html += '<div class="detail-row"><span class="detail-label">版本</span><span class="detail-value">' + escapeHtml(e.app_version || '-') + '</span></div>';
+    html += '<div class="detail-row"><span class="detail-label">系统</span><span class="detail-value">' + escapeHtml(e.os || '-') + '</span></div>';
+    html += '<div class="detail-row"><span class="detail-label">上报次数</span><span class="detail-value"><span class="count-badge ' + countClass(e.count) + '">' + escapeHtml(String(e.count)) + '</span></span></div>';
     html += '<div class="detail-row"><span class="detail-label">首次上报</span><span class="detail-value">' + formatDate(e.first_seen) + '</span></div>';
     html += '<div class="detail-row"><span class="detail-label">最近上报</span><span class="detail-value">' + formatDate(e.last_seen) + '</span></div>';
     html += '</div>';
@@ -538,7 +554,7 @@ async function showDetail(id) {
       html += '<div class="detail-section"><h3>上报记录 (' + e.details.length + ')</h3><div class="details-list">';
       e.details.forEach(d => {
         html += '<div class="detail-item">';
-        html += '<div class="detail-item-header"><span>' + formatDate(d.created_at) + '</span><span>' + (d.app_version||'') + ' / ' + (d.os||'') + '</span></div>';
+        html += '<div class="detail-item-header"><span>' + formatDate(d.created_at) + '</span><span>' + escapeHtml(d.app_version||'') + ' / ' + escapeHtml(d.os||'') + '</span></div>';
         if (d.stack_trace) html += '<div class="stack-trace" style="max-height:150px;margin-top:8px">' + escapeHtml(d.stack_trace) + '</div>';
         if (d.context) html += '<div class="context-text" style="max-height:100px;margin-top:8px">' + escapeHtml(d.context) + '</div>';
         html += '</div>';
