@@ -334,15 +334,14 @@ impl PortReader {
                 };
                 match read_result {
                     Ok(n) if n > 0 => {
-                        let chunk = tmp[..n].to_vec();
                         if let Ok(mut buf) = buf_clone.lock() {
-                            buf.extend_from_slice(&chunk);
+                            buf.extend_from_slice(&tmp[..n]);
                             if buf.len() > 262144 {
                                 let drain = buf.len() - 131072;
                                 buf.drain(..drain);
                             }
                         }
-                        let _ = tx_clone.try_send(chunk).is_ok();
+                        let _ = tx_clone.try_send(tmp[..n].to_vec()).is_ok();
                     }
                     Ok(_) => continue,
                     Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
@@ -396,11 +395,11 @@ impl PortReader {
 
         if matched_actions.is_empty() { return; }
 
-        let le_bytes: Vec<u8> = match le.as_str() {
-            "crlf" => vec![0x0D, 0x0A],
-            "lf" => vec![0x0A],
-            "cr" => vec![0x0D],
-            _ => vec![],
+        let le_bytes: &[u8] = match le.as_str() {
+            "crlf" => &[0x0D, 0x0A],
+            "lf" => &[0x0A],
+            "cr" => &[0x0D],
+            _ => &[],
         };
 
         // 动作执行在独立线程，不阻塞工作流线程
@@ -577,6 +576,10 @@ impl RegexCache {
             Ok(re) => {
                 let re = std::sync::Arc::new(re);
                 let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                // 容量淘汰：超过 100 条时清空
+                if cache.len() > 100 {
+                    cache.clear();
+                }
                 cache.insert(pattern.to_string(), re.clone());
                 Some(re)
             }
@@ -594,27 +597,49 @@ struct WorkflowState {
 
 /// 解析 HEX 字符串为字节序列（支持空格分隔如 "FF 01 02" 或连续 "FF0102"）
 fn parse_hex_bytes(s: &str) -> Vec<u8> {
-    let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if cleaned.len() % 2 != 0 { return vec![]; }
-    cleaned.as_bytes().chunks(2)
-        .filter_map(|chunk| {
-            let hex_str = std::str::from_utf8(chunk).ok()?;
-            u8::from_str_radix(hex_str, 16).ok()
-        })
-        .collect()
+    let bytes = s.as_bytes();
+    let mut result = Vec::with_capacity(bytes.len() / 2);
+    let mut hi: Option<u8> = None;
+    for &b in bytes {
+        if b.is_ascii_whitespace() { continue; }
+        let n = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => return Vec::new(),
+        };
+        match hi {
+            Some(h) => { result.push((h << 4) | n); hi = None; }
+            None => { hi = Some(n); }
+        }
+    }
+    if hi.is_some() { return Vec::new(); }
+    result
 }
 
 /// 检查单个条件是否匹配
 fn match_condition(cond: &WorkflowCondition, raw: &[u8], cache: &RegexCache) -> bool {
     match cond.cond_type.as_str() {
         "string_contains" => {
-            String::from_utf8_lossy(raw).contains(&cond.value)
+            // 直接在字节层面搜索，避免 String 分配
+            let needle = cond.value.as_bytes();
+            if needle.is_empty() { return true; }
+            raw.windows(needle.len()).any(|w| w == needle)
         }
         "regex" => {
-            let text = String::from_utf8_lossy(raw);
-            match cache.get_or_compile(&cond.value) {
-                Some(re) => re.is_match(&text),
-                None => false,
+            // 先尝试零拷贝 UTF-8 解析
+            if let Ok(text) = std::str::from_utf8(raw) {
+                match cache.get_or_compile(&cond.value) {
+                    Some(re) => re.is_match(text),
+                    None => false,
+                }
+            } else {
+                // fallback: 只在非 UTF-8 时才 lossy 转换
+                let text = String::from_utf8_lossy(raw);
+                match cache.get_or_compile(&cond.value) {
+                    Some(re) => re.is_match(&text),
+                    None => false,
+                }
             }
         }
         "exact_bytes" => {

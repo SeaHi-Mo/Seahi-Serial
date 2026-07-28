@@ -1723,7 +1723,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
         <img class="app-info-icon" src="app-icon.png" alt="Seahi Serial">
         <span id="appInfoName" class="app-info-name">Seahi Serial</span>
     </span>
-    <span class="add-btn" onclick="addMonitor()">＋ 打开额外监视器</span>
+    <span class="add-btn" id="addMonitorBtn" onclick="addMonitor()">＋ 打开额外监视器</span>
     <span id="wslToggleBtn" class="add-btn" onclick="openWslMapping()" style="margin-left:12px;">
         <svg id="wslToggleIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         <span id="wslToggleText">WSL 端口映射</span>
@@ -1817,9 +1817,10 @@ const ICONS = {
 /* ===== ANSI 颜色解析 ===== */
 function parseAnsi(text) {
     const re = /\x1b\[([0-9;]*)m/g;
-    let result = '', lastIdx = 0, currentClasses = [], m, openCount = 0;
+    var parts = [];
+    var lastIdx = 0, currentClasses = [], m, openCount = 0;
     while ((m = re.exec(text)) !== null) {
-        result += escapeHtml(text.slice(lastIdx, m.index));
+        parts.push(escapeHtml(text.slice(lastIdx, m.index)));
         lastIdx = re.lastIndex;
         const codes = m[1].split(';');
         for (const code of codes) {
@@ -1829,11 +1830,11 @@ function parseAnsi(text) {
             else if (n >= 30 && n <= 37) { currentClasses = currentClasses.filter(c => !c.startsWith('ansi-3')); currentClasses.push('ansi-' + n); }
             else if (n >= 90 && n <= 97) { currentClasses = currentClasses.filter(c => !c.startsWith('ansi-9')); currentClasses.push('ansi-' + n); }
         }
-        if (currentClasses.length > 0) { result += '<span class="' + currentClasses.join(' ') + '">'; openCount++; }
+        if (currentClasses.length > 0) { parts.push('<span class="' + currentClasses.join(' ') + '">'); openCount++; }
     }
-    result += escapeHtml(text.slice(lastIdx));
-    for (let i = 0; i < openCount; i++) result += '</span>';
-    return result;
+    parts.push(escapeHtml(text.slice(lastIdx)));
+    for (let i = 0; i < openCount; i++) parts.push('</span>');
+    return parts.join('');
 }
 function escapeHtml(s) { var r = ''; for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i); if (c === 38) r += '&amp;'; else if (c === 60) r += '&lt;'; else if (c === 62) r += '&gt;'; else if (c === 34) r += '&quot;'; else r += s[i]; } return r; }
 
@@ -1992,7 +1993,14 @@ function createMonitorPane(mid, title, closable) {
     monitors[mid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, _editing: false, quickCmds: [
         {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
         {label:'指令4', value:''}, {label:'指令5', value:''}
-    ], workflows: []};
+    ], workflows: [], _bufferStart: 0,
+    // 紧凑存储：TypedArray 替代对象数组
+    _textData: new Uint8Array(1024 * 1024),  // 1 MB 初始缓冲区
+    _textDataLen: 0,
+    _textOffsets: new Uint32Array(100000),    // 偏移表（每行结束位置）
+    _textTypes: new Uint8Array(100000),       // 类型表（0=recv,1=send,2=sys,3=err）
+    _textTsLens: new Uint16Array(100000),     // 时间戳长度
+    _textCount: 0};
 
     // 新建监视器默认展开高级设置
     var advRow = document.getElementById(mid + '-advRow');
@@ -2019,6 +2027,25 @@ function createMonitorPane(mid, title, closable) {
                 var btn = document.getElementById(mid + '-btnScroll');
                 if (btn) btn.classList.add('on');
                 monitors[mid]._autoScrollSaved = false;
+            }
+        });
+        // 滚动到顶部时加载更多历史
+        var _loadingHistory = false;
+        var _mouseDown = false;
+        outputEl.addEventListener('mousedown', function() { _mouseDown = true; });
+        document.addEventListener('mouseup', function() { _mouseDown = false; });
+        outputEl.addEventListener('scroll', function() {
+            if (_loadingHistory || _mouseDown) return;
+            // 用户有文本选中时不加载，避免打断复制操作
+            var sel = window.getSelection();
+            if (sel && sel.toString().length > 0) return;
+            if (outputEl.scrollTop < 50 && monitors[mid] && monitors[mid]._bufferStart > 0) {
+                _loadingHistory = true;
+                loadMoreHistory(mid, outputEl, function() { _loadingHistory = false; });
+            }
+            // 滚回底部时，清理多余旧行
+            if (outputEl.scrollTop + outputEl.clientHeight >= outputEl.scrollHeight - 20) {
+                cleanupExtraLines(mid, outputEl);
             }
         });
     }
@@ -2707,6 +2734,7 @@ function addMonitor() {
 
 // 添加 WSL 额外串口监视器
 function addWslMonitor() {
+    if (!_wslRunning) return; // WSL 未运行时不允许创建
     _wslExtraCount++;
     var wmid = 'wsl-x' + _wslExtraCount;
     var area = document.getElementById('wsl-monitorArea');
@@ -2726,7 +2754,10 @@ function addWslMonitor() {
     monitors[wmid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, _editing: false, quickCmds: [
         {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
         {label:'指令4', value:''}, {label:'指令5', value:''}
-    ], isWsl: true, workflows: [] };
+    ], isWsl: true, workflows: [], _bufferStart: 0,
+    _textData: new Uint8Array(1024 * 1024), _textDataLen: 0,
+    _textOffsets: new Uint32Array(100000), _textTypes: new Uint8Array(100000),
+    _textTsLens: new Uint16Array(100000), _textCount: 0 };
     initWslMonitor(wmid);
 
     if (_wslRunning) {
@@ -2862,6 +2893,11 @@ function fallbackCopy(mid, text) {
     document.body.removeChild(ta);
 }
 function getOutputText(mid) {
+    // 优先从紧凑存储读取（保留完整日志，不受 DOM maxLines 限制）
+    if (monitors[mid] && monitors[mid]._textCount > 0) {
+        return bufferGetAllText(monitors[mid]);
+    }
+    // fallback：从 DOM 读取
     var output = document.getElementById(mid + '-output');
     if (!output) return '';
     return Array.from(output.querySelectorAll('.ol'))
@@ -2915,6 +2951,10 @@ function appendOutput(mid, type, text, opts) {
     if (isEmpty) div.classList.add('empty-line');
     var contentSpan = document.createElement('span');
     contentSpan.className = 'lc';
+    // 写入紧凑存储（保留完整日志，不受 maxLines 限制）
+    if (monitors[mid] && !isEmpty) {
+        bufferPush(mid, type, ts, text);
+    }
     if (type === 'recv') {
         if (opts && opts.hex) {
             contentSpan.textContent = ts + text;
@@ -2932,8 +2972,12 @@ function appendOutput(mid, type, text, opts) {
     var target = (opts && opts.fragment) ? opts.fragment : el;
     target.appendChild(div);
     if (!(opts && opts.fragment)) {
-        var maxLines = 100000;
-        if (el.children.length > maxLines) {
+        var maxLines = 10000;
+        var softLimit = 15000;
+        // 用户在顶部查看历史或有选区时，跳过清理，保护已加载内容
+        var isAtTop = el.scrollTop < 100;
+        var hasSelection = (function() { var s = window.getSelection(); return s && s.toString().length > 0; })();
+        if (el.children.length > softLimit && !isAtTop && !hasSelection) {
             var removeCount = el.children.length - maxLines;
             var removedNonEmpty = 0;
             for (var r = 0; r < removeCount; r++) {
@@ -2941,6 +2985,7 @@ function appendOutput(mid, type, text, opts) {
                 el.removeChild(el.firstChild);
             }
             if (el._lineCount > removedNonEmpty) el._lineCount -= removedNonEmpty; else el._lineCount = 0;
+            if (monitors[mid]) monitors[mid]._bufferStart += removedNonEmpty;
         }
         var scrollBtn = document.getElementById(mid + '-btnScroll');
         if (scrollBtn && scrollBtn.classList.contains('on')) requestScroll(el);
@@ -2951,8 +2996,12 @@ function flushBatch(mid, fragment) {
     var el = document.getElementById(mid + '-output');
     if (!el || !fragment) return;
     el.appendChild(fragment);
-    var maxLines = 100000;
-    if (el.children.length > maxLines) {
+    var maxLines = 10000;
+    var softLimit = 15000;
+    // 用户在顶部查看历史或有选区时，跳过清理
+    var isAtTop = el.scrollTop < 100;
+    var hasSelection = (function() { var s = window.getSelection(); return s && s.toString().length > 0; })();
+    if (el.children.length > softLimit && !isAtTop && !hasSelection) {
         var removeCount = el.children.length - maxLines;
         var removedNonEmpty = 0;
         for (var r = 0; r < removeCount; r++) {
@@ -2960,6 +3009,7 @@ function flushBatch(mid, fragment) {
             el.removeChild(el.firstChild);
         }
         if (el._lineCount > removedNonEmpty) el._lineCount -= removedNonEmpty; else el._lineCount = 0;
+        if (monitors[mid]) monitors[mid]._bufferStart += removedNonEmpty;
     }
     var scrollBtn = document.getElementById(mid + '-btnScroll');
     if (scrollBtn && scrollBtn.classList.contains('on')) requestScroll(el);
@@ -2969,6 +3019,182 @@ function clearLog(mid) {
     var el = document.getElementById(mid + '-output');
     el.innerHTML = '';
     el._lineCount = 0;
+    // 同时清空紧凑存储
+    if (monitors[mid]) {
+        monitors[mid]._textDataLen = 0;
+        monitors[mid]._textCount = 0;
+        monitors[mid]._bufferStart = 0;
+    }
+}
+
+// ===== 紧凑存储辅助函数 =====
+var _typeMap = {recv: 0, send: 1, sys: 2, err: 3};
+var _typeNames = ['recv', 'send', 'sys', 'err'];
+
+// 写入一行到紧凑存储
+function bufferPush(mid, type, ts, text) {
+    var m = monitors[mid];
+    if (!m) return;
+
+    // 编码为 UTF-8
+    var tsBytes = new TextEncoder().encode(ts);
+    var textBytes = new TextEncoder().encode(text);
+    var totalLen = tsBytes.length + textBytes.length;
+
+    // 扩容数据缓冲区
+    if (m._textDataLen + totalLen > m._textData.length) {
+        var newBuf = new Uint8Array(m._textData.length * 2);
+        newBuf.set(m._textData);
+        m._textData = newBuf;
+    }
+    // 扩容索引缓冲区
+    if (m._textCount >= m._textOffsets.length) {
+        var newSize = m._textOffsets.length * 2;
+        m._textOffsets = new Uint32Array(newSize);
+        m._textTypes = new Uint8Array(newSize);
+        m._textTsLens = new Uint16Array(newSize);
+    }
+
+    // 写入数据
+    m._textData.set(tsBytes, m._textDataLen);
+    m._textDataLen += tsBytes.length;
+    m._textData.set(textBytes, m._textDataLen);
+    m._textDataLen += textBytes.length;
+
+    // 写入索引
+    m._textOffsets[m._textCount] = m._textDataLen;
+    m._textTypes[m._textCount] = _typeMap[type] || 0;
+    m._textTsLens[m._textCount] = tsBytes.length;
+    m._textCount++;
+
+    // 自动清理：超过 100 万行时移除最旧的 50 万行
+    if (m._textCount > 1000000) {
+        bufferTrimOld(m, 500000);
+    }
+}
+
+// 移除最旧的 N 行
+function bufferTrimOld(m, count) {
+    count = Math.min(count, m._textCount);
+    if (count <= 0) return;
+    var newStart = m._textOffsets[count - 1]; // 第 N 行的结束位置 = 新数据的起始位置
+    // 移动数据到开头
+    var remaining = m._textDataLen - newStart;
+    m._textData.copyWithin(0, newStart, m._textDataLen);
+    m._textDataLen = remaining;
+    // 移动索引
+    for (var i = count; i < m._textCount; i++) {
+        m._textOffsets[i - count] = m._textOffsets[i] - newStart;
+        m._textTypes[i - count] = m._textTypes[i];
+        m._textTsLens[i - count] = m._textTsLens[i];
+    }
+    m._textCount -= count;
+    m._bufferStart = Math.max(0, m._bufferStart - count);
+}
+
+// 读取一行
+function bufferGetLine(m, index) {
+    if (index < 0 || index >= m._textCount) return null;
+    var end = m._textOffsets[index];
+    var tsLen = m._textTsLens[index];
+    var start = index > 0 ? m._textOffsets[index - 1] : 0;
+    var tsBytes = m._textData.slice(start, start + tsLen);
+    var textBytes = m._textData.slice(start + tsLen, end);
+    return {
+        type: _typeNames[m._textTypes[index]],
+        ts: new TextDecoder().decode(tsBytes),
+        text: new TextDecoder().decode(textBytes)
+    };
+}
+
+// 读取范围
+function bufferGetLines(m, startIdx, endIdx) {
+    var result = [];
+    for (var i = startIdx; i < endIdx && i < m._textCount; i++) {
+        result.push(bufferGetLine(m, i));
+    }
+    return result;
+}
+
+// 获取全部文本（用于保存/复制）
+function bufferGetAllText(m) {
+    if (!m || m._textCount === 0) return '';
+    var parts = [];
+    for (var i = 0; i < m._textCount; i++) {
+        var item = bufferGetLine(m, i);
+        parts.push(item.ts + item.text.replace(/\x1b\[[0-9;]*m/g, ''));
+    }
+    return parts.join('\n');
+}
+
+// 从紧凑存储加载更多历史日志（滚动到顶部时触发）
+function loadMoreHistory(mid, el, callback) {
+    var m = monitors[mid];
+    if (!m || m._bufferStart <= 0 || m._textCount === 0) { if (callback) callback(); return; }
+
+    var loadCount = 1000;
+    var startIdx = Math.max(0, m._bufferStart - loadCount);
+    var endIdx = m._bufferStart;
+    var items = bufferGetLines(m, startIdx, endIdx);
+    if (items.length === 0) { if (callback) callback(); return; }
+
+    // 记录当前滚动位置
+    var prevScrollHeight = el.scrollHeight;
+
+    // 用 DocumentFragment 批量创建
+    var fragment = document.createDocumentFragment();
+    for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        var div = document.createElement('div');
+        div.className = 'ol ' + item.type;
+        var lnSpan = document.createElement('span');
+        lnSpan.className = 'ln';
+        lnSpan.setAttribute('contenteditable', 'false');
+        div.appendChild(lnSpan);
+        var contentSpan = document.createElement('span');
+        contentSpan.className = 'lc';
+        if (item.type === 'recv') {
+            if (item.text.indexOf('\x1b') === -1) {
+                contentSpan.textContent = item.ts + item.text;
+            } else {
+                contentSpan.innerHTML = escapeHtml(item.ts) + parseAnsi(item.text);
+            }
+        } else if (item.type === 'send') {
+            contentSpan.innerHTML = escapeHtml(item.ts) + item.text;
+        } else {
+            contentSpan.textContent = item.ts + item.text;
+        }
+        div.appendChild(contentSpan);
+        fragment.appendChild(div);
+    }
+
+    // 插入到 DOM 开头
+    el.prepend(fragment);
+
+    // 调整滚动位置，让用户看到的内容不跳动
+    var newScrollHeight = el.scrollHeight;
+    el.scrollTop += (newScrollHeight - prevScrollHeight);
+
+    // 更新 _bufferStart
+    m._bufferStart = startIdx;
+
+    if (callback) callback();
+}
+
+// 滚回底部时清理多余旧行
+function cleanupExtraLines(mid, el) {
+    var m = monitors[mid];
+    if (!m) return;
+    var maxLines = 10000;
+    if (el.children.length <= maxLines) return;
+    var removeCount = el.children.length - maxLines;
+    var removedNonEmpty = 0;
+    for (var r = 0; r < removeCount; r++) {
+        if (!el.firstChild.classList.contains('empty-line')) removedNonEmpty++;
+        el.removeChild(el.firstChild);
+    }
+    if (el._lineCount > removedNonEmpty) el._lineCount -= removedNonEmpty; else el._lineCount = 0;
+    m._bufferStart += removedNonEmpty;
 }
 
 /* ===== 工具函数 ===== */
@@ -2995,7 +3221,12 @@ function hexToBytes(s) {
     return new Uint8Array(out);
 }
 function bytesToHex(arr) {
-    return Array.from(arr).map(function(b) { return b.toString(16).padStart(2,'0').toUpperCase(); }).join(' ');
+    var u8 = arr instanceof Uint8Array ? arr : new Uint8Array(arr);
+    var parts = new Array(u8.length);
+    for (var i = 0; i < u8.length; i++) {
+        parts[i] = (u8[i] < 16 ? '0' : '') + u8[i].toString(16).toUpperCase();
+    }
+    return parts.join(' ');
 }
 
 /* ===== 快速指令下拉 ===== */
@@ -3293,8 +3524,8 @@ function renderWorkflowList(mid) {
             ? '<svg width="14" height="14" viewBox="0 0 1024 1024" fill="currentColor"><path d="M256 128h170.666667v768H256zM597.333333 128H768v768H597.333333z"/></svg>'
             : '<svg width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M725.333333 512L362.666667 256v512z"/></svg>';
         header.innerHTML =
-            '<input type="checkbox"' + (rule.enabled ? ' checked' : '') + ' onchange="toggleWorkflowEnabled(\'' + mid + '\',\'' + rule.id + '\',this.checked)">' +
-            '<input class="wf-rule-name" value="' + escapeHtml(rule.name) + '" onchange="renameWorkflowRule(\'' + mid + '\',\'' + rule.id + '\',this.value)">' +
+            '<input type="checkbox" name="wf-enabled"' + (rule.enabled ? ' checked' : '') + ' onchange="toggleWorkflowEnabled(\'' + mid + '\',\'' + rule.id + '\',this.checked)">' +
+            '<input class="wf-rule-name" name="wf-rule-name" value="' + escapeHtml(rule.name) + '" onchange="renameWorkflowRule(\'' + mid + '\',\'' + rule.id + '\',this.value)">' +
             '<button class="wf-rule-btn wf-run-btn' + (isRunning ? ' wf-running' : '') + '" onclick="toggleWorkflowRun(\'' + mid + '\',\'' + rule.id + '\')" title="' + (isRunning ? '停止' : '运行') + '" style="' + (isRunning ? 'background:var(--btn-p);color:#fff;border-color:var(--btn-p);' : '') + '">' + runIcon + '</button>' +
             '<button class="wf-rule-btn wf-rule-arrow" onclick="toggleWfRuleCollapse(\'' + mid + '\',\'' + rule.id + '\')" title="折叠/展开" style="transition:transform .2s ease;' + (isCollapsed ? 'transform:rotate(-90deg);' : '') + '">' + ICONS.chevronDown + '</button>' +
             '<button class="wf-rule-btn del" onclick="deleteWorkflowRule(\'' + mid + '\',\'' + rule.id + '\')" title="删除">&#xd7;</button>';
@@ -3320,7 +3551,7 @@ function renderWorkflowList(mid) {
                         '<div class="sel-opt' + (cond.type==='exact_bytes'?' active':'') + '" data-val="exact_bytes" onclick="setWfCondType(this,\'' + mid + '\',\'' + rule.id + '\',' + ci + ',\'exact_bytes\',event)">精确字节(HEX)</div>' +
                     '</div>' +
                 '</div>' +
-                '<input type="text" value="' + escapeHtml(cond.value) + '" placeholder="' + wfCondPlaceholder(cond.type) + '" oninput="updateWfCondition(\'' + mid + '\',\'' + rule.id + '\',' + ci + ',\'value\',this.value)">' +
+                '<input type="text" name="wf-cond-value" value="' + escapeHtml(cond.value) + '" placeholder="' + wfCondPlaceholder(cond.type) + '" oninput="updateWfCondition(\'' + mid + '\',\'' + rule.id + '\',' + ci + ',\'value\',this.value)">' +
                 '<button class="wf-row-btn" onclick="addWfCondition(\'' + mid + '\',\'' + rule.id + '\')" title="添加条件">+</button>' +
                 '<button class="wf-row-btn del" onclick="removeWfCondition(\'' + mid + '\',\'' + rule.id + '\',' + ci + ')" title="删除条件">&#xd7;</button>';
             condSection.appendChild(row);
@@ -3344,7 +3575,7 @@ function renderWorkflowList(mid) {
                             '<div class="sel-opt' + (act.encoding==='hex'?' active':'') + '" onclick="setWfActEnc(this,\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'hex\',event)">HEX</div>' +
                         '</div>' +
                     '</div>' +
-                    '<input type="text" value="' + escapeHtml(act.data) + '" placeholder="发送内容" oninput="updateWfAction(\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'data\',this.value)">';
+                    '<input type="text" name="wf-act-data" value="' + escapeHtml(act.data) + '" placeholder="发送内容" oninput="updateWfAction(\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'data\',this.value)">';
             } else if (act.type === 'toggle_dtr_rts') {
                 extraInputs =
                     '<div class="sel" onclick="toggleSelDrop(this)">' +
@@ -3372,7 +3603,7 @@ function renderWorkflowList(mid) {
                     '</div>' +
                 '</div>' +
                 extraInputs +
-                '<input type="number" value="' + (act.delayBefore || 0) + '" min="0" step="100" title="延时(ms)" oninput="updateWfAction(\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'delayBefore\',parseInt(this.value)||0)">' +
+                '<input type="number" name="wf-act-delay" value="' + (act.delayBefore || 0) + '" min="0" step="100" title="延时(ms)" oninput="updateWfAction(\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'delayBefore\',parseInt(this.value)||0)">' +
                 '<span style="font-size:10px;color:var(--text-d);">ms</span>' +
                 '<button class="wf-row-btn del" onclick="removeWfAction(\'' + mid + '\',\'' + rule.id + '\',' + ai + ')" title="删除动作">&#xd7;</button>';
             actSection.appendChild(row);
@@ -3465,7 +3696,7 @@ function renderWfActRow(actSection, mid, ruleId, targetIdx) {
                     '<div class="sel-opt' + (act.encoding==='hex'?' active':'') + '" onclick="setWfActEnc(this,\'' + mid + '\',\'' + ruleId + '\',' + targetIdx + ',\'hex\',event)">HEX</div>' +
                 '</div>' +
             '</div>' +
-            '<input type="text" value="' + escapeHtml(act.data) + '" placeholder="发送内容" oninput="updateWfAction(\'' + mid + '\',\'' + ruleId + '\',' + targetIdx + ',\'data\',this.value)">';
+            '<input type="text" name="wf-act-data" value="' + escapeHtml(act.data) + '" placeholder="发送内容" oninput="updateWfAction(\'' + mid + '\',\'' + ruleId + '\',' + targetIdx + ',\'data\',this.value)">';
     } else if (act.type === 'toggle_dtr_rts') {
         extraInputs =
             '<div class="sel" onclick="toggleSelDrop(this)">' +
@@ -3493,7 +3724,7 @@ function renderWfActRow(actSection, mid, ruleId, targetIdx) {
             '</div>' +
         '</div>' +
         extraInputs +
-        '<input type="number" value="' + (act.delayBefore || 0) + '" min="0" step="100" title="延时(ms)" oninput="updateWfAction(\'' + mid + '\',\'' + ruleId + '\',' + targetIdx + ',\'delayBefore\',parseInt(this.value)||0)">' +
+        '<input type="number" name="wf-act-delay" value="' + (act.delayBefore || 0) + '" min="0" step="100" title="延时(ms)" oninput="updateWfAction(\'' + mid + '\',\'' + ruleId + '\',' + targetIdx + ',\'delayBefore\',parseInt(this.value)||0)">' +
         '<span style="font-size:10px;color:var(--text-d);">ms</span>' +
         '<button class="wf-row-btn del" onclick="removeWfAction(\'' + mid + '\',\'' + ruleId + '\',' + targetIdx + ')" title="删除动作">&#xd7;</button>';
     targetRow.replaceWith(newRow);
@@ -4134,6 +4365,13 @@ function openWslMapping() {
         btn.setAttribute('onclick', "restoreMonitorPane()");
         if (icon) icon.innerHTML = '<rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><polyline points="9 3 9 21" fill="none" stroke="currentColor" stroke-width="2"/><line x1="3" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="2"/>';
     }
+    // 进入 WSL 模式时，根据 WSL 运行状态设置按钮状态
+    var addBtn = document.getElementById('addMonitorBtn');
+    if (addBtn) {
+        addBtn.style.opacity = _wslRunning ? '' : '0.4';
+        addBtn.style.pointerEvents = _wslRunning ? '' : 'none';
+    }
+
 
     // 首次打开时初始化 WSL 面板内容（设备区 + 监视器区）
     var wslPane = document.getElementById('wsl-pane');
@@ -4212,6 +4450,12 @@ function openWslMapping() {
         getWslMonitorIds().forEach(function(wmid) {
             setWslMonitorEnabled(running, wmid);
         });
+        // WSL 模式下，根据运行状态启用/禁用"打开额外监视器"按钮
+        var addBtn = document.getElementById('addMonitorBtn');
+        if (addBtn && document.getElementById('wsl-pane').style.display !== 'none') {
+            addBtn.style.opacity = running ? '' : '0.4';
+            addBtn.style.pointerEvents = running ? '' : 'none';
+        }
         if (!running) {
             var changed = false;
             _wslDevices.forEach(function(d) {
@@ -4221,8 +4465,10 @@ function openWslMapping() {
                     changed = true;
                 }
             });
-            if (changed) renderWslDeviceList('main');
-        } else {
+        }
+        // 无论 WSL 启动还是关闭，都重新渲染设备列表以更新复选框状态
+        renderWslDeviceList('main');
+        if (running) {
             loadWslDevices('main');
         }
     }
@@ -4263,7 +4509,10 @@ function initWslMonitor(wmid) {
         monitors[wmid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, _editing: false, quickCmds: [
             {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
             {label:'指令4', value:''}, {label:'指令5', value:''}
-        ], isWsl: true, workflows: [] };
+        ], isWsl: true, workflows: [], _bufferStart: 0,
+        _textData: new Uint8Array(1024 * 1024), _textDataLen: 0,
+        _textOffsets: new Uint32Array(100000), _textTypes: new Uint8Array(100000),
+        _textTsLens: new Uint16Array(100000), _textCount: 0 };
     }
     // 输出区域编辑状态检测：进入编辑关自动滚动，退出恢复
     var wslOutputEl = document.getElementById(wmid + '-output');
@@ -4810,6 +5059,10 @@ function restoreMonitorPane() {
         btn.setAttribute('onclick', 'openWslMapping()');
         if (icon) icon.innerHTML = '<rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y1="17" x2="12" y2="21"/>';
     }
+    // 退出 WSL 模式时恢复"打开额外监视器"按钮状态
+    var addBtn = document.getElementById('addMonitorBtn');
+    if (addBtn) { addBtn.style.opacity = ''; addBtn.style.pointerEvents = ''; }
+
 }
 
 // WSL 发行版启动/关闭，操作后延迟刷新 UI
@@ -4978,12 +5231,12 @@ function renderWslDeviceList(mid) {
         var autoOn = device.vidpid ? !!_wslAutoMap[device.vidpid] : false;
         var autoDisabled = isMapped || !_wslRunning;
         html += '<span style="width:60px;flex-shrink:0;text-align:center;">';
-        html += '<label class="wsl-auto-toggle"><input type="checkbox" ' + (autoOn ? 'checked' : '') + ' ' + (autoDisabled ? 'disabled' : '') + ' onchange="toggleAutoMap(\'' + (device.vidpid||'').replace(/'/g,"\\'") + '\', \'' + safePort.replace(/'/g,"\\'") + '\', this.checked)"><span class="wsl-auto-slider"></span></label>';
+        html += '<label class="wsl-auto-toggle"><input type="checkbox" name="wsl-auto-map" ' + (autoOn ? 'checked' : '') + ' ' + (autoDisabled ? 'disabled' : '') + ' onchange="toggleAutoMap(\'' + (device.vidpid||'').replace(/'/g,"\\'") + '\', \'' + safePort.replace(/'/g,"\\'") + '\', this.checked)"><span class="wsl-auto-slider"></span></label>';
         html += '</span>';
         // 映射
         var mapDisabled = isBusy || !_wslRunning;
         html += '<span style="width:50px;flex-shrink:0;text-align:center;">';
-        html += '<input type="checkbox" class="wsl-checkbox" ' + (isMapped ? 'checked' : '') + ' ' + (mapDisabled ? 'disabled' : '') + ' onchange="toggleWslMapping(\'' + mid + '\', ' + idx + ', this.checked)">';
+        html += '<input type="checkbox" name="wsl-map" class="wsl-checkbox" ' + (isMapped ? 'checked' : '') + ' ' + (mapDisabled ? 'disabled' : '') + ' onchange="toggleWslMapping(\'' + mid + '\', ' + idx + ', this.checked)">';
         html += '</span>';
         html += '</div>';
     });
