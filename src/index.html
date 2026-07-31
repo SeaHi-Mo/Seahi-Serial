@@ -1058,9 +1058,11 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     padding:5px 10px; background:var(--toolbar-bg);
     border-bottom:1px solid var(--border); min-height:40px; flex-shrink:0;
 }
+.toolbar > * { flex-shrink:0; }
+.toolbar .ibtn-group { display:flex; flex-wrap:wrap; gap:4px; }
 /* 工具栏折叠 */
 .toolbar-wrap {
-    flex-shrink:0; max-height:120px; border-bottom:1px solid var(--border);
+    flex-shrink:0; max-height:200px; border-bottom:1px solid var(--border);
     transition: max-height .3s ease;
 }
 .toolbar-wrap.collapsed { max-height:6px; border-bottom:none; overflow:hidden; }
@@ -2265,8 +2267,17 @@ async function refreshPorts(mid, force) {
             var opt = document.createElement('div');
             opt.className = 'sel-opt';
             opt.setAttribute('data-val', p.port_name);
-            opt.textContent = p.product_name ? p.product_name + ' (' + p.port_name + ')' : (p.friendly_name || p.port_name);
-            opt.onclick = function(e) { e.stopPropagation(); setPortSel(mid, p.port_name, this); };
+            var owner = findPortOwner(p.port_name, mid);
+            var displayName = p.product_name ? p.product_name + ' (' + p.port_name + ')' : (p.friendly_name || p.port_name);
+            if (owner) {
+                opt.className += ' port-in-use';
+                opt.textContent = displayName + ' [占用中]';
+                opt.style.opacity = '0.45';
+                opt.style.pointerEvents = 'none';
+            } else {
+                opt.textContent = displayName;
+                opt.onclick = function(e) { e.stopPropagation(); setPortSel(mid, p.port_name, this); };
+            }
             frag.appendChild(opt);
         });
         drop.appendChild(frag);
@@ -2510,6 +2521,27 @@ async function toggleRTS(mid, level) {
     }
 }
 
+/* ===== 端口锁定 ===== */
+// 检查指定端口是否已被其他监视器占用
+function findPortOwner(portName, excludeMid) {
+    if (!portName) return null;
+    for (var k in monitors) {
+        if (k === excludeMid) continue;
+        if (monitors[k] && monitors[k].isConnected && monitors[k].portName === portName) return k;
+    }
+    return null;
+}
+// 刷新所有监视器的端口列表（更新占用状态）
+function refreshAllPorts() {
+    Object.keys(monitors).forEach(function(mid) {
+        if (monitors[mid] && monitors[mid].isWsl) {
+            refreshWslMonPorts(mid);
+        } else if (!monitors[mid].isConnected) {
+            refreshPorts(mid, true);
+        }
+    });
+}
+
 /* ===== 连接管理 ===== */
 async function toggleConnection(mid) {
     if (monitors[mid] && monitors[mid].isConnected) await disconnectPort(mid);
@@ -2519,6 +2551,12 @@ async function toggleConnection(mid) {
 async function connectPort(mid, silent) {
     var name = document.getElementById(mid + '-portSelect').getAttribute('data-val') || '';
     if (!name) { if (!silent) appendOutput(mid, 'err', '请先选择端口'); return; }
+    // 端口锁定检查
+    var owner = findPortOwner(name, mid);
+    if (owner) {
+        if (!silent) showToast('端口 ' + name + ' 已被监视器 ' + owner + ' 占用', 'error');
+        return;
+    }
     var btn = document.getElementById(mid + '-btnStart');
     if (btn) { btn.disabled = true; btn.innerHTML = '<span style="font-size:11px;">⏳</span> 连接中...'; }
     var baud = parseInt(document.getElementById(mid + '-baudRate').value) || 115200;
@@ -2538,6 +2576,7 @@ async function connectPort(mid, silent) {
         var leEl = document.getElementById(mid + '-lineEnding');
         var leVal = leEl ? (leEl.getAttribute('data-val') || 'crlf') : 'crlf';
         invoke('update_workflow_line_ending', { monitorId: mid, lineEnding: leVal }).catch(function() {});
+        refreshAllPorts();
     } catch (e) {
         monitors[mid].isConnected = false;
         stopReading(mid);
@@ -2561,6 +2600,7 @@ async function disconnectPort(mid) {
     monitors[mid].isConnected = false;
     monitors[mid].portName = '';
     updateMonitorUI(mid, false);
+    refreshAllPorts();
 }
 
 function updateMonitorUI(mid, connected, waiting) {
@@ -4603,6 +4643,12 @@ async function connectWslPort(mid) {
     var ps = document.getElementById(mid + '-portSelect');
     var devicePath = ps ? ps.getAttribute('data-val') : '';
     if (!devicePath) { showToast('请先选择端口', 'error'); return; }
+    // 端口锁定检查
+    var owner = findPortOwner(devicePath, mid);
+    if (owner) {
+        showToast('端口 ' + devicePath + ' 已被监视器 ' + owner + ' 占用', 'error');
+        return;
+    }
     var btn = document.getElementById(mid + '-btnStart');
     if (btn) { btn.disabled = true; btn.innerHTML = '<span style="font-size:11px;">⏳</span> 连接中...'; }
     var baud = parseInt(document.getElementById(mid + '-baudRate').value) || 115200;
@@ -4614,6 +4660,7 @@ async function connectWslPort(mid) {
         updateMonitorUI(mid, true);
         startWslReading(mid);
         showToast('WSL 串口已连接', 'success');
+        refreshAllPorts();
     } catch (e) {
         if (btn) btn.disabled = false;
         updateMonitorUI(mid, false);
@@ -4630,6 +4677,7 @@ async function disconnectWslPort(mid) {
         stopReading(mid);
         updateMonitorUI(mid, false);
         showToast('WSL 串口已断开', 'info');
+        refreshAllPorts();
     } catch (e) { showToast('断开失败: ' + e, 'error'); }
 }
 
@@ -4830,8 +4878,16 @@ async function refreshWslMonPorts(wmid) {
         var div = document.createElement('div');
         div.className = 'sel-opt' + (i === matchIdx ? ' active' : '');
         div.setAttribute('data-val', p.name);
-        div.textContent = p.label;
-        div.addEventListener('click', function(e) { e.stopPropagation(); setSel(div, p.name, e); });
+        var owner = findPortOwner(p.name, wmid);
+        if (owner) {
+            div.className += ' port-in-use';
+            div.textContent = p.label + ' [占用中]';
+            div.style.opacity = '0.45';
+            div.style.pointerEvents = 'none';
+        } else {
+            div.textContent = p.label;
+            div.addEventListener('click', function(e) { e.stopPropagation(); setSel(div, p.name, e); });
+        }
         drop.appendChild(div);
     });
     if (ps && ports.length > 0) {
