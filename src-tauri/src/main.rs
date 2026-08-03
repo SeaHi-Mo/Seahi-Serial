@@ -332,6 +332,7 @@ impl PortReader {
                     let mut p = port_for_read.lock().unwrap_or_else(|e| e.into_inner());
                     p.read(&mut tmp)
                 };
+                let should_break = matches!(&read_result, Err(e) if e.kind() != std::io::ErrorKind::TimedOut && e.kind() != std::io::ErrorKind::WouldBlock);
                 match read_result {
                     Ok(n) if n > 0 => {
                         if let Ok(mut buf) = buf_clone.lock() {
@@ -343,10 +344,8 @@ impl PortReader {
                         }
                         let _ = tx_clone.try_send(tmp[..n].to_vec()).is_ok();
                     }
-                    Ok(_) => continue,
-                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-                    Err(_) => break,
+                    _ if should_break => break,
+                    _ => std::thread::sleep(std::time::Duration::from_millis(1)),
                 }
             }
             // 非正常停止（设备断开）时设置标志
