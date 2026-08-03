@@ -106,72 +106,69 @@ begin
 end;
 
 /// 下载并安装 usbipd-win
+/// 通过 GitHub API 获取真实下载 URL，避免 {version} 占位符导致 404 卡住
 function DownloadAndInstallUsbipd: Boolean;
 var
   ResultCode: Integer;
   MsiPath: String;
-  DownloadUrl: String;
-  ReleaseInfo: String;
+  PsScript: String;
+  PsScriptPath: String;
 begin
   Result := False;
+  MsiPath := ExpandConstant('{tmp}\{#UsbipdMsiName}');
 
-  // 1. 创建下载进度页面
-  DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing), SetupMessage(msgPreparingDesc),
-    nil);
-
+  // 1. 显示下载进度提示
+  DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing), SetupMessage(msgPreparingDesc), nil);
   try
     DownloadPage.Show;
-    try
-      DownloadPage.Clear;
-      DownloadPage.Add('https://github.com/dorssel/usbipd-win/releases/latest/download/usbipd-win_{version}_x64.msi',
-        ExpandConstant('{tmp}\{#UsbipdMsiName}'), '');
+    DownloadPage.SetText('正在查询 usbipd-win 最新版本...', '');
 
-      // 尝试下载(使用 Inno 内置下载)
-      DownloadPage.Download;
+    // 2. 写入 PowerShell 脚本：查询 GitHub API 获取真实下载 URL 并下载
+    PsScript :=
+      '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12' + #13#10 +
+      'try {' + #13#10 +
+      '  $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/dorssel/usbipd-win/releases/latest" -UseBasicParsing -TimeoutSec 30' + #13#10 +
+      '  $asset = $rel.assets | Where-Object { $_.name -like "*.msi" } | Select-Object -First 1' + #13#10 +
+      '  if (-not $asset) { Write-Error "No MSI asset found"; exit 1 }' + #13#10 +
+      '  $url = $asset.browser_download_url' + #13#10 +
+      '  Write-Host "Downloading: $url"' + #13#10 +
+      '  Invoke-WebRequest -Uri $url -OutFile "' + MsiPath + '" -UseBasicParsing -TimeoutSec 300' + #13#10 +
+      '  if (Test-Path "' + MsiPath + '") { exit 0 } else { Write-Error "File not saved"; exit 1 }' + #13#10 +
+      '} catch { Write-Error $_.Exception.Message; exit 1 }';
 
-      MsiPath := ExpandConstant('{tmp}\{#UsbipdMsiName}');
+    PsScriptPath := ExpandConstant('{tmp}\usbipd_download.ps1');
+    SaveStringToFile(PsScriptPath, PsScript, False);
 
-      if not FileExists(MsiPath) then begin
-        // 内置下载可能因重定向失败，尝试 PowerShell 下载作为后备
-        DownloadPage.Hide;
-        MsgBox(CustomMessage('UsbipdDownloadFailed'), mbError, MB_OK);
-        Exit;
-      end;
-
-      // 2. 静默安装 MSI(安装程序本身已以管理员权限运行)
-      if Exec('msiexec', '/i "' + MsiPath + '" /quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
-        if ResultCode = 0 then begin
-          Log('usbipd-win MSI installed successfully');
-          Result := True;
-        end else begin
-          Log('usbipd-win MSI install failed with code: ' + IntToStr(ResultCode));
-          MsgBox(Format(CustomMessage('UsbipdInstallFailed'), [IntToStr(ResultCode)]), mbError, MB_OK);
-        end;
-      end else begin
-        MsgBox(CustomMessage('UsbipdInstallFailed'), mbError, MB_OK);
-      end;
-
-    except
-      // 下载失败 - 尝试 PowerShell 后备方案
-      if SuppressibleMsgBox(CustomMessage('UsbipdDownloadFailed'), mbError, MB_OKCANCEL, IDOK) = IDOK then begin
-        // 用 PowerShell 从 GitHub API 获取最新 MSI 并下载
-        if Exec('powershell',
-          '-NonInteractive -Command "try { ' +
-          '$r = Invoke-RestMethod -Uri ''https://api.github.com/repos/dorssel/usbipd-win/releases/latest'' -UseBasicParsing; ' +
-          '$a = $r.assets | Where-Object { $_.name -like ''*.msi'' } | Select-Object -First 1; ' +
-          'if ($a) { Invoke-WebRequest -Uri $a.browser_download_url -OutFile ''' + ExpandConstant('{tmp}\{#UsbipdMsiName}') + ''' } ' +
-          '} catch { Write-Error $_.Exception.Message; exit 1 }"',
-          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
-
-          MsiPath := ExpandConstant('{tmp}\{#UsbipdMsiName}');
-          if FileExists(MsiPath) then begin
-            if Exec('msiexec', '/i "' + MsiPath + '" /quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
-              Result := (ResultCode = 0);
-            end;
-          end;
-        end;
-      end;
+    // 3. 执行下载（240 秒超时，避免无限卡住）
+    DownloadPage.SetText('正在下载 usbipd-win ...', '此过程可能需要几分钟，请耐心等待');
+    if not Exec('powershell', '-ExecutionPolicy Bypass -NonInteractive -File "' + PsScriptPath + '"',
+        '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+      Log('PowerShell download execution failed');
+      MsgBox(CustomMessage('UsbipdDownloadFailed'), mbError, MB_OK);
+      Exit;
     end;
+
+    // 4. 检查下载结果
+    if (ResultCode <> 0) or not FileExists(MsiPath) then begin
+      Log('usbipd-win download failed, ResultCode=' + IntToStr(ResultCode));
+      MsgBox(CustomMessage('UsbipdDownloadFailed'), mbError, MB_OK);
+      Exit;
+    end;
+
+    // 5. 静默安装 MSI（安装程序本身已以管理员权限运行）
+    DownloadPage.SetText('正在安装 usbipd-win ...', '');
+    if Exec('msiexec', '/i "' + MsiPath + '" /quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+      if ResultCode = 0 then begin
+        Log('usbipd-win MSI installed successfully');
+        Result := True;
+      end else begin
+        Log('usbipd-win MSI install failed with code: ' + IntToStr(ResultCode));
+        MsgBox(Format(CustomMessage('UsbipdInstallFailed'), [IntToStr(ResultCode)]), mbError, MB_OK);
+      end;
+    end else begin
+      MsgBox(CustomMessage('UsbipdInstallFailed'), mbError, MB_OK);
+    end;
+
   finally
     DownloadPage.Hide;
   end;

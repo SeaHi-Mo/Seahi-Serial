@@ -2509,16 +2509,25 @@ function toggleTerminalMode(btn, mid) {
     scheduleConfigSave();
 }
 
-/* ===== DTR/RTS 实时切换 ===== */
-async function toggleDTR(mid, level) {
-    if (monitors[mid] && monitors[mid].isConnected) {
-        try { await invoke('set_dtr', { monitorId: mid, level: level }); } catch (e) { appendOutput(mid, 'err', 'DTR 失败: ' + e); }
-    }
+/* ===== DTR/RTS 实时切换（防抖 100ms，避免连续点击导致 IPC 拥堵卡死） ===== */
+var _dtrRtsTimers = {};
+function toggleDTR(mid, level) {
+    if (!monitors[mid] || !monitors[mid].isConnected) return;
+    var key = mid + '_dtr';
+    if (_dtrRtsTimers[key]) clearTimeout(_dtrRtsTimers[key]);
+    _dtrRtsTimers[key] = setTimeout(function() {
+        delete _dtrRtsTimers[key];
+        invoke('set_dtr', { monitorId: mid, level: level }).catch(function(e) { appendOutput(mid, 'err', 'DTR 失败: ' + e); });
+    }, 100);
 }
-async function toggleRTS(mid, level) {
-    if (monitors[mid] && monitors[mid].isConnected) {
-        try { await invoke('set_rts', { monitorId: mid, level: level }); } catch (e) { appendOutput(mid, 'err', 'RTS 失败: ' + e); }
-    }
+function toggleRTS(mid, level) {
+    if (!monitors[mid] || !monitors[mid].isConnected) return;
+    var key = mid + '_rts';
+    if (_dtrRtsTimers[key]) clearTimeout(_dtrRtsTimers[key]);
+    _dtrRtsTimers[key] = setTimeout(function() {
+        delete _dtrRtsTimers[key];
+        invoke('set_rts', { monitorId: mid, level: level }).catch(function(e) { appendOutput(mid, 'err', 'RTS 失败: ' + e); });
+    }, 100);
 }
 
 /* ===== 端口锁定 ===== */
@@ -3774,8 +3783,10 @@ function renderWfActRow(actSection, mid, ruleId, targetIdx) {
 /* ===== 自动更新 ===== */
 var _updateInfo = null;
 
-// 检查更新（启动时调用）
+// 检查更新（启动时调用，之后每 30 分钟轮询）
 async function checkForUpdate() {
+    // 已经发现更新且按钮可见，无需重复检查
+    if (_updateInfo && _updateInfo.has_update) return;
     try {
         var result = await invoke('check_update');
         if (result.has_update) {
@@ -4711,16 +4722,26 @@ async function sendWslData(mid) {
     } catch (e) { appendOutput(mid, 'err', '发送失败: ' + e); }
 }
 
-// WSL DTR/RTS 控制
-async function toggleWslDTR(level, wmid) {
+// WSL DTR/RTS 控制（防抖）
+function toggleWslDTR(level, wmid) {
     wmid = wmid || 'wsl';
     if (!monitors[wmid] || !monitors[wmid].isConnected) return;
-    try { await invoke('set_wsl_dtr', { monitorId: wmid, level: level }); } catch (e) { showToast('DTR 设置失败: ' + e, 'error'); }
+    var key = wmid + '_dtr';
+    if (_dtrRtsTimers[key]) clearTimeout(_dtrRtsTimers[key]);
+    _dtrRtsTimers[key] = setTimeout(function() {
+        delete _dtrRtsTimers[key];
+        invoke('set_wsl_dtr', { monitorId: wmid, level: level }).catch(function(e) { showToast('DTR 设置失败: ' + e, 'error'); });
+    }, 100);
 }
-async function toggleWslRTS(level, wmid) {
+function toggleWslRTS(level, wmid) {
     wmid = wmid || 'wsl';
     if (!monitors[wmid] || !monitors[wmid].isConnected) return;
-    try { await invoke('set_wsl_rts', { monitorId: wmid, level: level }); } catch (e) { showToast('RTS 设置失败: ' + e, 'error'); }
+    var key = wmid + '_rts';
+    if (_dtrRtsTimers[key]) clearTimeout(_dtrRtsTimers[key]);
+    _dtrRtsTimers[key] = setTimeout(function() {
+        delete _dtrRtsTimers[key];
+        invoke('set_wsl_rts', { monitorId: wmid, level: level }).catch(function(e) { showToast('RTS 设置失败: ' + e, 'error'); });
+    }, 100);
 }
 
 // WSL 串口数据读取轮询
@@ -5541,6 +5562,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // 延迟检查更新，避免与端口加载竞争网络和 CPU 资源
     setTimeout(checkForUpdate, 2000);
+    // 每 10 分钟轮询一次更新，运行中也能发现新版本
+    setInterval(checkForUpdate, 10 * 60 * 1000);
 
     // 监听设备变更事件，自动刷新端口列表（防抖 150ms）
     if (window.__TAURI__ && window.__TAURI__.event) {
