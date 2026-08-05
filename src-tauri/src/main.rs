@@ -2140,7 +2140,8 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
             "try {{ \
                $out = & usbipd.exe attach --wsl --busid {busid} 2>&1 | Out-String; \
                $out | Out-File -FilePath '{result}' -Encoding UTF8; \
-               if ($LASTEXITCODE -ne 0) {{ exit 1 }} \
+               if ($LASTEXITCODE -ne 0) {{ exit 1 }}; \
+               '操作成功' | Out-File -FilePath '{result}' -Encoding UTF8 -Append \
              }} catch {{ \
                $_.Exception.Message | Out-File -FilePath '{result}' -Encoding UTF8; \
                exit 1 \
@@ -2212,6 +2213,9 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
 
     // 检查是否成功 - 通过结果内容判断
     if result_content.contains("操作成功") {
+        Ok(format!("已将 {} (busid: {}) 绑定并映射到 WSL", port_name, busid))
+    } else if status.success() && result_content.is_empty() {
+        // 已绑定时 attach 成功不会写入 "操作成功"，但命令输出为空且 exit 0 表示成功
         Ok(format!("已将 {} (busid: {}) 绑定并映射到 WSL", port_name, busid))
     } else if result_content.contains("绑定失败") || result_content.contains("附加失败") {
         report_error(&format!("WSL映射失败: {}", result_content), "wsl_attach");
@@ -2464,9 +2468,8 @@ async fn check_update() -> Result<UpdateInfo, String> {
         }
     }
 
-    // 2. 尝试镜像（ghproxy 已失效，跳过）
+    // 2. 网络失败不上报错误（瞬态问题，前端已优雅处理）
     if resp.is_none() {
-        report_error("无法连接 GitHub，检查更新失败", "check_update");
         return Err("无法连接 GitHub，请检查网络".to_string());
     }
 
