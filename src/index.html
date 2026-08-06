@@ -1018,10 +1018,10 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     display:flex; align-items:center; padding:0 0 0 12px;
     background:var(--toolbar-bg); height:36px; flex-shrink:0;
     border-bottom:1px solid var(--border);
-    -webkit-app-region:drag;
-    app-region:drag;
+    cursor:default;
+    user-select:none;
+    -webkit-user-select:none;
 }
-.global-bar > * { -webkit-app-region:no-drag; app-region:no-drag; }
 .add-btn { color:var(--link); font-size:12px; cursor:pointer; display:inline-flex; align-items:center; gap:4px; padding:2px 6px; border-radius:4px; transition: opacity .15s; }
 .add-btn:hover { text-decoration:underline; }
 .app-info { display:inline-flex; align-items:center; gap:6px; margin-right:10px; cursor:default; flex-shrink:0; }
@@ -5490,6 +5490,24 @@ function refreshWslDevices() {
 function winMinimize() { window.__TAURI__.window.getCurrentWindow().minimize(); }
 function winToggleMaximize() { window.__TAURI__.window.getCurrentWindow().toggleMaximize(); }
 function winClose() { window.__TAURI__.window.getCurrentWindow().close(); }
+
+/* ===== 标题栏拖动 ===== */
+document.addEventListener('DOMContentLoaded', function() {
+    var bar = document.getElementById('globalBar');
+    if (!bar) return;
+    bar.addEventListener('mousedown', async function(e) {
+        // 如果点击的是交互元素，不触发拖动
+        if (e.target.closest('button') || e.target.closest('input') ||
+            e.target.closest('select') || e.target.closest('textarea') ||
+            e.target.closest('a') || e.target.closest('.add-btn') ||
+            e.target.closest('.win-ctrl') || e.target.closest('.theme-switch') ||
+            e.target.closest('.sel') || e.target.closest('.issue-btn') ||
+            e.target.closest('.update-btn') || e.target.closest('.app-info')) return;
+        try {
+            await window.__TAURI__.window.getCurrentWindow().startDragging();
+        } catch(err) { console.warn('startDragging failed:', err); }
+    });
+});
 
 /* ===== 初始化 ===== */
 /* ===== 自定义 tooltip（无延迟） ===== */
