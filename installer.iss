@@ -225,9 +225,13 @@ begin
     DownloadPage.Show;
     DownloadPage.SetText(CustomMessage('WebView2Installing'), '');
 
-    // 2. 下载官方 Evergreen Bootstrapper
-    if not DownloadPage.Download('{#WebView2BootstrapperUrl}', BootstrapperPath, '', '') then begin
-      Log('WebView2 bootstrapper download failed');
+    // 2. 下载官方 Evergreen Bootstrapper（加入队列后执行下载，文件写入 {tmp}）
+    DownloadPage.Clear;
+    DownloadPage.Add('{#WebView2BootstrapperUrl}', 'MicrosoftEdgeWebview2Setup.exe', '');
+    try
+      DownloadPage.Download;
+    except
+      Log('WebView2 bootstrapper download failed: ' + GetExceptionMessage);
       MsgBox(CustomMessage('WebView2DownloadFailed'), mbError, MB_OK);
       Exit;
     end;
