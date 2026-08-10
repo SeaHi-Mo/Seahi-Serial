@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nickel-lang/json-schema-store/main/tauri.schema.json",
   "productName": "Seahi Serial",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "identifier": "com.seahi.seahi-serial",
   "build": {
     "frontendDist": "../src"
@@ -19,6 +19,7 @@
         "minHeight": 650,
         "center": true,
         "decorations": false,
+        "backgroundColor": "#1c1e22",
         "devtools": true
       }
     ],

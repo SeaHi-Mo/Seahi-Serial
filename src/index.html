@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" style="background:#1c1e22;">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -34,10 +34,10 @@
     --accent-contrast: #2a4878;
     --send-bubble-bg: #1e3050;
     --send-bubble-text: #dce0e8;
-    --mapped-bg: rgba(90,158,110,0.06);
-    --mapped-border: rgba(90,158,110,0.2);
-    --wsl-dist-border: rgba(90,158,110,0.3);
-    --wsl-dist-bg: rgba(90,158,110,0.08);
+    --mapped-bg: rgba(106,149,184,0.06);
+    --mapped-border: rgba(106,149,184,0.2);
+    --wsl-dist-border: rgba(106,149,184,0.3);
+    --wsl-dist-bg: rgba(106,149,184,0.08);
     --wsl-dist-stop-bg: rgba(192,128,64,0.1);
     --wsl-dist-start-bg: rgba(74,122,181,0.1);
     --font-ui: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
@@ -1009,6 +1009,11 @@ html.transitioning *::before,
 html.transitioning *::after {
     transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
+/* 日志输出区行数多，主题切换时不做逐行过渡，避免卡顿 */
+html.transitioning .output,
+html.transitioning .output * {
+    transition: none !important;
+}
 
 * { margin:0; padding:0; box-sizing:border-box; }
 html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(--text); height:100vh; overflow:hidden; font-size:14px; }
@@ -1041,6 +1046,8 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 
 /* ===== 分栏容器 ===== */
 .pane-container { flex:1; display:flex; flex-direction:row; overflow:hidden; min-height:0; }
+/* 监视器数量过多（4+）时允许横向滚动，避免最右侧面板被裁掉 */
+#paneContainer { overflow-x:auto; }
 
 /* ===== 监视器窗格 ===== */
 .monitor-pane { flex:1; display:flex; flex-direction:column; min-width:280px; min-height:0; }
@@ -1087,7 +1094,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     display:none; position:absolute; top:calc(100% + 2px); left:0; z-index:9999;
     background:var(--surface-1); border:1px solid var(--border-h);
     border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,.5);
-    min-width:100%; overflow:hidden; max-height:200px; overflow-y:auto;
+    min-width:100%; max-width:calc(100vw - 12px); overflow:hidden; max-height:200px; overflow-y:auto;
     -ms-overflow-style:none; scrollbar-width:none;
 }
 .sel-drop::-webkit-scrollbar { display:none; }
@@ -1648,7 +1655,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 }
 #onboarding-overlay.show { opacity: 1; pointer-events: auto; }
 .onboard-step {
-    position: absolute; z-index: 10002;
+    position: absolute; z-index: 10005;
     background: var(--surface-1, #262930);
     border: 1px solid var(--accent-focus, #4a7ab5);
     border-radius: 8px;
@@ -1678,7 +1685,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .onboard-arrow.bottom { bottom: -7px; border-top: none; border-left: none; }
 .onboard-nav {
     position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
-    z-index: 10003;
+    z-index: 10006;
     display: flex; align-items: center; gap: 16px;
     background: var(--surface-1, #262930);
     border: 1px solid var(--border, #2e3e48);
@@ -1707,17 +1714,44 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     transition: background .15s;
 }
 .onboard-next:hover { background: var(--btn-ph, #5888c0); }
+/* ===== 启动兜底页：正常启动后由 JS 隐藏；初始化失败/超时时显示，避免纯黑/纯白界面 ===== */
+#bootError {
+    position: fixed; inset: 0; z-index: 100000;
+    background: #1c1e22; color: #dce0e8;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; text-align: center; padding: 24px;
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+#bootError .boot-error-title { font-size: 15px; font-weight: 600; }
+#bootError .boot-error-detail { font-size: 12px; color: #8b919a; max-width: 520px; word-break: break-all; white-space: pre-wrap; }
+#bootError .boot-error-btn {
+    font-size: 13px; color: #fff; background: #4a7ab5; border: none; border-radius: 14px;
+    padding: 6px 18px; cursor: pointer; margin-top: 6px;
+}
+#bootError .boot-error-btn:hover { background: #5888c0; }
+#bootError .boot-error-btn-danger { background: #c45c5c; }
+#bootError .boot-error-btn-danger:hover { background: #d06a6a; }
 /* 自定义 tooltip（无延迟） */
-.mimocode-tip {
+.custom-tip {
     position:fixed; z-index:99999; pointer-events:none;
     background:var(--surface-1); color:var(--text-b); border:1px solid var(--border-h);
     border-radius:4px; padding:3px 8px; font-size:11px; white-space:nowrap;
     box-shadow:0 2px 8px rgba(0,0,0,.3); opacity:0; transition:opacity .1s;
 }
-.mimocode-tip.show { opacity:1; }
+.custom-tip.show { opacity:1; }
 </style>
 </head>
 <body style="display:flex;flex-direction:column;height:100vh;">
+
+<!-- 启动兜底页：JS 初始化成功后隐藏；初始化失败/超时或 Tauri 桥接不可用时显示，防止纯黑/纯白 -->
+<div id="bootError">
+    <div class="boot-error-title" id="bootErrorTitle">正在初始化界面…</div>
+    <div class="boot-error-detail" id="bootErrorDetail"></div>
+    <div style="display:flex;gap:10px;">
+        <button class="boot-error-btn" onclick="location.reload()">重新加载</button>
+        <button class="boot-error-btn boot-error-btn-danger" onclick="bootErrorExit()">退出应用</button>
+    </div>
+</div>
 
 <!-- 全局操作栏（自定义标题栏） -->
 <div class="global-bar" id="globalBar">
@@ -1785,7 +1819,67 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 
 
 <script>
-const { invoke } = window.__TAURI__.core;
+/* ===== Tauri 桥接安全访问：__TAURI__ 缺失时降级为拒绝的 Promise，避免整个脚本中断 ===== */
+function _safeInvoke(cmd, args) {
+    try {
+        if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
+            return window.__TAURI__.core.invoke(cmd, args);
+        }
+    } catch (_) {}
+    return Promise.reject(new Error('Tauri bridge unavailable: ' + cmd));
+}
+const invoke = _safeInvoke;
+
+/* ===== 全局错误捕获：尽早注册，防止早期错误静默（配合后端 report_js_error 上报） ===== */
+window.addEventListener('error', function(e) {
+    try {
+        var msg = (e && e.message) ? e.message : String((e && e.error) || 'unknown error');
+        var ctx = (e && e.filename || '').replace(/^.*[\\/]/, '') + ':' + (e.lineno || 0) + ':' + (e.colno || 0);
+        try {
+            if (typeof monitors !== 'undefined' && monitors) {
+                var st = [];
+                Object.keys(monitors).forEach(function(mid) {
+                    if (monitors[mid] && monitors[mid].isConnected) st.push(mid + ':connected');
+                });
+                if (st.length) ctx += ' | monitors=' + st.join(',');
+            }
+        } catch (_) {}
+        _safeInvoke('report_js_error', { error: msg, context: ctx }).catch(function() {});
+    } catch (_) {}
+});
+window.addEventListener('unhandledrejection', function(e) {
+    var reason = (e && e.reason) || 'unknown';
+    try { _safeInvoke('report_js_error', { error: 'UnhandledPromise: ' + String(reason), context: 'promise' }).catch(function() {}); } catch (_) {}
+});
+
+/* ===== 启动兜底页：初始化失败/超时/桥接不可用时显示 ===== */
+function showFatalError(title, detail) {
+    try {
+        var box = document.getElementById('bootError');
+        if (!box) return;
+        var t = document.getElementById('bootErrorTitle');
+        var d = document.getElementById('bootErrorDetail');
+        if (t) t.textContent = title || '界面初始化失败';
+        if (d) d.textContent = detail ? String(detail) : '';
+        box.style.display = 'flex';
+        _safeInvoke('report_js_error', {
+            error: (title || '界面初始化失败') + (detail ? ': ' + String(detail) : ''),
+            context: 'fatal-boot'
+        }).catch(function() {});
+    } catch (_) {}
+}
+
+/* 兜底页"退出应用"：优先走 Tauri 窗口关闭，桥接不可用时回退 window.close() */
+function bootErrorExit() {
+    try {
+        if (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow) {
+            window.__TAURI__.window.getCurrentWindow().close();
+            return;
+        }
+    } catch (_) {}
+    try { window.close(); } catch (_) {}
+}
+
 const _textDecoder = new TextDecoder();
 
 /* ===== 全局状态 ===== */
@@ -2115,18 +2209,6 @@ function createMonitorPane(mid, title, closable) {
     // 输入时重置历史导航索引
     sendInput.addEventListener('input', function() { monitors[mid].histNavIdx = -1; });
 
-    // 绑定 select 变化 → 自动保存
-    ['viewMode','portSelect','lineEnding','dataBits','stopBits','parity'].forEach(function(key) {
-        var el = document.getElementById(mid + '-' + key);
-        if (el) el.addEventListener('change', function() {
-            scheduleConfigSave();
-            // 行尾设置同步到后台线程
-            if (key === 'lineEnding' && monitors[mid] && monitors[mid].isConnected) {
-                var val = el.getAttribute('data-val') || 'crlf';
-                invoke('update_workflow_line_ending', { monitorId: mid, lineEnding: val }).catch(function() {});
-            }
-        });
-    });
     // 波特率手动输入 → 自动保存
     var baudInput = document.getElementById(mid + '-baudRate');
     if (baudInput) baudInput.addEventListener('change', function() { scheduleConfigSave(); });
@@ -2210,7 +2292,20 @@ document.addEventListener('click', function(e) {
 /* ===== 通用下拉选择 ===== */
 function toggleSelDrop(el) {
     var drop = el.querySelector('.sel-drop');
-    if (drop) drop.classList.toggle('open');
+    if (!drop) return;
+    var willOpen = !drop.classList.contains('open');
+    drop.classList.toggle('open');
+    if (willOpen) {
+        // 空间不足时向上翻转（复用 .sel-drop-up 样式），避免下拉超出窗口底部被裁
+        try {
+            var r = drop.getBoundingClientRect();
+            if (r.bottom > window.innerHeight - 8 && r.top > window.innerHeight / 2) {
+                drop.classList.add('sel-drop-up');
+            } else {
+                drop.classList.remove('sel-drop-up');
+            }
+        } catch (_) {}
+    }
 }
 function setSel(optEl, val, e) {
     if (e) e.stopPropagation();
@@ -2223,6 +2318,14 @@ function setSel(optEl, val, e) {
     drop.classList.remove('open');
     sel.setAttribute('data-val', val);
     scheduleConfigSave();
+    // 行尾设置同步到后台工作流线程（连接中即时生效，无需重连）
+    var selId = sel.id || '';
+    if (selId.indexOf('-lineEnding') > 0) {
+        var mid = selId.replace('-lineEnding', '');
+        if (monitors[mid] && monitors[mid].isConnected) {
+            invoke('update_workflow_line_ending', { monitorId: mid, lineEnding: val }).catch(function() {});
+        }
+    }
 }
 
 /* ===== 格式选择下拉 ===== */
@@ -2306,6 +2409,73 @@ function setPortSel(mid, val, el) {
     el.classList.add('active');
     drop.classList.remove('open');
     scheduleConfigSave();
+    // 监控中（或自动重连等待中）切换端口：自动释放旧端口并连接新端口
+    var m = monitors[mid];
+    if (!m) return;
+    var isActive = m.isConnected || m._reconnectPending;
+    if (!isActive || val === (m.portName || '')) return;
+    if (m._reconnecting) return; // 已有切换进行中，连接时以 DOM 最新选择为准
+    // 防御性占用检查（占用中的端口在下拉中本已不可点）
+    var owner = findPortOwner(val, mid);
+    if (owner) {
+        showToast('端口 ' + val + ' 已被监视器 ' + owner + ' 占用', 'error');
+        revertPortSel(mid, m.portName);
+        return;
+    }
+    m._reconnecting = true;
+    m._reconnectPending = false; // 取消残留的自动重连重试
+    switchMonitorPort(mid, val, m.portName || '');
+}
+
+// 把端口下拉回显为指定端口（用于占用检查失败时恢复原选择）
+function revertPortSel(mid, portName) {
+    var sel = document.getElementById(mid + '-portSelect');
+    var drop = document.getElementById(mid + '-portDrop');
+    if (!sel || !drop || !portName) return;
+    var matchEl = drop.querySelector('.sel-opt[data-val="' + portName + '"]');
+    if (matchEl) {
+        sel.querySelector('.sel-text').textContent = matchEl.textContent;
+        sel.setAttribute('data-val', portName);
+        drop.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
+        matchEl.classList.add('active');
+    }
+}
+
+// 监控中切换端口：释放旧端口资源 → 连接新端口（复用现有连接命令）
+async function switchMonitorPort(mid, newPort, oldPort) {
+    var m = monitors[mid];
+    if (!m) return;
+    var isWsl = !!m.isWsl;
+    appendOutput(mid, 'sys', '正在切换端口: ' + (oldPort || '无') + ' → ' + newPort + ' ...');
+    var btn = document.getElementById(mid + '-btnStart');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span style="font-size:11px;">⏳</span> 切换中...'; }
+    try {
+        // 释放旧端口资源（已断开/已释放时忽略错误）
+        try {
+            if (isWsl) { await invoke('close_wsl_serial', { monitorId: mid }); }
+            else { await invoke('close_port', { monitorId: mid }); }
+        } catch (_) {}
+        m.isConnected = false;
+        m.portName = '';
+        stopReading(mid);
+        updateMonitorUI(mid, false);
+        // 切换期间用户点击了"停止监控"：保持断开，不复活连接
+        if (m._manuallyDisconnected) return;
+        if (isWsl) { await connectWslPort(mid); }
+        else { await connectPort(mid, true); }
+        if (m.isConnected) {
+            appendOutput(mid, 'sys', '端口已切换至 ' + (m.portName || newPort));
+        } else {
+            refreshAllPorts();
+            if (!isWsl) {
+                var selEl = document.getElementById(mid + '-portSelect');
+                var latestPort = selEl ? (selEl.getAttribute('data-val') || newPort) : newPort;
+                showToast('切换失败: ' + latestPort + '，请检查端口后重试', 'error');
+            }
+        }
+    } finally {
+        if (monitors[mid]) monitors[mid]._reconnecting = false;
+    }
 }
 
 /* ===== 更多设置 ===== */
@@ -2601,6 +2771,7 @@ async function disconnectPort(mid) {
     // 先停止轮询，防止 in-flight 的 timer 回调触发重连
     stopReading(mid);
     monitors[mid]._manuallyDisconnected = true;
+    monitors[mid]._reconnectPending = false; // 取消残留的自动重连重试
     try {
         await invoke('close_port', { monitorId: mid });
     } catch (e) {
@@ -2731,11 +2902,13 @@ function startReading(mid) {
 }
 
 async function reconnectPort(mid, portName, attempt) {
+    if (monitors[mid]) monitors[mid]._reconnectPending = true;
     if (!portName || attempt > 10) {
         if (attempt > 10) {
             appendOutput(mid, 'err', '重连失败，已达到最大重试次数');
             updateMonitorUI(mid, false, false);
         }
+        if (monitors[mid]) monitors[mid]._reconnectPending = false;
         return;
     }
     await refreshPorts(mid, true);
@@ -2750,11 +2923,18 @@ async function reconnectPort(mid, portName, attempt) {
             matchEl.classList.add('active');
         }
         await connectPort(mid, true);
-        if (monitors[mid].isConnected) return;
+        if (monitors[mid].isConnected) {
+            if (monitors[mid]) monitors[mid]._reconnectPending = false;
+            return;
+        }
     }
     var delay = Math.min(2000 * attempt, 20000);
     appendOutput(mid, 'sys', '重连失败，' + Math.round(delay/1000) + '秒后重试 (' + attempt + '/10)...');
-    setTimeout(function() { reconnectPort(mid, portName, attempt + 1); }, delay);
+    setTimeout(function() {
+        // 用户已切换端口或手动断开时，中止残留重试
+        if (!monitors[mid] || !monitors[mid]._reconnectPending) return;
+        reconnectPort(mid, portName, attempt + 1);
+    }, delay);
 }
 function stopReading(mid) {
     if (monitors[mid] && monitors[mid].readTimer) { clearInterval(monitors[mid].readTimer); monitors[mid].readTimer = null; }
@@ -4177,14 +4357,20 @@ document.addEventListener('click', function(e) {
     if (drop && wrap && !wrap.contains(e.target)) drop.classList.remove('open');
 });
 
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function() {
-    applyTheme(getSystemTheme());
-    scheduleConfigSave();
-});
+try {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function() {
+        applyTheme(getSystemTheme());
+        scheduleConfigSave();
+    });
+} catch (_) { console.warn('matchMedia 监听注册失败:', _); }
 
 // 启动时跟随系统主题
-applyTheme(getSystemTheme());
-syncThemeUI();
+try {
+    applyTheme(getSystemTheme());
+    syncThemeUI();
+} catch (err) {
+    console.warn('主题初始化失败:', err);
+}
 
 // 延迟再次设置标题栏颜色，确保窗口完全初始化
 setTimeout(function() { syncTitleBarColor(_currentTheme); }, 500);
@@ -4682,6 +4868,7 @@ async function connectWslPort(mid) {
 // 断开 WSL 串口
 async function disconnectWslPort(mid) {
     try {
+        monitors[mid]._reconnectPending = false; // 取消残留的自动重连重试
         await invoke('close_wsl_serial', { monitorId: mid });
         monitors[mid].isConnected = false;
         monitors[mid].portName = '';
@@ -4804,11 +4991,16 @@ function startWslReading(mid) {
 }
 
 async function reconnectWslPort(mid, portName, attempt) {
-    if (!portName) return;
+    if (monitors[mid]) monitors[mid]._reconnectPending = true;
+    if (!portName) {
+        if (monitors[mid]) monitors[mid]._reconnectPending = false;
+        return;
+    }
     attempt = attempt || 1;
     if (attempt > 10) {
         appendOutput(mid, 'err', '重连失败，已达到最大重试次数');
         updateMonitorUI(mid, false, false);
+        if (monitors[mid]) monitors[mid]._reconnectPending = false;
         return;
     }
     var baud = parseInt(document.getElementById(mid + '-baudRate').value) || 115200;
@@ -4820,12 +5012,19 @@ async function reconnectWslPort(mid, portName, attempt) {
         updateMonitorUI(mid, true);
         startWslReading(mid);
         appendOutput(mid, 'sys', '重连成功');
+        if (monitors[mid]) monitors[mid]._reconnectPending = false;
     } catch (e) {
         appendOutput(mid, 'err', '重连失败: ' + e);
         var reconnectBtn = document.getElementById(mid + '-btnAutoReconnect');
         if (reconnectBtn && reconnectBtn.classList.contains('on')) {
             var delay = Math.min(3000 * attempt, 30000);
-            setTimeout(function() { reconnectWslPort(mid, portName, attempt + 1); }, delay);
+            setTimeout(function() {
+                // 用户已切换端口或手动断开时，中止残留重试
+                if (!monitors[mid] || !monitors[mid]._reconnectPending) return;
+                reconnectWslPort(mid, portName, attempt + 1);
+            }, delay);
+        } else {
+            if (monitors[mid]) monitors[mid]._reconnectPending = false;
         }
     }
 }
@@ -4907,7 +5106,7 @@ async function refreshWslMonPorts(wmid) {
             div.style.pointerEvents = 'none';
         } else {
             div.textContent = p.label;
-            div.addEventListener('click', function(e) { e.stopPropagation(); setSel(div, p.name, e); });
+            div.addEventListener('click', function(e) { e.stopPropagation(); setPortSel(wmid, p.name, div); });
         }
         drop.appendChild(div);
     });
@@ -5298,7 +5497,7 @@ function renderWslDeviceList(mid) {
             var direction = isMapped ? '← WSL' : '→ WSL';
             html += '<span style="width:80px;flex-shrink:0;font-family:monospace;font-size:12px;"><span class="wsl-loading-cell"><span class="wsl-spinner"></span>' + direction + '</span></span>';
         } else {
-            var portColor = isMapped ? 'var(--accent-green)' : 'var(--link)';
+            var portColor = isMapped ? 'var(--accent-focus)' : 'var(--link)';
             var portText = isMapped ? 'WSL' : safePort;
             html += '<span style="width:80px;flex-shrink:0;font-family:monospace;font-size:12px;font-weight:600;color:' + portColor + ';">' + portText + '</span>';
         }
@@ -5396,12 +5595,8 @@ function toggleAutoMap(vidpid, portName, on) {
     }
     scheduleConfigSave();
     updateAutoMapPolling();
-    // 刷新当前显示的设备列表
-    var pane = document.querySelector('.monitor-pane');
-    if (pane) {
-        var mid = pane.id.replace('pane-', '');
-        renderWslDeviceList(mid);
-    }
+    // 刷新当前显示的设备列表（WSL 设备区为共享单实例，固定使用 'main' 前缀）
+    renderWslDeviceList('main');
 }
 
 function updateAutoMapPolling() {
@@ -5444,11 +5639,9 @@ async function autoMapCheck() {
         if (tasks.length > 0) {
             await Promise.all(tasks);
         }
-        // 如果 WSL 页面打开，刷新列表
-        var pane = document.querySelector('.monitor-pane');
-        if (pane) {
-            var mid = pane.id.replace('pane-', '');
-            var listEl = document.getElementById(mid + '-wslDeviceList');
+        // 如果 WSL 页面打开，刷新列表（WSL 设备区为共享单实例，固定使用 'main' 前缀）
+        var listEl = document.getElementById('main-wslDeviceList');
+        if (listEl) {
             if (listEl) {
                 // 合并状态，保留 _wslBusy 状态
                 var freshMap = {};
@@ -5466,7 +5659,7 @@ async function autoMapCheck() {
                     if (!existBusids[d.busid]) _wslDevices.push(d);
                 });
                 sortWslDevices();
-                renderWslDeviceList(mid);
+                renderWslDeviceList('main');
             }
         }
         // 自动映射完成后也刷新 WSL 串口端口列表
@@ -5479,17 +5672,14 @@ async function autoMapCheck() {
 }
 
 function refreshWslDevices() {
-    var pane = document.querySelector('.monitor-pane');
-    if (pane) {
-        var mid = pane.id.replace('pane-', '');
-        loadWslDevices(mid);
-    }
+    // WSL 设备区为共享单实例，固定使用 'main' 前缀
+    loadWslDevices('main');
 }
 
 /* ===== 窗口控制 ===== */
-function winMinimize() { window.__TAURI__.window.getCurrentWindow().minimize(); }
-function winToggleMaximize() { window.__TAURI__.window.getCurrentWindow().toggleMaximize(); }
-function winClose() { window.__TAURI__.window.getCurrentWindow().close(); }
+function winMinimize() { try { window.__TAURI__.window.getCurrentWindow().minimize(); } catch (err) { console.warn('minimize failed:', err); } }
+function winToggleMaximize() { try { window.__TAURI__.window.getCurrentWindow().toggleMaximize(); } catch (err) { console.warn('toggleMaximize failed:', err); } }
+function winClose() { try { window.__TAURI__.window.getCurrentWindow().close(); } catch (err) { console.warn('close failed:', err); } }
 
 /* ===== 标题栏拖动 ===== */
 document.addEventListener('DOMContentLoaded', function() {
@@ -5513,7 +5703,7 @@ document.addEventListener('DOMContentLoaded', function() {
 /* ===== 自定义 tooltip（无延迟） ===== */
 (function() {
     var tip = document.createElement('div');
-    tip.className = 'mimocode-tip';
+    tip.className = 'custom-tip';
     document.body.appendChild(tip);
     var showTimer = null;
     document.addEventListener('mouseover', function(e) {
@@ -5548,99 +5738,108 @@ document.addEventListener('DOMContentLoaded', function() {
 })();
 
 document.addEventListener('DOMContentLoaded', function() {
-    // 加载应用信息（版本号 + commit hash），设置到 tooltip
-    invoke('get_app_info').then(function(info) {
-        var wrap = document.getElementById('appInfoWrap');
-        if (wrap) wrap.title = 'Seahi Serial v' + info.version + ' (' + info.commit + ')';
-    }).catch(function() {});
+    try {
+        // 加载应用信息（版本号 + commit hash），设置到 tooltip
+        invoke('get_app_info').then(function(info) {
+            var wrap = document.getElementById('appInfoWrap');
+            if (wrap) wrap.title = 'Seahi Serial v' + info.version + ' (' + info.commit + ')';
+        }).catch(function() {});
 
-    // 全局错误捕获，上报到错误收集服务器
-    window.onerror = function(msg, src, line, col, err) {
-        var ctx = (src||'').replace(/^.*[\\/]/,'') + ':' + line + ':' + col;
-        // 附加应用状态帮助复现
-        try {
-            var state = [];
-            Object.keys(monitors).forEach(function(mid) {
-                if (monitors[mid] && monitors[mid].isConnected) state.push(mid + ':connected');
+        // 主面板创建成功后隐藏启动兜底页（createMonitorPane 抛错则进入 catch 显示错误）
+        createMonitorPane('main', '主监视器', false);
+        var bootBox = document.getElementById('bootError');
+        if (bootBox) bootBox.style.display = 'none';
+
+        setInterval(function() { if (!monitors.main || !monitors.main.isConnected) refreshPorts('main'); }, 10000);
+
+        // 加载并恢复用户上次的配置
+        loadAndApplyConfig();
+
+        // 延迟检查更新，避免与端口加载竞争网络和 CPU 资源
+        setTimeout(checkForUpdate, 2000);
+        // 每 10 分钟轮询一次更新，运行中也能发现新版本
+        setInterval(checkForUpdate, 10 * 60 * 1000);
+
+        // 监听设备变更事件，自动刷新端口列表（防抖 150ms）
+        if (window.__TAURI__ && window.__TAURI__.event) {
+            var _deviceChangeTimer = null;
+            window.__TAURI__.event.listen('device-changed', function() {
+                console.log('[device-changed] event received at', Date.now());
+                if (_deviceChangeTimer) clearTimeout(_deviceChangeTimer);
+                _deviceChangeTimer = setTimeout(function() {
+                    _deviceChangeTimer = null;
+                    console.log('[device-changed] refreshing ports at', Date.now());
+                    document.querySelectorAll('.monitor-pane').forEach(function(pane) {
+                        var mid = pane.id.replace('pane-', '');
+                        if (!monitors[mid] || !monitors[mid].isConnected) refreshPorts(mid, true);
+                    });
+                    // WSL 页面打开时也刷新设备列表
+                    var wslList = document.querySelector('[id$="-wslDeviceList"]');
+                    if (wslList) {
+                        var wslMid = wslList.id.replace('-wslDeviceList', '');
+                        loadWslDevices(wslMid);
+                    }
+                }, 150);
             });
-            if (state.length) ctx += ' | monitors=' + state.join(',');
-        } catch(_) {}
-        try { invoke('report_js_error', { error: String(msg), context: ctx }); } catch(_) {}
-    };
-    window.addEventListener('unhandledrejection', function(e) {
-        var reason = e.reason || 'unknown';
-        try { invoke('report_js_error', { error: 'UnhandledPromise: ' + String(reason), context: 'promise' }); } catch(_) {}
-    });
+            // 安装更新前强制保存配置（process::exit 会跳过 beforeunload）
+            window.__TAURI__.event.listen('save-before-exit', function() {
+                if (_saveConfigTimer) { clearTimeout(_saveConfigTimer); _saveConfigTimer = null; }
+                var cfg = collectConfig();
+                invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function() {});
+            });
+        }
 
-    createMonitorPane('main', '主监视器', false);
-    setInterval(function() { if (!monitors.main || !monitors.main.isConnected) refreshPorts('main'); }, 10000);
-
-    // 加载并恢复用户上次的配置
-    loadAndApplyConfig();
-
-    // 延迟检查更新，避免与端口加载竞争网络和 CPU 资源
-    setTimeout(checkForUpdate, 2000);
-    // 每 10 分钟轮询一次更新，运行中也能发现新版本
-    setInterval(checkForUpdate, 10 * 60 * 1000);
-
-    // 监听设备变更事件，自动刷新端口列表（防抖 150ms）
-    if (window.__TAURI__ && window.__TAURI__.event) {
-        var _deviceChangeTimer = null;
-        window.__TAURI__.event.listen('device-changed', function() {
-            console.log('[device-changed] event received at', Date.now());
-            if (_deviceChangeTimer) clearTimeout(_deviceChangeTimer);
-            _deviceChangeTimer = setTimeout(function() {
-                _deviceChangeTimer = null;
-                console.log('[device-changed] refreshing ports at', Date.now());
-                document.querySelectorAll('.monitor-pane').forEach(function(pane) {
-                    var mid = pane.id.replace('pane-', '');
-                    if (!monitors[mid] || !monitors[mid].isConnected) refreshPorts(mid, true);
-                });
-                // WSL 页面打开时也刷新设备列表
-                var wslList = document.querySelector('[id$="-wslDeviceList"]');
-                if (wslList) {
-                    var wslMid = wslList.id.replace('-wslDeviceList', '');
-                    loadWslDevices(wslMid);
-                }
-            }, 150);
+        // 监听窗口大小变化，缓存并保存到配置（防抖 500ms）
+        function refreshWindowSizeCache() {
+            invoke('get_window_size').then(function(size) {
+                _cachedWindowSize = size;
+            }).catch(function() {});
+        }
+        refreshWindowSizeCache();
+        var _resizeTimer = null;
+        window.addEventListener('resize', function() {
+            refreshWindowSizeCache();
+            if (_resizeTimer) clearTimeout(_resizeTimer);
+            _resizeTimer = setTimeout(function() {
+                _resizeTimer = null;
+                scheduleConfigSave();
+            }, 500);
         });
-        // 安装更新前强制保存配置（process::exit 会跳过 beforeunload）
-        window.__TAURI__.event.listen('save-before-exit', function() {
+
+        // 首次使用引导
+        if (!localStorage.getItem('onboarding_done')) {
+            setTimeout(showOnboarding, 600);
+        }
+
+        // 窗口关闭前强制保存配置，防止未提交的编辑丢失
+        window.addEventListener('beforeunload', function() {
             if (_saveConfigTimer) { clearTimeout(_saveConfigTimer); _saveConfigTimer = null; }
             var cfg = collectConfig();
             invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function() {});
         });
+    } catch (err) {
+        console.error('初始化失败:', err);
+        if (document.getElementById('pane-main')) {
+            // 主面板已创建，仅部分功能失败：提示但不遮屏
+            try { showToast('部分功能初始化失败: ' + err, 'error'); } catch (_) {}
+        } else {
+            showFatalError('界面初始化失败', err);
+        }
     }
-
-    // 监听窗口大小变化，缓存并保存到配置（防抖 500ms）
-    function refreshWindowSizeCache() {
-        invoke('get_window_size').then(function(size) {
-            _cachedWindowSize = size;
-        }).catch(function() {});
-    }
-    refreshWindowSizeCache();
-    var _resizeTimer = null;
-    window.addEventListener('resize', function() {
-        refreshWindowSizeCache();
-        if (_resizeTimer) clearTimeout(_resizeTimer);
-        _resizeTimer = setTimeout(function() {
-            _resizeTimer = null;
-            scheduleConfigSave();
-        }, 500);
-    });
-
-    // 首次使用引导
-    if (!localStorage.getItem('onboarding_done')) {
-        setTimeout(showOnboarding, 600);
-    }
-
-    // 窗口关闭前强制保存配置，防止未提交的编辑丢失
-    window.addEventListener('beforeunload', function() {
-        if (_saveConfigTimer) { clearTimeout(_saveConfigTimer); _saveConfigTimer = null; }
-        var cfg = collectConfig();
-        invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function() {});
-    });
 });
+
+// 初始化看门狗：主面板未在 8 秒内创建成功则显示兜底页，避免无提示黑屏
+setTimeout(function() {
+    try {
+        if (!document.getElementById('pane-main')) {
+            var d = document.getElementById('bootErrorDetail');
+            // 若 catch 已经显示了具体错误信息，不覆盖为笼统的超时提示
+            if (!d || !d.textContent) {
+                showFatalError('界面初始化超时', '主监视器面板未在 8 秒内创建完成，请点击下方按钮重新加载。');
+            }
+        }
+    } catch (_) {}
+}, 8000);
 
 /* ===== 首次使用引导 ===== */
 var _onboardSteps = [
@@ -5830,7 +6029,7 @@ function closeOnboarding() {
 // 测试错误上报功能
 async function testErrorReport() {
     try {
-        var result = await window.__TAURI__.core.invoke('test_error_report');
+        var result = await invoke('test_error_report');
         showToast('测试错误上报成功: ' + result, 'success');
     } catch (e) {
         showToast('测试失败: ' + e, 'error');
