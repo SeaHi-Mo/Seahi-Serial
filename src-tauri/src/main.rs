@@ -1343,35 +1343,29 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
             }
     }
 
-    // 为已映射设备解析 WSL 侧设备路径（通过 /dev/serial/by-id 的 VID:PID 符号链接）
+    // 为已映射设备解析 WSL 侧设备路径与序列号（按 sysfs 的 idVendor:idProduct 匹配 VID:PID）
     if wsl_running {
-        if let Ok(by_id_out) = wsl_shell_exec(&distro, "ls -l /dev/serial/by-id/ 2>/dev/null || true", 2000) {
-            let mut vid_to_path: HashMap<String, String> = HashMap::new();
-            for line in by_id_out.lines() {
-                let line = line.trim();
-                if let Some(arrow) = line.find(" -> ") {
-                    let left = &line[..arrow];
-                    let right = line[arrow + 4..].trim();
-                    let Some(tty) = right.rsplit('/').next() else { continue; };
-                    if !tty.starts_with("tty") { continue; }
-                    if let Some(rest) = left.strip_prefix("usb-") {
-                        let first = rest.split('-').next().unwrap_or("");
-                        let parts: Vec<&str> = first.split('_').collect();
-                        if parts.len() >= 2 {
-                            vid_to_path.insert(
-                                format!("{}:{}", parts[0], parts[1]).to_uppercase(),
-                                format!("/dev/{}", tty),
-                            );
-                        }
-                    }
+        let mut vid_to_path: HashMap<String, String> = HashMap::new();
+        let mut vid_to_serial: HashMap<String, String> = HashMap::new();
+        for (path, _name, vidpid, serial) in list_wsl_tty_details(&distro) {
+            if !vidpid.is_empty() {
+                if !serial.is_empty() {
+                    vid_to_serial.insert(vidpid.clone(), serial);
+                }
+                vid_to_path.insert(vidpid, path);
+            }
+        }
+        for d in devices.iter_mut() {
+            let vidpid = d.get("vidpid").and_then(|v| v.as_str()).unwrap_or("").to_uppercase();
+            if !vidpid.is_empty() {
+                // 序列号用于区分同型号设备（仅已映射设备在 WSL 中可见，可解析到）
+                if let Some(serial) = vid_to_serial.get(&vidpid) {
+                    d["wslSerial"] = serde_json::Value::String(serial.clone());
                 }
             }
-            for d in devices.iter_mut() {
-                if d.get("status").and_then(|v| v.as_str()) == Some("mapped") {
-                    let vidpid = d.get("vidpid").and_then(|v| v.as_str()).unwrap_or("").to_uppercase();
-                    if let Some(path) = vid_to_path.get(&vidpid) {
-                        d["wslPath"] = serde_json::Value::String(path.clone());
-                    }
+            if d.get("status").and_then(|v| v.as_str()) == Some("mapped") {
+                if let Some(path) = vid_to_path.get(&vidpid) {
+                    d["wslPath"] = serde_json::Value::String(path.clone());
                 }
             }
         }
@@ -2013,19 +2007,22 @@ fn set_wsl_signal_cmd(state: tauri::State<'_, WslSerialState>, monitor_id: Strin
     if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) { Ok(()) } else { Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("设置信号失败").to_string()) }
 }
 
-/// 列出 WSL 内所有串口设备及其 USB 产品名（单条命令批量获取，避免多次 shell 往返）
-fn list_wsl_tty_details(distro: &str) -> Vec<(String, String)> {
-    let cmd = "for d in /dev/ttyACM* /dev/ttyUSB* /dev/ttyS*; do [ -e \"$d\" ] || continue; b=${d#/dev/}; p=$(cat \"/sys/class/tty/$b/device/../product\" 2>/dev/null); [ -z \"$p\" ] && p=$(cat \"/sys/class/tty/$b/device/product\" 2>/dev/null); echo \"$d|$p\"; done";
+/// 列出 WSL 内所有串口设备及其 USB 产品名 / VID:PID（单条命令批量获取，避免多次 shell 往返）
+/// 通过向上遍历 sysfs 查找 product / idVendor / idProduct，兼容不同内核的符号链接深度
+fn list_wsl_tty_details(distro: &str) -> Vec<(String, String, String, String)> {
+    let cmd = "for d in /dev/ttyACM* /dev/ttyUSB* /dev/ttyS*; do [ -e \"$d\" ] || continue; b=${d#/dev/}; p=\"\"; v=\"\"; i=\"\"; s=\"\"; dir=$(readlink -f \"/sys/class/tty/$b/device\" 2>/dev/null); while [ -n \"$dir\" ] && [ \"$dir\" != \"/\" ]; do if [ -z \"$p\" ] && [ -f \"$dir/product\" ]; then p=$(cat \"$dir/product\" 2>/dev/null); fi; if [ -z \"$v\" ] && [ -f \"$dir/idVendor\" ]; then v=$(cat \"$dir/idVendor\" 2>/dev/null); fi; if [ -z \"$i\" ] && [ -f \"$dir/idProduct\" ]; then i=$(cat \"$dir/idProduct\" 2>/dev/null); fi; if [ -z \"$s\" ] && [ -f \"$dir/serial\" ]; then s=$(cat \"$dir/serial\" 2>/dev/null); fi; dir=${dir%/*}; done; vidpid=\"\"; if [ -n \"$v\" ] && [ -n \"$i\" ]; then vidpid=$(echo \"$v:$i\" | tr '[:lower:]' '[:upper:]'); fi; echo \"$d|$p|$vidpid|$s\"; done";
     match wsl_shell_exec(distro, cmd, 3000) {
         Ok(out) => out
             .lines()
             .map(|l| l.trim())
             .filter(|l| l.starts_with("/dev/tty"))
             .filter_map(|l| {
-                let mut it = l.splitn(2, '|');
+                let mut it = l.splitn(4, '|');
                 let path = it.next()?.to_string();
                 let name = it.next().unwrap_or("").to_string();
-                Some((path, name))
+                let vidpid = it.next().unwrap_or("").to_string();
+                let serial = it.next().unwrap_or("").to_string();
+                Some((path, name, vidpid, serial))
             })
             .collect(),
         Err(_) => vec![],
@@ -2045,7 +2042,7 @@ fn get_wsl_serial_devices() -> Result<Vec<serde_json::Value>, String> {
     let details = list_wsl_tty_details(&distro);
     let devices: Vec<serde_json::Value> = details
         .into_iter()
-        .map(|(path, name)| serde_json::json!({"path": path, "name": name}))
+        .map(|(path, name, _vidpid, _serial)| serde_json::json!({"path": path, "name": name}))
         .collect();
     dbg_log(&format!("get_wsl_serial_devices: distro={}, devices={:?}", distro, devices));
     Ok(devices)
