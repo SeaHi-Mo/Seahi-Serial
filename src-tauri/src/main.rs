@@ -1225,8 +1225,9 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
         let _ = tx.send(result);
     });
 
-    // 检查 WSL 是否正在运行
-    let wsl_running = check_wsl_running().map(|d| !d.is_empty()).unwrap_or(false);
+    // 检查 WSL 是否正在运行（取第一个运行中的发行版，用于解析 WSL 侧设备路径）
+    let distro = check_wsl_running().and_then(|d| d.into_iter().next()).unwrap_or_default();
+    let wsl_running = !distro.is_empty();
 
     let output = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(Ok(out)) => Some(out),
@@ -1301,6 +1302,8 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                             format!("USB Device ({})", busid)
                         }
                     };
+                    // 去掉 usbipd 名称末尾的 Windows 侧 COM 后缀，如 "USB 串行设备 (COM38)" -> "USB 串行设备"
+                    let name = strip_windows_com_suffix(&name);
 
                     static FILTERS: &[&str] = &[
                         "通信端口", "通讯端口", "communicationsport",
@@ -1338,6 +1341,40 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
                     }));
                 }
             }
+    }
+
+    // 为已映射设备解析 WSL 侧设备路径（通过 /dev/serial/by-id 的 VID:PID 符号链接）
+    if wsl_running {
+        if let Ok(by_id_out) = wsl_shell_exec(&distro, "ls -l /dev/serial/by-id/ 2>/dev/null || true", 2000) {
+            let mut vid_to_path: HashMap<String, String> = HashMap::new();
+            for line in by_id_out.lines() {
+                let line = line.trim();
+                if let Some(arrow) = line.find(" -> ") {
+                    let left = &line[..arrow];
+                    let right = line[arrow + 4..].trim();
+                    let Some(tty) = right.rsplit('/').next() else { continue; };
+                    if !tty.starts_with("tty") { continue; }
+                    if let Some(rest) = left.strip_prefix("usb-") {
+                        let first = rest.split('-').next().unwrap_or("");
+                        let parts: Vec<&str> = first.split('_').collect();
+                        if parts.len() >= 2 {
+                            vid_to_path.insert(
+                                format!("{}:{}", parts[0], parts[1]).to_uppercase(),
+                                format!("/dev/{}", tty),
+                            );
+                        }
+                    }
+                }
+            }
+            for d in devices.iter_mut() {
+                if d.get("status").and_then(|v| v.as_str()) == Some("mapped") {
+                    let vidpid = d.get("vidpid").and_then(|v| v.as_str()).unwrap_or("").to_uppercase();
+                    if let Some(path) = vid_to_path.get(&vidpid) {
+                        d["wslPath"] = serde_json::Value::String(path.clone());
+                    }
+                }
+            }
+        }
     }
 
     Ok(devices)
@@ -1400,6 +1437,24 @@ fn decode_wsl_output(raw: &[u8]) -> String {
 #[tauri::command]
 fn check_wsl_status() -> Vec<String> {
     check_wsl_running().unwrap_or_default()
+}
+
+/// 去掉设备名末尾的 Windows 侧 COM 端口后缀（如 "USB 串行设备 (COM38)" -> "USB 串行设备"）
+fn strip_windows_com_suffix(name: &str) -> String {
+    let trimmed = name.trim_end();
+    if let Some(pos) = trimmed.rfind(" (COM") {
+        let tail = &trimmed[pos + 5..];
+        if let Some(close) = tail.find(')') {
+            let digits = &tail[..close];
+            if !digits.is_empty()
+                && digits.chars().all(|c| c.is_ascii_digit())
+                && tail[close + 1..].trim().is_empty()
+            {
+                return trimmed[..pos].trim_end().to_string();
+            }
+        }
+    }
+    trimmed.to_string()
 }
 
 fn check_wsl_running() -> Option<Vec<String>> {
@@ -1958,9 +2013,28 @@ fn set_wsl_signal_cmd(state: tauri::State<'_, WslSerialState>, monitor_id: Strin
     if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) { Ok(()) } else { Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("设置信号失败").to_string()) }
 }
 
-/// 获取 WSL 中可用的串口设备列表（使用持久化 shell，毫秒级响应）
+/// 列出 WSL 内所有串口设备及其 USB 产品名（单条命令批量获取，避免多次 shell 往返）
+fn list_wsl_tty_details(distro: &str) -> Vec<(String, String)> {
+    let cmd = "for d in /dev/ttyACM* /dev/ttyUSB* /dev/ttyS*; do [ -e \"$d\" ] || continue; b=${d#/dev/}; p=$(cat \"/sys/class/tty/$b/device/../product\" 2>/dev/null); [ -z \"$p\" ] && p=$(cat \"/sys/class/tty/$b/device/product\" 2>/dev/null); echo \"$d|$p\"; done";
+    match wsl_shell_exec(distro, cmd, 3000) {
+        Ok(out) => out
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| l.starts_with("/dev/tty"))
+            .filter_map(|l| {
+                let mut it = l.splitn(2, '|');
+                let path = it.next()?.to_string();
+                let name = it.next().unwrap_or("").to_string();
+                Some((path, name))
+            })
+            .collect(),
+        Err(_) => vec![],
+    }
+}
+
+/// 获取 WSL 中可用的串口设备列表（路径 + 设备名，使用持久化 shell）
 #[tauri::command]
-fn get_wsl_serial_devices() -> Result<Vec<String>, String> {
+fn get_wsl_serial_devices() -> Result<Vec<serde_json::Value>, String> {
     let distros = check_wsl_running().unwrap_or_default();
     let distro = distros.first().cloned().unwrap_or_default();
     if distro.is_empty() {
@@ -1968,13 +2042,12 @@ fn get_wsl_serial_devices() -> Result<Vec<String>, String> {
         return Ok(vec![]);
     }
 
-    let output = wsl_shell_exec(&distro, "ls /dev/ttyACM* /dev/ttyUSB* /dev/ttyS* 2>/dev/null || true", 2000)?;
-    let devices: Vec<String> = output
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty() && s.starts_with("/dev/tty"))
+    let details = list_wsl_tty_details(&distro);
+    let devices: Vec<serde_json::Value> = details
+        .into_iter()
+        .map(|(path, name)| serde_json::json!({"path": path, "name": name}))
         .collect();
-    dbg_log(&format!("get_wsl_serial_devices: distro={}, raw={}, devices={:?}", distro, output.trim(), devices));
+    dbg_log(&format!("get_wsl_serial_devices: distro={}, devices={:?}", distro, devices));
     Ok(devices)
 }
 

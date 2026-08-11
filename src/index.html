@@ -5079,7 +5079,12 @@ async function refreshWslMonPorts(wmid) {
     try {
         var devices = await invoke('get_wsl_serial_devices');
         if (devices && devices.length > 0) {
-            ports = devices.map(function(d) { return { name: d, label: d }; });
+            ports = devices.map(function(d) {
+                var path = (d && d.path) ? d.path : d;
+                var name = (d && d.name) ? d.name : '';
+                // 显示格式: /dev/ttyxx (设备名称)
+                return { name: path, label: path + (name ? ' (' + name + ')' : ''), deviceName: name };
+            });
         }
     } catch (e) { console.error('[WSL] 获取串口设备失败:', e); }
     drop.innerHTML = '';
@@ -5106,13 +5111,19 @@ async function refreshWslMonPorts(wmid) {
             div.style.pointerEvents = 'none';
         } else {
             div.textContent = p.label;
-            div.addEventListener('click', function(e) { e.stopPropagation(); setPortSel(wmid, p.name, div); });
+            div.addEventListener('click', function(e) {
+                e.stopPropagation();
+                setPortSel(wmid, p.name, div);
+                // 选中后只显示路径，设备名仅在下拉展开时可见
+                var selEl = document.getElementById(wmid + '-portSelect');
+                if (selEl) selEl.querySelector('.sel-text').textContent = p.name;
+            });
         }
         drop.appendChild(div);
     });
     if (ps && ports.length > 0) {
         ps.setAttribute('data-val', ports[matchIdx].name);
-        ps.querySelector('.sel-text').textContent = ports[matchIdx].label;
+        ps.querySelector('.sel-text').textContent = ports[matchIdx].name;
     }
 }
 
@@ -5485,9 +5496,9 @@ function renderWslDeviceList(mid) {
         var isBusy = _wslBusy[device.busid];
         var rowBg = isMapped ? 'var(--mapped-bg)' : 'transparent';
         var rowBorder = isMapped ? 'var(--mapped-border)' : 'var(--border)';
-        var safeName = (device.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         var safeBusid = device.busid || '';
         var safePort = device.port || '';
+        var safeName = (device.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         
         html += '<div class="wsl-device-row" style="display:flex;align-items:center;padding:10px 14px;gap:14px;border-radius:4px;background:' + rowBg + ';border:1px solid ' + rowBorder + ';cursor:default;' + (isBusy ? 'opacity:0.6;' : '') + '">';
         // BUSID
@@ -5498,10 +5509,11 @@ function renderWslDeviceList(mid) {
             html += '<span style="width:80px;flex-shrink:0;font-family:monospace;font-size:12px;"><span class="wsl-loading-cell"><span class="wsl-spinner"></span>' + direction + '</span></span>';
         } else {
             var portColor = isMapped ? 'var(--accent-focus)' : 'var(--link)';
-            var portText = isMapped ? 'WSL' : safePort;
+            // 不显示 Windows 侧设备名称/COM：已映射显示 WSL 路径，未映射显示占位符
+            var portText = isMapped ? (device.wslPath || 'WSL') : '—';
             html += '<span style="width:80px;flex-shrink:0;font-family:monospace;font-size:12px;font-weight:600;color:' + portColor + ';">' + portText + '</span>';
         }
-        // 设备名称
+        // 设备名称（后端已去掉 (COMxx) 后缀，端口列不再显示 COM）
         html += '<span style="flex:1;min-width:0;font-size:12px;color:var(--text-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.4;" title="' + safeName + '">' + safeName + '</span>';
         // 自动映射（按 VID:PID 匹配）
         var autoOn = device.vidpid ? !!_wslAutoMap[device.vidpid] : false;
