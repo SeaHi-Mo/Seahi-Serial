@@ -37,8 +37,13 @@ jobs:
         id: notes
         shell: pwsh
         run: |
-          $body = Get-Content -Path "RELEASE_NOTES.md" -Raw
-          $body = $body -replace '\{VERSION\}', '${{ github.ref_name }}'
+          $tag = '${{ github.ref_name }}'
+          $all = Get-Content -Path "RELEASE_NOTES.md" -Raw
+          # 只提取当前版本段落（"## <tag>" 到下一个 "## v" 或文件末尾），不含历史版本
+          $pattern = '(?s)##\s*' + [regex]::Escape($tag) + '\s*(.*?)(?=\n##\s*v|\z)'
+          $m = [regex]::Match($all, $pattern)
+          $body = if ($m.Success) { $m.Groups[1].Value.Trim() } else { $all }
+          $body = $body -replace '\{VERSION\}', $tag
           echo "body<<EOF" >> $env:GITHUB_OUTPUT
           echo "$body" >> $env:GITHUB_OUTPUT
           echo "EOF" >> $env:GITHUB_OUTPUT
