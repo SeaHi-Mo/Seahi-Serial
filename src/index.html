@@ -2807,6 +2807,7 @@ async function connectPort(mid, silent) {
         monitors[mid].isConnected = true;
         monitors[mid].portName = name;
         monitors[mid]._manuallyDisconnected = false;
+        resetRecvStream(mid); // 新数据流：不继承上一次连接的未结束行
         updateMonitorUI(mid, true);
         startReading(mid);
         // 同步行尾设置到后台线程
@@ -2914,14 +2915,8 @@ function startReading(mid) {
                         appendOutput(mid, 'recv', (i === 0 ? 'HEX: ' : '     ') + chunk, { hex: true, fragment: frag });
                     }
                 } else {
-                    var decoded = decodeData(mid, data);
-                    decoded = decoded.replace(/[\r\n]+$/, '');
-                    if (decoded) {
-                        var lines = decoded.split(/\r?\n/);
-                        for (var i = 0; i < lines.length; i++) {
-                            appendOutput(mid, 'recv', lines[i], { fragment: frag });
-                        }
-                    }
+                    // 文本模式：合并未结束行，只有真正的 \r\n 才换行
+                    appendRecvText(mid, decodeRecv(mid, data), frag);
                 }
                 flushBatch(mid, frag);
             }
@@ -3266,6 +3261,19 @@ function appendOutput(mid, type, text, opts) {
     div.appendChild(contentSpan);
     var target = (opts && opts.fragment) ? opts.fragment : el;
     target.appendChild(div);
+    // 维护“未结束的接收行”状态：opts.open 的 recv 行可接受后续数据合并，
+    // 其余行（send/sys/hex/普通 recv）都会关闭当前打开行，避免跨输出合并
+    var m = monitors[mid];
+    if (m) {
+        if (opts && opts.open && type === 'recv' && !(opts && opts.hex)) {
+            m._recvPartialEl = div;
+            m._recvPartial = text;
+            m._recvPartialTs = ts;
+            m._recvPartialOpen = true;
+        } else {
+            closeRecvPartial(m);
+        }
+    }
     if (!(opts && opts.fragment)) {
         var maxLines = 10000;
         var softLimit = 15000;
@@ -3285,6 +3293,7 @@ function appendOutput(mid, type, text, opts) {
         var scrollBtn = document.getElementById(mid + '-btnScroll');
         if (scrollBtn && scrollBtn.classList.contains('on')) requestScroll(el);
     }
+    return div;
 }
 
 function flushBatch(mid, fragment) {
@@ -3310,6 +3319,107 @@ function flushBatch(mid, fragment) {
     if (scrollBtn && scrollBtn.classList.contains('on')) requestScroll(el);
 }
 
+/* ===== 接收行缓冲（防止轮询分块造成“假换行”）=====
+ * 串口数据按轮询间隔分块到达，若每块都独立拆行显示，块边界会凭空产生换行，
+ * 即使设备端从未发送 \r\n。这里为每个监视器维护一条“未结束的接收行”
+ * （_recvPartial*），后续数据无缝合并进同一行，只有真正收到 \r\n 才换行。 */
+function closeRecvPartial(m) {
+    if (!m) return;
+    m._recvPartialEl = null;
+    m._recvPartial = '';
+    m._recvPartialTs = '';
+    m._recvPartialOpen = false;
+}
+
+// 新建一行接收数据（处于未结束状态，后续数据会合并进来）
+function openRecvRow(mid, text, frag) {
+    if (!text) return null;
+    return appendOutput(mid, 'recv', text, { fragment: frag, open: true });
+}
+
+// 将后续数据合并进当前未结束的接收行（DOM 与紧凑存储同步更新）
+function updateOpenRowText(m, fullText, mid, frag) {
+    if (!m) return;
+    // 打开行已被清理（极端情况）→ 重新开一行
+    if (!m._recvPartialEl || !m._recvPartialEl.parentNode) {
+        closeRecvPartial(m);
+        openRecvRow(mid, fullText, frag);
+        return;
+    }
+    var contentSpan = m._recvPartialEl.querySelector('.lc');
+    if (contentSpan) {
+        if (fullText.indexOf('\x1b') === -1) {
+            contentSpan.textContent = m._recvPartialTs + fullText;
+        } else {
+            contentSpan.innerHTML = escapeHtml(m._recvPartialTs) + parseAnsi(fullText);
+        }
+    }
+    m._recvPartial = fullText;
+    var idx = bufferFindLastRecvIndex(m);
+    if (idx >= 0) bufferUpdateLineText(m, idx, fullText);
+}
+
+// 处理一段接收文本：合并“未结束行”，只有设备真正发送 \r\n 才产生换行
+function appendRecvText(mid, decoded, frag) {
+    var el = document.getElementById(mid + '-output');
+    var m = monitors[mid];
+    if (!el || !m || decoded === '') return;
+
+    var combined = (m._recvPartial || '') + decoded;
+    var endsWithNl = /[\r\n]$/.test(combined);
+    var body = endsWithNl ? combined.replace(/[\r\n]+$/, '') : combined;
+    var parts = body === '' ? [] : body.split(/\r?\n/);
+
+    if (parts.length === 0) {
+        // 纯换行：已有打开行则关闭，否则渲染一个空行
+        if (m._recvPartialOpen) closeRecvPartial(m);
+        else appendOutput(mid, 'recv', '', { fragment: frag });
+        return;
+    }
+
+    // 第一段：若此前有打开行，则是它的延续或完成
+    var first = parts[0];
+    if (m._recvPartialOpen) {
+        updateOpenRowText(m, first, mid, frag);
+        if (endsWithNl || parts.length > 1) closeRecvPartial(m);
+    } else if (first !== '') {
+        if (parts.length === 1 && !endsWithNl) {
+            openRecvRow(mid, first, frag);          // 未换行结尾 → 新打开行
+        } else {
+            appendOutput(mid, 'recv', first, { fragment: frag });
+        }
+    } else {
+        // 以换行开头且无打开行 → 空行
+        appendOutput(mid, 'recv', '', { fragment: frag });
+    }
+
+    // 其余部分：完整行直接输出；最后一段未以换行结尾则作为新的打开行
+    for (var i = 1; i < parts.length; i++) {
+        var isLast = (i === parts.length - 1);
+        if (isLast && !endsWithNl) {
+            if (parts[i] !== '') openRecvRow(mid, parts[i], frag);
+        } else {
+            appendOutput(mid, 'recv', parts[i], { fragment: frag });
+        }
+    }
+}
+
+// 流式解码：保持跨轮询分块的多字节 UTF-8 字符完整，避免块边界出现乱码
+function decodeRecv(mid, data) {
+    var m = monitors[mid];
+    if (!m) return '';
+    if (!m._recvDecoder) m._recvDecoder = new TextDecoder();
+    return m._recvDecoder.decode(new Uint8Array(data), { stream: true });
+}
+
+// 串口（重新）连接时重置行缓冲与解码器：新数据流不应与旧流合并
+function resetRecvStream(mid) {
+    var m = monitors[mid];
+    if (!m) return;
+    closeRecvPartial(m);
+    m._recvDecoder = null;
+}
+
 function clearLog(mid) {
     var el = document.getElementById(mid + '-output');
     el.innerHTML = '';
@@ -3319,6 +3429,7 @@ function clearLog(mid) {
         monitors[mid]._textDataLen = 0;
         monitors[mid]._textCount = 0;
         monitors[mid]._bufferStart = 0;
+        closeRecvPartial(monitors[mid]);
     }
 }
 
@@ -3385,6 +3496,42 @@ function bufferTrimOld(m, count) {
     }
     m._textCount -= count;
     m._bufferStart = Math.max(0, m._bufferStart - count);
+}
+
+// 找到紧凑存储中最后一条 recv 记录（即“未结束的接收行”所在条目）
+function bufferFindLastRecvIndex(m) {
+    if (!m) return -1;
+    for (var j = m._textCount - 1; j >= 0; j--) {
+        if (m._textTypes[j] === 0) return j; // 0 = recv
+    }
+    return -1;
+}
+
+// 原地更新紧凑存储中某一行文本（保留时间戳），并修正后续行的偏移
+function bufferUpdateLineText(m, idx, text) {
+    if (!m || idx < 0 || idx >= m._textCount) return;
+    var start = idx > 0 ? m._textOffsets[idx - 1] : 0;
+    var oldEnd = m._textOffsets[idx];
+    var tsLen = m._textTsLens[idx];
+    var tsBytes = m._textData.slice(start, start + tsLen);
+    var textBytes = new TextEncoder().encode(text);
+    var newEnd = start + tsLen + textBytes.length;
+    var delta = newEnd - oldEnd;
+    if (m._textDataLen + delta > m._textData.length) {
+        var newBuf = new Uint8Array(Math.max(m._textData.length * 2, m._textDataLen + delta));
+        newBuf.set(m._textData);
+        m._textData = newBuf;
+    }
+    if (delta !== 0) {
+        m._textData.copyWithin(newEnd, oldEnd, m._textDataLen);
+    }
+    m._textData.set(tsBytes, start);
+    m._textData.set(textBytes, start + tsLen);
+    m._textDataLen += delta;
+    m._textOffsets[idx] = newEnd;
+    for (var j = idx + 1; j < m._textCount; j++) {
+        m._textOffsets[j] += delta;
+    }
 }
 
 // 读取一行
@@ -4960,6 +5107,7 @@ async function connectWslPort(mid) {
         monitors[mid].isConnected = true;
         monitors[mid].portName = devicePath;
         monitors[mid]._manuallyDisconnected = false;
+        resetRecvStream(mid); // 新数据流：不继承上一次连接的未结束行
         updateMonitorUI(mid, true);
         startWslReading(mid);
         showToast('WSL 串口已连接', 'success');
@@ -5061,14 +5209,8 @@ function startWslReading(mid) {
                         appendOutput(mid, 'recv', (i === 0 ? 'HEX: ' : '     ') + chunk, { hex: true, fragment: frag });
                     }
                 } else {
-                    var decoded = decodeData(mid, data);
-                    decoded = decoded.replace(/[\r\n]+$/, '');
-                    if (decoded) {
-                        var lines = decoded.split(/\r?\n/);
-                        for (var i = 0; i < lines.length; i++) {
-                            appendOutput(mid, 'recv', lines[i], { fragment: frag });
-                        }
-                    }
+                    // 文本模式：合并未结束行，只有真正的 \r\n 才换行
+                    appendRecvText(mid, decodeRecv(mid, data), frag);
                 }
                 flushBatch(mid, frag);
             }
@@ -5117,6 +5259,7 @@ async function reconnectWslPort(mid, portName, attempt) {
         await invoke('open_wsl_serial', { monitorId: mid, devicePath: portName, baudRate: baud });
         monitors[mid].isConnected = true;
         monitors[mid].portName = portName;
+        resetRecvStream(mid); // 新数据流：不继承上一次连接的未结束行
         updateMonitorUI(mid, true);
         startWslReading(mid);
         appendOutput(mid, 'sys', '重连成功');
