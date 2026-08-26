@@ -37,3 +37,6 @@ cloudflare-worker/.wrangler/
 # Error collection service local database
 server/errors.db
 server/errors.db-*
+
+# AI 会话记忆（不再跟踪）
+.workbuddy/
