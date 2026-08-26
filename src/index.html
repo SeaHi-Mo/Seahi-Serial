@@ -3101,7 +3101,7 @@ async function sendData(mid) {
         // 先显示 echo，再发送数据，避免回车后等待卡顿
         var echoBtn = document.getElementById(mid + '-btnEcho');
         if (echoBtn && echoBtn.classList.contains('on')) {
-            appendOutput(mid, 'send', hexMode ? '<span style="color:var(--text-d);">HEX:</span>' + bytesToHex(bytes) : decodeRaw(bytes));
+            appendOutput(mid, 'send', hexMode ? 'HEX: ' + bytesToHex(bytes) : decodeRaw(bytes));
         }
         await invoke('send_data', { monitorId: mid, data: Array.from(bytes) });
         // 保存到发送历史（去重：不存连续重复）
@@ -3259,7 +3259,7 @@ function appendOutput(mid, type, text, opts) {
             contentSpan.innerHTML = escapeHtml(ts) + parseAnsi(text);
         }
     } else if (type === 'send') {
-        contentSpan.innerHTML = escapeHtml(ts) + text;
+        contentSpan.textContent = ts + text;
     } else {
         contentSpan.textContent = ts + text;
     }
@@ -3640,7 +3640,7 @@ async function sendQcmdItem(mid, idx) {
         // 先显示 echo，再发送数据
         var echoBtn = document.getElementById(mid + '-btnEcho');
         if (echoBtn && echoBtn.classList.contains('on')) {
-            appendOutput(mid, 'send', hexMode ? '<span style="color:var(--text-d);">HEX:</span>' + bytesToHex(bytes) : decodeRaw(bytes));
+            appendOutput(mid, 'send', hexMode ? 'HEX: ' + bytesToHex(bytes) : decodeRaw(bytes));
         }
         var isWsl = monitors[mid].isWsl;
         if (isWsl) { await invoke('send_wsl_serial', { monitorId: mid, data: Array.from(bytes) }); }
@@ -4053,7 +4053,7 @@ async function downloadAndInstallUpdate() {
     btn.classList.add('disabled');
     btn.textContent = '正在下载...';
     try {
-        var filePath = await invoke('download_update', { downloadUrl: _updateInfo.download_url });
+        var filePath = await invoke('download_update', { downloadUrl: _updateInfo.download_url, sha256: _updateInfo.sha256 || null, size: _updateInfo.size || null });
         btn.textContent = '正在安装...';
         await invoke('install_update', { filePath: filePath });
     } catch (e) {
@@ -5003,7 +5003,7 @@ async function sendWslData(mid) {
         // 先显示 echo，再发送数据，避免回车后等待卡顿
         var echoBtn = document.getElementById(mid + '-btnEcho');
         if (echoBtn && echoBtn.classList.contains('on')) {
-            appendOutput(mid, 'send', hexMode ? '<span style="color:var(--text-d);">HEX:</span>' + bytesToHex(bytes) : decodeRaw(bytes));
+            appendOutput(mid, 'send', hexMode ? 'HEX: ' + bytesToHex(bytes) : decodeRaw(bytes));
         }
         await invoke('send_wsl_serial', { monitorId: mid, data: Array.from(bytes) });
         var hist = monitors[mid].sendHistory;
@@ -5503,6 +5503,7 @@ var _wslDevices = [];
 var _wslBusy = {}; // { busid: true } 正在操作中的设备
 var _wslSelectedBusid = null; // 选中的设备行
 var _wslAutoMap = {}; // { vidpid: portName } 开启自动映射的设备（按 VID:PID 匹配，而非 busid）
+var _wslAutoFailCount = {}; // { vidpid: n } 自动映射连续失败次数（>=3 暂停重试）
 var _wslAutoMapTimer = null;
 var _wslSavedConfig = null; // 缓存从配置文件加载的 WSL 监视器配置，防止主监视器保存时丢失
 var _wslStatusUnlisten = null; // WSL 状态事件监听取消函数
@@ -5791,8 +5792,10 @@ function toggleAutoMap(vidpid, portName, on) {
     if (!_wslRunning) return;
     if (on) {
         _wslAutoMap[vidpid] = portName;
+        delete _wslAutoFailCount[vidpid];
     } else {
         delete _wslAutoMap[vidpid];
+        delete _wslAutoFailCount[vidpid];
     }
     scheduleConfigSave();
     updateAutoMapPolling();
@@ -5818,20 +5821,26 @@ async function autoMapCheck() {
         var tasks = [];
         for (var i = 0; i < devices.length; i++) {
             var d = devices[i];
-            if (d.vidpid && _wslAutoMap[d.vidpid] && d.status !== 'mapped' && !_wslBusy[d.busid]) {
+            // 连续失败 3 次后暂停该设备（防 UAC 弹窗轰炸），成功或用户重开自动映射时重置
+            if (d.vidpid && _wslAutoMap[d.vidpid] && d.status !== 'mapped' && !_wslBusy[d.busid] && !((_wslAutoFailCount[d.vidpid] || 0) >= 3)) {
                 _wslBusy[d.busid] = true;
                 var autoAttachId = d.hasCom ? d.port : d.busid;
                 (function(device, attachId) {
                     tasks.push(
                         invoke('attach_port_to_wsl', { portName: attachId })
-                            .then(function(result) { 
+                            .then(function(result) {
                                 device.status = 'mapped';
+                                delete _wslAutoFailCount[device.vidpid];
                             })
-                            .catch(function(e) { 
+                            .catch(function(e) {
                                 console.error('[WSL] 自动映射失败:', e);
+                                _wslAutoFailCount[device.vidpid] = (_wslAutoFailCount[device.vidpid] || 0) + 1;
+                                if (_wslAutoFailCount[device.vidpid] === 3) {
+                                    showToast('自动映射连续失败 3 次，已暂停该设备 (' + (device.name || device.busid) + ')，请检查 WSL 状态', 'error');
+                                }
                             })
-                            .finally(function() { 
-                                delete _wslBusy[device.busid]; 
+                            .finally(function() {
+                                delete _wslBusy[device.busid];
                             })
                     );
                 })(d, autoAttachId);

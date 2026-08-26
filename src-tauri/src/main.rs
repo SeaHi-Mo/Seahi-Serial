@@ -37,8 +37,13 @@ fn init_error_reporter() {
             .ok();
         if let Some(client) = client {
             while let Ok((error, context)) = rx.recv() {
-                let server_url = std::env::var("ERROR_SERVER_URL")
-                    .unwrap_or_else(|_| "https://seahi-error-server.seahi-mo.workers.dev".to_string());
+                // 未显式配置 ERROR_SERVER_URL 时不上报（隐私：不默认发往公网端点）
+                let Ok(server_url) = std::env::var("ERROR_SERVER_URL") else {
+                    continue;
+                };
+                if server_url.trim().is_empty() {
+                    continue;
+                }
                 let api_key = std::env::var("ERROR_API_KEY").unwrap_or_default();
                 let payload = serde_json::json!({
                     "app_version": env!("CARGO_PKG_VERSION"),
@@ -47,7 +52,7 @@ fn init_error_reporter() {
                     "context": context,
                     "timestamp": chrono::Utc::now().to_rfc3339(),
                 });
-                let mut req = client.post(format!("{}/report", server_url)).json(&payload);
+                let mut req = client.post(format!("{}/report", server_url.trim_end_matches('/'))).json(&payload);
                 if !api_key.is_empty() {
                     req = req.header("X-API-Key", &api_key);
                 }
@@ -201,24 +206,28 @@ fn start_device_watcher(app: tauri::AppHandle) {
 
 /// 持久化 WSL shell：保持一个 WSL 进程存活，通过管道发送命令
 /// 避免每次调用都 fork 新进程（WSL2 进程创建 ~300ms）
+/// 用 Arc 持有：执行命令时克隆 Arc，超时/异常时可杀掉子进程，
+/// 使被阻塞的读取线程因管道 EOF 退出，避免永久阻塞与线程泄漏。
 struct WslShell {
     writer: std::sync::Mutex<std::io::BufWriter<std::process::ChildStdin>>,
-    reader: std::sync::Mutex<std::io::BufReader<std::process::ChildStdout>>,
-    _child: std::process::Child,
+    reader: std::sync::Arc<std::sync::Mutex<std::io::BufReader<std::process::ChildStdout>>>,
+    child: std::sync::Arc<std::sync::Mutex<std::process::Child>>,
 }
 
-static WSL_SHELL: Mutex<Option<WslShell>> = Mutex::new(None);
+static WSL_SHELL: Mutex<Option<std::sync::Arc<WslShell>>> = Mutex::new(None);
 /// 标记 shell 需要重建（超时/进程退出后设置，get_wsl_shell 检查此标记）
 static WSL_SHELL_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// 获取或创建持久化 WSL shell
-fn get_wsl_shell(distro: &str) -> Result<&'static Mutex<Option<WslShell>>, String> {
-    let mut shell = WSL_SHELL.lock().unwrap();
-    if let Some(ref s) = *shell {
-        if !WSL_SHELL_DIRTY.load(std::sync::atomic::Ordering::Relaxed) && is_process_alive(s._child.id()) {
-            return Ok(&WSL_SHELL);
+/// 获取或创建持久化 WSL shell（返回 Arc，调用方不持有全局锁）
+fn get_wsl_shell(distro: &str) -> Result<std::sync::Arc<WslShell>, String> {
+    let mut slot = WSL_SHELL.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = slot.as_ref() {
+        let alive = !WSL_SHELL_DIRTY.load(std::sync::atomic::Ordering::Relaxed)
+            && is_process_alive(s.child.lock().unwrap_or_else(|e| e.into_inner()).id());
+        if alive {
+            return Ok(s.clone());
         }
-        *shell = None;
+        *slot = None;
         WSL_SHELL_DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
     }
     // 在锁内创建，避免 TOCTOU 竞态
@@ -231,20 +240,22 @@ fn get_wsl_shell(distro: &str) -> Result<&'static Mutex<Option<WslShell>>, Strin
         .map_err(|e| format!("创建 WSL shell 失败: {}", e))?;
     let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
     let stdin = child.stdin.take().ok_or("无法获取 stdin")?;
-    *shell = Some(WslShell {
+    let shell = std::sync::Arc::new(WslShell {
         writer: std::sync::Mutex::new(std::io::BufWriter::new(stdin)),
-        reader: std::sync::Mutex::new(std::io::BufReader::new(stdout)),
-        _child: child,
+        reader: std::sync::Arc::new(std::sync::Mutex::new(std::io::BufReader::new(stdout))),
+        child: std::sync::Arc::new(std::sync::Mutex::new(child)),
     });
-    Ok(&WSL_SHELL)
+    *slot = Some(shell.clone());
+    Ok(shell)
 }
 
 /// 通过持久化 shell 执行命令并返回输出
+/// 读取在独立线程中进行，主线程用 recv_timeout 等待；
+/// 超时/进程退出时杀掉子进程，让阻塞的读取线程随管道 EOF 退出。
 fn wsl_shell_exec(distro: &str, cmd: &str, timeout_ms: u64) -> Result<String, String> {
     use std::io::{BufRead, Write};
-    let shell_ref = get_wsl_shell(distro)?;
-    let shell = shell_ref.lock().unwrap();
-    let shell = shell.as_ref().ok_or("WSL shell 未初始化")?;
+    use std::sync::mpsc;
+    let shell = get_wsl_shell(distro)?;
 
     let marker_start = "___SEAHI_START___";
     let marker_end = "___SEAHI_END___";
@@ -256,30 +267,47 @@ fn wsl_shell_exec(distro: &str, cmd: &str, timeout_ms: u64) -> Result<String, St
         w.flush().map_err(|e| format!("刷新失败: {}", e))?;
     }
 
-    let mut r = shell.reader.lock().map_err(|e| format!("锁失败: {}", e))?;
-    let mut output = String::new();
-    let start = std::time::Instant::now();
-    loop {
-        if start.elapsed().as_millis() > timeout_ms as u128 {
-            WSL_SHELL_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
-            dbg_log(&format!("wsl_shell_exec: timeout after {}ms", timeout_ms));
-            return Err("WSL shell 命令超时".into());
-        }
-        let mut line = String::new();
-        match r.read_line(&mut line) {
-            Ok(0) => {
-                WSL_SHELL_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
-                dbg_log("wsl_shell_exec: EOF");
-                return Err("WSL shell 进程已退出".into());
+    let reader = shell.reader.clone();
+    let child = shell.child.clone();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = (|| -> Result<String, String> {
+            let mut r = reader.lock().map_err(|e| format!("锁失败: {}", e))?;
+            let mut output = String::new();
+            loop {
+                let mut line = String::new();
+                match r.read_line(&mut line) {
+                    Ok(0) => return Err("WSL shell 进程已退出".into()),
+                    Ok(_) => {}
+                    Err(e) => return Err(format!("读取失败: {}", e)),
+                }
+                if line.trim() == marker_end { break; }
+                if line.trim() == marker_start { continue; }
+                output.push_str(&line);
             }
-            Ok(_) => {}
-            Err(e) => return Err(format!("读取失败: {}", e)),
+            Ok(output)
+        })();
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(std::time::Duration::from_millis(timeout_ms)) {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(e)) => {
+            WSL_SHELL_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = child.lock().unwrap_or_else(|e| e.into_inner()).kill();
+            Err(e)
         }
-        if line.trim() == marker_end { break; }
-        if line.trim() == marker_start { continue; }
-        output.push_str(&line);
+        Err(_) => {
+            WSL_SHELL_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+            {
+                let mut c = child.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            dbg_log(&format!("wsl_shell_exec: timeout after {}ms", timeout_ms));
+            Err("WSL shell 命令超时".into())
+        }
     }
-    Ok(output)
 }
 
 /// WSL 终端进程 PID（由 launch_wsl 设置，用于检测用户关闭窗口）
@@ -291,8 +319,11 @@ struct PortReader {
     events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     read_handle: Option<std::thread::JoinHandle<()>>,
     wf_handle: Option<std::thread::JoinHandle<()>>,
+    act_handle: Option<std::thread::JoinHandle<()>>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     disconnected: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// 断开后是否已上报过（避免 read_data 每次轮询都重复上报）
+    disconnect_reported: std::sync::Arc<std::sync::atomic::AtomicBool>,
     port: std::sync::Arc<std::sync::Mutex<Box<dyn SerialPort>>>,
     rules: std::sync::Arc<std::sync::Mutex<Vec<WorkflowRule>>>,
     log_dir: std::sync::Arc<std::sync::Mutex<String>>,
@@ -305,21 +336,26 @@ impl PortReader {
         let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let disconnected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let disconnect_reported = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let rules = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log_dir = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let line_ending = std::sync::Arc::new(std::sync::Mutex::new(String::from("crlf")));
+        let match_tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let buf_clone = buffer.clone();
         let evt_clone = events.clone();
         let stop_clone = stop.clone();
         let disconnected_clone = disconnected.clone();
         let port_arc = std::sync::Arc::new(std::sync::Mutex::new(port));
-        let port_clone = port_arc.clone();
         let rules_clone = rules.clone();
         let log_dir_clone = log_dir.clone();
         let le_clone = line_ending.clone();
+        let tail_clone = match_tail.clone();
 
         // channel：读取线程 → 工作流工作线程
         let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(2048);
+        // channel：工作流线程 → 动作工作线程（有界，串行执行动作，避免每块数据 spawn 线程）
+        let (act_tx, act_rx) =
+            crossbeam_channel::bounded::<(Vec<Vec<WorkflowAction>>, Vec<u8>, Vec<u8>, String)>(32);
 
         // 读取线程：从串口读数据，存 buffer，发给工作流线程
         let tx_clone = tx.clone();
@@ -354,25 +390,43 @@ impl PortReader {
             }
         });
 
-        // 工作流工作线程：单线程消费 channel，检查规则，执行动作
-        let rc_clone = regex_cache.clone();
-        let wf_handle = std::thread::spawn(move || {
-            while let Ok(data) = rx.recv() {
-                Self::check_workflows(&data, &rules_clone, &log_dir_clone, &port_clone, &evt_clone, &le_clone, &rc_clone);
+        // 动作工作线程：串行执行匹配到的动作（有界队列，天然带背压，线程数量恒定）
+        let port_act = port_arc.clone();
+        let evt_act = evt_clone.clone();
+        let act_handle = std::thread::spawn(move || {
+            while let Ok((matched_actions, pending, le_bytes, ld)) = act_rx.recv() {
+                execute_workflow_actions_bg(&matched_actions, &pending, &le_bytes, &ld, &port_act, &evt_act);
             }
         });
 
-        PortReader { buffer, events, read_handle: Some(read_handle), wf_handle: Some(wf_handle), stop, disconnected, port: port_arc, rules, log_dir, line_ending }
+        // 工作流工作线程：单线程消费 channel，检查规则，投递动作
+        let rc_clone = regex_cache.clone();
+        let act_tx_wf = act_tx;
+        let tail_wf = tail_clone.clone();
+        let wf_handle = std::thread::spawn(move || {
+            while let Ok(data) = rx.recv() {
+                Self::check_workflows(
+                    &data, &rules_clone, &log_dir_clone,
+                    &le_clone, &rc_clone, &tail_wf, &act_tx_wf,
+                );
+            }
+        });
+
+        PortReader {
+            buffer, events, read_handle: Some(read_handle), wf_handle: Some(wf_handle),
+            act_handle: Some(act_handle), stop, disconnected, disconnect_reported,
+            port: port_arc, rules, log_dir, line_ending,
+        }
     }
 
     fn check_workflows(
         pending: &[u8],
         rules: &std::sync::Arc<std::sync::Mutex<Vec<WorkflowRule>>>,
         log_dir: &std::sync::Arc<std::sync::Mutex<String>>,
-        port: &std::sync::Arc<std::sync::Mutex<Box<dyn SerialPort>>>,
-        events: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
         line_ending: &std::sync::Arc<std::sync::Mutex<String>>,
         regex_cache: &RegexCache,
+        tail: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        act_tx: &crossbeam_channel::Sender<(Vec<Vec<WorkflowAction>>, Vec<u8>, Vec<u8>, String)>,
     ) {
         if pending.is_empty() { return; }
 
@@ -384,10 +438,31 @@ impl PortReader {
         let le = line_ending.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
         // 阶段2：无锁匹配（正则编译不阻塞任何共享状态）
+        // 同时基于「上一块尾部 + 当前块」做跨块边界匹配（fresh_start 之后结束才算命中），
+        // 既支持跨块的条件，又不会因窗口重叠对同一条件重复触发。
+        let (tail_len, combined) = {
+            let mut t = tail.lock().unwrap_or_else(|e| e.into_inner());
+            let tl = t.len();
+            let mut comb = Vec::with_capacity(tl + pending.len());
+            comb.extend_from_slice(&t);
+            comb.extend_from_slice(pending);
+            // 更新 tail（保留最近 2048 字节）
+            t.extend_from_slice(pending);
+            const TAIL_CAP: usize = 2048;
+            if t.len() > TAIL_CAP {
+                let d = t.len() - TAIL_CAP;
+                t.drain(..d);
+            }
+            (tl, comb)
+        };
+
         let mut matched_actions: Vec<Vec<WorkflowAction>> = Vec::new();
         for rule in &snapshot {
             if !rule.running || rule.conditions.is_empty() { continue; }
-            if rule.conditions.iter().all(|c| match_condition(c, pending, regex_cache)) {
+            if rule.conditions.iter().all(|c| {
+                match_condition(c, pending, regex_cache)
+                    || (tail_len > 0 && match_condition_window(c, &combined, tail_len, regex_cache))
+            }) {
                 matched_actions.push(rule.actions.clone());
             }
         }
@@ -401,67 +476,13 @@ impl PortReader {
             _ => &[],
         };
 
-        // 动作执行在独立线程，不阻塞工作流线程
-        let pending_clone = pending.to_vec();
-        let port_clone = port.clone();
-        let events_clone = events.clone();
-        std::thread::spawn(move || {
-            let mut all_sent = Vec::new();
-            for actions in &matched_actions {
-                let mut sent_parts = Vec::new();
-                for action in actions {
-                    if action.delay_before > 0 {
-                        std::thread::sleep(std::time::Duration::from_millis(action.delay_before));
-                    }
-                    match action.action_type.as_str() {
-                        "send_data" => {
-                            let mut bytes = if action.encoding == "hex" {
-                                parse_hex_bytes(&action.data)
-                            } else {
-                                action.data.as_bytes().to_vec()
-                            };
-                            if bytes.is_empty() { continue; }
-                            if action.encoding != "hex" && !le_bytes.is_empty() {
-                                bytes.extend_from_slice(&le_bytes);
-                            }
-                            sent_parts.push(action.data.clone());
-                            let mut p = port_clone.lock().unwrap_or_else(|e| e.into_inner());
-                            match p.write_all(&bytes) {
-                                Ok(()) => { let _ = p.flush(); }
-                                Err(e) => {
-                                    eprintln!("[Workflow] 写入串口失败: {}", e);
-                                    sent_parts.pop();
-                                }
-                            }
-                        }
-                        "toggle_dtr_rts" => {
-                            let mut p = port_clone.lock().unwrap_or_else(|e| e.into_inner());
-                            let ok = match action.signal.as_str() {
-                                "dtr" => p.write_data_terminal_ready(action.level).is_ok(),
-                                "rts" => p.write_request_to_send(action.level).is_ok(),
-                                _ => false,
-                            };
-                            if ok { sent_parts.push(format!("[{} {}]", action.signal.to_uppercase(), if action.level { "ON" } else { "OFF" })); }
-                        }
-                        "save_log" => {
-                            if !ld.is_empty() {
-                                let filepath = std::path::Path::new(&ld).join("workflow_log.txt");
-                                if let Ok(mut f) = std::fs::OpenOptions::new()
-                                    .create(true).append(true).open(&filepath)
-                                { let _ = f.write_all(&pending_clone); }
-                            }
-                            sent_parts.push("[LOG]".to_string());
-                        }
-                        _ => {}
-                    }
-                }
-                all_sent.extend(sent_parts);
-            }
-            if !all_sent.is_empty() {
-                let msg = format!("[Auto] {}", all_sent.join(" "));
-                if let Ok(mut evts) = events_clone.lock() { evts.push(msg); }
-            }
-        });
+        // 动作投递到有界队列由动作工作线程串行执行（不再每块数据 spawn 线程）
+        let _ = act_tx.send((
+            matched_actions,
+            pending.to_vec(),
+            le_bytes.to_vec(),
+            ld,
+        ));
     }
 
     fn read_all(&self) -> Vec<u8> {
@@ -494,6 +515,7 @@ impl Drop for PortReader {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some(h) = self.read_handle.take() { let _ = h.join(); }
         if let Some(h) = self.wf_handle.take() { let _ = h.join(); }
+        if let Some(h) = self.act_handle.take() { let _ = h.join(); }
     }
 }
 
@@ -503,10 +525,15 @@ struct PortState {
 }
 
 /// WSL 串口会话：通过管道与 bridge 脚本通信
+/// 每个会话有且仅有一条常驻 stdout 读取线程（按序推送响应行），
+/// 避免每次命令都新建线程；bridge 进程退出/被杀后读取线程随管道 EOF 自行退出。
 struct WslSerialSession {
     child: std::sync::Arc<std::sync::Mutex<std::process::Child>>,
     writer: std::sync::Mutex<std::io::BufWriter<std::process::ChildStdin>>,
-    reader: std::sync::Arc<std::sync::Mutex<std::io::BufReader<std::process::ChildStdout>>>,
+    /// 常驻读取线程推送的响应行：命令按发出顺序严格对应
+    responses: crossbeam_channel::Receiver<String>,
+    /// 会话已失效（超时被杀后置位，防止消费过期响应）
+    dead: std::sync::atomic::AtomicBool,
 }
 
 /// 全局状态：WSL 串口连接（key = monitor_id）
@@ -650,6 +677,108 @@ fn match_condition(cond: &WorkflowCondition, raw: &[u8], cache: &RegexCache) -> 
     }
 }
 
+/// 在「上一块尾部 + 当前块」组合窗口上匹配条件；
+/// 仅当匹配结束位置 > fresh_start（即匹配延伸到新到达的数据）时才判定命中，
+/// 从而支持跨块边界匹配，同时避免窗口重叠导致同一条件重复触发。
+fn match_condition_window(cond: &WorkflowCondition, window: &[u8], fresh_start: usize, cache: &RegexCache) -> bool {
+    if window.len() <= fresh_start { return false; }
+    match cond.cond_type.as_str() {
+        "string_contains" => {
+            let needle = cond.value.as_bytes();
+            if needle.is_empty() { return false; }
+            window
+                .windows(needle.len())
+                .position(|w| w == needle)
+                .map(|pos| pos + needle.len() > fresh_start)
+                .unwrap_or(false)
+        }
+        "regex" => {
+            let text = String::from_utf8_lossy(window);
+            match cache.get_or_compile(&cond.value) {
+                Some(re) => re.find(&text).map(|m| m.end() > fresh_start).unwrap_or(false),
+                None => false,
+            }
+        }
+        "exact_bytes" => {
+            let expected = parse_hex_bytes(&cond.value);
+            if expected.is_empty() { return false; }
+            window
+                .windows(expected.len())
+                .position(|w| w == expected.as_slice())
+                .map(|pos| pos + expected.len() > fresh_start)
+                .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+/// 后台动作执行（由 PortReader 的单个动作工作线程串行调用）：
+/// 遍历匹配规则的动作序列并执行，汇总 [Auto] 消息写入事件队列。
+fn execute_workflow_actions_bg(
+    matched_actions: &[Vec<WorkflowAction>],
+    pending_clone: &[u8],
+    le_bytes: &[u8],
+    ld: &str,
+    port_clone: &std::sync::Arc<std::sync::Mutex<Box<dyn SerialPort>>>,
+    events_clone: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    let mut all_sent = Vec::new();
+    for actions in matched_actions {
+        let mut sent_parts = Vec::new();
+        for action in actions {
+            if action.delay_before > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(action.delay_before));
+            }
+            match action.action_type.as_str() {
+                "send_data" => {
+                    let mut bytes = if action.encoding == "hex" {
+                        parse_hex_bytes(&action.data)
+                    } else {
+                        action.data.as_bytes().to_vec()
+                    };
+                    if bytes.is_empty() { continue; }
+                    if action.encoding != "hex" && !le_bytes.is_empty() {
+                        bytes.extend_from_slice(le_bytes);
+                    }
+                    sent_parts.push(action.data.clone());
+                    let mut p = port_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    match p.write_all(&bytes) {
+                        Ok(()) => { let _ = p.flush(); }
+                        Err(e) => {
+                            eprintln!("[Workflow] 写入串口失败: {}", e);
+                            sent_parts.pop();
+                        }
+                    }
+                }
+                "toggle_dtr_rts" => {
+                    let mut p = port_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    let ok = match action.signal.as_str() {
+                        "dtr" => p.write_data_terminal_ready(action.level).is_ok(),
+                        "rts" => p.write_request_to_send(action.level).is_ok(),
+                        _ => false,
+                    };
+                    if ok { sent_parts.push(format!("[{} {}]", action.signal.to_uppercase(), if action.level { "ON" } else { "OFF" })); }
+                }
+                "save_log" => {
+                    if !ld.is_empty() {
+                        let filepath = std::path::Path::new(ld).join("workflow_log.txt");
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true).append(true).open(&filepath)
+                        { let _ = f.write_all(pending_clone); }
+                    }
+                    sent_parts.push("[LOG]".to_string());
+                }
+                _ => {}
+            }
+        }
+        all_sent.extend(sent_parts);
+    }
+    if !all_sent.is_empty() {
+        let msg = format!("[Auto] {}", all_sent.join(" "));
+        if let Ok(mut evts) = events_clone.lock() { evts.push(msg); }
+    }
+}
+
 /// 执行工作流动作序列，返回所有发送的数据文本
 fn execute_workflow_actions(
     actions: &[WorkflowAction],
@@ -721,6 +850,42 @@ fn hidden_command(program: &str) -> std::process::Command {
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW); // CREATE_NO_WINDOW
     cmd
+}
+
+/// 运行命令并等待输出；超过 timeout_ms 毫秒则杀掉子进程并返回 None。
+/// 避免 WSL 无响应时 `.output()` 永久阻塞（wsl 进程卡住时管道不会关闭）。
+fn run_output_timeout(cmd: &mut std::process::Command, timeout_ms: u64) -> Option<std::process::Output> {
+    use std::io::Read;
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let _ = child.stdout.take().and_then(|mut s| s.read_to_end(&mut stdout).ok());
+    let _ = child.stderr.take().and_then(|mut s| s.read_to_end(&mut stderr).ok());
+    let status = child.wait().ok()?;
+    Some(std::process::Output { status, stdout, stderr })
 }
 
 /// 嵌入的 bridge 脚本 base64
@@ -942,7 +1107,10 @@ fn read_data(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<V
     let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
     if let Some(reader) = map.get(&monitor_id) {
         if reader.disconnected.load(std::sync::atomic::Ordering::Relaxed) {
-            report_error("设备已断开连接", "read_data");
+            // 断开上报只触发一次，避免轮询期间重复上报
+            if !reader.disconnect_reported.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                report_error("设备已断开连接", "read_data");
+            }
             return Err("设备已断开连接".into());
         }
         Ok(reader.read_all())
@@ -1176,6 +1344,27 @@ fn choose_log_directory() -> Result<Option<String>, String> {
         .map(|path| path.to_string_lossy().to_string()))
 }
 
+/// 将 PowerShell 脚本编码为 -EncodedCommand 需要的 UTF-16LE Base64
+fn encode_ps_command(script: &str) -> String {
+    use base64::Engine;
+    let mut u16: Vec<u8> = Vec::with_capacity(script.len() * 2);
+    for u in script.encode_utf16() {
+        u16.extend_from_slice(&u.to_le_bytes());
+    }
+    base64::engine::general_purpose::STANDARD.encode(&u16)
+}
+
+/// 生成不可预测的临时文件后缀（时间戳 + 进程 id 混合），
+/// 用于提权结果文件命名，降低同用户进程预置/劫持临时文件的风险
+fn temp_rand_suffix() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    nanos ^ (std::process::id() as u64).rotate_left(32) ^ (nanos.rotate_left(17))
+}
+
 /// 获取所有串口（包括已映射到WSL的）
 #[tauri::command]
 /// 通过 UAC 提权执行 usbipd list，返回 stdout 内容
@@ -1183,8 +1372,13 @@ fn run_usbipd_list_elevated() -> Option<String> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LIST_COUNTER: AtomicU64 = AtomicU64::new(0);
     let unique_id = LIST_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp_result = std::env::temp_dir().join(format!("usbipd_list_{}_{}.txt", std::process::id(), unique_id));
-    let tmp_result_str = tmp_result.to_str().unwrap_or("C:\\Temp\\usbipd_list.txt").replace('\'', "''");
+    let tmp_result = std::env::temp_dir().join(format!(
+        "usbipd_list_{}_{}_{}.txt",
+        std::process::id(),
+        unique_id,
+        temp_rand_suffix()
+    ));
+    let tmp_result_str = tmp_result.to_str().unwrap_or("C:\\Temp\\usbipd_list.txt");
 
     let ps_script = format!(
         "try {{ \
@@ -1196,17 +1390,13 @@ fn run_usbipd_list_elevated() -> Option<String> {
         result = tmp_result_str
     );
 
-    let tmp_script = std::env::temp_dir().join(format!("usbipd_list_script_{}_{}.ps1", std::process::id(), unique_id));
+    // 通过 -EncodedCommand 传脚本内容，避免写可预测的临时 .ps1 被同用户进程替换（TOCTOU）
     let _ = std::fs::remove_file(&tmp_result);
-    let _ = std::fs::write(&tmp_script, &ps_script);
-
-    let script_path_str = tmp_script.to_str().unwrap_or("");
-    let sp = script_path_str.replace('\'', "''");
+    let encoded = encode_ps_command(&ps_script);
     let _ = hidden_command("powershell")
         .args(["-NonInteractive", "-Command"])
-        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-File','{}' -Verb RunAs -Wait", sp))
+        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs -Wait", encoded))
         .status();
-    let _ = std::fs::remove_file(&tmp_script);
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     let result = std::fs::read_to_string(&tmp_result).ok();
@@ -1519,7 +1709,7 @@ fn start_wsl_watcher(app: tauri::AppHandle) {
             let wsl_running = !distros.is_empty();
 
             let terminal_alive = {
-                let pid = WSL_TERMINAL_PID.lock().unwrap();
+                let pid = WSL_TERMINAL_PID.lock().unwrap_or_else(|e| e.into_inner());
                 match *pid {
                     Some(p) => is_process_alive(p),
                     None => true,
@@ -1527,7 +1717,7 @@ fn start_wsl_watcher(app: tauri::AppHandle) {
             };
 
             if !terminal_alive && wsl_running {
-                *CACHED_DISTRO.lock().unwrap() = None;
+                *CACHED_DISTRO.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
 
             let running = wsl_running && terminal_alive;
@@ -1578,19 +1768,20 @@ fn launch_wsl(dist: Option<String>) -> Result<(), String> {
     });
     let mut cmd = if use_wt {
         let dist_name = dist.as_deref().unwrap_or("Ubuntu-20.04");
-        // 获取 WSL 用户主目录，用于设置终端启动路径
-        let home = std::process::Command::new("wsl.exe")
-            .args(["-d", dist_name, "--", "printenv", "HOME"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
-                } else {
-                    None
-                }
-            });
+        // 获取 WSL 用户主目录，用于设置终端启动路径（带超时，避免 WSL 无响应时卡住）
+        let home = run_output_timeout(
+            std::process::Command::new("wsl.exe")
+                .args(["-d", dist_name, "--", "printenv", "HOME"])
+                .creation_flags(CREATE_NO_WINDOW),
+            5000,
+        )
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+            } else {
+                None
+            }
+        });
         let mut c = std::process::Command::new("wt.exe");
         // 使用 Windows Terminal 的 WSL 配置文件（带图标和正确配色）
         c.args(["-p", dist_name]);
@@ -1626,9 +1817,9 @@ fn launch_wsl(dist: Option<String>) -> Result<(), String> {
     dbg_log(&format!("launch_wsl: spawned pid={}, use_wt={}", child.id(), use_wt));
     if use_wt {
         // wt.exe 会立即退出，不追踪其 PID，让 watcher 以 WSL 实际状态为准
-        *WSL_TERMINAL_PID.lock().unwrap() = None;
+        *WSL_TERMINAL_PID.lock().unwrap_or_else(|e| e.into_inner()) = None;
     } else {
-        *WSL_TERMINAL_PID.lock().unwrap() = Some(child.id());
+        *WSL_TERMINAL_PID.lock().unwrap_or_else(|e| e.into_inner()) = Some(child.id());
     }
     Ok(())
 }
@@ -1636,12 +1827,10 @@ fn launch_wsl(dist: Option<String>) -> Result<(), String> {
 /// 关闭指定 WSL 发行版（异步，不阻塞 UI）
 #[tauri::command]
 async fn shutdown_wsl(dist: String) -> Result<(), String> {
-    *WSL_TERMINAL_PID.lock().unwrap() = None;
+    *WSL_TERMINAL_PID.lock().unwrap_or_else(|e| e.into_inner()) = None;
     tauri::async_runtime::spawn_blocking(move || {
-        let out = hidden_command("wsl")
-            .args(["-t", &dist])
-            .output()
-            .map_err(|e| format!("{}", e))?;
+        let out = run_output_timeout(hidden_command("wsl").args(["-t", &dist]), 5000)
+            .ok_or_else(|| "关闭 WSL 发行版超时".to_string())?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             return Err(format!("关闭 WSL 发行版失败: {}", stderr.trim()));
@@ -1657,17 +1846,16 @@ async fn shutdown_wsl(dist: String) -> Result<(), String> {
 fn get_wsl_distributions() -> Result<Vec<serde_json::Value>, String> {
     // 检查由 launch_wsl 启动的终端进程是否仍然存活
     let terminal_alive = {
-        let pid = WSL_TERMINAL_PID.lock().unwrap();
+        let pid = WSL_TERMINAL_PID.lock().unwrap_or_else(|e| e.into_inner());
         match *pid {
             Some(p) => is_process_alive(p),
             None => true, // 未跟踪终端进程时，以 WSL 实际状态为准
         }
     };
 
-    let output = hidden_command("wsl")
-        .args(["--list", "--verbose"])
-        .output()
-        .map_err(|e| format!("{}", e))?;
+    // 所有 wsl 子进程调用都带超时，避免 WSL 无响应时永久阻塞
+    let output = run_output_timeout(hidden_command("wsl").args(["--list", "--verbose"]), 5000)
+        .ok_or_else(|| "获取 WSL 列表超时或失败".to_string())?;
 
     let text = decode_wsl_output(&output.stdout);
     let mut distros: Vec<serde_json::Value> = Vec::new();
@@ -1692,25 +1880,22 @@ fn get_wsl_distributions() -> Result<Vec<serde_json::Value>, String> {
         let running = wsl_says_running && terminal_alive;
 
         let (uptime, mem_used, mem_total) = if wsl_says_running {
-            // 用 timeout 避免命令阻塞，且不启动已停止的发行版
-            let uptime_out = hidden_command("wsl")
-                .args(["-d", &name, "--", "cat", "/proc/uptime"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output();
+            // 用超时避免命令阻塞，且不启动已停止的发行版
+            let uptime_out = run_output_timeout(
+                hidden_command("wsl").args(["-d", &name, "--", "cat", "/proc/uptime"]),
+                3000,
+            );
             let uptime = match uptime_out {
-                Ok(o) => {
-                    let raw = decode_wsl_output(&o.stdout);
-                    parse_uptime_hms(&raw)
-                }
-                Err(_) => String::new(),
+                Some(o) => parse_uptime_hms(&decode_wsl_output(&o.stdout)),
+                None => String::new(),
             };
-            let free_out = hidden_command("wsl")
-                .args(["-d", &name, "--", "free", "-m"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output();
+            let free_out = run_output_timeout(
+                hidden_command("wsl").args(["-d", &name, "--", "free", "-m"]),
+                3000,
+            );
             let (total, used) = match free_out {
-                Ok(o) => parse_free_output(&decode_wsl_output(&o.stdout)),
-                Err(_) => (0, 0),
+                Some(o) => parse_free_output(&decode_wsl_output(&o.stdout)),
+                None => (0, 0),
             };
             (uptime, used, total)
         } else {
@@ -1779,7 +1964,7 @@ static CACHED_DISTRO: Mutex<Option<String>> = Mutex::new(None);
 fn get_or_start_wsl_distro() -> Result<String, String> {
     // 先检查缓存
     {
-        let cached = CACHED_DISTRO.lock().unwrap();
+        let cached = CACHED_DISTRO.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ref name) = *cached {
             return Ok(name.clone());
         }
@@ -1787,24 +1972,20 @@ fn get_or_start_wsl_distro() -> Result<String, String> {
     // 优先选择已在运行的发行版
     let running = check_wsl_running().unwrap_or_default();
     if let Some(name) = running.first() {
-        *CACHED_DISTRO.lock().unwrap() = Some(name.clone());
+        *CACHED_DISTRO.lock().unwrap_or_else(|e| e.into_inner()) = Some(name.clone());
         return Ok(name.clone());
     }
-    // 没有运行中的，选择默认发行版并启动
-    let out = hidden_command("wsl")
-        .args(["--list", "--verbose"])
-        .output()
-        .map_err(|e| format!("获取 WSL 列表失败: {}", e))?;
+    // 没有运行中的，选择默认发行版并启动（所有调用带超时，避免 WSL 无响应时阻塞）
+    let out = run_output_timeout(hidden_command("wsl").args(["--list", "--verbose"]), 5000)
+        .ok_or_else(|| "获取 WSL 列表超时".to_string())?;
     let text = decode_wsl_output(&out.stdout);
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with('*') {
             let name = line[1..].trim().split_whitespace().next()
                 .ok_or("无法解析默认发行版名称")?;
-            let _ = hidden_command("wsl")
-                .args(["-d", name, "-e", "echo", "ok"])
-                .output();
-            *CACHED_DISTRO.lock().unwrap() = Some(name.to_string());
+            let _ = run_output_timeout(hidden_command("wsl").args(["-d", name, "-e", "echo", "ok"]), 5000);
+            *CACHED_DISTRO.lock().unwrap_or_else(|e| e.into_inner()) = Some(name.to_string());
             return Ok(name.to_string());
         }
     }
@@ -1815,23 +1996,16 @@ fn get_or_start_wsl_distro() -> Result<String, String> {
         if lower.starts_with("name") || lower.starts_with("version") { continue; }
         let name = line.split_whitespace().next()
             .ok_or("无法解析发行版名称")?;
-        let _ = hidden_command("wsl")
-            .args(["-d", name, "-e", "echo", "ok"])
-            .output();
-        *CACHED_DISTRO.lock().unwrap() = Some(name.to_string());
+        let _ = run_output_timeout(hidden_command("wsl").args(["-d", name, "-e", "echo", "ok"]), 5000);
+        *CACHED_DISTRO.lock().unwrap_or_else(|e| e.into_inner()) = Some(name.to_string());
         return Ok(name.to_string());
     }
     Err("没有可用的 WSL 发行版".into())
 }
 
 /// 部署 bridge 脚本到指定 WSL 发行版（通过 /mnt 路径直接写入）
+/// 每次连接都强制覆盖部署，避免应用升级后 WSL /tmp 中残留旧版脚本导致协议不匹配
 fn deploy_bridge(distro: &str) -> Result<(), String> {
-    // 先检查 bridge 是否已存在（跳过重复部署）
-    let check = hidden_command("wsl")
-        .args(["-d", distro, "-e", "test", "-f", BRIDGE_SCRIPT_PATH])
-        .output();
-    if let Ok(o) = check { if o.status.success() { return Ok(()); } }
-
     let b64 = BRIDGE_B64.trim();
     let tmp_b64 = std::env::temp_dir().join("seahi_bridge_b64.txt");
     std::fs::write(&tmp_b64, b64).map_err(|e| format!("写入临时文件失败: {}", e))?;
@@ -1840,15 +2014,23 @@ fn deploy_bridge(distro: &str) -> Result<(), String> {
     let rest = win_path[2..].replace('\\', "/");
     let mnt_path = format!("/mnt/{}{}", drive, rest);
     let decode_cmd = format!("base64 -d < {} > {}", mnt_path, BRIDGE_SCRIPT_PATH);
-    let out = hidden_command("wsl")
-        .args(["-d", distro, "-e", "bash", "-c", &decode_cmd])
-        .output()
-        .map_err(|e| format!("解码失败: {}", e))?;
+    let out = run_output_timeout(
+        hidden_command("wsl").args(["-d", distro, "-e", "bash", "-c", &decode_cmd]),
+        5000,
+    );
     let _ = std::fs::remove_file(&tmp_b64);
-    if out.status.success() { Ok(()) } else {
-        let msg = format!("部署 bridge 失败: {}", String::from_utf8_lossy(&out.stderr));
-        report_error(&msg, "deploy_bridge");
-        Err(msg)
+    match out {
+        Some(o) if o.status.success() => Ok(()),
+        Some(o) => {
+            let msg = format!("部署 bridge 失败: {}", String::from_utf8_lossy(&o.stderr));
+            report_error(&msg, "deploy_bridge");
+            Err(msg)
+        }
+        None => {
+            let msg = "部署 bridge 超时".to_string();
+            report_error(&msg, "deploy_bridge");
+            Err(msg)
+        }
     }
 }
 
@@ -1865,8 +2047,11 @@ fn spawn_bridge(distro: &str) -> Result<std::process::Child, String> {
     Ok(child)
 }
 fn bridge_command(session: &WslSerialSession, cmd: &serde_json::Value) -> Result<serde_json::Value, String> {
-    use std::io::{BufRead, Write};
-    use std::sync::mpsc;
+    use std::io::Write;
+    // 会话已失效（之前超时被杀）：直接失败，不再读写管道
+    if session.dead.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("bridge 进程已退出".into());
+    }
     let mut msg = serde_json::to_string(cmd).map_err(|e| format!("序列化失败: {}", e))?;
     msg.push('\n');
     {
@@ -1874,39 +2059,35 @@ fn bridge_command(session: &WslSerialSession, cmd: &serde_json::Value) -> Result
         w.write_all(msg.as_bytes()).map_err(|e| format!("写入失败: {}", e))?;
         w.flush().map_err(|e| format!("刷新失败: {}", e))?;
     }
-    // 在独立线程中读取，通过 channel 超时保护，防止 bridge 挂起导致永久阻塞
-    let reader = session.reader.clone();
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let result = (|| -> Result<String, String> {
-            let mut r = reader.lock().map_err(|e| format!("锁失败: {}", e))?;
-            let mut resp_line = String::new();
-            match r.read_line(&mut resp_line) {
-                Ok(0) => Err("bridge 进程已退出".into()),
-                Ok(_) => Ok(resp_line),
-                Err(e) => Err(format!("读取 bridge 响应失败: {}", e)),
-            }
-        })();
-        let _ = tx.send(result);
-    });
-    match rx.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(Ok(resp_line)) => {
+    // 从常驻读取线程的有序通道消费响应；超时则判定 bridge 挂起并杀进程
+    match session.responses.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(resp_line) => {
             serde_json::from_str(resp_line.trim()).map_err(|e| format!("解析响应失败: {}", e))
         }
-        Ok(Err(e)) => {
-            if e.contains("bridge 进程已退出") {
-                let mut c = session.child.lock().map_err(|e| format!("锁失败: {}", e))?;
-                let _ = c.kill();
-            }
-            Err(e)
-        }
-        Err(_) => {
+        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+            session.dead.store(true, std::sync::atomic::Ordering::Relaxed);
             let mut c = session.child.lock().map_err(|e| format!("锁失败: {}", e))?;
             let _ = c.kill();
+            let _ = c.wait();
             report_error("bridge 响应超时(5s)", "bridge_command");
             Err("bridge 响应超时(5s)".into())
         }
+        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+            // 读取线程退出（bridge 进程已退出或被杀）
+            session.dead.store(true, std::sync::atomic::Ordering::Relaxed);
+            let mut c = session.child.lock().map_err(|e| format!("锁失败: {}", e))?;
+            let _ = c.kill();
+            Err("bridge 进程已退出".into())
+        }
     }
+}
+
+/// 终止 WSL 会话：置失效标志、杀子进程、等待退出
+fn kill_wsl_session(session: &WslSerialSession) {
+    session.dead.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut c = session.child.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = c.kill();
+    let _ = c.wait();
 }
 
 /// 打开 WSL 串口（通过 bridge 管道）
@@ -1918,10 +2099,10 @@ fn open_wsl_serial(
     baud_rate: u32,
 ) -> Result<(), String> {
     validate_device_path(&device_path)?;
-    { let mut s = state.sessions.lock().unwrap(); if let Some(old) = s.remove(&monitor_id) { { let mut c = old.child.lock().unwrap(); let _ = c.kill(); let _ = c.wait(); } } }
+    { let mut s = state.sessions.lock().unwrap_or_else(|e| e.into_inner()); if let Some(old) = s.remove(&monitor_id) { kill_wsl_session(&old); } }
     let distro = get_or_start_wsl_distro().map_err(|e| {
         // 连接失败时清除缓存，下次重新检测
-        *CACHED_DISTRO.lock().unwrap() = None;
+        *CACHED_DISTRO.lock().unwrap_or_else(|e| e.into_inner()) = None;
         e
     })?;
     deploy_bridge(&distro)?;
@@ -1943,16 +2124,35 @@ fn open_wsl_serial(
     let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
     let stdin = child.stdin.take().ok_or("无法获取 stdin")?;
     let writer = std::sync::Mutex::new(std::io::BufWriter::new(stdin));
-    let reader = std::sync::Arc::new(std::sync::Mutex::new(std::io::BufReader::new(stdout)));
-    let session = WslSerialSession { child: std::sync::Arc::new(std::sync::Mutex::new(child)), writer, reader };
+    // 常驻 stdout 读取线程：按序推送响应行（会话关闭/进程退出后随管道 EOF 自行结束）
+    let (resp_tx, resp_rx) = crossbeam_channel::unbounded::<String>();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            if resp_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let session = WslSerialSession {
+        child: std::sync::Arc::new(std::sync::Mutex::new(child)),
+        writer,
+        responses: resp_rx,
+        dead: std::sync::atomic::AtomicBool::new(false),
+    };
     let resp = bridge_command(&session, &json!({"cmd":"open","id":&monitor_id,"path":&device_path,"baud":baud_rate}))?;
     if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-        state.sessions.lock().unwrap().insert(monitor_id, session);
+        state.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(monitor_id, session);
         Ok(())
     } else {
         let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("打开失败").to_string();
         report_error(&format!("WSL串口打开失败: {}", err), "open_wsl_serial");
-        { let mut c = session.child.lock().unwrap(); let _ = c.kill(); let _ = c.wait(); }
+        kill_wsl_session(&session);
         Err(err)
     }
 }
@@ -1960,10 +2160,10 @@ fn open_wsl_serial(
 /// 关闭 WSL 串口连接
 #[tauri::command]
 fn close_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().unwrap();
+    let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(session) = sessions.remove(&monitor_id) {
         { use std::io::Write; if let Ok(mut w) = session.writer.lock() { let _ = w.write_all(b"{\"cmd\":\"close\"}\n"); let _ = w.flush(); } }
-        { let mut c = session.child.lock().unwrap(); let _ = c.kill(); let _ = c.wait(); }
+        kill_wsl_session(&session);
     }
     Ok(())
 }
@@ -1971,7 +2171,7 @@ fn close_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String)
 /// 读取 WSL 串口数据
 #[tauri::command]
 fn read_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String) -> Result<Vec<u8>, String> {
-    let sessions = state.sessions.lock().unwrap();
+    let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let session = sessions.get(&monitor_id).ok_or("未连接 WSL 串口")?;
     let resp = bridge_command(session, &json!({"cmd":"read","id":&monitor_id,"max":4096}))?;
     if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -1987,7 +2187,7 @@ fn read_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String) 
 /// 向 WSL 串口发送数据
 #[tauri::command]
 fn send_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String, data: Vec<u8>) -> Result<usize, String> {
-    let sessions = state.sessions.lock().unwrap();
+    let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let session = sessions.get(&monitor_id).ok_or("未连接 WSL 串口")?;
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
@@ -2001,7 +2201,7 @@ fn send_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String, 
 
 /// 设置 WSL 串口信号
 fn set_wsl_signal_cmd(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool, signal: &str) -> Result<(), String> {
-    let sessions = state.sessions.lock().unwrap();
+    let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let session = sessions.get(&monitor_id).ok_or("未连接 WSL 串口")?;
     let resp = bridge_command(session, &json!({"cmd":signal.to_lowercase(),"id":&monitor_id,"level":level}))?;
     if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) { Ok(()) } else { Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("设置信号失败").to_string()) }
@@ -2071,12 +2271,10 @@ async fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
 }
 
 fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
-    // 0. 检查是否有正在运行的 WSL 发行版
-    let wsl_check = hidden_command("wsl")
-        .args(["--list", "--running"])
-        .output();
+    // 0. 检查是否有正在运行的 WSL 发行版（带超时）
+    let wsl_check = run_output_timeout(hidden_command("wsl").args(["--list", "--running"]), 5000);
     match wsl_check {
-        Ok(out) => {
+        Some(out) => {
             let text = decode_wsl_output(&out.stdout);
             let has_running = text.lines()
                 .any(|line| {
@@ -2088,9 +2286,9 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
                 return Err("WSL 未运行，请先打开一个 WSL 终端窗口再进行映射".to_string());
             }
         }
-        Err(e) => {
-            report_error(&format!("检测 WSL 状态失败: {}", e), "attach_port_to_wsl");
-            return Err(format!("检测 WSL 状态失败: {}，请确认 WSL 已安装", e));
+        None => {
+            report_error("检测 WSL 状态超时", "attach_port_to_wsl");
+            return Err("检测 WSL 状态超时，请确认 WSL 已安装且未卡死".to_string());
         }
     }
 
@@ -2200,8 +2398,13 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let unique_id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp_result = std::env::temp_dir().join(format!("usbipd_result_{}_{}.txt", std::process::id(), unique_id));
-    let tmp_result_str = tmp_result.to_str().unwrap_or("C:\\Temp\\usbipd_result.txt").replace('\'', "''");
+    let tmp_result = std::env::temp_dir().join(format!(
+        "usbipd_result_{}_{}_{}.txt",
+        std::process::id(),
+        unique_id,
+        temp_rand_suffix()
+    ));
+    let tmp_result_str = tmp_result.to_str().unwrap_or("C:\\Temp\\usbipd_result.txt");
 
     let ps_script = if already_bound {
         // 已绑定但直接attach失败，用管理员权限attach
@@ -2248,25 +2451,18 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
         )
     };
 
-    // 6. 通过临时 .ps1 文件 + Start-Process -Verb RunAs 触发 UAC 提权
-    let tmp_script = std::env::temp_dir().join(format!("usbipd_script_{}_{}.ps1", std::process::id(), unique_id));
+    // 6. 通过 -EncodedCommand 传脚本内容触发 UAC 提权（不写可预测临时 .ps1，消除 TOCTOU）
     let _ = std::fs::remove_file(&tmp_result);
-    let _ = std::fs::write(&tmp_script, &ps_script);
+    let encoded = encode_ps_command(&ps_script);
 
-    let script_path_str = tmp_script.to_str().unwrap_or("");
-
-    dbg_log(&format!("PowerShell script file: {:?}", tmp_script));
+    dbg_log(&format!("PowerShell elevated attach: busid={}", busid));
 
     let status = hidden_command("powershell")
         .args(["-NonInteractive", "-Command"])
-        .arg({
-            let sp = script_path_str.replace('\'', "''");
-            format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-File','{}' -Verb RunAs -Wait", sp)
-        })
+        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs -Wait", encoded))
         .status()
         .map_err(|e| format!("提权启动失败: {}", e))?;
 
-    let _ = std::fs::remove_file(&tmp_script);
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // 7. 读取提权进程写入的结果文件
@@ -2337,8 +2533,13 @@ fn run_usbipd_detach_elevated(busid: &str) -> Option<String> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static DETACH_COUNTER: AtomicU64 = AtomicU64::new(0);
     let unique_id = DETACH_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp_result = std::env::temp_dir().join(format!("usbipd_detach_{}_{}.txt", std::process::id(), unique_id));
-    let tmp_result_str = tmp_result.to_str().unwrap_or("C:\\Temp\\usbipd_detach.txt").replace('\'', "''");
+    let tmp_result = std::env::temp_dir().join(format!(
+        "usbipd_detach_{}_{}_{}.txt",
+        std::process::id(),
+        unique_id,
+        temp_rand_suffix()
+    ));
+    let tmp_result_str = tmp_result.to_str().unwrap_or("C:\\Temp\\usbipd_detach.txt");
 
     let ps_script = format!(
         "try {{ \
@@ -2351,17 +2552,13 @@ fn run_usbipd_detach_elevated(busid: &str) -> Option<String> {
         result = tmp_result_str
     );
 
-    let tmp_script = std::env::temp_dir().join(format!("usbipd_detach_script_{}_{}.ps1", std::process::id(), unique_id));
+    // 通过 -EncodedCommand 传脚本内容，避免写可预测的临时 .ps1（TOCTOU）
     let _ = std::fs::remove_file(&tmp_result);
-    let _ = std::fs::write(&tmp_script, &ps_script);
-
-    let script_path_str = tmp_script.to_str().unwrap_or("");
-    let sp = script_path_str.replace('\'', "''");
+    let encoded = encode_ps_command(&ps_script);
     let _ = hidden_command("powershell")
         .args(["-NonInteractive", "-Command"])
-        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-File','{}' -Verb RunAs -Wait", sp))
+        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs -Wait", encoded))
         .status();
-    let _ = std::fs::remove_file(&tmp_script);
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     let result = std::fs::read_to_string(&tmp_result).ok();
@@ -2461,6 +2658,11 @@ struct GitHubRelease {
 struct GitHubAsset {
     name: String,
     browser_download_url: String,
+    /// GitHub API 提供的 SHA-256 digest（格式 "sha256:<base64>"，可能缺失）
+    #[serde(default)]
+    digest: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
 }
 
 /// 返回给前端的更新信息
@@ -2470,6 +2672,113 @@ struct UpdateInfo {
     latest_version: String,
     current_version: String,
     download_url: String,
+    /// 安装包 SHA-256（hex 小写），用于下载后校验；GitHub 未提供 digest 时为 null
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+    /// 安装包字节数（GitHub 提供时用于校验；digest 缺失时的兜底）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+}
+
+/// 纯 Rust SHA-256（用于更新包校验，避免引入额外依赖）
+fn sha256_hex(data: &[u8]) -> String {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ];
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+    ];
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+    for chunk in msg.chunks(64) {
+        let mut w = [0u32; 64];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
+            (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let t1 = hh
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(t1);
+            d = c;
+            c = b;
+            b = a;
+            a = t1.wrapping_add(t2);
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+        h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g);
+        h[7] = h[7].wrapping_add(hh);
+    }
+    h.iter().map(|v| format!("{:08x}", v)).collect()
+}
+
+/// 将 GitHub digest（"sha256:<base64>"）转换为 hex 小写；解析失败返回 None
+fn digest_to_hex(digest: &str) -> Option<String> {
+    let b64 = digest.strip_prefix("sha256:").unwrap_or(digest);
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    if bytes.len() != 32 {
+        return None;
+    }
+    Some(bytes.iter().map(|b| format!("{:02x}", b)).collect())
+}
+
+#[cfg(test)]
+mod sha256_tests {
+    #[test]
+    fn known_vectors() {
+        assert_eq!(
+            super::sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            super::sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }
 
 /// 解析版本号字符串，返回 (major, minor, patch) 元组
@@ -2562,20 +2871,24 @@ async fn check_update() -> Result<UpdateInfo, String> {
     let has_update = is_newer_version(&current, &release.tag_name);
 
     // 查找 Windows 安装包（优先 NSIS .exe，其次 .msi）
-    let download_url = if has_update {
+    let (download_url, sha256, size) = if has_update {
         let asset = release
             .assets
             .iter()
             .find(|a| a.name.to_lowercase().contains("-setup") && a.name.ends_with(".exe"))
             .or_else(|| release.assets.iter().find(|a| a.name.ends_with(".exe")))
             .or_else(|| release.assets.iter().find(|a| a.name.ends_with(".msi")));
-        
+
         match asset {
-            Some(a) => a.browser_download_url.clone(),
-            None => String::new(),
+            Some(a) => (
+                a.browser_download_url.clone(),
+                a.digest.as_deref().and_then(digest_to_hex),
+                a.size,
+            ),
+            None => (String::new(), None, None),
         }
     } else {
-        String::new()
+        (String::new(), None, None)
     };
 
     Ok(UpdateInfo {
@@ -2583,12 +2896,16 @@ async fn check_update() -> Result<UpdateInfo, String> {
         latest_version: release.tag_name,
         current_version: current,
         download_url,
+        sha256,
+        size,
     })
 }
 
 /// 下载更新安装包到临时目录
+/// 提供 sha256（hex 小写）时下载完成后做哈希校验，未提供时用 size 做兜底长度校验；
+/// 校验不匹配则删除并报错，杜绝执行被篡改的安装包
 #[tauri::command]
-async fn download_update(download_url: String) -> Result<String, String> {
+async fn download_update(download_url: String, sha256: Option<String>, size: Option<u64>) -> Result<String, String> {
     use std::fs;
 
     let client = reqwest::Client::builder()
@@ -2613,12 +2930,21 @@ async fn download_update(download_url: String) -> Result<String, String> {
         return Err(msg);
     }
 
-    // 获取文件名
+    // 获取文件名并净化：拒绝路径分隔符 / 反斜杠 / ".." / 盘符，防止路径穿越
     let filename = download_url
         .rsplit_once('/')
         .map(|(_, name)| name)
-        .unwrap_or("update-setup.exe")
-        .to_string();
+        .unwrap_or("update-setup.exe");
+    let filename = if filename.is_empty()
+        || filename.contains('\\')
+        || filename.contains('/')
+        || filename.contains(':')
+        || filename.contains("..")
+    {
+        "update-setup.exe".to_string()
+    } else {
+        filename.to_string()
+    };
 
     // 保存到临时目录
     let temp_dir = std::env::temp_dir().join("seahi-serial-update");
@@ -2626,33 +2952,66 @@ async fn download_update(download_url: String) -> Result<String, String> {
     let file_path = temp_dir.join(&filename);
 
     let bytes = resp.bytes().await.map_err(|e| format!("读取下载内容失败: {}", e))?;
+
+    // 校验安装包完整性：优先 SHA-256（GitHub digest），缺失时兜底校验文件大小
+    if let Some(expected) = sha256 {
+        let actual = sha256_hex(&bytes);
+        if !actual.eq_ignore_ascii_case(&expected) {
+            let _ = fs::remove_file(&file_path);
+            let msg = format!("更新包校验失败（SHA-256 不匹配），已中止安装");
+            report_error(&msg, "download_update");
+            return Err(msg);
+        }
+        dbg_log(&format!("download_update: SHA-256 校验通过 {}", actual));
+    } else if let Some(expected_size) = size {
+        if bytes.len() as u64 != expected_size {
+            let _ = fs::remove_file(&file_path);
+            let msg = format!(
+                "更新包校验失败（大小 {} != 预期 {}），已中止安装",
+                bytes.len(),
+                expected_size
+            );
+            report_error(&msg, "download_update");
+            return Err(msg);
+        }
+        dbg_log(&format!("download_update: 大小校验通过 {}", bytes.len()));
+    }
+
     fs::write(&file_path, &bytes).map_err(|e| format!("写入安装包失败: {}", e))?;
 
     Ok(file_path.to_string_lossy().to_string())
 }
 
 /// 启动安装包并退出当前程序
+/// 直接以独立进程启动安装包（.msi 走 msiexec），不再经过 cmd start，避免 cmd 元字符注入
 #[tauri::command]
 fn install_update(app: tauri::AppHandle, file_path: String) -> Result<(), String> {
     #[cfg(windows)]
     {
         // Windows: 启动安装包，不等待其完成
-        hidden_command("cmd")
-            .args(["/c", "start", "", &file_path])
-            .spawn()
-            .map_err(|e| format!("启动安装程序失败: {}", e))?;
+        let lower = file_path.to_lowercase();
+        if lower.ends_with(".msi") {
+            hidden_command("msiexec")
+                .args(["/i", &file_path, "/passive", "/norestart"])
+                .spawn()
+                .map_err(|e| format!("启动安装程序失败: {}", e))?;
+        } else {
+            std::process::Command::new(&file_path)
+                .spawn()
+                .map_err(|e| format!("启动安装程序失败: {}", e))?;
+        }
     }
 
     #[cfg(not(windows))]
     {
-        Command::new(&file_path)
+        std::process::Command::new(&file_path)
             .spawn()
             .map_err(|e| format!("启动安装程序失败: {}", e))?;
     }
 
     // 通知前端保存配置（beforeunload 可能被 process::exit 跳过）
     let _ = app.emit("save-before-exit", ());
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    std::thread::sleep(std::time::Duration::from_millis(600));
     std::process::exit(0);
 }
 
@@ -2874,7 +3233,7 @@ fn main() {
                     let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
                     for (_, session) in sessions.drain() {
                         let _ = { use std::io::Write; if let Ok(mut w) = session.writer.lock() { let _ = w.write_all(b"{\"cmd\":\"close\"}\n"); let _ = w.flush(); } };
-                        let _ = { let mut c = session.child.lock().unwrap(); let _ = c.kill(); c.wait() };
+                        kill_wsl_session(&session);
                     }
                 }
 
@@ -2882,7 +3241,7 @@ fn main() {
                 {
                     let mut shell = WSL_SHELL.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(s) = shell.take() {
-                        let mut c = s._child;
+                        let mut c = s.child.lock().unwrap_or_else(|e| e.into_inner());
                         let _ = c.kill();
                         let _ = c.wait();
                     }
