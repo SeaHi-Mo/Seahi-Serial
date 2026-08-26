@@ -1041,10 +1041,13 @@ fn open_port(
     dtr: bool,
     rts: bool,
 ) -> Result<(), String> {
-    // 关闭该监视器已有的连接
-    {
+    // 关闭该监视器已有的连接（用 close_reader 避免旧读线程卡住阻塞重连）
+    let old_reader = {
         let mut map = state.readers.write().unwrap_or_else(|e| e.into_inner());
-        map.remove(&monitor_id);
+        map.remove(&monitor_id)
+    };
+    if let Some(old) = old_reader {
+        close_reader(old);
     }
 
     let mut port: Box<dyn SerialPort> = serialport::open(&port_name)
@@ -1089,14 +1092,44 @@ fn open_port(
     Ok(())
 }
 
+/// 停止读线程并尝试快速释放串口（#15/#16/#18）
+/// 之前 close_port 先 `port.lock()` 再 drop，若读线程正阻塞在 read 上
+/// （部分 USB 转串口驱动不按超时返回），会永久卡住命令线程 → 端口不释放/发送无响应。
+/// 这里改为：先置 stop → try_lock 快速清理 → 等待读线程退出（带 200ms 上限），
+/// 超时则放弃等待，读线程作为后台线程自行退出。
+fn close_reader(mut reader: PortReader) {
+    use std::time::{Duration, Instant};
+    reader.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    // 尝试快速清理（拿不到锁说明读线程正忙，跳过即可）
+    if let Ok(mut port) = reader.port.try_lock() {
+        let _ = port.flush();
+        let _ = port.clear(ClearBuffer::All);
+    }
+    // 等待读线程退出，最多 200ms；超时不再阻塞（读线程最终自行退出并释放句柄）
+    if let Some(h) = reader.read_handle.take() {
+        let deadline = Instant::now() + Duration::from_millis(200);
+        while !h.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if h.is_finished() {
+            let _ = h.join();
+        } else {
+            std::mem::forget(h);
+        }
+    }
+    // 其余工作线程（工作流/动作）消费 channel，读线程退出后自然结束
+    drop(reader);
+}
+
 /// 关闭串口（停止读取线程）
 #[tauri::command]
 fn close_port(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<(), String> {
-    let mut map = state.readers.write().unwrap_or_else(|e| e.into_inner());
-    if let Some(reader) = map.remove(&monitor_id) {
-        let mut port = reader.port.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = port.flush();
-        let _ = port.clear(ClearBuffer::All);
+    let reader = {
+        let mut map = state.readers.write().unwrap_or_else(|e| e.into_inner());
+        map.remove(&monitor_id)
+    };
+    if let Some(reader) = reader {
+        close_reader(reader);
     }
     Ok(())
 }
@@ -1393,11 +1426,17 @@ fn run_usbipd_list_elevated() -> Option<String> {
     // 通过 -EncodedCommand 传脚本内容，避免写可预测的临时 .ps1 被同用户进程替换（TOCTOU）
     let _ = std::fs::remove_file(&tmp_result);
     let encoded = encode_ps_command(&ps_script);
+    // 不再使用 -Wait：UAC 弹窗未被确认时 -Wait 会永久挂起，导致界面卡死
     let _ = hidden_command("powershell")
         .args(["-NonInteractive", "-Command"])
-        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs -Wait", encoded))
+        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs", encoded))
         .status();
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // 轮询结果文件直到超时（10 秒），UAC 未确认也不会永久阻塞
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !tmp_result.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200)); // 等待文件写入完成
 
     let result = std::fs::read_to_string(&tmp_result).ok();
     let _ = std::fs::remove_file(&tmp_result);
@@ -2264,13 +2303,22 @@ fn set_wsl_rts(state: tauri::State<'_, WslSerialState>, monitor_id: String, leve
 ///   2. 检查绑定状态，已绑定则直接 attach（无需管理员权限）
 ///   3. 未绑定则通过 PowerShell 提权执行 bind + attach
 #[tauri::command]
-async fn attach_port_to_wsl(port_name: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || attach_port_to_wsl_blocking(port_name))
+async fn attach_port_to_wsl(port_name: String, distro: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || attach_port_to_wsl_blocking(port_name, distro))
         .await
         .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
-fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
+fn attach_port_to_wsl_blocking(port_name: String, distro: Option<String>) -> Result<String, String> {
+    // 目标 WSL 发行版：多发行版时 usbipd 默认附加到默认发行版，需显式指定（#19）
+    let distro_args: Vec<String> = match distro.as_deref().map(str::trim) {
+        Some(d) if !d.is_empty() => vec!["--distribution".to_string(), d.to_string()],
+        _ => vec![],
+    };
+    let distro_ps: String = match distro.as_deref().map(str::trim) {
+        Some(d) if !d.is_empty() => format!("--distribution '{}'", d.replace('\'', "''")),
+        _ => String::new(),
+    };
     // 0. 检查是否有正在运行的 WSL 发行版（带超时）
     let wsl_check = run_output_timeout(hidden_command("wsl").args(["--list", "--running"]), 5000);
     match wsl_check {
@@ -2373,6 +2421,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
         dbg_log(&format!("Device {} already bound, trying direct attach", busid));
         let output = hidden_command("usbipd")
             .args(["attach", "--wsl", "--busid", &busid])
+            .args(&distro_args)
             .output();
 
         match output {
@@ -2411,7 +2460,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
         dbg_log(&format!("Using admin to attach {}", busid));
         format!(
             "try {{ \
-               $out = & usbipd.exe attach --wsl --busid {busid} 2>&1 | Out-String; \
+               $out = & usbipd.exe attach --wsl --busid {busid} {distro} 2>&1 | Out-String; \
                $out | Out-File -FilePath '{result}' -Encoding UTF8; \
                if ($LASTEXITCODE -ne 0) {{ exit 1 }}; \
                '操作成功' | Out-File -FilePath '{result}' -Encoding UTF8 -Append \
@@ -2420,6 +2469,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
                exit 1 \
              }}",
             busid = busid,
+            distro = distro_ps,
             result = tmp_result_str
         )
     } else {
@@ -2435,7 +2485,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
                  exit 1 \
                }}; \
                'bind成功，开始附加到WSL...' | Out-File -FilePath '{result}' -Encoding UTF8 -Append; \
-               $attachOut = & usbipd.exe attach --wsl --busid {busid} 2>&1 | Out-String; \
+               $attachOut = & usbipd.exe attach --wsl --busid {busid} {distro} 2>&1 | Out-String; \
                'attach输出: ' + $attachOut | Out-File -FilePath '{result}' -Encoding UTF8 -Append; \
                if ($LASTEXITCODE -ne 0) {{ \
                  'attach失败，退出码: ' + $LASTEXITCODE | Out-File -FilePath '{result}' -Encoding UTF8 -Append; \
@@ -2447,6 +2497,7 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
                exit 1 \
              }}",
             busid = busid,
+            distro = distro_ps,
             result = tmp_result_str
         )
     };
@@ -2457,13 +2508,20 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
 
     dbg_log(&format!("PowerShell elevated attach: busid={}", busid));
 
-    let status = hidden_command("powershell")
+    // 不再使用 -Wait：UAC 弹窗未被确认时 -Wait 会永久挂起，导致界面卡死
+    let _ = hidden_command("powershell")
         .args(["-NonInteractive", "-Command"])
-        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs -Wait", encoded))
+        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs", encoded))
         .status()
         .map_err(|e| format!("提权启动失败: {}", e))?;
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // 轮询结果文件直到超时（15 秒），用户不确认 UAC 也不会永久阻塞
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !tmp_result.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200)); // 等待文件写入完成
+    let result_exists = tmp_result.exists();
 
     // 7. 读取提权进程写入的结果文件
     dbg_log(&format!("Reading result file: {:?}", tmp_result));
@@ -2480,18 +2538,15 @@ fn attach_port_to_wsl_blocking(port_name: String) -> Result<String, String> {
     // 检查是否成功 - 通过结果内容判断
     if result_content.contains("操作成功") {
         Ok(format!("已将 {} (busid: {}) 绑定并映射到 WSL", port_name, busid))
-    } else if status.success() && result_content.is_empty() {
-        // 已绑定时 attach 成功不会写入 "操作成功"，但命令输出为空且 exit 0 表示成功
+    } else if result_exists && result_content.is_empty() {
+        // 已绑定时 attach 成功不会写入 "操作成功"，但结果文件存在且无输出表示成功
         Ok(format!("已将 {} (busid: {}) 绑定并映射到 WSL", port_name, busid))
     } else if result_content.contains("绑定失败") || result_content.contains("附加失败") {
         report_error(&format!("WSL映射失败: {}", result_content), "wsl_attach");
         Err(format!("映射失败: {}", result_content))
-    } else if !status.success() {
-        report_error("WSL映射操作失败或用户取消管理员权限", "wsl_attach");
-        Err("操作失败或用户取消了管理员权限请求".to_string())
     } else {
-        report_error("WSL映射操作未完成，可能用户取消了UAC", "wsl_attach");
-        Err("操作未完成，可能用户取消了管理员权限请求".to_string())
+        report_error("WSL映射操作未完成，可能用户取消了UAC或超时", "wsl_attach");
+        Err("操作未完成，可能用户取消了管理员权限请求或超时".to_string())
     }
 }
 
@@ -2555,11 +2610,17 @@ fn run_usbipd_detach_elevated(busid: &str) -> Option<String> {
     // 通过 -EncodedCommand 传脚本内容，避免写可预测的临时 .ps1（TOCTOU）
     let _ = std::fs::remove_file(&tmp_result);
     let encoded = encode_ps_command(&ps_script);
+    // 不再使用 -Wait：UAC 弹窗未被确认时 -Wait 会永久挂起，导致界面卡死
     let _ = hidden_command("powershell")
         .args(["-NonInteractive", "-Command"])
-        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs -Wait", encoded))
+        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs", encoded))
         .status();
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // 轮询结果文件直到超时（10 秒），UAC 未确认也不会永久阻塞
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !tmp_result.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200)); // 等待文件写入完成
 
     let result = std::fs::read_to_string(&tmp_result).ok();
     let _ = std::fs::remove_file(&tmp_result);

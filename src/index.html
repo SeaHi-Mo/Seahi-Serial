@@ -2904,21 +2904,26 @@ function startReading(mid) {
         try {
             var data = await invoke('read_data', { monitorId: mid });
             if (data && data.length > 0) {
-                var frag = document.createDocumentFragment();
-                var vm = document.getElementById(mid + '-viewMode');
-                var isHex = vm && vm.getAttribute('data-val') === 'hex';
-                if (isHex) {
-                    var hexStr = bytesToHex(new Uint8Array(data));
-                    var chunkSize = 192;
-                    for (var i = 0; i < hexStr.length; i += chunkSize) {
-                        var chunk = hexStr.substring(i, i + chunkSize);
-                        appendOutput(mid, 'recv', (i === 0 ? 'HEX: ' : '     ') + chunk, { hex: true, fragment: frag });
+                // 渲染异常只记录日志，避免误触发断开/重连逻辑导致界面异常（#13）
+                try {
+                    var frag = document.createDocumentFragment();
+                    var vm = document.getElementById(mid + '-viewMode');
+                    var isHex = vm && vm.getAttribute('data-val') === 'hex';
+                    if (isHex) {
+                        var hexStr = bytesToHex(new Uint8Array(data));
+                        var chunkSize = 192;
+                        for (var i = 0; i < hexStr.length; i += chunkSize) {
+                            var chunk = hexStr.substring(i, i + chunkSize);
+                            appendOutput(mid, 'recv', (i === 0 ? 'HEX: ' : '     ') + chunk, { hex: true, fragment: frag });
+                        }
+                    } else {
+                        // 文本模式：合并未结束行，只有真正的 \r\n 才换行
+                        appendRecvText(mid, decodeRecv(mid, data), frag);
                     }
-                } else {
-                    // 文本模式：合并未结束行，只有真正的 \r\n 才换行
-                    appendRecvText(mid, decodeRecv(mid, data), frag);
+                    flushBatch(mid, frag);
+                } catch (e) {
+                    console.warn('[recv] 数据显示异常:', e);
                 }
-                flushBatch(mid, frag);
             }
             // 读取工作流触发事件
             var wfEvents = await invoke('read_workflow_events', { monitorId: mid });
@@ -3056,28 +3061,44 @@ function addWslMonitor() {
 
 // 关闭 WSL 额外串口监视器
 function closeWslMonitor(wmid) {
-    if (monitors[wmid] && monitors[wmid].isConnected) {
-        invoke('close_wsl_serial', { monitorId: wmid }).catch(function() {});
-    }
     stopReading(wmid);
-    delete monitors[wmid];
-    var pane = document.getElementById('pane-' + wmid);
-    if (pane) pane.remove();
-    renderWslDeviceList('main'); // 及时刷新 WSL 设备状态点
-    scheduleConfigSave();
+    var wasConnected = !!(monitors[wmid] && monitors[wmid].isConnected);
+    var cleanup = function() {
+        delete monitors[wmid];
+        var pane = document.getElementById('pane-' + wmid);
+        if (pane) pane.remove();
+        renderWslDeviceList('main'); // 及时刷新 WSL 设备状态点
+        scheduleConfigSave();
+    };
+    if (wasConnected) {
+        // 等待连接释放完成（最多 3 秒），避免端口未释放（#15/#16）
+        invokeTimeout('close_wsl_serial', { monitorId: wmid }, 3000)
+            .catch(function() {})
+            .finally(cleanup);
+    } else {
+        cleanup();
+    }
 }
 
 function closeMonitor(mid) {
     stopReading(mid);
-    if (monitors[mid] && monitors[mid].isConnected) {
-        invoke('close_port', { monitorId: mid }).catch(function() {});
+    var wasConnected = !!(monitors[mid] && monitors[mid].isConnected);
+    var cleanup = function() {
+        delete monitors[mid];
+        delete _terminalBuffers[mid];
+        var pane = document.getElementById('pane-' + mid);
+        if (pane) pane.remove();
+        renderWslDeviceList('main'); // 及时刷新 WSL 设备状态点
+        scheduleConfigSave();
+    };
+    if (wasConnected) {
+        // 等待端口释放完成（最多 3 秒），避免直接删除监视器导致端口句柄未释放（#15/#16）
+        invokeTimeout('close_port', { monitorId: mid }, 3000)
+            .catch(function() {})
+            .finally(cleanup);
+    } else {
+        cleanup();
     }
-    delete monitors[mid];
-    delete _terminalBuffers[mid];
-    var pane = document.getElementById('pane-' + mid);
-    if (pane) pane.remove();
-    renderWslDeviceList('main'); // 及时刷新 WSL 设备状态点
-    scheduleConfigSave();
 }
 
 /* ===== 发送数据 ===== */
@@ -3098,7 +3119,7 @@ async function sendData(mid) {
         if (echoBtn && echoBtn.classList.contains('on')) {
             appendOutput(mid, 'send', hexMode ? 'HEX: ' + bytesToHex(bytes) : decodeRaw(bytes));
         }
-        await invoke('send_data', { monitorId: mid, data: Array.from(bytes) });
+        await invokeTimeout('send_data', { monitorId: mid, data: Array.from(bytes) }, 5000);
         // 保存到发送历史（去重：不存连续重复）
         var hist = monitors[mid].sendHistory;
         if (hist.length === 0 || hist[0] !== text) {
@@ -3775,7 +3796,9 @@ async function sendQcmdItem(mid, idx) {
     if (!monitors[mid] || !monitors[mid].isConnected) return;
     var item = document.getElementById(mid + '-qcmdi-' + idx);
     var valInp = item ? item.querySelector('.qcmd-item-val') : null;
-    var text = valInp ? valInp.value : monitors[mid].quickCmds[idx].value;
+    var text = '';
+    if (valInp) { text = valInp.value; }
+    else if (monitors[mid].quickCmds && monitors[mid].quickCmds[idx]) { text = monitors[mid].quickCmds[idx].value; }
     if (!text) return;
     var hexMode = document.getElementById(mid + '-sendAsText').textContent === 'HEX';
     var bytes;
@@ -3790,8 +3813,8 @@ async function sendQcmdItem(mid, idx) {
             appendOutput(mid, 'send', hexMode ? 'HEX: ' + bytesToHex(bytes) : decodeRaw(bytes));
         }
         var isWsl = monitors[mid].isWsl;
-        if (isWsl) { await invoke('send_wsl_serial', { monitorId: mid, data: Array.from(bytes) }); }
-        else { await invoke('send_data', { monitorId: mid, data: Array.from(bytes) }); }
+        if (isWsl) { await invokeTimeout('send_wsl_serial', { monitorId: mid, data: Array.from(bytes) }, 5000); }
+        else { await invokeTimeout('send_data', { monitorId: mid, data: Array.from(bytes) }, 5000); }
         monitors[mid].histNavIdx = -1;
         scheduleConfigSave();
     } catch (e) { appendOutput(mid, 'err', '发送失败: ' + e); }
@@ -4680,11 +4703,20 @@ async function loadAndApplyConfig() {
 
 /* ===== WSL 映射页面 ===== */
 var _wslExtraCount = 0;
+var _wslTargetDist = ''; // “映射到”目标发行版（空 = 默认发行版）
+
+function setWslTargetDist(name) {
+    _wslTargetDist = name || '';
+}
 
 // WSL 设备区域 HTML（共享，单实例）
 function getWslDeviceAreaHtml() {
     return '<div id="wsl-paneHeader" style="background:var(--toolbar-bg);border-bottom:1px solid var(--border);padding:8px 16px;display:flex;align-items:center;gap:20px;flex-shrink:0;">' +
             '<div style="font-size:13px;font-weight:600;color:var(--text-b);white-space:nowrap;flex-shrink:0;">WSL 端口映射</div>' +
+            '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0;" title="多发行版时选择设备映射到的目标发行版">' +
+                '<span style="font-size:12px;color:var(--text-d);white-space:nowrap;">映射到</span>' +
+                '<select id="main-wslTargetDist" onchange="setWslTargetDist(this.value)" style="background:var(--surface-1);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px;padding:3px 6px;max-width:160px;outline:none;"><option value="">默认</option></select>' +
+            '</div>' +
             '<div id="main-wslDistroList" style="display:flex;flex-wrap:wrap;gap:6px;flex:1;min-width:0;justify-content:flex-end;"></div>' +
         '</div>' +
         '<div style="flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0;" id="main-wslTop">' +
@@ -4910,7 +4942,7 @@ function openWslMapping() {
 
     // 检查 WSL 运行状态
     function loadWslDistros() {
-        invoke('get_wsl_distributions').then(function(distros) {
+        invokeTimeout('get_wsl_distributions', null, 6000).then(function(distros) {
             renderWslDistroCards('main', distros);
         }).catch(function() {
             var container = document.getElementById('main-wslDistroList');
@@ -5153,7 +5185,7 @@ async function sendWslData(mid) {
         if (echoBtn && echoBtn.classList.contains('on')) {
             appendOutput(mid, 'send', hexMode ? 'HEX: ' + bytesToHex(bytes) : decodeRaw(bytes));
         }
-        await invoke('send_wsl_serial', { monitorId: mid, data: Array.from(bytes) });
+        await invokeTimeout('send_wsl_serial', { monitorId: mid, data: Array.from(bytes) }, 5000);
         var hist = monitors[mid].sendHistory;
         if (hist.length === 0 || hist[0] !== text) {
             hist.unshift(text);
@@ -5197,22 +5229,27 @@ function startWslReading(mid) {
         try {
             var data = await invoke('read_wsl_serial', { monitorId: mid });
             if (data && data.length > 0) {
-                checkWorkflowMatches(mid, data);
-                var frag = document.createDocumentFragment();
-                var vm = document.getElementById(mid + '-viewMode');
-                var isHex = vm && vm.getAttribute('data-val') === 'hex';
-                if (isHex) {
-                    var hexStr = bytesToHex(new Uint8Array(data));
-                    var chunkSize = 192;
-                    for (var i = 0; i < hexStr.length; i += chunkSize) {
-                        var chunk = hexStr.substring(i, i + chunkSize);
-                        appendOutput(mid, 'recv', (i === 0 ? 'HEX: ' : '     ') + chunk, { hex: true, fragment: frag });
+                // 渲染异常只记录日志，避免误触发断开/重连逻辑导致界面异常（#13）
+                try {
+                    checkWorkflowMatches(mid, data);
+                    var frag = document.createDocumentFragment();
+                    var vm = document.getElementById(mid + '-viewMode');
+                    var isHex = vm && vm.getAttribute('data-val') === 'hex';
+                    if (isHex) {
+                        var hexStr = bytesToHex(new Uint8Array(data));
+                        var chunkSize = 192;
+                        for (var i = 0; i < hexStr.length; i += chunkSize) {
+                            var chunk = hexStr.substring(i, i + chunkSize);
+                            appendOutput(mid, 'recv', (i === 0 ? 'HEX: ' : '     ') + chunk, { hex: true, fragment: frag });
+                        }
+                    } else {
+                        // 文本模式：合并未结束行，只有真正的 \r\n 才换行
+                        appendRecvText(mid, decodeRecv(mid, data), frag);
                     }
-                } else {
-                    // 文本模式：合并未结束行，只有真正的 \r\n 才换行
-                    appendRecvText(mid, decodeRecv(mid, data), frag);
+                    flushBatch(mid, frag);
+                } catch (e) {
+                    console.warn('[recv] 数据显示异常:', e);
                 }
-                flushBatch(mid, frag);
             }
         } catch (e) {
             // 手动断开或正在重连时不触发自动重连
@@ -5440,7 +5477,29 @@ function renderWslDistroCards(mid, distros) {
     if (!distros || distros.length === 0) {
         container.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">未检测到 WSL 分发版</div>';
         stopWslUptimeTicker();
+        // 清空“映射到”下拉（无可用发行版）
+        var tsel = document.getElementById('main-wslTargetDist');
+        if (tsel) { tsel.innerHTML = '<option value="">默认</option>'; }
+        _wslTargetDist = '';
         return;
+    }
+    // 填充“映射到”目标发行版下拉（多发行版时选择映射目标）
+    var tsel = document.getElementById('main-wslTargetDist');
+    if (tsel) {
+        var current = tsel.value || _wslTargetDist;
+        tsel.innerHTML = '<option value="">默认</option>';
+        distros.forEach(function(d) {
+            var opt = document.createElement('option');
+            opt.value = d.name;
+            opt.textContent = d.name + (d.isDefault ? '（默认）' : '');
+            tsel.appendChild(opt);
+        });
+        if (current && distros.some(function(d) { return d.name === current; })) {
+            tsel.value = current;
+            _wslTargetDist = current;
+        } else {
+            _wslTargetDist = '';
+        }
     }
     var termIcon = '<svg width="27" height="27" viewBox="0 0 1024 1024" fill="currentColor"><path d="M499.712 481.792l-128-128c-16.896-16.384-44.032-15.872-60.416 1.024-15.872 16.384-15.872 42.496 0 59.392L409.088 512l-97.792 97.792c-16.896 16.384-17.408 43.52-1.024 60.416s43.52 17.408 60.416 1.024l1.024-1.024 128-128c16.384-16.896 16.384-43.52 0-60.416zM682.496 597.504h-128c-23.552 0-42.496 18.944-42.496 42.496 0 23.552 18.944 42.496 42.496 42.496h128c23.552 0 42.496-18.944 42.496-42.496s-18.944-42.496-42.496-42.496z"/><path d="M810.496 128H213.504c-70.656 0-128 57.344-128 128v512c0 70.656 57.344 128 128 128h597.504c70.656 0 128-57.344 128-128V256c-0.512-70.656-57.856-128-128.512-128z m0 682.496H213.504c-23.552 0-42.496-18.944-42.496-42.496V256c0-23.552 18.944-42.496 42.496-42.496h597.504c23.552 0 42.496 18.944 42.496 42.496v512c0 23.552-19.456 42.496-43.008 42.496z"/></svg>';
     var html = '';
@@ -5621,7 +5680,7 @@ function wslDistAction(cmd, dist) {
                 var mid = el.id.replace('-wslDistroList', '');
                 var fn = el.closest('.monitor-pane');
                 if (fn) {
-                    invoke('get_wsl_distributions').then(function(distros) {
+                    invokeTimeout('get_wsl_distributions', null, 6000).then(function(distros) {
                         renderWslDistroCards(mid, distros);
                     });
                     invoke('check_wsl_status').then(function(dists) {
@@ -5689,6 +5748,17 @@ function sortWslDevices() {
     });
 }
 
+// 带超时的 invoke：后端命令挂起（如 UAC 弹窗未确认）时前端不会永久等待
+function invokeTimeout(cmd, args, ms) {
+    ms = ms || 8000;
+    return Promise.race([
+        invoke(cmd, args),
+        new Promise(function(_, reject) {
+            setTimeout(function() { reject(new Error(cmd + ' 执行超时')); }, ms);
+        })
+    ]);
+}
+
 async function loadWslDevices(mid) {
     console.log('[WSL] 加载设备列表');
     var container = document.getElementById(mid + '-wslDeviceList');
@@ -5698,7 +5768,7 @@ async function loadWslDevices(mid) {
     }
     
     try {
-        var devices = await invoke('list_wsl_devices');
+        var devices = await invokeTimeout('list_wsl_devices', null, 8000);
         
         // 保留正在操作中的设备（防止取消映射后设备消失）
         var newBusids = {};
@@ -5861,7 +5931,7 @@ async function toggleWslMapping(mid, idx, checked) {
     
     if (checked) {
         try {
-            await invoke('attach_port_to_wsl', { portName: attachId });
+            await invoke('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null });
             device.status = 'mapped';
         } catch (e) {
             console.error('[WSL] 映射失败:', e);
@@ -5959,7 +6029,7 @@ function updateAutoMapPolling() {
 async function autoMapCheck() {
     if (Object.keys(_wslAutoMap).length === 0) return;
     try {
-        var devices = await invoke('list_wsl_devices');
+        var devices = await invokeTimeout('list_wsl_devices', null, 8000);
         // 收集需要映射的设备，并发执行
         var tasks = [];
         for (var i = 0; i < devices.length; i++) {
@@ -5970,7 +6040,7 @@ async function autoMapCheck() {
                 var autoAttachId = d.hasCom ? d.port : d.busid;
                 (function(device, attachId) {
                     tasks.push(
-                        invoke('attach_port_to_wsl', { portName: attachId })
+                        invoke('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null })
                             .then(function(result) {
                                 device.status = 'mapped';
                                 delete _wslAutoFailCount[device.vidpid];
