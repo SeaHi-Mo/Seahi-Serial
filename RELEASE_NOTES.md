@@ -1,3 +1,35 @@
+## v0.3.0
+
+### 🔒 安全加固
+
+- **修复存储型 XSS** — 发送回显未转义直接注入 HTML，现改为 textContent，堵住远程代码执行链前端入口
+- **`open_url` 命令注入** — 去掉 `cmd /C start`，改用 rundll32 + 协议白名单校验
+- **更新链路收紧** — 下载 URL/SHA-256 改为后端缓存校验、安装路径限制在受控目录，杜绝任意文件下载/执行
+- **日志保存限制** — `save_log` 仅允许写入最近一次选择的目录
+- **错误收集服务** — 修复 `corsHeaders` 未定义、`error_hash` 缺少 UNIQUE（去重失效）、CORS 收紧到可信来源
+
+### 🐛 修复
+
+- **关闭串口死锁** — 读线程卡死时关闭/重连/关窗不再永久阻塞（线程 join 加超时）
+- **WSL 进程泄漏** — 超时后正确终止子进程/线程，不再泄漏孤儿进程
+- **list_wsl_devices 执行超时** — 缩短各步超时、无设备时不再触发提权，前端超时兜底放长，WSL 面板正常加载设备列表
+- **纯 `\r` 换行** — AT 等嵌入式设备以 `\r` 换行时正确分行
+- **加载历史后行号错乱** — 加载历史后重排行号
+- **`addMonitor` 窗口自动加宽失效** — 修复 `size.width`→`size[0]`
+- **多处竞态** — 波特率切换闭包崩溃、取消映射与断开竞争、异步调用未捕获 rejection
+
+### ✨ 改进
+
+- 前端轮询 10ms→25ms、读线程无数据退避，降低 IPC 与 CPU 开销
+- 新增后端单元测试（parse_hex_bytes / parse_version / strip_windows_com_suffix / decode_wsl_output）
+
+### 📦 下载
+
+| 文件 | 说明 |
+|------|------|
+| `Seahi-Serial-Setup-{VERSION}.exe` | Inno Setup 安装程序（推荐） |
+| `Seahi.Serial_{VERSION}_x64_en-US.msi` | MSI 安装包 |
+
 ## v0.2.11
 
 ### 🐛 修复
