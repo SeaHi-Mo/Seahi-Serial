@@ -29,7 +29,7 @@ try {
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     app_version TEXT,
     os TEXT,
-    error_hash TEXT,
+    error_hash TEXT UNIQUE,
     error_message TEXT,
     stack_trace TEXT,
     context TEXT,
@@ -583,8 +583,14 @@ loadData();
 }
 
 // 主服务器
+const allowedOrigin = process.env.ALLOWED_ORIGIN || 'http://localhost:3000';
 const server = http.createServer((req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // 只对可信来源放行 CORS，防止任意网站跨源读取错误数据；
+  // 无 Origin 头（Tauri 应用 / 同源页面）不受影响
+  const origin = req.headers.origin || '';
+  if (origin === allowedOrigin) {
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   
@@ -599,7 +605,7 @@ const server = http.createServer((req, res) => {
     handleReport(req, res);
   } else if (req.method === 'GET' && pathname === '/api/errors') {
     handleList(req, res, query);
-  } else if (req.method === 'GET' && pathname.match(/^\\/api\\/errors\\/\\d+$/)) {
+  } else if (req.method === 'GET' && pathname.match(/^\/api\/errors\/\d+$/)) {
     const id = parseInt(pathname.split('/').pop());
     handleErrorDetail(req, res, id);
   } else if (req.method === 'GET' && pathname === '/api/filters') {

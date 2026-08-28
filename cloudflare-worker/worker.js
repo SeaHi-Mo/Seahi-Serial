@@ -63,13 +63,13 @@ export default {
       } else {
         return new Response(
           JSON.stringify({ error: 'Not found' }),
-          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          { status: 404, headers: { ...publicCors, 'Content-Type': 'application/json' } }
         );
       }
     } catch (error) {
       return new Response(
         JSON.stringify({ error: error.message }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 500, headers: { ...publicCors, 'Content-Type': 'application/json' } }
       );
     }
   }
@@ -87,39 +87,27 @@ async function handleReport(request, DB, corsHeaders) {
   
   const errorHash = await generateHash(`${error}\n${stack || ''}`);
   
-  const existing = await DB.prepare(
+  // 原子 upsert：同一 error_hash 则 count+1，否则插入，避免并发上报同一新错误的竞态
+  await DB.prepare(
+    `INSERT INTO errors (app_version, os, error_hash, error_message, stack_trace, context)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(error_hash) DO UPDATE SET count = count + 1, last_seen = datetime('now')`
+  ).bind(app_version, os, errorHash, error, stack, context).run();
+
+  const row = await DB.prepare(
     'SELECT id, count FROM errors WHERE error_hash = ?'
   ).bind(errorHash).first();
-  
-  if (existing) {
-    await DB.prepare(
-      'UPDATE errors SET count = count + 1, last_seen = datetime(\'now\') WHERE id = ?'
-    ).bind(existing.id).run();
-    
-    await DB.prepare(
-      'INSERT INTO error_details (error_id, app_version, os, error_message, stack_trace, context) VALUES (?, ?, ?, ?, ?, ?)'
-    ).bind(existing.id, app_version, os, error, stack, context).run();
-    
-    return new Response(
-      JSON.stringify({ status: 'updated', error_id: existing.id, count: existing.count + 1 }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
-  } else {
-    const result = await DB.prepare(
-      'INSERT INTO errors (app_version, os, error_hash, error_message, stack_trace, context) VALUES (?, ?, ?, ?, ?, ?)'
-    ).bind(app_version, os, errorHash, error, stack, context).run();
-    
-    const errorId = result.meta.last_row_id;
-    
-    await DB.prepare(
-      'INSERT INTO error_details (error_id, app_version, os, error_message, stack_trace, context) VALUES (?, ?, ?, ?, ?, ?)'
-    ).bind(errorId, app_version, os, error, stack, context).run();
-    
-    return new Response(
-      JSON.stringify({ status: 'created', error_id: errorId }),
-      { status: 201, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
-  }
+  const errorId = row.id;
+  const isUpdated = row.count > 1;
+
+  await DB.prepare(
+    'INSERT INTO error_details (error_id, app_version, os, error_message, stack_trace, context) VALUES (?, ?, ?, ?, ?, ?)'
+  ).bind(errorId, app_version, os, error, stack, context).run();
+
+  return new Response(
+    JSON.stringify({ status: isUpdated ? 'updated' : 'created', error_id: errorId, count: row.count }),
+    { status: isUpdated ? 200 : 201, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+  );
 }
 
 async function handleList(request, DB, corsHeaders, url) {

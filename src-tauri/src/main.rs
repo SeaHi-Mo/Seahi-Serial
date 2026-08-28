@@ -28,6 +28,13 @@ fn dbg_log(msg: &str) {
 /// 全局错误上报通道（单线程消费，避免每次 spawn 新线程）
 static ERROR_SENDER: std::sync::OnceLock<std::sync::mpsc::Sender<(String, String)>> = std::sync::OnceLock::new();
 
+/// 最近一次检查更新得到的安装包信息缓存（download_url, sha256, size）。
+/// 用于 download_update 校验，防止前端传入任意 URL / 任意大小值 → 任意代码下载。
+static UPDATE_INFO_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(String, Option<String>, Option<u64>)>>> = std::sync::OnceLock::new();
+
+/// 最近一次用户选择的日志保存目录（save_log 校验 path 必须等于它，防止任意路径写文件）
+static LAST_LOG_DIR: std::sync::OnceLock<std::sync::Mutex<Option<String>>> = std::sync::OnceLock::new();
+
 fn init_error_reporter() {
     let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
     std::thread::spawn(move || {
@@ -143,7 +150,7 @@ fn set_panic_hook() {
 #[cfg(windows)]
 fn start_device_watcher(app: tauri::AppHandle) {
     use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
-        CM_Register_Notification, CM_NOTIFY_FILTER, CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
+        CM_Register_Notification, CM_Unregister_Notification, CM_NOTIFY_FILTER, CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
         CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL, CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL,
         CM_NOTIFY_EVENT_DATA, CM_NOTIFY_ACTION,
     };
@@ -201,6 +208,13 @@ fn start_device_watcher(app: tauri::AppHandle) {
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
         dbg_log("device_watcher: stopped");
+
+        // 回收 AppHandle Box，避免泄漏（此前用 Box::into_raw 换取回调内指针有效性）
+        let _ = Box::from_raw(context as *mut tauri::AppHandle);
+        // 注销设备通知
+        if !notify_handle.is_null() {
+            let _ = CM_Unregister_Notification(notify_handle);
+        }
     });
 }
 
@@ -212,6 +226,8 @@ struct WslShell {
     writer: std::sync::Mutex<std::io::BufWriter<std::process::ChildStdin>>,
     reader: std::sync::Arc<std::sync::Mutex<std::io::BufReader<std::process::ChildStdout>>>,
     child: std::sync::Arc<std::sync::Mutex<std::process::Child>>,
+    /// 该 shell 绑定的 WSL 发行版（命中时校验，避免命令跑错发行版）
+    distro: String,
 }
 
 static WSL_SHELL: Mutex<Option<std::sync::Arc<WslShell>>> = Mutex::new(None);
@@ -224,7 +240,8 @@ fn get_wsl_shell(distro: &str) -> Result<std::sync::Arc<WslShell>, String> {
     if let Some(s) = slot.as_ref() {
         let alive = !WSL_SHELL_DIRTY.load(std::sync::atomic::Ordering::Relaxed)
             && is_process_alive(s.child.lock().unwrap_or_else(|e| e.into_inner()).id());
-        if alive {
+        // 命中需同时满足 alive 且发行版一致，否则重建
+        if alive && s.distro == distro {
             return Ok(s.clone());
         }
         *slot = None;
@@ -244,6 +261,7 @@ fn get_wsl_shell(distro: &str) -> Result<std::sync::Arc<WslShell>, String> {
         writer: std::sync::Mutex::new(std::io::BufWriter::new(stdin)),
         reader: std::sync::Arc::new(std::sync::Mutex::new(std::io::BufReader::new(stdout))),
         child: std::sync::Arc::new(std::sync::Mutex::new(child)),
+        distro: distro.to_string(),
     });
     *slot = Some(shell.clone());
     Ok(shell)
@@ -381,7 +399,8 @@ impl PortReader {
                         let _ = tx_clone.try_send(tmp[..n].to_vec()).is_ok();
                     }
                     _ if should_break => break,
-                    _ => std::thread::sleep(std::time::Duration::from_millis(1)),
+                    // 无数据时轻微退避（1ms→2ms），减少空转，对读取延迟影响可忽略
+                    _ => std::thread::sleep(std::time::Duration::from_millis(2)),
                 }
             }
             // 非正常停止（设备断开）时设置标志
@@ -512,10 +531,31 @@ impl PortReader {
 
 impl Drop for PortReader {
     fn drop(&mut self) {
+        use std::time::{Duration, Instant};
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(h) = self.read_handle.take() { let _ = h.join(); }
-        if let Some(h) = self.wf_handle.take() { let _ = h.join(); }
-        if let Some(h) = self.act_handle.take() { let _ = h.join(); }
+        // 所有线程 join 都带超时，避免读线程卡死（部分 USB 转串口驱动不按超时返回）
+        // 导致关闭/重连/关窗永久阻塞。超时后 forget 句柄，读线程作为后台线程自行退出。
+        if let Some(h) = self.read_handle.take() {
+            let deadline = Instant::now() + Duration::from_millis(200);
+            while !h.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if h.is_finished() { let _ = h.join(); } else { std::mem::forget(h); }
+        }
+        if let Some(h) = self.wf_handle.take() {
+            let deadline = Instant::now() + Duration::from_millis(300);
+            while !h.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if h.is_finished() { let _ = h.join(); } else { std::mem::forget(h); }
+        }
+        if let Some(h) = self.act_handle.take() {
+            let deadline = Instant::now() + Duration::from_millis(300);
+            while !h.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if h.is_finished() { let _ = h.join(); } else { std::mem::forget(h); }
+        }
     }
 }
 
@@ -1148,7 +1188,7 @@ fn read_data(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<V
         }
         Ok(reader.read_all())
     } else {
-        report_error("未连接串口", "read_data");
+        // 未连接是前端高频轮询的常态（用户关闭连接后仍 poll），不触发错误上报，避免风暴
         Err("未连接串口".into())
     }
 }
@@ -1371,10 +1411,18 @@ fn update_workflow_line_ending(
 /// 选择日志文件目录（使用原生对话框）
 #[tauri::command]
 fn choose_log_directory() -> Result<Option<String>, String> {
-    Ok(rfd::FileDialog::new()
+    let picked = rfd::FileDialog::new()
         .set_title("选择日志保存目录")
         .pick_folder()
-        .map(|path| path.to_string_lossy().to_string()))
+        .map(|path| path.to_string_lossy().to_string());
+    // 记录最近一次选择，供 save_log 校验（防止前端调用 save_log 写任意路径）
+    if let Some(dir) = picked.clone() {
+        let cache = LAST_LOG_DIR.get_or_init(|| std::sync::Mutex::new(None));
+        if let Ok(mut c) = cache.lock() {
+            *c = Some(dir);
+        }
+    }
+    Ok(picked)
 }
 
 /// 将 PowerShell 脚本编码为 -EncodedCommand 需要的 UTF-16LE Base64
@@ -1431,8 +1479,8 @@ fn run_usbipd_list_elevated() -> Option<String> {
         .args(["-NonInteractive", "-Command"])
         .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs", encoded))
         .status();
-    // 轮询结果文件直到超时（10 秒），UAC 未确认也不会永久阻塞
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // 轮询结果文件直到超时（5 秒），UAC 未确认也不会永久阻塞
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !tmp_result.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
@@ -1445,44 +1493,22 @@ fn run_usbipd_list_elevated() -> Option<String> {
 
 #[tauri::command]
 fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
-    use std::sync::mpsc;
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let result = hidden_command("usbipd")
-            .args(["list"])
-            .output();
-        let _ = tx.send(result);
-    });
-
     // 检查 WSL 是否正在运行（取第一个运行中的发行版，用于解析 WSL 侧设备路径）
     let distro = check_wsl_running().and_then(|d| d.into_iter().next()).unwrap_or_default();
     let wsl_running = !distro.is_empty();
 
-    let output = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(Ok(out)) => Some(out),
-        Ok(Err(e)) => {
-            dbg_log(&format!("usbipd list 执行失败: {}", e));
-            None
-        }
-        Err(_) => {
-            dbg_log(&format!("usbipd list 执行超时"));
-            None
-        }
-    };
+    // 用带 kill 的 run_output_timeout：usbipd 卡死时杀掉子进程，避免泄漏孤儿线程/进程
+    // 缩短超时：usbipd list 在无 WSL / 未授权环境下可能卡住，避免拖垮 WSL 面板加载
+    let mut cmd = hidden_command("usbipd");
+    cmd.args(["list"]);
+    let output = run_output_timeout(&mut cmd, 3000);
 
-    // 如果普通模式失败或输出为空，尝试管理员权限执行
+    // 仅当 usbipd list 执行失败/超时才提权；成功（即使无已 attach 设备）直接使用输出，
+    // 避免"无设备"时无谓触发 UAC 提权导致加载拖慢/超时
     let list_str = match output {
-        Some(out) if out.status.success() => {
-            let s = String::from_utf8_lossy(&out.stdout).to_string();
-            if s.lines().any(|l| l.split_whitespace().count() >= 3 && l.contains('-')) {
-                s
-            } else {
-                dbg_log("usbipd list 输出为空，尝试提权执行");
-                run_usbipd_list_elevated().unwrap_or_default()
-            }
-        }
+        Some(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
         _ => {
-            dbg_log("usbipd list 失败，尝试提权执行");
+            dbg_log("usbipd list 失败/超时，尝试提权执行");
             run_usbipd_list_elevated().unwrap_or_default()
         }
     };
@@ -1681,48 +1707,36 @@ fn strip_windows_com_suffix(name: &str) -> String {
 }
 
 fn check_wsl_running() -> Option<Vec<String>> {
-    use std::sync::mpsc;
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let result = hidden_command("wsl")
-            .args(["--list", "--verbose"])
-            .output();
-        let _ = tx.send(result);
-    });
-    let output = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(Ok(out)) => Some(out),
-        _ => return None,
-    };
-    let dists: Vec<String> = match output {
-        Some(out) => {
-            let text = decode_wsl_output(&out.stdout);
-            text.lines()
-                .map(|l| l.trim())
-                .filter(|l| {
-                    if l.is_empty() { return false; }
-                    let lower = l.to_lowercase();
-                    if lower.starts_with("name") || lower.starts_with("名称") { return false; }
-                    if lower.starts_with("version") || lower.starts_with("版本") { return false; }
-                    true
-                })
-                .filter_map(|l| {
-                    let clean = l.trim_start_matches('*').trim();
-                    let parts: Vec<&str> = clean.split_whitespace().collect();
-                    if parts.len() >= 2 {
-                        let state = parts[1].to_lowercase();
-                        if state.contains("running") || state.contains("运行") {
-                            Some(parts[0].to_string())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }
-        None => vec![],
-    };
+    let mut cmd = hidden_command("wsl");
+    cmd.args(["--list", "--verbose"]);
+    // 用带 kill 的 run_output_timeout：wsl 卡死时杀掉子进程，避免泄漏孤儿线程/进程
+    // 缩短超时（3s），避免 WSL 面板加载被 `wsl --list --verbose` 卡住拖垮
+    let output = run_output_timeout(&mut cmd, 3000)?;
+    let text = decode_wsl_output(&output.stdout);
+    let dists: Vec<String> = text.lines()
+        .map(|l| l.trim())
+        .filter(|l| {
+            if l.is_empty() { return false; }
+            let lower = l.to_lowercase();
+            if lower.starts_with("name") || lower.starts_with("名称") { return false; }
+            if lower.starts_with("version") || lower.starts_with("版本") { return false; }
+            true
+        })
+        .filter_map(|l| {
+            let clean = l.trim_start_matches('*').trim();
+            let parts: Vec<&str> = clean.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let state = parts[1].to_lowercase();
+                if state.contains("running") || state.contains("运行") {
+                    Some(parts[0].to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
     Some(dists)
 }
 
@@ -2042,6 +2056,11 @@ fn get_or_start_wsl_distro() -> Result<String, String> {
     Err("没有可用的 WSL 发行版".into())
 }
 
+/// 将路径用 bash 单引号包裹并转义，避免路径含空格/特殊字符时被 shell 拆分或注入
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// 部署 bridge 脚本到指定 WSL 发行版（通过 /mnt 路径直接写入）
 /// 每次连接都强制覆盖部署，避免应用升级后 WSL /tmp 中残留旧版脚本导致协议不匹配
 fn deploy_bridge(distro: &str) -> Result<(), String> {
@@ -2052,7 +2071,7 @@ fn deploy_bridge(distro: &str) -> Result<(), String> {
     let drive = win_path.chars().next().unwrap_or('c').to_lowercase();
     let rest = win_path[2..].replace('\\', "/");
     let mnt_path = format!("/mnt/{}{}", drive, rest);
-    let decode_cmd = format!("base64 -d < {} > {}", mnt_path, BRIDGE_SCRIPT_PATH);
+    let decode_cmd = format!("base64 -d < {} > {}", sh_quote(&mnt_path), sh_quote(BRIDGE_SCRIPT_PATH));
     let out = run_output_timeout(
         hidden_command("wsl").args(["-d", distro, "-e", "bash", "-c", &decode_cmd]),
         5000,
@@ -2147,13 +2166,24 @@ fn open_wsl_serial(
     deploy_bridge(&distro)?;
     let mut child = spawn_bridge(&distro)?;
     let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
-    let ready = std::thread::spawn(move || {
-        use std::io::BufRead;
-        for line in std::io::BufReader::new(stderr).lines() {
-            match line { Ok(l) if l.trim() == "ready" => return true, Err(_) => return false, _ => {} }
-        }
-        false
-    }).join().unwrap_or(false);
+    // 等待 bridge 就绪（最多 5 秒）：用 channel + recv_timeout 替代无超时 join，避免永久阻塞；
+    // 超时后由下方 !ready 分支 kill + wait，且就绪线程因 stderr EOF 自行退出。
+    let ready = {
+        use std::sync::mpsc;
+        let (tx, rx) = mpsc::channel::<bool>();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stderr).lines() {
+                match line {
+                    Ok(l) if l.trim() == "ready" => { let _ = tx.send(true); return; }
+                    Err(_) => { let _ = tx.send(false); return; }
+                    _ => {}
+                }
+            }
+            let _ = tx.send(false);
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or(false)
+    };
     if !ready {
         let _ = child.kill();
         let _ = child.wait();
@@ -2184,7 +2214,15 @@ fn open_wsl_serial(
         responses: resp_rx,
         dead: std::sync::atomic::AtomicBool::new(false),
     };
-    let resp = bridge_command(&session, &json!({"cmd":"open","id":&monitor_id,"path":&device_path,"baud":baud_rate}))?;
+    // 若 bridge 命令失败（超时/进程退出/序列化或写入错误），先杀子进程再返回，避免泄漏孤儿 python 进程
+    let resp = match bridge_command(&session, &json!({"cmd":"open","id":&monitor_id,"path":&device_path,"baud":baud_rate})) {
+        Ok(r) => r,
+        Err(e) => {
+            kill_wsl_session(&session);
+            report_error(&format!("WSL串口打开失败: {}", e), "open_wsl_serial");
+            return Err(e);
+        }
+    };
     if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         state.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(monitor_id, session);
         Ok(())
@@ -2340,24 +2378,11 @@ fn attach_port_to_wsl_blocking(port_name: String, distro: Option<String>) -> Res
         }
     }
 
-    // 1. 获取设备列表
-    use std::sync::mpsc;
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let result = hidden_command("usbipd")
-            .args(["list"])
-            .output();
-        let _ = tx.send(result);
-    });
-
-    let list_out = match rx.recv_timeout(std::time::Duration::from_secs(3)) {
-        Ok(Ok(out)) => out,
-        Ok(Err(e)) => {
-            report_error(&format!("执行 usbipd list 失败: {}", e), "attach_port_to_wsl");
-            return Err(format!("执行 usbipd list 失败: {}", e));
-        }
-        Err(_) => {
-            report_error("usbipd list 执行超时", "attach_port_to_wsl");
+    // 1. 获取设备列表（带 kill 的超时，避免 usbipd 卡死时泄漏孤儿线程/进程）
+    let list_out = match run_output_timeout(hidden_command("usbipd").args(["list"]), 3000) {
+        Some(out) => out,
+        None => {
+            report_error("usbipd list 执行超时或失败", "attach_port_to_wsl");
             return Err("usbipd list 执行超时（3 秒），请确认 usbipd-win 已正确安装".to_string());
         }
     };
@@ -2615,8 +2640,8 @@ fn run_usbipd_detach_elevated(busid: &str) -> Option<String> {
         .args(["-NonInteractive", "-Command"])
         .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs", encoded))
         .status();
-    // 轮询结果文件直到超时（10 秒），UAC 未确认也不会永久阻塞
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // 轮询结果文件直到超时（5 秒），UAC 未确认也不会永久阻塞
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !tmp_result.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
@@ -2678,6 +2703,25 @@ fn save_log(content: String, path: String) -> Result<(), String> {
 
     if path.is_empty() {
         return Err("未设置日志目录".into());
+    }
+
+    // 安全：path 必须规范化为最近一次通过 choose_log_directory 选择的目录，防止任意路径写文件
+    let allowed_dir = {
+        let cache = LAST_LOG_DIR.get_or_init(|| std::sync::Mutex::new(None));
+        let lock = cache.lock().map_err(|_| "日志目录锁获取失败".to_string())?;
+        lock.clone().unwrap_or_default()
+    };
+    if allowed_dir.is_empty() {
+        return Err("日志目录不是最近一次选择的目录".into());
+    }
+    let allowed = Path::new(&allowed_dir)
+        .canonicalize()
+        .map_err(|e| format!("日志目录解析失败: {}", e))?;
+    let target = Path::new(&path)
+        .canonicalize()
+        .map_err(|e| format!("日志目录路径无效: {}", e))?;
+    if allowed != target {
+        return Err("日志目录不是最近一次选择的目录，已拒绝写入".into());
     }
 
     let filename = {
@@ -2842,9 +2886,63 @@ mod sha256_tests {
     }
 }
 
+#[cfg(test)]
+mod util_tests {
+    #[test]
+    fn parse_hex_bytes_works() {
+        assert_eq!(super::parse_hex_bytes("FF 01 02"), vec![0xFF, 0x01, 0x02]);
+        assert_eq!(super::parse_hex_bytes("ff0102"), vec![0xFF, 0x01, 0x02]);
+        assert_eq!(super::parse_hex_bytes("00 41 62"), vec![0x00, 0x41, 0x62]);
+        // 奇数长度 → 非法，返回空
+        assert_eq!(super::parse_hex_bytes("abc"), Vec::<u8>::new());
+        // 非 hex 字符 → 非法
+        assert_eq!(super::parse_hex_bytes("zz"), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn parse_version_handles_prefix_and_prerelease() {
+        assert_eq!(super::parse_version("0.2.11"), (0, 2, 11));
+        assert_eq!(super::parse_version("v0.2.10"), (0, 2, 10));
+        assert_eq!(super::parse_version("0.2.11-beta"), (0, 2, 11));
+        assert_eq!(super::parse_version("0.2.11-rc.1"), (0, 2, 11));
+        // 预发布版本不高于正式版；is_newer_version(current, latest) 为 true 表示有更新
+        assert!(!super::is_newer_version("0.2.11", "0.2.11-beta"));
+        assert!(super::is_newer_version("0.2.10", "0.2.11"));
+        assert!(!super::is_newer_version("0.2.11", "0.2.10"));
+    }
+
+    #[test]
+    fn strip_windows_com_suffix_works() {
+        assert_eq!(super::strip_windows_com_suffix("USB 串行设备 (COM28)"), "USB 串行设备");
+        assert_eq!(super::strip_windows_com_suffix("COM3"), "COM3");
+        // 含 "(COM" + 数字 后缀会被剥离
+        assert_eq!(super::strip_windows_com_suffix("COM xx (COM28)"), "COM xx");
+    }
+
+    #[test]
+    fn decode_wsl_output_utf16le() {
+        // "Ubuntu\n" 的 UTF-16LE 编码
+        let mut raw = vec![0xFF, 0xFE];
+        for u in "Ubuntu\n".encode_utf16() {
+            raw.extend_from_slice(&u.to_le_bytes());
+        }
+        assert_eq!(super::decode_wsl_output(&raw), "Ubuntu\n");
+    }
+
+    #[test]
+    fn decode_wsl_output_ascii() {
+        // 没有 BOM，当作 UTF-8 处理
+        let raw = b"NAME          STATE";
+        assert_eq!(super::decode_wsl_output(raw), "NAME          STATE");
+    }
+}
+
 /// 解析版本号字符串，返回 (major, minor, patch) 元组
+/// 支持 -beta / -rc 等预发布后缀（只取数字部分）与 v/V 前缀
 fn parse_version(ver: &str) -> (u32, u32, u32) {
     let ver = ver.trim_start_matches('v').trim_start_matches('V');
+    // 去掉 -beta / -rc / +build 等后缀，只保留数字主体
+    let ver = ver.split(['-', '+']).next().unwrap_or(ver);
     let parts: Vec<&str> = ver.split('.').collect();
     let major = parts.get(0).and_then(|p| p.parse().ok()).unwrap_or(0);
     let minor = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(0);
@@ -2952,6 +3050,14 @@ async fn check_update() -> Result<UpdateInfo, String> {
         (String::new(), None, None)
     };
 
+    // 缓存本次检查结果，供 download_update 校验（防前端传入任意 URL / 大小值）
+    {
+        let cache = UPDATE_INFO_CACHE.get_or_init(|| std::sync::Mutex::new(None));
+        if let Ok(mut c) = cache.lock() {
+            *c = Some((download_url.clone(), sha256.clone(), size));
+        }
+    }
+
     Ok(UpdateInfo {
         has_update,
         latest_version: release.tag_name,
@@ -2966,8 +3072,24 @@ async fn check_update() -> Result<UpdateInfo, String> {
 /// 提供 sha256（hex 小写）时下载完成后做哈希校验，未提供时用 size 做兜底长度校验；
 /// 校验不匹配则删除并报错，杜绝执行被篡改的安装包
 #[tauri::command]
-async fn download_update(download_url: String, sha256: Option<String>, size: Option<u64>) -> Result<String, String> {
+async fn download_update(download_url: String, _sha256: Option<String>, _size: Option<u64>) -> Result<String, String> {
     use std::fs;
+
+    // 安全：从后端缓存取值校验，不信任前端传入的 download_url / sha256 / size
+    let (cached_url, cached_sha256, cached_size) = {
+        let cache = UPDATE_INFO_CACHE.get_or_init(|| std::sync::Mutex::new(None));
+        let lock = cache.lock().map_err(|_| "更新信息锁获取失败".to_string())?;
+        lock.clone().unwrap_or_default()
+    };
+
+    // 校验下载 URL 必须等于最近一次检查更新得到的 URL
+    if cached_url.is_empty() || download_url != cached_url {
+        return Err("更新信息已过期，请重新检查更新后重试".to_string());
+    }
+    // 校验：SHA-256 或缓存大小值至少一个存在，杜绝零校验下载任意文件
+    if cached_sha256.is_none() && cached_size.is_none() {
+        return Err("更新包缺少校验信息，已拒绝下载".to_string());
+    }
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
@@ -3014,17 +3136,17 @@ async fn download_update(download_url: String, sha256: Option<String>, size: Opt
 
     let bytes = resp.bytes().await.map_err(|e| format!("读取下载内容失败: {}", e))?;
 
-    // 校验安装包完整性：优先 SHA-256（GitHub digest），缺失时兜底校验文件大小
-    if let Some(expected) = sha256 {
+    // 校验安装包完整性：优先 SHA-256（来自后端缓存），缺失时用缓存的大小值兜底
+    if let Some(expected) = &cached_sha256 {
         let actual = sha256_hex(&bytes);
-        if !actual.eq_ignore_ascii_case(&expected) {
+        if !actual.eq_ignore_ascii_case(expected) {
             let _ = fs::remove_file(&file_path);
             let msg = format!("更新包校验失败（SHA-256 不匹配），已中止安装");
             report_error(&msg, "download_update");
             return Err(msg);
         }
         dbg_log(&format!("download_update: SHA-256 校验通过 {}", actual));
-    } else if let Some(expected_size) = size {
+    } else if let Some(expected_size) = cached_size {
         if bytes.len() as u64 != expected_size {
             let _ = fs::remove_file(&file_path);
             let msg = format!(
@@ -3047,17 +3169,38 @@ async fn download_update(download_url: String, sha256: Option<String>, size: Opt
 /// 直接以独立进程启动安装包（.msi 走 msiexec），不再经过 cmd start，避免 cmd 元字符注入
 #[tauri::command]
 fn install_update(app: tauri::AppHandle, file_path: String) -> Result<(), String> {
+    // 安全：只允许启动位于 %TEMP%\seahi-serial-update\ 下的 .exe / .msi 安装包，防止任意路径执行
+    let temp_dir = std::env::temp_dir()
+        .join("seahi-serial-update")
+        .canonicalize()
+        .map_err(|e| format!("解析临时目录失败: {}", e))?;
+    let canonical = std::path::Path::new(&file_path)
+        .canonicalize()
+        .map_err(|e| format!("安装包路径无效: {}", e))?;
+    if !canonical.starts_with(&temp_dir) {
+        return Err("安装包路径不在受控目录内，已拒绝执行".to_string());
+    }
+    let ext = canonical
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if ext != "exe" && ext != "msi" {
+        return Err("安装包扩展名不合法，已拒绝执行".to_string());
+    }
+    let installable = canonical.to_string_lossy().to_string();
+
     #[cfg(windows)]
     {
         // Windows: 启动安装包，不等待其完成
-        let lower = file_path.to_lowercase();
+        let lower = installable.to_lowercase();
         if lower.ends_with(".msi") {
             hidden_command("msiexec")
-                .args(["/i", &file_path, "/passive", "/norestart"])
+                .args(["/i", &installable, "/passive", "/norestart"])
                 .spawn()
                 .map_err(|e| format!("启动安装程序失败: {}", e))?;
         } else {
-            std::process::Command::new(&file_path)
+            std::process::Command::new(&installable)
                 .spawn()
                 .map_err(|e| format!("启动安装程序失败: {}", e))?;
         }
@@ -3065,7 +3208,7 @@ fn install_update(app: tauri::AppHandle, file_path: String) -> Result<(), String
 
     #[cfg(not(windows))]
     {
-        std::process::Command::new(&file_path)
+        std::process::Command::new(&installable)
             .spawn()
             .map_err(|e| format!("启动安装程序失败: {}", e))?;
     }
@@ -3093,11 +3236,32 @@ fn set_window_size(window: tauri::Window, width: u32, height: u32) -> Result<(),
 }
 
 /// 用系统默认浏览器打开 URL
+/// 安全：不再使用 `cmd /C start`（存在命令注入风险），改用 rundll32 url.dll,FileProtocolHandler，
+/// 并校验 URL 必须为 http/https 协议、不含空白与命令元字符。
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "", &url])
-        .spawn()
+    let trimmed = url.trim();
+    let is_allowed = trimmed.starts_with("http://") || trimmed.starts_with("https://");
+    let has_bad_chars = trimmed.chars().any(|c| {
+        c.is_whitespace()
+            || c == '"'
+            || c == '\''
+            || c == '&'
+            || c == '|'
+            || c == '^'
+            || c == ';'
+            || c == '\r'
+            || c == '\n'
+    });
+    if !is_allowed || has_bad_chars {
+        return Err(format!("非法 URL: {}", url));
+    }
+
+    let mut cmd = std::process::Command::new("rundll32.exe");
+    cmd.args(["url.dll,FileProtocolHandler", trimmed]);
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd.spawn()
         .map_err(|e| format!("打开 URL 失败: {}", e))?;
     Ok(())
 }

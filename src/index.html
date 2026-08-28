@@ -1975,7 +1975,7 @@ function parseAnsi(text) {
     for (let i = 0; i < openCount; i++) parts.push('</span>');
     return parts.join('');
 }
-function escapeHtml(s) { var r = ''; for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i); if (c === 38) r += '&amp;'; else if (c === 60) r += '&lt;'; else if (c === 62) r += '&gt;'; else if (c === 34) r += '&quot;'; else r += s[i]; } return r; }
+function escapeHtml(s) { var r = ''; for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i); if (c === 38) r += '&amp;'; else if (c === 60) r += '&lt;'; else if (c === 62) r += '&gt;'; else if (c === 34) r += '&quot;'; else if (c === 39) r += '&#39;'; else r += s[i]; } return r; }
 
 /* ===== Toast 通知 ===== */
 function showToast(message, type) {
@@ -2306,20 +2306,23 @@ function setBaud(mid, val) {
         var btn = document.getElementById(mid + '-btnStart');
         if (btn) { btn.disabled = true; btn.innerHTML = '<span style="font-size:11px;">⏳</span> 切换中...'; }
         (async function() {
+            // 捕获监视器引用；切换期间用户可能关闭监视器（delete monitors[mid]），需判空避免崩溃
+            var m = monitors[mid];
             try {
                 if (isWsl) { await invoke('close_wsl_serial', { monitorId: mid }); }
                 else { await invoke('close_port', { monitorId: mid }); }
             } catch (_) {}
-            monitors[mid].isConnected = false;
+            if (!m) { return; }
+            m.isConnected = false;
             stopReading(mid);
             updateMonitorUI(mid, false);
             if (isWsl) { await connectWslPort(mid); }
             else { await connectPort(mid, true); }
-            if (!monitors[mid].isConnected && savedPort) {
+            if (!m.isConnected && savedPort) {
                 if (isWsl) { reconnectWslPort(mid, savedPort); }
                 else { reconnectPort(mid, savedPort, 1); }
             }
-            monitors[mid]._reconnecting = false;
+            m._reconnecting = false;
         })();
     }
 }
@@ -2958,7 +2961,7 @@ function startReading(mid) {
         } finally {
             reading = false;
         }
-    }, 10);
+    }, 25);
 }
 
 async function reconnectPort(mid, portName, attempt) {
@@ -3016,8 +3019,11 @@ function addMonitor() {
     var panes = document.querySelectorAll('#paneContainer .monitor-pane');
     var minWidth = panes.length * 524;
     invoke('get_window_size').then(function(size) {
-        if (size.width < minWidth) {
-            invoke('set_window_size', { width: minWidth, height: size.height });
+        // 后端 get_window_size 返回 Result<(u32,u32)>，经 serde 序列化为数组 [width, height]
+        var w = Array.isArray(size) ? size[0] : size.width;
+        var h = Array.isArray(size) ? size[1] : size.height;
+        if (w < minWidth) {
+            invoke('set_window_size', { width: minWidth, height: h });
         }
     }).catch(function() {});
     scheduleConfigSave();
@@ -3386,10 +3392,11 @@ function appendRecvText(mid, decoded, frag) {
     var m = monitors[mid];
     if (!el || !m || decoded === '') return;
 
-    var combined = (m._recvPartial || '') + decoded;
-    var endsWithNl = /[\r\n]$/.test(combined);
-    var body = endsWithNl ? combined.replace(/[\r\n]+$/, '') : combined;
-    var parts = body === '' ? [] : body.split(/\r?\n/);
+    // 归一化换行：把 \r\n 与单独的 \r 统一为 \n，纯 \r 换行的设备（如 AT 固件）也能正确分行
+    var combined = ((m._recvPartial || '') + decoded).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    var endsWithNl = /\n$/.test(combined);
+    var body = endsWithNl ? combined.replace(/\n+$/, '') : combined;
+    var parts = body === '' ? [] : body.split('\n');
 
     if (parts.length === 0) {
         // 纯换行：已有打开行则关闭，否则渲染一个空行
@@ -3623,7 +3630,8 @@ function loadMoreHistory(mid, el, callback) {
                 contentSpan.innerHTML = escapeHtml(item.ts) + parseAnsi(item.text);
             }
         } else if (item.type === 'send') {
-            contentSpan.innerHTML = escapeHtml(item.ts) + item.text;
+            // 安全：send 行不需要 ANSI 渲染，直接用 textContent，避免未转义文本注入 HTML（XSS）
+            contentSpan.textContent = item.ts + item.text;
         } else {
             contentSpan.textContent = item.ts + item.text;
         }
@@ -3633,6 +3641,9 @@ function loadMoreHistory(mid, el, callback) {
 
     // 插入到 DOM 开头
     el.prepend(fragment);
+
+    // 重排行号：新插入的历史行 .ln 为空，且 _lineCount 需重算，避免行号错乱/重复（P1-15）
+    updateLineNumbers(mid);
 
     // 调整滚动位置，让用户看到的内容不跳动
     var newScrollHeight = el.scrollHeight;
@@ -4571,7 +4582,7 @@ function animateTitleBar(target, duration) {
         var r = Math.round(start.r + (target.r - start.r) * et);
         var g = Math.round(start.g + (target.g - start.g) * et);
         var b = Math.round(start.b + (target.b - start.b) * et);
-        try { invoke('set_title_bar_color', { r: r, g: g, b: b }); } catch(_) {}
+        try { invoke('set_title_bar_color', { r: r, g: g, b: b }).catch(function(_v) {}); } catch(_) {}
         if (t >= 1) { clearInterval(_titleBarAnim); _titleBarAnim = null; _titleBarCur = { r: target.r, g: target.g, b: target.b }; }
     }, 16);
 }
@@ -5274,7 +5285,7 @@ function startWslReading(mid) {
         } finally {
             reading = false;
         }
-    }, 10);
+    }, 25);
 }
 
 async function reconnectWslPort(mid, portName, attempt) {
@@ -5504,6 +5515,7 @@ function renderWslDistroCards(mid, distros) {
     var termIcon = '<svg width="27" height="27" viewBox="0 0 1024 1024" fill="currentColor"><path d="M499.712 481.792l-128-128c-16.896-16.384-44.032-15.872-60.416 1.024-15.872 16.384-15.872 42.496 0 59.392L409.088 512l-97.792 97.792c-16.896 16.384-17.408 43.52-1.024 60.416s43.52 17.408 60.416 1.024l1.024-1.024 128-128c16.384-16.896 16.384-43.52 0-60.416zM682.496 597.504h-128c-23.552 0-42.496 18.944-42.496 42.496 0 23.552 18.944 42.496 42.496 42.496h128c23.552 0 42.496-18.944 42.496-42.496s-18.944-42.496-42.496-42.496z"/><path d="M810.496 128H213.504c-70.656 0-128 57.344-128 128v512c0 70.656 57.344 128 128 128h597.504c70.656 0 128-57.344 128-128V256c-0.512-70.656-57.856-128-128.512-128z m0 682.496H213.504c-23.552 0-42.496-18.944-42.496-42.496V256c0-23.552 18.944-42.496 42.496-42.496h597.504c23.552 0 42.496 18.944 42.496 42.496v512c0 23.552-19.456 42.496-43.008 42.496z"/></svg>';
     var html = '';
     distros.forEach(function(d) {
+        var nameHtml = escapeHtml(d.name);
         var running = d.running;
         var borderColor = running ? 'var(--wsl-dist-border)' : 'var(--border)';
         var bgGrad = running ? 'linear-gradient(135deg,var(--wsl-dist-bg) 0%,var(--toolbar-bg) 100%)' : 'var(--toolbar-bg)';
@@ -5530,7 +5542,7 @@ function renderWslDistroCards(mid, distros) {
 
         html += '<div style="padding:8px 14px;background:' + bgGrad + ';border:1px solid ' + borderColor + ';border-radius:6px;display:flex;align-items:center;gap:12px;">';
         html += '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';flex-shrink:0;' + (running ? 'box-shadow:0 0 6px rgba(90,158,110,0.4);' : '') + '"></span>';
-        html += '<span style="font-size:13px;font-weight:600;color:var(--text-b);white-space:nowrap;" title="' + d.name + '">' + d.name + '</span>';
+        html += '<span style="font-size:13px;font-weight:600;color:var(--text-b);white-space:nowrap;" title="' + nameHtml + '">' + nameHtml + '</span>';
         html += '<span style="width:1px;height:14px;background:var(--border);flex-shrink:0;margin:0 2px;"></span>';
         html += '<span style="font-size:10px;color:var(--text-muted);font-weight:500;">UP</span>';
         html += '<span id="uptime-' + mid + '-' + d.name + '" style="font-size:11px;color:var(--text);font-family:monospace;letter-spacing:0.3px;">' + uptime + '</span>';
@@ -5682,12 +5694,12 @@ function wslDistAction(cmd, dist) {
                 if (fn) {
                     invokeTimeout('get_wsl_distributions', null, 6000).then(function(distros) {
                         renderWslDistroCards(mid, distros);
-                    });
+                    }).catch(function(e) { console.warn('[WSL] 获取发行版失败:', e); });
                     invoke('check_wsl_status').then(function(dists) {
                         _wslRunning = dists && dists.length > 0;
                         setWslMonitorEnabled(_wslRunning);
                         renderWslDeviceList(mid);
-                    });
+                    }).catch(function(e) { console.warn('[WSL] 检查 WSL 状态失败:', e); });
                 }
             });
         }, 1500);
@@ -5751,12 +5763,16 @@ function sortWslDevices() {
 // 带超时的 invoke：后端命令挂起（如 UAC 弹窗未确认）时前端不会永久等待
 function invokeTimeout(cmd, args, ms) {
     ms = ms || 8000;
+    var timer = null;
     return Promise.race([
         invoke(cmd, args),
         new Promise(function(_, reject) {
-            setTimeout(function() { reject(new Error(cmd + ' 执行超时')); }, ms);
+            timer = setTimeout(function() { reject(new Error(cmd + ' 执行超时')); }, ms);
         })
-    ]);
+    ]).finally(function() {
+        // 竞态结束（无论胜负）都清除超时定时器，避免高频调用堆积悬空 timer
+        if (timer) clearTimeout(timer);
+    });
 }
 
 async function loadWslDevices(mid) {
@@ -5768,7 +5784,7 @@ async function loadWslDevices(mid) {
     }
     
     try {
-        var devices = await invokeTimeout('list_wsl_devices', null, 8000);
+        var devices = await invokeTimeout('list_wsl_devices', null, 15000);
         
         // 保留正在操作中的设备（防止取消映射后设备消失）
         var newBusids = {};
@@ -5940,16 +5956,18 @@ async function toggleWslMapping(mid, idx, checked) {
     } else {
         try {
             // 如果 WSL 监视器正在使用该设备的 WSL 端口，先关闭连接释放资源
-            getWslMonitorIds().forEach(async function(wmid) {
+            // forEach 不等待 async 回调，需收集 Promise 后统一 await，避免断开与 detach 竞态
+            await Promise.all(getWslMonitorIds().map(function(wmid) {
                 if (monitors[wmid] && monitors[wmid].isConnected) {
                     var wslPath = device.wslPath || '';
                     var portName = monitors[wmid].portName || '';
                     if (wslPath && portName && (portName === wslPath || portName.indexOf(wslPath) !== -1 || wslPath.indexOf(portName) !== -1)) {
                         appendOutput(wmid, 'sys', '取消映射：正在关闭 WSL 串口连接...');
-                        await disconnectWslPort(wmid);
+                        return disconnectWslPort(wmid);
                     }
                 }
-            });
+                return Promise.resolve();
+            }));
             await invoke('detach_port_from_wsl', { busid: device.busid });
             device.status = 'unmapped';
         } catch (e) { console.error('[WSL] 断开失败:', e); showToast('断开失败: ' + e, 'error'); }
@@ -6029,7 +6047,7 @@ function updateAutoMapPolling() {
 async function autoMapCheck() {
     if (Object.keys(_wslAutoMap).length === 0) return;
     try {
-        var devices = await invokeTimeout('list_wsl_devices', null, 8000);
+        var devices = await invokeTimeout('list_wsl_devices', null, 15000);
         // 收集需要映射的设备，并发执行
         var tasks = [];
         for (var i = 0; i < devices.length; i++) {

@@ -1,6 +1,6 @@
 {
   "name": "serial-debugger",
-  "version": "0.1.15",
+  "version": "0.2.11",
   "private": true,
   "scripts": {
     "tauri": "tauri",
