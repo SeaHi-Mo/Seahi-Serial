@@ -1681,6 +1681,11 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 /* 终端模式光标 */
 .terminal-cursor { display:inline-block; width:8px; height:1.2em; background:var(--text); animation:blink 1s step-end infinite; vertical-align:text-bottom; margin-left:1px; }
 @keyframes blink { 50% { opacity:0; } }
+/* 终端模式（真终端模拟器）：设备输出流 + 当前行（提示符 + 可见输入框，内联跟随提示符） */
+.term-current { display:none; align-items:baseline; line-height:1.7; font-family:var(--font-mono); font-size:14px; white-space:pre-wrap; overflow-wrap:break-word; }
+.term-current.show { display:flex; }
+.term-out { color:var(--accent-focus); flex-shrink:0; white-space:pre; }
+.term-in { flex:1; min-width:0; background:transparent; border:none; outline:none; color:var(--text); font-family:var(--font-mono); font-size:14px; padding:0; margin:0; }
 .no-scrollbar::-webkit-scrollbar {
     display: none;
 }
@@ -2628,113 +2633,113 @@ function updateLineNumbers(mid) {
 
 
 /* ===== 终端模式 ===== */
-var _terminalBuffers = {}; // { mid: { line: '', lineEl: null, cursorEl: null } }
+var _terminalBuffers = {}; // 用于标记终端模式开启（真值），供相关保护逻辑判断
 
 function initTerminalMode(mid) {
     var output = document.getElementById(mid + '-output');
     if (!output) return;
-    
-    // 让输出区可以获得焦点
+
+    // 让输出区可获得焦点（点击时聚焦到终端当前行的输入框）
     output.setAttribute('tabindex', '0');
     output.style.outline = 'none';
-    
-    output.addEventListener('keydown', function(e) {
+
+    // 终端当前行：提示符（来自设备输出）+ 可见输入框，内联跟随设备提示符（继承系统输入法，候选框在光标旁）。
+    // 输出区在终端模式时 contentEditable 关闭，输入全部由输入框负责，避免组合文本污染输出区。
+    var termCur = document.getElementById(mid + '-termCurrent');
+    if (!termCur) {
+        termCur = document.createElement('div');
+        termCur.id = mid + '-termCurrent';
+        termCur.className = 'term-current';
+        var out = document.createElement('span');
+        out.id = mid + '-termOut';
+        out.className = 'term-out';
+        var input = document.createElement('input');
+        input.id = mid + '-termInput';
+        input.className = 'term-in';
+        input.type = 'text';
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        termCur.appendChild(out);
+        termCur.appendChild(input);
+        output.appendChild(termCur);
+    }
+    var termInput = document.getElementById(mid + '-termInput');
+
+    function termOn() {
         var btn = document.getElementById(mid + '-btnSendLE');
-        if (!btn || !btn.classList.contains('on')) return;
-        if (!monitors[mid] || !monitors[mid].isConnected) return;
-        
+        return btn && btn.classList.contains('on');
+    }
+
+    termInput.addEventListener('keydown', function(e) {
+        if (!termOn()) return;
+        var m = monitors[mid];
+        if (!m) return;
+        if (e.isComposing) return; // 输入法组合中，回车确认候选，不发送
+
         if (e.key === 'Enter') {
             e.preventDefault();
-            var buf = _terminalBuffers[mid];
-            if (buf && buf.line) {
-                var text = buf.line + leStr(mid);
-                var bytes = new TextEncoder().encode(text);
-                invoke('send_data', { monitorId: mid, data: Array.from(bytes) }).catch(function(err) {
+            var line = termInput.value;
+            var le = leStr(mid);
+            if (m.isConnected) {
+                // 本地回显关闭：发送内容 + 行尾。空内容也发换行（与 Linux 终端一致，空回车触发 \r\n）
+                var bytes = new TextEncoder().encode(line + le);
+                var isWsl = m.isWsl;
+                var sendCmd = isWsl ? 'send_wsl_serial' : 'send_data';
+                invokeTimeout(sendCmd, { monitorId: mid, data: Array.from(bytes) }, 5000).catch(function(err) {
                     appendOutput(mid, 'err', '发送失败: ' + err);
                 });
-                // 清除当前输入行和光标
-                if (buf.cursorEl) buf.cursorEl.remove();
-                if (buf.lineEl) buf.lineEl.remove();
-                delete _terminalBuffers[mid];
+            } else {
+                // 未连接：提示（空输入不提示，仅清空）
+                if (line) appendOutput(mid, 'err', '未连接串口，无法发送');
             }
-        } else if (e.key === 'Backspace') {
-            e.preventDefault();
-            var buf = _terminalBuffers[mid];
-            if (buf && buf.line.length > 0) {
-                buf.line = buf.line.slice(0, -1);
-                if (buf.lineEl) {
-                    var lc = buf.lineEl.querySelector('.lc');
-                    if (lc) lc.textContent = buf.line;
-                }
-            }
-        } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
-            e.preventDefault();
-            var buf = _terminalBuffers[mid];
-            if (!buf) {
-                buf = { line: '', lineEl: null, cursorEl: null };
-                _terminalBuffers[mid] = buf;
-            }
-            buf.line += e.key;
-            if (!buf.lineEl) {
-                buf.lineEl = document.createElement('div');
-                buf.lineEl.className = 'ol recv';
-                var lnSpan = document.createElement('span');
-                lnSpan.className = 'ln';
-                lnSpan.setAttribute('contenteditable', 'false');
-                buf.lineEl.appendChild(lnSpan);
-                var contentSpan = document.createElement('span');
-                contentSpan.className = 'lc';
-                contentSpan.style.color = '#4ec9b0';
-                buf.lineEl.appendChild(contentSpan);
-                output.appendChild(buf.lineEl);
-                // 添加光标
-                buf.cursorEl = document.createElement('span');
-                buf.cursorEl.className = 'terminal-cursor';
-                output.appendChild(buf.cursorEl);
-            }
-            var lc = buf.lineEl.querySelector('.lc');
-            if (lc) lc.textContent = buf.line;
-            
-            var scrollBtn = document.getElementById(mid + '-btnScroll');
-            if (scrollBtn && scrollBtn.classList.contains('on')) requestScroll(output);
+            // 清空输入，并清空旧的提示符缓冲（旧提示符不应并入后续设备响应）
+            if (m) m._recvPartial = '';
+            termInput.value = '';
+            termInput.focus();
         }
     });
 
+    // 点击输出区 → 聚焦输入框继续输入
     output.addEventListener('click', function() {
-        var btn = document.getElementById(mid + '-btnSendLE');
-        if (btn && btn.classList.contains('on')) {
-            output.focus();
-        }
+        if (termOn()) termInput.focus();
     });
 }
+
+// 设置终端当前行的提示符（设备输出检测到的提示符）
+function setTermPrompt(mid, text) {
+    var p = document.getElementById(mid + '-termOut');
+    if (p) p.textContent = text;
+}
+
 
 function toggleTerminalMode(btn, mid) {
     btn.classList.toggle('on');
     var output = document.getElementById(mid + '-output');
     var sendBar = document.querySelector('#pane-' + mid + ' .send-bar');
+    var termCur = document.getElementById(mid + '-termCurrent');
+    var termInput = document.getElementById(mid + '-termInput');
     if (output) {
         if (btn.classList.contains('on')) {
-            output.focus();
             output.style.cursor = 'text';
+            // 终端模式：关闭输出区 contenteditable（不让浏览器往输出区插入文本），
+            // 显示终端当前行（提示符+输入框，内联跟随设备提示符），输入由输入框负责（继承系统输入法）。
+            output.contentEditable = 'false';
             if (sendBar) sendBar.style.display = 'none';
-            // 立即显示光标
-            var buf = { line: '', lineEl: null, cursorEl: null };
-            _terminalBuffers[mid] = buf;
-            buf.cursorEl = document.createElement('span');
-            buf.cursorEl.className = 'terminal-cursor';
-            output.appendChild(buf.cursorEl);
+            if (termCur) termCur.classList.add('show');
+            setTermPrompt(mid, ''); // 提示符由设备输出决定，先清空
+            if (termInput) { termInput.value = ''; termInput.focus(); }
+            // 记录当前行元素，供 appendOutput 把设备输出插入到它之前（当前行始终在末尾）
+            _terminalBuffers[mid] = termCur ? { lineEl: termCur } : true;
             var scrollBtn = document.getElementById(mid + '-btnScroll');
             if (scrollBtn && scrollBtn.classList.contains('on')) requestScroll(output);
         } else {
             output.style.cursor = 'default';
+            // 恢复日志编辑
+            output.contentEditable = 'true';
             if (sendBar) sendBar.style.display = '';
-            // 清除光标和输入行
-            var buf = _terminalBuffers[mid];
-            if (buf) {
-                if (buf.cursorEl) buf.cursorEl.remove();
-                if (buf.lineEl) buf.lineEl.remove();
-                delete _terminalBuffers[mid];
-            }
+            if (termCur) termCur.classList.remove('show');
+            if (termInput) termInput.value = '';
+            delete _terminalBuffers[mid];
         }
     }
     scheduleConfigSave();
@@ -3287,7 +3292,13 @@ function appendOutput(mid, type, text, opts) {
     }
     div.appendChild(contentSpan);
     var target = (opts && opts.fragment) ? opts.fragment : el;
-    target.appendChild(div);
+    // 终端模式下，新行插到终端当前行之前（当前行保持在末尾），使设备输出显示在提示符上方
+    var termCur = _terminalBuffers[mid] && _terminalBuffers[mid].lineEl;
+    if (target === el && termCur && termCur.parentNode === el) {
+        el.insertBefore(div, termCur);
+    } else {
+        target.appendChild(div);
+    }
     // 维护“未结束的接收行”状态：opts.open 的 recv 行可接受后续数据合并，
     // 其余行（send/sys/hex/普通 recv）都会关闭当前打开行，避免跨输出合并
     var m = monitors[mid];
@@ -3326,7 +3337,13 @@ function appendOutput(mid, type, text, opts) {
 function flushBatch(mid, fragment) {
     var el = document.getElementById(mid + '-output');
     if (!el || !fragment) return;
-    el.appendChild(fragment);
+    // 终端模式下，批量数据插到终端当前行之前
+    var termCur = _terminalBuffers[mid] && _terminalBuffers[mid].lineEl;
+    if (termCur && termCur.parentNode === el) {
+        el.insertBefore(fragment, termCur);
+    } else {
+        el.appendChild(fragment);
+    }
     var maxLines = 10000;
     var softLimit = 15000;
     // 用户在顶部查看历史或有选区时，跳过清理
@@ -3398,6 +3415,20 @@ function appendRecvText(mid, decoded, frag) {
     var body = endsWithNl ? combined.replace(/\n+$/, '') : combined;
     var parts = body === '' ? [] : body.split('\n');
 
+    // 终端模式：未结束行作为"当前行提示符"，完整行作为设备输出（插到当前行之前）
+    if (_terminalBuffers[mid] && _terminalBuffers[mid].lineEl) {
+        m._recvPartial = (endsWithNl || parts.length === 0) ? '' : parts[parts.length - 1];
+        var fullParts = endsWithNl ? parts : parts.slice(0, parts.length - 1);
+        for (var k = 0; k < fullParts.length; k++) {
+            appendOutput(mid, 'recv', fullParts[k] === '' ? '' : fullParts[k], { fragment: frag });
+        }
+        // 未结束行（提示符）→ 终端当前行提示符
+        if (!endsWithNl && parts.length > 0 && parts[parts.length - 1] !== '') {
+            setTermPrompt(mid, parts[parts.length - 1]);
+        }
+        return;
+    }
+
     if (parts.length === 0) {
         // 纯换行：已有打开行则关闭，否则渲染一个空行
         if (m._recvPartialOpen) closeRecvPartial(m);
@@ -3446,11 +3477,19 @@ function resetRecvStream(mid) {
     if (!m) return;
     closeRecvPartial(m);
     m._recvDecoder = null;
+    if (_terminalBuffers[mid]) setTermPrompt(mid, ''); // 终端模式：清空提示符
 }
 
 function clearLog(mid) {
     var el = document.getElementById(mid + '-output');
-    el.innerHTML = '';
+    var termCur = _terminalBuffers[mid] && _terminalBuffers[mid].lineEl;
+    if (termCur && termCur.parentNode === el) {
+        // 终端模式：清空输出但保留当前行（提示符+输入框）
+        Array.from(el.childNodes).forEach(function(n) { if (n !== termCur) n.remove(); });
+        el.appendChild(termCur);
+    } else {
+        el.innerHTML = '';
+    }
     el._lineCount = 0;
     // 同时清空紧凑存储
     if (monitors[mid]) {
@@ -3459,6 +3498,7 @@ function clearLog(mid) {
         monitors[mid]._bufferStart = 0;
         closeRecvPartial(monitors[mid]);
     }
+    if (_terminalBuffers[mid]) setTermPrompt(mid, '');
 }
 
 // ===== 紧凑存储辅助函数 =====
@@ -4471,7 +4511,8 @@ function applyMonitorConfig(mid, mc) {
     }
     if (mc.btnScroll !== undefined)       setBtn(mid + '-btnScroll', mc.btnScroll);
     if (mc.btnAutoReconnect !== undefined) setBtn(mid + '-btnAutoReconnect', mc.btnAutoReconnect);
-    if (mc.btnSendLE !== undefined)        setBtn(mid + '-btnSendLE', mc.btnSendLE);
+    // 终端模式是交互式会话状态，不随配置自动恢复为"开"，否则按钮显示开启但实际未进入终端模式
+    setBtn(mid + '-btnSendLE', false);
     if (mc.btnTs !== undefined)            setBtn(mid + '-btnTs', mc.btnTs);
     if (mc.btnEcho !== undefined)          setBtn(mid + '-btnEcho', mc.btnEcho);
     if (mc.btnLineNum !== undefined) {
@@ -5935,6 +5976,47 @@ function wslPathInUse(path) {
     });
 }
 
+/* ===== WSL 映射授权窗口 ===== */
+// 映射设备若需管理员权限，弹出独立的授权确认窗口（Promise<boolean>）
+function showWslMapApproval(device, distro) {
+    return new Promise(function(resolve) {
+        var old = document.getElementById('wsl-map-approval-overlay');
+        if (old) old.remove();
+        var overlay = document.createElement('div');
+        overlay.id = 'wsl-map-approval-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;';
+        // 目标设备：端口号（设备名）。无端口时仅显示设备名或 BUSID。
+        var portText = (device.port && device.port !== '-') ? escapeHtml(device.port) : '';
+        var nameText = escapeHtml((device.name || '').trim());
+        var deviceLabel = portText ? (portText + '（' + nameText + '）') : (nameText || escapeHtml(device.busid || ''));
+        overlay.innerHTML =
+            '<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;width:380px;max-width:92vw;box-shadow:0 12px 40px rgba(0,0,0,0.5);overflow:hidden;">' +
+                '<div style="background:var(--toolbar-bg);border-bottom:1px solid var(--border);padding:12px 16px;font-size:14px;font-weight:600;color:var(--text-b);">授权确认</div>' +
+                '<div style="padding:16px 20px 6px;font-size:13px;color:var(--text);line-height:1.6;">' +
+                    '<div style="margin-bottom:10px;">将设备映射到 WSL 需要<b style="color:var(--accent-orange);font-weight:600;">管理员权限授权</b>。</div>' +
+                    '<div style="font-size:15px;font-weight:600;color:var(--text-b);">' + deviceLabel + '</div>' +
+                '</div>' +
+                '<div style="display:flex;justify-content:flex-end;gap:10px;padding:14px 16px;border-top:1px solid var(--border);">' +
+                    '<button id="wsl-map-approval-cancel" style="padding:6px 14px;border-radius:4px;border:1px solid var(--border);background:var(--surface-1);color:var(--text);font-size:12px;cursor:pointer;">取消</button>' +
+                    '<button id="wsl-map-approval-ok" style="padding:6px 14px;border-radius:4px;border:1px solid var(--btn-p);background:var(--btn-p);color:#fff;font-size:12px;cursor:pointer;font-weight:600;">授权并映射</button>' +
+                '</div>' +
+            '</div>';
+        document.body.appendChild(overlay);
+        var settled = false;
+        function settle(val) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(autoTimer);
+            if (overlay && overlay.parentNode) overlay.remove();
+            resolve(val);
+        }
+        var autoTimer = setTimeout(function() { settle(false); }, 60000);
+        overlay.querySelector('#wsl-map-approval-ok').onclick = function() { settle(true); };
+        overlay.querySelector('#wsl-map-approval-cancel').onclick = function() { settle(false); };
+        overlay.addEventListener('click', function(ev) { if (ev.target === overlay) settle(false); });
+    });
+}
+
 async function toggleWslMapping(mid, idx, checked) {
     if (!_wslRunning) return;
     var device = _wslDevices[idx];
@@ -5947,11 +6029,22 @@ async function toggleWslMapping(mid, idx, checked) {
     
     if (checked) {
         try {
-            await invoke('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null });
+            // 两阶段映射：先探测是否需要管理员权限；需要时弹出独立授权窗口，确认后才提权执行
+            var res = await invoke('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null, authorized: false });
+            if (res && res.needsApproval) {
+                var approved = await showWslMapApproval(device, _wslTargetDist || '');
+                if (!approved) {
+                    delete _wslBusy[device.busid];
+                    renderWslDeviceList(mid);
+                    return;
+                }
+                res = await invoke('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null, authorized: true });
+            }
             device.status = 'mapped';
+            showToast((res && res.message) || '设备已映射到 WSL', 'success');
         } catch (e) {
             console.error('[WSL] 映射失败:', e);
-            showToast('映射失败: ' + e, 'error');
+            showToast(e + '', 'error');
         }
     } else {
         try {
@@ -6058,7 +6151,7 @@ async function autoMapCheck() {
                 var autoAttachId = d.hasCom ? d.port : d.busid;
                 (function(device, attachId) {
                     tasks.push(
-                        invoke('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null })
+                        invoke('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null, authorized: true })
                             .then(function(result) {
                                 device.status = 'mapped';
                                 delete _wslAutoFailCount[device.vidpid];
@@ -6212,7 +6305,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     console.log('[device-changed] refreshing ports at', Date.now());
                     document.querySelectorAll('.monitor-pane').forEach(function(pane) {
                         var mid = pane.id.replace('pane-', '');
-                        if (!monitors[mid] || !monitors[mid].isConnected) refreshPorts(mid, true);
+                        if (!monitors[mid] || monitors[mid].isConnected) return;
+                        // 区分 WSL / Windows 监视器：WSL 监视器刷新 WSL 设备列表，Windows 监视器刷新 COM 列表。
+                        // 此前统一用 refreshPorts，会导致授权期间（设备变更事件）把 WSL 监视器端口填成 Windows COM 列表
+                        if (monitors[mid].isWsl) {
+                            refreshWslMonPorts(mid);
+                        } else {
+                            refreshPorts(mid, true);
+                        }
                     });
                     // WSL 页面打开时也刷新设备列表
                     var wslList = document.querySelector('[id$="-wslDeviceList"]');

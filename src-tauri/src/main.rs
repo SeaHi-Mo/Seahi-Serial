@@ -1475,9 +1475,10 @@ fn run_usbipd_list_elevated() -> Option<String> {
     let _ = std::fs::remove_file(&tmp_result);
     let encoded = encode_ps_command(&ps_script);
     // 不再使用 -Wait：UAC 弹窗未被确认时 -Wait 会永久挂起，导致界面卡死
+    // -WindowStyle Hidden：隐藏提权后 PowerShell 的控制台窗口，避免"授权终端一闪而过"
     let _ = hidden_command("powershell")
         .args(["-NonInteractive", "-Command"])
-        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs", encoded))
+        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs -WindowStyle Hidden", encoded))
         .status();
     // 轮询结果文件直到超时（5 秒），UAC 未确认也不会永久阻塞
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -2335,19 +2336,85 @@ fn set_wsl_rts(state: tauri::State<'_, WslSerialState>, monitor_id: String, leve
     set_wsl_signal_cmd(state, monitor_id, level, "RTS")
 }
 
+/// 设备映射操作结果。当需要管理员权限且在授权确认之前（authorized=false），
+/// 返回 needs_approval=true（不触发 UAC），由前端弹独立授权窗口让用户确认；
+/// 用户确认后以 authorized=true 再次调用，后端才真正提权执行。
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MapWslOutcome {
+    needs_approval: bool,
+    message: String,
+    #[serde(default)]
+    busid: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    port: String,
+}
+
+/// 解析 usbipd 行，返回 (设备名, COM口)，用于授权窗口的展示。
+fn parse_usbipd_line(line: &str) -> (String, String) {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    let name = if parts.len() >= 3 {
+        let name_parts = &parts[2..];
+        let end = if name_parts.last().map(|s| s.to_lowercase()) == Some("shared".into()) {
+            let last2 = name_parts.len();
+            if last2 >= 2 && name_parts[last2 - 2].to_lowercase() == "not" {
+                last2 - 2
+            } else {
+                last2 - 1
+            }
+        } else if name_parts.last().map(|s| matches!(s.to_lowercase().as_str(), "attached" | "connected")) == Some(true) {
+            name_parts.len() - 1
+        } else {
+            name_parts.len()
+        };
+        if end > 0 {
+            name_parts[..end].join(" ")
+        } else {
+            format!("USB Device ({})", parts[0])
+        }
+    } else {
+        String::new()
+    };
+    let port = if let Some(com_match) = line.find("COM") {
+        let rest = &line[com_match..];
+        if let Some(ep) = rest.find(|c: char| !c.is_alphanumeric()) {
+            rest[..ep].to_string()
+        } else {
+            rest.to_string()
+        }
+    } else {
+        String::new()
+    };
+    (name, port)
+}
+
+/// 判断提权结果文件是否已写入"终态标记"（成功操作成功 / bind失败 / attach失败 / 异常）。
+/// 用于避免在 usbipd 尚未执行完毕、结果还不完整时提前读取，导致"已成功却报失败"。
+fn is_wsl_result_terminal(content: &str) -> bool {
+    content.contains("操作成功")
+        || content.contains("bind失败")
+        || content.contains("attach失败")
+        || content.contains("异常")
+}
+
 /// 将指定串口对应的 USB 设备映射到 WSL
 /// 通过 usbipd 工具实现：
 ///   1. usbipd list 找到目标端口的 busid
 ///   2. 检查绑定状态，已绑定则直接 attach（无需管理员权限）
 ///   3. 未绑定则通过 PowerShell 提权执行 bind + attach
+/// authorized=false 时仅在需要提权的情况下返回需授权标志（不触发 UAC），
+/// 由前端弹独立授权窗口让用户确认；用户确认后以 authorized=true 再次调用，
+/// 此时后端才真正提权执行（提权进程窗口隐藏，避免控制台一闪而过）。
 #[tauri::command]
-async fn attach_port_to_wsl(port_name: String, distro: Option<String>) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || attach_port_to_wsl_blocking(port_name, distro))
+async fn attach_port_to_wsl(port_name: String, distro: Option<String>, authorized: bool) -> Result<MapWslOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || attach_port_to_wsl_blocking(port_name, distro, authorized))
         .await
         .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
-fn attach_port_to_wsl_blocking(port_name: String, distro: Option<String>) -> Result<String, String> {
+fn attach_port_to_wsl_blocking(port_name: String, distro: Option<String>, authorized: bool) -> Result<MapWslOutcome, String> {
     // 目标 WSL 发行版：多发行版时 usbipd 默认附加到默认发行版，需显式指定（#19）
     let distro_args: Vec<String> = match distro.as_deref().map(str::trim) {
         Some(d) if !d.is_empty() => vec!["--distribution".to_string(), d.to_string()],
@@ -2438,7 +2505,13 @@ fn attach_port_to_wsl_blocking(port_name: String, distro: Option<String>) -> Res
 
     // 已经映射到WSL，直接返回成功
     if target_line.to_uppercase().contains("ATTACHED") {
-        return Ok(format!("已将 {} (busid: {}) 映射到 WSL", port_name, busid));
+        return Ok(MapWslOutcome {
+            needs_approval: false,
+            message: format!("已将 {} (busid: {}) 映射到 WSL", port_name, busid),
+            busid: busid.clone(),
+            name: String::new(),
+            port: String::new(),
+        });
     }
 
     // 4. 如果已绑定，尝试直接 attach（无需管理员权限）
@@ -2452,7 +2525,13 @@ fn attach_port_to_wsl_blocking(port_name: String, distro: Option<String>) -> Res
         match output {
             Ok(out) if out.status.success() => {
                 dbg_log(&format!("Direct attach succeeded for {}", busid));
-                return Ok(format!("已将 {} (busid: {}) 映射到 WSL", port_name, busid));
+                return Ok(MapWslOutcome {
+                    needs_approval: false,
+                    message: format!("已将 {} (busid: {}) 映射到 WSL", port_name, busid),
+                    busid: busid.clone(),
+                    name: String::new(),
+                    port: String::new(),
+                });
             }
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -2468,7 +2547,21 @@ fn attach_port_to_wsl_blocking(port_name: String, distro: Option<String>) -> Res
         }
     }
 
-    // 5. 未绑定 或 直接attach失败，需要管理员权限
+    // 5. 需要管理员权限。首次映射时先让用户在独立的授权窗口确认，不直接触发 UAC，
+    //    避免控制台一闪而过与"可能用户取消"的误报。
+    if !authorized {
+        let (line_name, line_port) = parse_usbipd_line(&target_line);
+        dbg_log(&format!("Device {} needs elevation, requesting user approval", busid));
+        return Ok(MapWslOutcome {
+            needs_approval: true,
+            message: "映射该设备需要管理员权限授权，请在授权窗口中确认".to_string(),
+            busid: busid.clone(),
+            name: line_name,
+            port: line_port,
+        });
+    }
+
+    // 6. 未绑定 或 直接attach失败，需要管理员权限
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let unique_id = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -2487,10 +2580,10 @@ fn attach_port_to_wsl_blocking(port_name: String, distro: Option<String>) -> Res
             "try {{ \
                $out = & usbipd.exe attach --wsl --busid {busid} {distro} 2>&1 | Out-String; \
                $out | Out-File -FilePath '{result}' -Encoding UTF8; \
-               if ($LASTEXITCODE -ne 0) {{ exit 1 }}; \
+               if ($LASTEXITCODE -ne 0) {{ 'attach失败，退出码: ' + $LASTEXITCODE | Out-File -FilePath '{result}' -Encoding UTF8 -Append; exit 1 }}; \
                '操作成功' | Out-File -FilePath '{result}' -Encoding UTF8 -Append \
              }} catch {{ \
-               $_.Exception.Message | Out-File -FilePath '{result}' -Encoding UTF8; \
+               '异常: ' + $_.Exception.Message | Out-File -FilePath '{result}' -Encoding UTF8; \
                exit 1 \
              }}",
             busid = busid,
@@ -2534,19 +2627,34 @@ fn attach_port_to_wsl_blocking(port_name: String, distro: Option<String>) -> Res
     dbg_log(&format!("PowerShell elevated attach: busid={}", busid));
 
     // 不再使用 -Wait：UAC 弹窗未被确认时 -Wait 会永久挂起，导致界面卡死
-    let _ = hidden_command("powershell")
+    // -WindowStyle Hidden：隐藏提权后 PowerShell 的控制台窗口，避免"授权终端一闪而过"
+    // Start-Process -Verb RunAs 会阻塞等待 UAC 授权结果。启动退出码不用于立即判定成败
+    // （有些环境下成功时退出码也可能非零），而是：启动非零用较短等待，零用较长等待；
+    // 最终一律以结果文件内容判断成功/失败，避免误报"授权失败"。
+    let launch_status = hidden_command("powershell")
         .args(["-NonInteractive", "-Command"])
-        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs", encoded))
+        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs -WindowStyle Hidden", encoded))
         .status()
         .map_err(|e| format!("提权启动失败: {}", e))?;
+    dbg_log(&format!("Elevated attach launch: ok={}, code={:?}", launch_status.success(), launch_status.code()));
 
-    // 轮询结果文件直到超时（15 秒），用户不确认 UAC 也不会永久阻塞
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while !tmp_result.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
-    std::thread::sleep(std::time::Duration::from_millis(200)); // 等待文件写入完成
-    let result_exists = tmp_result.exists();
+    // 启动成功给足时间（60s）完成；启动非零（可能被拒绝 UAC）用较短等待，但结果文件出现仍视为成功
+    let poll_secs: u64 = if launch_status.success() { 60 } else { 15 };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(poll_secs);
+    // 轮询直到结果文件写入完毕（出现终态标记），避免读取到 usbipd 执行中途的内容，
+    // 否则会因尚未写入"操作成功"而误判失败（实际设备已成功映射）。
+    let result_exists = loop {
+        if std::time::Instant::now() >= deadline { break tmp_result.exists(); }
+        if !tmp_result.exists() {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            continue;
+        }
+        if let Ok(content) = std::fs::read_to_string(&tmp_result) {
+            if is_wsl_result_terminal(&content) { break true; }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    };
+    std::thread::sleep(std::time::Duration::from_millis(150)); // 等待最后一次写入落盘
 
     // 7. 读取提权进程写入的结果文件
     dbg_log(&format!("Reading result file: {:?}", tmp_result));
@@ -2562,16 +2670,31 @@ fn attach_port_to_wsl_blocking(port_name: String, distro: Option<String>) -> Res
 
     // 检查是否成功 - 通过结果内容判断
     if result_content.contains("操作成功") {
-        Ok(format!("已将 {} (busid: {}) 绑定并映射到 WSL", port_name, busid))
+        Ok(MapWslOutcome {
+            needs_approval: false,
+            message: format!("已将 {} (busid: {}) 绑定并映射到 WSL", port_name, busid),
+            busid: busid.clone(),
+            name: String::new(),
+            port: String::new(),
+        })
     } else if result_exists && result_content.is_empty() {
         // 已绑定时 attach 成功不会写入 "操作成功"，但结果文件存在且无输出表示成功
-        Ok(format!("已将 {} (busid: {}) 绑定并映射到 WSL", port_name, busid))
-    } else if result_content.contains("绑定失败") || result_content.contains("附加失败") {
+        Ok(MapWslOutcome {
+            needs_approval: false,
+            message: format!("已将 {} (busid: {}) 绑定并映射到 WSL", port_name, busid),
+            busid: busid.clone(),
+            name: String::new(),
+            port: String::new(),
+        })
+    } else if result_content.contains("bind失败") || result_content.contains("attach失败") || result_content.contains("异常") {
         report_error(&format!("WSL映射失败: {}", result_content), "wsl_attach");
-        Err(format!("映射失败: {}", result_content))
+        Err(format!("usbipd 映射失败: {}", result_content))
+    } else if !launch_status.success() {
+        report_error("WSL映射未完成，UAC 可能被拒绝", "wsl_attach");
+        Err("未获得管理员授权，已取消映射（UAC 被拒绝）".to_string())
     } else {
-        report_error("WSL映射操作未完成，可能用户取消了UAC或超时", "wsl_attach");
-        Err("操作未完成，可能用户取消了管理员权限请求或超时".to_string())
+        report_error("WSL映射操作未完成，可能超时", "wsl_attach");
+        Err("未获得管理员授权（可能取消了 UAC 或操作超时），请重试".to_string())
     }
 }
 
@@ -2636,9 +2759,10 @@ fn run_usbipd_detach_elevated(busid: &str) -> Option<String> {
     let _ = std::fs::remove_file(&tmp_result);
     let encoded = encode_ps_command(&ps_script);
     // 不再使用 -Wait：UAC 弹窗未被确认时 -Wait 会永久挂起，导致界面卡死
+    // -WindowStyle Hidden：隐藏提权后 PowerShell 的控制台窗口，避免"授权终端一闪而过"
     let _ = hidden_command("powershell")
         .args(["-NonInteractive", "-Command"])
-        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs", encoded))
+        .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs -WindowStyle Hidden", encoded))
         .status();
     // 轮询结果文件直到超时（5 秒），UAC 未确认也不会永久阻塞
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
