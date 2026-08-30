@@ -1882,6 +1882,8 @@ const invoke = _safeInvoke;
 window.addEventListener('error', function(e) {
     try {
         var msg = (e && e.message) ? e.message : String((e && e.error) || 'unknown error');
+        // 追加堆栈，便于定位（B4）
+        if (e && e.error && e.error.stack) { msg += '\n' + e.error.stack; }
         var ctx = (e && e.filename || '').replace(/^.*[\\/]/, '') + ':' + (e.lineno || 0) + ':' + (e.colno || 0);
         try {
             if (typeof monitors !== 'undefined' && monitors) {
@@ -1897,8 +1899,21 @@ window.addEventListener('error', function(e) {
 });
 window.addEventListener('unhandledrejection', function(e) {
     var reason = (e && e.reason) || 'unknown';
-    try { _safeInvoke('report_js_error', { error: 'UnhandledPromise: ' + String(reason), context: 'promise' }).catch(function() {}); } catch (_) {}
+    try {
+        var msg = 'UnhandledPromise: ' + String(reason);
+        if (reason && reason.stack) { msg += '\n' + reason.stack; }
+        _safeInvoke('report_js_error', { error: msg, context: 'promise' }).catch(function() {});
+    } catch (_) {}
 });
+
+// 统一前端错误上报入口（B1/B2/B3）：把 showToast/console/空 catch 处理的真实错误接入后端上报服务
+function reportError(errMsg, ctx) {
+    try {
+        var msg = (errMsg && errMsg.stack) ? (errMsg.message || String(errMsg)) + '\n' + errMsg.stack :
+                  (errMsg && errMsg.message) ? errMsg.message : String(errMsg);
+        _safeInvoke('report_js_error', { error: msg, context: ctx || 'frontend' }).catch(function() {});
+    } catch (_) {}
+}
 
 /* ===== 启动兜底页：初始化失败/超时/桥接不可用时显示 ===== */
 function showFatalError(title, detail) {
@@ -2316,18 +2331,26 @@ function setBaud(mid, val) {
             try {
                 if (isWsl) { await invoke('close_wsl_serial', { monitorId: mid }); }
                 else { await invoke('close_port', { monitorId: mid }); }
-            } catch (_) {}
-            if (!m) { return; }
-            m.isConnected = false;
-            stopReading(mid);
-            updateMonitorUI(mid, false);
-            if (isWsl) { await connectWslPort(mid); }
-            else { await connectPort(mid, true); }
-            if (!m.isConnected && savedPort) {
-                if (isWsl) { reconnectWslPort(mid, savedPort); }
-                else { reconnectPort(mid, savedPort, 1); }
+                if (!m) { return; }
+                m.isConnected = false;
+                stopReading(mid);
+                updateMonitorUI(mid, false);
+                if (isWsl) { await connectWslPort(mid); }
+                else { await connectPort(mid, true); }
+                if (!m.isConnected && savedPort) {
+                    if (isWsl) { reconnectWslPort(mid, savedPort); }
+                    else { reconnectPort(mid, savedPort, 1); }
+                }
+            } catch (e) {
+                console.error('[setBaud] 重连失败:', e);
+                if (m) { try { reportError(e, 'setBaud'); } catch (_) {} }
+            } finally {
+                // 无论成败都复位，避免 _reconnecting 卡死导致后续波特率/端口切换被永久拦截（E7）
+                if (m) m._reconnecting = false;
+                var btn2 = document.getElementById(mid + '-btnStart');
+                if (btn2) { btn2.disabled = false; btn2.innerHTML = '开始监控'; }
+                if (m) updateMonitorUI(mid, m.isConnected);
             }
-            m._reconnecting = false;
         })();
     }
 }
@@ -2463,7 +2486,7 @@ async function refreshPorts(mid, force) {
         }
         // 清除已恢复的端口标记
         if (monitors[mid]) monitors[mid]._savedPort = '';
-    } catch (e) { appendOutput(mid, 'err', '刷新端口失败: ' + e); }
+    } catch (e) { appendOutput(mid, 'err', '刷新端口失败: ' + e); reportError(e, 'refreshPorts'); }
 }
 
 function setPortSel(mid, val, el) {
@@ -2841,6 +2864,7 @@ async function connectPort(mid, silent) {
         if (btn) { btn.disabled = false; }
         updateMonitorUI(mid, false);
         if (!silent) showToast('连接失败: ' + e, 'error');
+        reportError(e, 'connectPort');
     }
 }
 
@@ -2855,6 +2879,7 @@ async function disconnectPort(mid) {
         await invoke('close_port', { monitorId: mid });
     } catch (e) {
         showToast('断开失败: ' + e, 'error');
+        reportError(e, 'disconnectPort');
     }
     monitors[mid].isConnected = false;
     monitors[mid].portName = '';
@@ -2921,7 +2946,7 @@ function startReading(mid) {
         if (reading || !monitors[mid] || !monitors[mid].isConnected) { if (!monitors[mid] || !monitors[mid].isConnected) stopReading(mid); return; }
         reading = true;
         try {
-            var data = await invoke('read_data', { monitorId: mid });
+            var data = await invokeTimeout('read_data', { monitorId: mid }, 3000);
             if (data && data.length > 0) {
                 // 渲染异常只记录日志，避免误触发断开/重连逻辑导致界面异常（#13）
                 try {
@@ -2944,10 +2969,12 @@ function startReading(mid) {
                     console.warn('[recv] 数据显示异常:', e);
                 }
             }
-            // 读取工作流触发事件
-            var wfEvents = await invoke('read_workflow_events', { monitorId: mid });
-            for (var j = 0; j < wfEvents.length; j++) {
-                appendOutput(mid, 'send', wfEvents[j]);
+            // 读取工作流触发事件（无工作流规则时跳过，减少每 tick 的 IPC）
+            if (monitors[mid] && (monitors[mid].workflows || []).length > 0) {
+                var wfEvents = await invokeTimeout('read_workflow_events', { monitorId: mid }, 3000);
+                for (var j = 0; j < wfEvents.length; j++) {
+                    appendOutput(mid, 'send', wfEvents[j]);
+                }
             }
         } catch (e) {
             // 手动断开或正在重连时不触发自动重连
@@ -3152,7 +3179,7 @@ async function sendData(mid) {
         input.value = '';
         input.focus();
         scheduleConfigSave();
-    } catch (e) { appendOutput(mid, 'err', '发送失败: ' + e); }
+    } catch (e) { appendOutput(mid, 'err', '发送失败: ' + e); reportError(e, 'sendData'); }
 }
 
 /* ===== 发送历史下拉 ===== */
@@ -3623,8 +3650,8 @@ function bufferGetLine(m, index) {
     var textBytes = m._textData.slice(start + tsLen, end);
     return {
         type: _typeNames[m._textTypes[index]],
-        ts: new TextDecoder().decode(tsBytes),
-        text: new TextDecoder().decode(textBytes)
+        ts: _textDecoder.decode(tsBytes),
+        text: _textDecoder.decode(textBytes)
     };
 }
 
@@ -3993,7 +4020,7 @@ function removeWfAction(mid, ruleId, idx) {
 function saveWorkflowConfig(mid) {
     if (!monitors[mid]) return;
     var rules = monitors[mid].workflows || [];
-    invoke('save_workflows', { monitorId: mid, workflowsJson: JSON.stringify(rules) }).catch(function() {});
+    invoke('save_workflows', { monitorId: mid, workflowsJson: JSON.stringify(rules) }).catch(function(e) { console.warn('保存工作流失败:', e); reportError(e, 'saveWorkflowConfig'); });
     scheduleConfigSave();
 }
 
@@ -4275,6 +4302,7 @@ async function checkForUpdate() {
         }
     } catch (e) {
         console.warn('检查更新失败:', e);
+        reportError(e, 'checkForUpdate');
     }
 }
 
@@ -4559,6 +4587,7 @@ function scheduleConfigSave() {
         var cfg = collectConfig();
         invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) {
             console.warn('保存配置失败:', e);
+            reportError(e, 'scheduleConfigSave');
         });
     }, 500);
 }
@@ -4710,7 +4739,7 @@ async function loadAndApplyConfig() {
                 if (!cfg.monitors[mid].workflows) cfg.monitors[mid].workflows = [];
             });
             cfg.version = 2;
-            invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function() {});
+            invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) { console.warn('保存配置失败:', e); reportError(e, 'save-config-v2'); });
         }
         // 恢复主题
         if (cfg.themeStyle) _currentThemeStyle = cfg.themeStyle;
@@ -5290,7 +5319,7 @@ function startWslReading(mid) {
         if (reading || !monitors[mid] || !monitors[mid].isConnected) { if (!monitors[mid] || !monitors[mid].isConnected) stopReading(mid); return; }
         reading = true;
         try {
-            var data = await invoke('read_wsl_serial', { monitorId: mid });
+            var data = await invokeTimeout('read_wsl_serial', { monitorId: mid }, 3000);
             if (data && data.length > 0) {
                 // 渲染异常只记录日志，避免误触发断开/重连逻辑导致界面异常（#13）
                 try {
@@ -5438,7 +5467,7 @@ async function refreshWslMonPorts(wmid) {
                 return { name: path, label: path + (name ? '(' + name + ')' : ''), deviceName: name };
             });
         }
-    } catch (e) { console.error('[WSL] 获取串口设备失败:', e); }
+    } catch (e) { console.error('[WSL] 获取串口设备失败:', e); reportError(e, 'refreshWslMonPorts'); }
     drop.innerHTML = '';
     if (ports.length === 0) {
         drop.innerHTML = '<div class="sel-opt" style="color:var(--text-placeholder);">无可用端口</div>';
@@ -5767,6 +5796,7 @@ function wslDistAction(cmd, dist) {
 // WSL设备数据
 var _wslDevices = [];
 var _wslBusy = {}; // { busid: true } 正在操作中的设备
+var _wslRefreshing = false; // 单飞：避免取消映射后多路重扫并发挤压（E9）
 var _wslSelectedBusid = null; // 选中的设备行
 var _wslAutoMap = {}; // { vidpid: portName } 开启自动映射的设备（按 VID:PID 匹配，而非 busid）
 var _wslAutoFailCount = {}; // { vidpid: n } 自动映射连续失败次数（>=3 暂停重试）
@@ -5834,6 +5864,9 @@ async function loadWslDevices(mid) {
         console.error('[WSL] 未找到设备列表容器');
         return;
     }
+    // 单飞：取消映射后多路重扫会同时触发，避免并发挤压 + 全量 DOM 重建（E9）
+    if (_wslRefreshing) return;
+    _wslRefreshing = true;
     
     try {
         var devices = await invokeTimeout('list_wsl_devices', null, 15000);
@@ -5855,6 +5888,9 @@ async function loadWslDevices(mid) {
     } catch (e) {
         console.error('[WSL] 加载设备列表失败:', e);
         container.innerHTML = '<div style="color:var(--accent-red);text-align:center;padding:20px;">加载失败: ' + e + '</div>';
+        reportError(e, 'loadWslDevices');
+    } finally {
+        _wslRefreshing = false;
     }
 }
 
@@ -5926,7 +5962,8 @@ function renderWslDeviceList(mid) {
         var safeSub = escapeHtml(sub);
         var status = wslDeviceStatus(device);
         var autoOn = device.vidpid ? !!_wslAutoMap[device.vidpid] : false;
-        var autoDisabled = isMapped || !_wslRunning;
+        // 自动映射开关始终可切换（即使当前未识别到 WSL 运行）；仅当该设备正在映射操作中时禁用
+        var autoDisabled = isBusy;
 
         html += '<div class="wsl-device-row' + (selected ? ' selected' : '') + '" style="display:flex;align-items:center;padding:5px 10px 5px 14px;min-height:48px;gap:14px;border-radius:4px;background:' + rowBg + ';border:1px solid ' + rowBorder + ';' + (isBusy ? 'opacity:0.6;' : '') + '" onclick="selectWslRow(\'' + safeBusid + '\',event)">';
         // BUSID
@@ -5965,8 +6002,13 @@ function renderWslDeviceList(mid) {
 }
 
 // 行选中（点击交互控件时不触发）
+// 说明：自动映射开关是 <label class="wsl-auto-toggle">（内含滑块 <span>），映射复选框是
+// 裸 <input class="wsl-checkbox">。点击这些控件时，事件会冒泡到行级 onclick，
+// 若在此处重新 render 整行列表会重建 DOM，干扰 checkbox 的 change 事件，
+// 使 toggleAutoMap 不触发/不稳定，导致开关显示状态无法切换、自动映射无法开启。
+// 故除 input/button 外，也须匹配 label（覆盖开关 label 及其内滑块 span）。
 function selectWslRow(busid, ev) {
-    if (ev && ev.target && ev.target.closest('input,button')) return;
+    if (ev && ev.target && ev.target.closest('input,button,label')) return;
     _wslSelectedBusid = (_wslSelectedBusid === busid) ? null : busid;
     renderWslDeviceList('main');
 }
@@ -6038,27 +6080,18 @@ async function toggleWslMapping(mid, idx, checked) {
     
     var attachId = device.hasCom ? device.port : device.busid;
     
-    if (checked) {
-        try {
+    try {
+        if (checked) {
             // 两阶段映射：先探测是否需要管理员权限；需要时弹出独立授权窗口，确认后才提权执行
-            var res = await invoke('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null, authorized: false });
+            var res = await invokeTimeout('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null, authorized: false }, 60000);
             if (res && res.needsApproval) {
                 var approved = await showWslMapApproval(device, _wslTargetDist || '');
-                if (!approved) {
-                    delete _wslBusy[device.busid];
-                    renderWslDeviceList(mid);
-                    return;
-                }
-                res = await invoke('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null, authorized: true });
+                if (!approved) { return; }
+                res = await invokeTimeout('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null, authorized: true }, 60000);
             }
             device.status = 'mapped';
             showToast((res && res.message) || '设备已映射到 WSL', 'success');
-        } catch (e) {
-            console.error('[WSL] 映射失败:', e);
-            showToast(e + '', 'error');
-        }
-    } else {
-        try {
+        } else {
             // 如果 WSL 监视器正在使用该设备的 WSL 端口，先关闭连接释放资源
             // forEach 不等待 async 回调，需收集 Promise 后统一 await，避免断开与 detach 竞态
             await Promise.all(getWslMonitorIds().map(function(wmid) {
@@ -6072,14 +6105,17 @@ async function toggleWslMapping(mid, idx, checked) {
                 }
                 return Promise.resolve();
             }));
-            await invoke('detach_port_from_wsl', { busid: device.busid });
+            await invokeTimeout('detach_port_from_wsl', { busid: device.busid }, 60000);
             device.status = 'unmapped';
-        } catch (e) { console.error('[WSL] 断开失败:', e); showToast('断开失败: ' + e, 'error'); }
+        }
+    } catch (e) { console.error('[WSL] 映射/断开失败:', e); showToast('操作失败: ' + e, 'error'); reportError(e, 'toggleWslMapping'); }
+    finally {
+        // 无论成功/失败/取消授权都释放 busy，避免该设备行永久禁用
+        delete _wslBusy[device.busid];
+        renderWslDeviceList(mid);
     }
     
-    delete _wslBusy[device.busid];
-    renderWslDeviceList(mid);
-    // 映射/断开后自动刷新所有 WSL 监视器的端口列表
+    // 映射/断开后自动刷新所有 WSL 监视器的端口列表（授权取消的 early return 不会跑到这里）
     setTimeout(function() { getWslMonitorIds().forEach(function(wmid) { refreshWslMonPorts(wmid); }); }, 1000);
     // 后台静默刷新：合并最新数据并解析 WSL 路径（tty 节点出现有延迟，自动重试）
     retryResolveWslPaths(mid, 0);
@@ -6087,8 +6123,11 @@ async function toggleWslMapping(mid, idx, checked) {
 
 // 拉取最新 WSL 设备列表并合并到当前列表（保留 wslPath），完成后重新渲染
 async function refreshWslDeviceListData(mid) {
+    // 单飞：与 loadWslDevices 共用锁，避免取消映射后多路重扫并发（E9）
+    if (_wslRefreshing) return;
+    _wslRefreshing = true;
     try {
-        var fresh = await invoke('list_wsl_devices');
+        var fresh = await invokeTimeout('list_wsl_devices', null, 15000);
         var freshMap = {};
         fresh.forEach(function(d) { freshMap[d.busid] = d; });
         // 保留现有设备，用 fresh 数据更新状态
@@ -6108,7 +6147,12 @@ async function refreshWslDeviceListData(mid) {
         });
         sortWslDevices();
         renderWslDeviceList(mid);
-    } catch (e) {}
+    } catch (e) {
+        console.error('[WSL] 刷新设备列表失败:', e);
+        reportError(e, 'refreshWslDeviceListData');
+    } finally {
+        _wslRefreshing = false;
+    }
 }
 
 // 已映射设备若尚未解析出 WSL 路径，轮询重试（最多 4 次，间隔 1s）
@@ -6124,7 +6168,8 @@ function retryResolveWslPaths(mid, attempt) {
 
 /* ===== 自动映射 ===== */
 function toggleAutoMap(vidpid, portName, on) {
-    if (!_wslRunning) return;
+    // 允许随时配置自动映射（即使当前未识别到 WSL 运行）；真正的自动映射由 autoMapCheck
+    // 依据后端 list_wsl_devices 返回的 wsl_running 来决定是否执行，无需读这里的 _wslRunning。
     if (on) {
         _wslAutoMap[vidpid] = portName;
         delete _wslAutoFailCount[vidpid];
@@ -6162,7 +6207,7 @@ async function autoMapCheck() {
                 var autoAttachId = d.hasCom ? d.port : d.busid;
                 (function(device, attachId) {
                     tasks.push(
-                        invoke('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null, authorized: true })
+                        invokeTimeout('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null, authorized: true }, 60000)
                             .then(function(result) {
                                 device.status = 'mapped';
                                 delete _wslAutoFailCount[device.vidpid];
@@ -6212,7 +6257,9 @@ async function autoMapCheck() {
             setTimeout(function() { refreshWslMonPorts(); }, 1500);
         }
     } catch (e) {
-        // 静默失败，下次轮询重试
+        // 静默失败，下次轮询重试；但接入上报以便诊断自动映射为何失效
+        console.error('[WSL] 自动映射检查异常:', e);
+        reportError(e, 'autoMapCheck');
     }
 }
 
@@ -6337,7 +6384,7 @@ document.addEventListener('DOMContentLoaded', function() {
             window.__TAURI__.event.listen('save-before-exit', function() {
                 if (_saveConfigTimer) { clearTimeout(_saveConfigTimer); _saveConfigTimer = null; }
                 var cfg = collectConfig();
-                invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function() {});
+                invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) { console.warn('退出前保存配置失败:', e); reportError(e, 'save-before-exit'); });
             });
         }
 
@@ -6367,7 +6414,7 @@ document.addEventListener('DOMContentLoaded', function() {
         window.addEventListener('beforeunload', function() {
             if (_saveConfigTimer) { clearTimeout(_saveConfigTimer); _saveConfigTimer = null; }
             var cfg = collectConfig();
-            invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function() {});
+            invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) { console.warn('关闭前保存配置失败:', e); reportError(e, 'beforeunload'); });
         });
     } catch (err) {
         console.error('初始化失败:', err);

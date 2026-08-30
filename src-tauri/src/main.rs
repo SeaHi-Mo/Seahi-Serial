@@ -233,6 +233,10 @@ struct WslShell {
 static WSL_SHELL: Mutex<Option<std::sync::Arc<WslShell>>> = Mutex::new(None);
 /// 标记 shell 需要重建（超时/进程退出后设置，get_wsl_shell 检查此标记）
 static WSL_SHELL_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// 串行化对持久化 WSL shell 的命令执行：shell 的读写是同一根管道，
+/// 并发执行时会因一个个独立读线程各自截取 `___SEAHI_END___` 标记而串音
+/// （A 命令拿到 B 命令的输出）。列表类命令改为 async 并发后必须靠这把锁串行。
+static WSL_SHELL_CMD_LOCK: Mutex<()> = Mutex::new(());
 
 /// 获取或创建持久化 WSL shell（返回 Arc，调用方不持有全局锁）
 fn get_wsl_shell(distro: &str) -> Result<std::sync::Arc<WslShell>, String> {
@@ -273,6 +277,8 @@ fn get_wsl_shell(distro: &str) -> Result<std::sync::Arc<WslShell>, String> {
 fn wsl_shell_exec(distro: &str, cmd: &str, timeout_ms: u64) -> Result<String, String> {
     use std::io::{BufRead, Write};
     use std::sync::mpsc;
+    // 串行执行：同一持久化 shell 的读写必须互斥，否则并发命令会串音
+    let _cmd_guard = WSL_SHELL_CMD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let shell = get_wsl_shell(distro)?;
 
     let marker_start = "___SEAHI_START___";
@@ -577,8 +583,9 @@ struct WslSerialSession {
 }
 
 /// 全局状态：WSL 串口连接（key = monitor_id）
+/// sessions 用 Arc 持有，以便在 spawn_blocking 中克隆移出、且不跨 bridge 等待持锁。
 struct WslSerialState {
-    sessions: Mutex<HashMap<String, WslSerialSession>>,
+    sessions: std::sync::Arc<Mutex<HashMap<String, std::sync::Arc<WslSerialSession>>>>,
 }
 
 // ===== 自动化工作流 =====
@@ -1034,37 +1041,45 @@ fn enumerate_ports() -> Vec<PortInfo> {
 /// 获取所有可用串口列表
 #[cfg(windows)]
 #[tauri::command]
-fn list_ports() -> Vec<PortInfo> {
-    let t0 = std::time::Instant::now();
-    let ports = enumerate_ports();
-    dbg_log(&format!("list_ports: {} ports, {:?}", ports.len(), t0.elapsed()));
-    ports
+async fn list_ports() -> Vec<PortInfo> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let t0 = std::time::Instant::now();
+        let ports = enumerate_ports();
+        dbg_log(&format!("list_ports: {} ports, {:?}", ports.len(), t0.elapsed()));
+        ports
+    })
+    .await
+    .unwrap_or_default()
 }
 
 #[cfg(not(windows))]
 #[tauri::command]
-fn list_ports() -> Vec<PortInfo> {
-    use serialport::SerialPortType;
-    serialport::available_ports()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|p| {
-            let friendly = match &p.port_type {
-                SerialPortType::UsbPort(usb) => {
-                    let dev_name = usb.product.as_deref()
-                        .filter(|s| !s.is_empty())
-                        .or_else(|| usb.manufacturer.as_deref().filter(|s| !s.is_empty()));
-                    match dev_name {
-                        Some(name) => format!("{} - {}", p.port_name, name),
-                        None => p.port_name.clone(),
-                    }
-                },
-                SerialPortType::BluetoothPort => format!("{} - 蓝牙", p.port_name),
-                _ => p.port_name.clone(),
-            };
-            PortInfo { port_name: p.port_name.clone(), friendly_name: friendly, product_name: String::new() }
-        })
-        .collect()
+async fn list_ports() -> Vec<PortInfo> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use serialport::SerialPortType;
+        serialport::available_ports()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| {
+                let friendly = match &p.port_type {
+                    SerialPortType::UsbPort(usb) => {
+                        let dev_name = usb.product.as_deref()
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| usb.manufacturer.as_deref().filter(|s| !s.is_empty()));
+                        match dev_name {
+                            Some(name) => format!("{} - {}", p.port_name, name),
+                            None => p.port_name.clone(),
+                        }
+                    },
+                    SerialPortType::BluetoothPort => format!("{} - 蓝牙", p.port_name),
+                    _ => p.port_name.clone(),
+                };
+                PortInfo { port_name: p.port_name.clone(), friendly_name: friendly, product_name: String::new() }
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// 打开串口（启动后台读取线程）
@@ -1204,9 +1219,32 @@ fn read_workflow_events(state: tauri::State<'_, PortState>, monitor_id: String) 
     }
 }
 
-/// 发送数据
+/// 带超时获取串口锁：读线程正常周期性持锁，若某驱动忽略读超时而长期持锁，
+/// 写命令的 `lock()` 会无限卡死（E5）。改用 try_lock 轮询，超时返回明确错误，主线程不会被冻结。
+fn lock_port_with_timeout(
+    port_arc: &std::sync::Arc<std::sync::Mutex<Box<dyn SerialPort>>>,
+    timeout_ms: u64,
+) -> Result<std::sync::MutexGuard<'_, Box<dyn SerialPort>>, String> {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        match port_arc.try_lock() {
+            Ok(g) => return Ok(g),
+            Err(std::sync::TryLockError::Poisoned(p)) => return Ok(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if Instant::now() >= deadline {
+                    return Err("串口无响应（读线程占用或驱动卡顿）".into());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
+
+/// 发送数据。写阻塞（设备不读时 WriteFile 可无限阻塞）移到 spawn_blocking，主线程不冻结；
+/// 锁也带超时，避免读线程持锁时无限等待。
 #[tauri::command]
-fn send_data(state: tauri::State<'_, PortState>, monitor_id: String, data: Vec<u8>) -> Result<usize, String> {
+async fn send_data(state: tauri::State<'_, PortState>, monitor_id: String, data: Vec<u8>) -> Result<usize, String> {
     let port_arc = {
         let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
         match map.get(&monitor_id) {
@@ -1217,13 +1255,17 @@ fn send_data(state: tauri::State<'_, PortState>, monitor_id: String, data: Vec<u
             }
         }
     };
-    let mut port = port_arc.lock().unwrap_or_else(|e| e.into_inner());
-    port.write_all(&data).map_err(|e| {
-        report_error(&format!("发送失败: {}", e), "send_data");
-        format!("发送失败: {}", e)
-    })?;
-    port.flush().ok();
-    Ok(data.len())
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut port = lock_port_with_timeout(&port_arc, 500)?;
+        port.write_all(&data).map_err(|e| {
+            report_error(&format!("发送失败: {}", e), "send_data");
+            format!("发送失败: {}", e)
+        })?;
+        port.flush().ok();
+        Ok(data.len())
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 /// 实时设置 DTR 信号
@@ -1239,7 +1281,7 @@ fn set_dtr(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) 
             }
         }
     };
-    let mut port = port_arc.lock().unwrap_or_else(|e| e.into_inner());
+    let mut port = lock_port_with_timeout(&port_arc, 500)?;
     port.write_data_terminal_ready(level).map_err(|e| {
         report_error(&format!("DTR 设置失败: {}", e), "set_dtr");
         format!("DTR 设置失败: {}", e)
@@ -1259,7 +1301,7 @@ fn set_rts(state: tauri::State<'_, PortState>, monitor_id: String, level: bool) 
             }
         }
     };
-    let mut port = port_arc.lock().unwrap_or_else(|e| e.into_inner());
+    let mut port = lock_port_with_timeout(&port_arc, 500)?;
     port.write_request_to_send(level).map_err(|e| {
         report_error(&format!("RTS 设置失败: {}", e), "set_rts");
         format!("RTS 设置失败: {}", e)
@@ -1495,8 +1537,9 @@ fn run_usbipd_list_elevated() -> Option<String> {
     result
 }
 
-#[tauri::command]
-fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
+/// 阻塞式实现：在 spawn_blocking 中执行，避免同步命令占用主线程卡住整个 UI。
+/// 取消映射后前端会密集重扫本命令（device-changed + 重试），并发时靠 WSL_SHELL_CMD_LOCK 串行。
+fn list_wsl_devices_blocking() -> Result<Vec<serde_json::Value>, String> {
     // 检查 WSL 是否正在运行（取第一个运行中的发行版，用于解析 WSL 侧设备路径）
     let distro = check_wsl_running().and_then(|d| d.into_iter().next()).unwrap_or_default();
     let wsl_running = !distro.is_empty();
@@ -1633,6 +1676,13 @@ fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
     Ok(devices)
 }
 
+#[tauri::command]
+async fn list_wsl_devices() -> Result<Vec<serde_json::Value>, String> {
+    tauri::async_runtime::spawn_blocking(list_wsl_devices_blocking)
+        .await
+        .map_err(|e| format!("任务执行失败: {}", e))?
+}
+
 fn decode_utf32_lossy(raw: &[u8]) -> String {
     raw.chunks_exact(4)
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -1688,8 +1738,10 @@ fn decode_wsl_output(raw: &[u8]) -> String {
 
 /// 检查 WSL 运行状态，返回正在运行的发行版列表
 #[tauri::command]
-fn check_wsl_status() -> Vec<String> {
-    check_wsl_running().unwrap_or_default()
+async fn check_wsl_status() -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(|| check_wsl_running().unwrap_or_default())
+        .await
+        .unwrap_or_default()
 }
 
 /// 去掉设备名末尾的 Windows 侧 COM 端口后缀（如 "USB 串行设备 (COM38)" -> "USB 串行设备"）
@@ -1899,8 +1951,7 @@ async fn shutdown_wsl(dist: String) -> Result<(), String> {
 }
 
 /// 获取所有 WSL 分发版信息
-#[tauri::command]
-fn get_wsl_distributions() -> Result<Vec<serde_json::Value>, String> {
+fn get_wsl_distributions_blocking() -> Result<Vec<serde_json::Value>, String> {
     // 检查由 launch_wsl 启动的终端进程是否仍然存活
     let terminal_alive = {
         let pid = WSL_TERMINAL_PID.lock().unwrap_or_else(|e| e.into_inner());
@@ -1970,6 +2021,14 @@ fn get_wsl_distributions() -> Result<Vec<serde_json::Value>, String> {
     }
 
     Ok(distros)
+}
+
+/// wsl --list + 每个运行发行版的 uptime/free 子进程（可到 5+N×6s），移到 spawn_blocking，主线程不冻结。
+#[tauri::command]
+async fn get_wsl_distributions() -> Result<Vec<serde_json::Value>, String> {
+    tauri::async_runtime::spawn_blocking(get_wsl_distributions_blocking)
+        .await
+        .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 fn parse_free_output(text: &str) -> (u64, u64) {
@@ -2112,20 +2171,20 @@ fn bridge_command(session: &WslSerialSession, cmd: &serde_json::Value) -> Result
     use std::io::Write;
     // 会话已失效（之前超时被杀）：直接失败，不再读写管道
     if session.dead.load(std::sync::atomic::Ordering::Relaxed) {
-        return Err("bridge 进程已退出".into());
+        let e = "bridge 进程已退出".to_string();
+        report_error(&e, "bridge_command");
+        return Err(e);
     }
-    let mut msg = serde_json::to_string(cmd).map_err(|e| format!("序列化失败: {}", e))?;
+    let mut msg = serde_json::to_string(cmd).map_err(|e| { let s = format!("序列化失败: {}", e); report_error(&s, "bridge_command"); s })?;
     msg.push('\n');
     {
-        let mut w = session.writer.lock().map_err(|e| format!("锁失败: {}", e))?;
-        w.write_all(msg.as_bytes()).map_err(|e| format!("写入失败: {}", e))?;
-        w.flush().map_err(|e| format!("刷新失败: {}", e))?;
+        let mut w = session.writer.lock().map_err(|e| { let s = format!("锁失败: {}", e); report_error(&s, "bridge_command"); s })?;
+        w.write_all(msg.as_bytes()).map_err(|e| { let s = format!("写入失败: {}", e); report_error(&s, "bridge_command"); s })?;
+        w.flush().map_err(|e| { let s = format!("刷新失败: {}", e); report_error(&s, "bridge_command"); s })?;
     }
     // 从常驻读取线程的有序通道消费响应；超时则判定 bridge 挂起并杀进程
     match session.responses.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(resp_line) => {
-            serde_json::from_str(resp_line.trim()).map_err(|e| format!("解析响应失败: {}", e))
-        }
+        Ok(resp_line) => serde_json::from_str(resp_line.trim()).map_err(|e| { let s = format!("解析响应失败: {}", e); report_error(&s, "bridge_command"); s }),
         Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
             session.dead.store(true, std::sync::atomic::Ordering::Relaxed);
             let mut c = session.child.lock().map_err(|e| format!("锁失败: {}", e))?;
@@ -2139,6 +2198,7 @@ fn bridge_command(session: &WslSerialSession, cmd: &serde_json::Value) -> Result
             session.dead.store(true, std::sync::atomic::Ordering::Relaxed);
             let mut c = session.child.lock().map_err(|e| format!("锁失败: {}", e))?;
             let _ = c.kill();
+            report_error("bridge 进程已退出（管道断开）", "bridge_command");
             Err("bridge 进程已退出".into())
         }
     }
@@ -2152,140 +2212,173 @@ fn kill_wsl_session(session: &WslSerialSession) {
     let _ = c.wait();
 }
 
-/// 打开 WSL 串口（通过 bridge 管道）
+/// 打开 WSL 串口（通过 bridge 管道）。整体移入 spawn_blocking：get_or_start_wsl_distro(可达13s)
+/// + deploy_bridge(5s) + ready(5s) + bridge(5s) 均不阻塞主线程。
 #[tauri::command]
-fn open_wsl_serial(
+async fn open_wsl_serial(
     state: tauri::State<'_, WslSerialState>,
     monitor_id: String,
     device_path: String,
     baud_rate: u32,
 ) -> Result<(), String> {
     validate_device_path(&device_path)?;
-    { let mut s = state.sessions.lock().unwrap_or_else(|e| e.into_inner()); if let Some(old) = s.remove(&monitor_id) { kill_wsl_session(&old); } }
-    let distro = get_or_start_wsl_distro().map_err(|e| {
-        // 连接失败时清除缓存，下次重新检测
-        *CACHED_DISTRO.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        e
-    })?;
-    deploy_bridge(&distro)?;
-    let mut child = spawn_bridge(&distro)?;
-    let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
-    // 等待 bridge 就绪（最多 5 秒）：用 channel + recv_timeout 替代无超时 join，避免永久阻塞；
-    // 超时后由下方 !ready 分支 kill + wait，且就绪线程因 stderr EOF 自行退出。
-    let ready = {
-        use std::sync::mpsc;
-        let (tx, rx) = mpsc::channel::<bool>();
+    let sessions = state.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        { let mut s = sessions.lock().unwrap_or_else(|e| e.into_inner()); if let Some(old) = s.remove(&monitor_id) { kill_wsl_session(&old); } }
+        let distro = get_or_start_wsl_distro().map_err(|e| {
+            // 连接失败时清除缓存，下次重新检测
+            *CACHED_DISTRO.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            e
+        })?;
+        deploy_bridge(&distro)?;
+        let mut child = spawn_bridge(&distro)?;
+        let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
+        // 等待 bridge 就绪（最多 5 秒）：用 channel + recv_timeout 替代无超时 join，避免永久阻塞；
+        // 超时后由下方 !ready 分支 kill + wait，且就绪线程因 stderr EOF 自行退出。
+        let ready = {
+            use std::sync::mpsc;
+            let (tx, rx) = mpsc::channel::<bool>();
+            std::thread::spawn(move || {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(stderr).lines() {
+                    match line {
+                        Ok(l) if l.trim() == "ready" => { let _ = tx.send(true); return; }
+                        Err(_) => { let _ = tx.send(false); return; }
+                        _ => {}
+                    }
+                }
+                let _ = tx.send(false);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or(false)
+        };
+        if !ready {
+            let _ = child.kill();
+            let _ = child.wait();
+            report_error("bridge 启动超时", "open_wsl_serial");
+            return Err("bridge 启动超时".into());
+        }
+        let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
+        let stdin = child.stdin.take().ok_or("无法获取 stdin")?;
+        let writer = std::sync::Mutex::new(std::io::BufWriter::new(stdin));
+        // 常驻 stdout 读取线程：按序推送响应行（会话关闭/进程退出后随管道 EOF 自行结束）
+        let (resp_tx, resp_rx) = crossbeam_channel::unbounded::<String>();
         std::thread::spawn(move || {
             use std::io::BufRead;
-            for line in std::io::BufReader::new(stderr).lines() {
-                match line {
-                    Ok(l) if l.trim() == "ready" => { let _ = tx.send(true); return; }
-                    Err(_) => { let _ = tx.send(false); return; }
-                    _ => {}
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(_) => break,
+                };
+                if resp_tx.send(line).is_err() {
+                    break;
                 }
             }
-            let _ = tx.send(false);
         });
-        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or(false)
-    };
-    if !ready {
-        let _ = child.kill();
-        let _ = child.wait();
-        report_error("bridge 启动超时", "open_wsl_serial");
-        return Err("bridge 启动超时".into());
-    }
-    let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
-    let stdin = child.stdin.take().ok_or("无法获取 stdin")?;
-    let writer = std::sync::Mutex::new(std::io::BufWriter::new(stdin));
-    // 常驻 stdout 读取线程：按序推送响应行（会话关闭/进程退出后随管道 EOF 自行结束）
-    let (resp_tx, resp_rx) = crossbeam_channel::unbounded::<String>();
-    std::thread::spawn(move || {
-        use std::io::BufRead;
-        let reader = std::io::BufReader::new(stdout);
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => break,
-            };
-            if resp_tx.send(line).is_err() {
-                break;
+        let session = WslSerialSession {
+            child: std::sync::Arc::new(std::sync::Mutex::new(child)),
+            writer,
+            responses: resp_rx,
+            dead: std::sync::atomic::AtomicBool::new(false),
+        };
+        // 若 bridge 命令失败（超时/进程退出/序列化或写入错误），先杀子进程再返回，避免泄漏孤儿 python 进程
+        let resp = match bridge_command(&session, &json!({"cmd":"open","id":&monitor_id,"path":&device_path,"baud":baud_rate})) {
+            Ok(r) => r,
+            Err(e) => {
+                kill_wsl_session(&session);
+                report_error(&format!("WSL串口打开失败: {}", e), "open_wsl_serial");
+                return Err(e);
             }
-        }
-    });
-    let session = WslSerialSession {
-        child: std::sync::Arc::new(std::sync::Mutex::new(child)),
-        writer,
-        responses: resp_rx,
-        dead: std::sync::atomic::AtomicBool::new(false),
-    };
-    // 若 bridge 命令失败（超时/进程退出/序列化或写入错误），先杀子进程再返回，避免泄漏孤儿 python 进程
-    let resp = match bridge_command(&session, &json!({"cmd":"open","id":&monitor_id,"path":&device_path,"baud":baud_rate})) {
-        Ok(r) => r,
-        Err(e) => {
+        };
+        if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(monitor_id, std::sync::Arc::new(session));
+            Ok(())
+        } else {
+            let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("打开失败").to_string();
+            report_error(&format!("WSL串口打开失败: {}", err), "open_wsl_serial");
             kill_wsl_session(&session);
-            report_error(&format!("WSL串口打开失败: {}", e), "open_wsl_serial");
-            return Err(e);
+            Err(err)
         }
-    };
-    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-        state.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(monitor_id, session);
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
+}
+
+/// 关闭 WSL 串口连接（kill 子进程的 wait() 无超时，移入 spawn_blocking 防主线程卡死）
+#[tauri::command]
+async fn close_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String) -> Result<(), String> {
+    let sessions = state.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut map = sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(session) = map.remove(&monitor_id) {
+            { use std::io::Write; if let Ok(mut w) = session.writer.lock() { let _ = w.write_all(b"{\"cmd\":\"close\"}\n"); let _ = w.flush(); } }
+            kill_wsl_session(&session);
+        }
         Ok(())
-    } else {
-        let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("打开失败").to_string();
-        report_error(&format!("WSL串口打开失败: {}", err), "open_wsl_serial");
-        kill_wsl_session(&session);
-        Err(err)
-    }
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
-/// 关闭 WSL 串口连接
+/// 读取 WSL 串口数据。把会话 Arc 克隆出来、释放 sessions 锁后再与 bridge 通信，
+/// 避免某个慢命令持全局锁导致其它 WSL 命令串行/阻塞；整体移入 spawn_blocking。
 #[tauri::command]
-fn close_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(session) = sessions.remove(&monitor_id) {
-        { use std::io::Write; if let Ok(mut w) = session.writer.lock() { let _ = w.write_all(b"{\"cmd\":\"close\"}\n"); let _ = w.flush(); } }
-        kill_wsl_session(&session);
-    }
-    Ok(())
-}
-
-/// 读取 WSL 串口数据
-#[tauri::command]
-fn read_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String) -> Result<Vec<u8>, String> {
-    let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
-    let session = sessions.get(&monitor_id).ok_or("未连接 WSL 串口")?;
-    let resp = bridge_command(session, &json!({"cmd":"read","id":&monitor_id,"max":4096}))?;
-    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-        let b64 = resp.get("data").and_then(|v| v.as_str()).unwrap_or("");
-        use base64::Engine;
-        Ok(base64::engine::general_purpose::STANDARD.decode(b64).unwrap_or_default())
-    } else {
-        let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("读取失败");
-        if err.contains("port not open") || err.contains("Resource temporarily unavailable") { Ok(vec![]) } else { Err(err.to_string()) }
-    }
+async fn read_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String) -> Result<Vec<u8>, String> {
+    let sessions = state.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = {
+            let map = sessions.lock().unwrap_or_else(|e| e.into_inner());
+            map.get(&monitor_id).ok_or("未连接 WSL 串口")?.clone()
+        };
+        let resp = bridge_command(&session, &json!({"cmd":"read","id":&monitor_id,"max":4096}))?;
+        if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let b64 = resp.get("data").and_then(|v| v.as_str()).unwrap_or("");
+            use base64::Engine;
+            Ok(base64::engine::general_purpose::STANDARD.decode(b64).unwrap_or_default())
+        } else {
+            let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("读取失败");
+            if err.contains("port not open") || err.contains("Resource temporarily unavailable") { Ok(vec![]) } else { Err(err.to_string()) }
+        }
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 /// 向 WSL 串口发送数据
 #[tauri::command]
-fn send_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String, data: Vec<u8>) -> Result<usize, String> {
-    let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
-    let session = sessions.get(&monitor_id).ok_or("未连接 WSL 串口")?;
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-    let resp = bridge_command(session, &json!({"cmd":"write","id":&monitor_id,"data":b64}))?;
-    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-        Ok(resp.get("n").and_then(|v| v.as_u64()).unwrap_or(data.len() as u64) as usize)
-    } else {
-        Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("写入失败").to_string())
-    }
+async fn send_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: String, data: Vec<u8>) -> Result<usize, String> {
+    let sessions = state.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = {
+            let map = sessions.lock().unwrap_or_else(|e| e.into_inner());
+            map.get(&monitor_id).ok_or("未连接 WSL 串口")?.clone()
+        };
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+        let resp = bridge_command(&session, &json!({"cmd":"write","id":&monitor_id,"data":b64}))?;
+        if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            Ok(resp.get("n").and_then(|v| v.as_u64()).unwrap_or(data.len() as u64) as usize)
+        } else {
+            Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("写入失败").to_string())
+        }
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 /// 设置 WSL 串口信号
-fn set_wsl_signal_cmd(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool, signal: &str) -> Result<(), String> {
-    let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
-    let session = sessions.get(&monitor_id).ok_or("未连接 WSL 串口")?;
-    let resp = bridge_command(session, &json!({"cmd":signal.to_lowercase(),"id":&monitor_id,"level":level}))?;
-    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) { Ok(()) } else { Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("设置信号失败").to_string()) }
+async fn set_wsl_signal_cmd(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool, signal: String) -> Result<(), String> {
+    let sessions = state.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = {
+            let map = sessions.lock().unwrap_or_else(|e| e.into_inner());
+            map.get(&monitor_id).ok_or("未连接 WSL 串口")?.clone()
+        };
+        let resp = bridge_command(&session, &json!({"cmd":signal.to_lowercase(),"id":&monitor_id,"level":level}))?;
+        if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) { Ok(()) } else { Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("设置信号失败").to_string()) }
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 /// 列出 WSL 内所有串口设备及其 USB 产品名 / VID:PID（单条命令批量获取，避免多次 shell 往返）
@@ -2311,8 +2404,9 @@ fn list_wsl_tty_details(distro: &str) -> Vec<(String, String, String, String)> {
 }
 
 /// 获取 WSL 中可用的串口设备列表（路径 + 设备名，使用持久化 shell）
-#[tauri::command]
-fn get_wsl_serial_devices() -> Result<Vec<serde_json::Value>, String> {
+/// 阻塞式实现：在 spawn_blocking 中执行，避免同步命令占用主线程卡住整个 UI。
+/// 取消映射后 `device-changed` 事件会触发刷新本命令，同为异步后可并发，靠 WSL_SHELL_CMD_LOCK 串行。
+fn get_wsl_serial_devices_blocking() -> Result<Vec<serde_json::Value>, String> {
     let distros = check_wsl_running().unwrap_or_default();
     let distro = distros.first().cloned().unwrap_or_default();
     if distro.is_empty() {
@@ -2330,13 +2424,20 @@ fn get_wsl_serial_devices() -> Result<Vec<serde_json::Value>, String> {
 }
 
 #[tauri::command]
-fn set_wsl_dtr(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool) -> Result<(), String> {
-    set_wsl_signal_cmd(state, monitor_id, level, "DTR")
+async fn get_wsl_serial_devices() -> Result<Vec<serde_json::Value>, String> {
+    tauri::async_runtime::spawn_blocking(get_wsl_serial_devices_blocking)
+        .await
+        .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 #[tauri::command]
-fn set_wsl_rts(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool) -> Result<(), String> {
-    set_wsl_signal_cmd(state, monitor_id, level, "RTS")
+async fn set_wsl_dtr(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool) -> Result<(), String> {
+    set_wsl_signal_cmd(state, monitor_id, level, "DTR".to_string()).await
+}
+
+#[tauri::command]
+async fn set_wsl_rts(state: tauri::State<'_, WslSerialState>, monitor_id: String, level: bool) -> Result<(), String> {
+    set_wsl_signal_cmd(state, monitor_id, level, "RTS".to_string()).await
 }
 
 /// 设备映射操作结果。当需要管理员权限且在授权确认之前（authorized=false），
@@ -3502,7 +3603,7 @@ fn main() {
             readers: RwLock::new(HashMap::new()),
         })
         .manage(WslSerialState {
-            sessions: Mutex::new(HashMap::new()),
+            sessions: std::sync::Arc::new(Mutex::new(HashMap::new())),
         })
         .manage(WorkflowState {
             rules: Mutex::new(HashMap::new()),

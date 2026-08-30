@@ -1,3 +1,19 @@
+## v0.3.2
+
+### 🐛 修复
+
+- **WSL 自动映射开关无法切换显示状态** — 点击开关可视滑块触发行选中逻辑，整行列表被重新渲染，干扰 checkbox 的 change 事件，使 `toggleAutoMap` 不触发/不稳定，导致开关显示状态无法切换、自动映射无法开启；修复行选中对开关（label）及其内滑块的误触发
+- **串口写操作锁死** — 读线程长期持锁时，写命令的 `lock()` 会无限卡死、冻结主线程；改为带超时（`try_lock` 轮询）返回明确错误，写阻塞同时移至 `spawn_blocking`
+- **WSL 命令串音** — 并发执行持久化 WSL shell 命令时，各命令读同一根管道而互相串音（A 拿到 B 的输出）；新增 `WSL_SHELL_CMD_LOCK` 串行化读写
+- **WSL/串口命令阻塞 UI** — `list_ports` / `list_wsl_devices` / `check_wsl_status` / `open_wsl_serial` / `read_wsl_serial` / `send_wsl_serial` / `get_wsl_distributions` 等改为 async + `spawn_blocking`，同步长命令不再卡住主线程
+- **错误上报接入** — 前后端多路径接入错误上报，便于远程诊断（前端 `reportError`、后端 `report_error`）
+
+### ✨ 改进
+
+- 前端 `invoke` 统一带超时兜底（`invokeTimeout`），后端命令挂起（如 UAC 未确认）时前端不再永久等待
+- WSL 设备列表刷新加单飞锁，避免取消映射后多路重扫并发挤压与全量 DOM 重建
+- WSL 会话改用 `Arc` 持有，慢命令不再持全局锁阻塞其它 WSL 命令
+
 ## v0.3.1
 
 ### ✨ 改进
