@@ -2703,6 +2703,14 @@ function initTerminalMode(mid) {
     output.addEventListener('click', function() {
         if (termOn()) termInput.focus();
     });
+
+    // 输入框获得焦点时滚动到当前行，保证输入框可见（用户要输入时）
+    termInput.addEventListener('focus', function() {
+        if (termOn()) {
+            var out = document.getElementById(mid + '-output');
+            if (out) requestScroll(out);
+        }
+    });
 }
 
 // 设置终端当前行的提示符（设备输出检测到的提示符）

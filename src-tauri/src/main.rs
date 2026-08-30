@@ -1476,12 +1476,15 @@ fn run_usbipd_list_elevated() -> Option<String> {
     let encoded = encode_ps_command(&ps_script);
     // 不再使用 -Wait：UAC 弹窗未被确认时 -Wait 会永久挂起，导致界面卡死
     // -WindowStyle Hidden：隐藏提权后 PowerShell 的控制台窗口，避免"授权终端一闪而过"
-    let _ = hidden_command("powershell")
+    // 捕获启动退出码：非零（UAC 可能被拒绝）用较短等待；零（UAC 已同意）给 usbipd 足够时间。
+    let launch_status = hidden_command("powershell")
         .args(["-NonInteractive", "-Command"])
         .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs -WindowStyle Hidden", encoded))
         .status();
-    // 轮询结果文件直到超时（5 秒），UAC 未确认也不会永久阻塞
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let ok = launch_status.map(|s| s.success()).unwrap_or(false);
+    let poll_secs: u64 = if ok { 10 } else { 8 };
+    // 轮询结果文件直到超时（UAC 未确认也不会永久阻塞）
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(poll_secs);
     while !tmp_result.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
@@ -2760,12 +2763,16 @@ fn run_usbipd_detach_elevated(busid: &str) -> Option<String> {
     let encoded = encode_ps_command(&ps_script);
     // 不再使用 -Wait：UAC 弹窗未被确认时 -Wait 会永久挂起，导致界面卡死
     // -WindowStyle Hidden：隐藏提权后 PowerShell 的控制台窗口，避免"授权终端一闪而过"
-    let _ = hidden_command("powershell")
+    // 捕获启动退出码：非零（UAC 可能被拒绝）用较短等待；零（UAC 已同意）给 usbipd 足够时间完成。
+    let launch_status = hidden_command("powershell")
         .args(["-NonInteractive", "-Command"])
         .arg(format!("Start-Process -FilePath 'powershell' -ArgumentList '-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-NonInteractive','-EncodedCommand','{}' -Verb RunAs -WindowStyle Hidden", encoded))
         .status();
-    // 轮询结果文件直到超时（5 秒），UAC 未确认也不会永久阻塞
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let ok = launch_status.map(|s| s.success()).unwrap_or(false);
+    dbg_log(&format!("Elevated detach launch ok={}", ok));
+    let poll_secs: u64 = if ok { 20 } else { 8 };
+    // 轮询结果文件直到超时（UAC 未确认也不会永久阻塞）
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(poll_secs);
     while !tmp_result.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
