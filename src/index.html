@@ -2727,6 +2727,7 @@ function toggleTerminalMode(btn, mid) {
             if (sendBar) sendBar.style.display = 'none';
             if (termCur) termCur.classList.add('show');
             setTermPrompt(mid, ''); // 提示符由设备输出决定，先清空
+            if (monitors[mid]) closeRecvPartial(monitors[mid]); // 清空普通模式残留行，避免污染
             if (termInput) { termInput.value = ''; termInput.focus(); }
             // 记录当前行元素，供 appendOutput 把设备输出插入到它之前（当前行始终在末尾）
             _terminalBuffers[mid] = termCur ? { lineEl: termCur } : true;
@@ -2739,6 +2740,8 @@ function toggleTerminalMode(btn, mid) {
             if (sendBar) sendBar.style.display = '';
             if (termCur) termCur.classList.remove('show');
             if (termInput) termInput.value = '';
+            // 清除终端模式的接收行缓冲（提示符），避免普通模式错误合并残留数据
+            if (monitors[mid]) closeRecvPartial(monitors[mid]);
             delete _terminalBuffers[mid];
         }
     }
@@ -3482,9 +3485,9 @@ function resetRecvStream(mid) {
 
 function clearLog(mid) {
     var el = document.getElementById(mid + '-output');
-    var termCur = _terminalBuffers[mid] && _terminalBuffers[mid].lineEl;
+    // 始终保留终端当前行（隐藏时也在 DOM 里），避免清理日志后终端模式丢行
+    var termCur = document.getElementById(mid + '-termCurrent');
     if (termCur && termCur.parentNode === el) {
-        // 终端模式：清空输出但保留当前行（提示符+输入框）
         Array.from(el.childNodes).forEach(function(n) { if (n !== termCur) n.remove(); });
         el.appendChild(termCur);
     } else {
