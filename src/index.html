@@ -5621,12 +5621,12 @@ function renderWslDistroCards(mid, distros) {
             delete _wslDistroBasetime[d.name];
         }
 
-        html += '<div style="padding:8px 14px;background:' + bgGrad + ';border:1px solid ' + borderColor + ';border-radius:6px;display:flex;align-items:center;gap:12px;">';
+        html += '<div style="padding:8px 14px;background:' + bgGrad + ';border:1px solid ' + borderColor + ';border-radius:6px;display:flex;align-items:center;gap:12px;min-width:0;flex-shrink:1;">';
         html += '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';flex-shrink:0;' + (running ? 'box-shadow:0 0 6px rgba(90,158,110,0.4);' : '') + '"></span>';
-        html += '<span style="font-size:13px;font-weight:600;color:var(--text-b);white-space:nowrap;" title="' + nameHtml + '">' + nameHtml + '</span>';
+        html += '<span style="font-size:13px;font-weight:600;color:var(--text-b);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex-shrink:1;" title="' + nameHtml + '">' + nameHtml + '</span>';
         html += '<span style="width:1px;height:14px;background:var(--border);flex-shrink:0;margin:0 2px;"></span>';
-        html += '<span style="font-size:10px;color:var(--text-muted);font-weight:500;">UP</span>';
-        html += '<span id="uptime-' + mid + '-' + d.name + '" style="font-size:11px;color:var(--text);font-family:monospace;letter-spacing:0.3px;">' + uptime + '</span>';
+        html += '<span style="font-size:10px;color:var(--text-muted);font-weight:500;flex-shrink:0;">UP</span>';
+        html += '<span id="uptime-' + mid + '-' + d.name + '" style="font-size:11px;color:var(--text);font-family:monospace;letter-spacing:0.3px;flex-shrink:0;">' + uptime + '</span>';
         html += '<div style="flex:1;"></div>';
         html += '<button onclick="openWslTerminal(\'' + escapedName + '\')" ' + termDisabled + ' title="打开终端" style="flex-shrink:0;width:28px;height:28px;border:none;border-radius:4px;background:transparent;color:var(--btn-p);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;opacity:' + termOpacity + ';transition:opacity .15s;">' + termIcon + '</button>';
         html += '<button onclick="' + btnAction + '" onmousedown="this.style.transform=\'scale(0.90)\';this.style.filter=\'brightness(0.7)\';this.style.opacity=\'0.6\'" onmouseup="this.style.transform=\'\';this.style.filter=\'\';this.style.opacity=\'\'" onmouseleave="this.style.transform=\'\';this.style.filter=\'\';this.style.opacity=\'\'" style="flex-shrink:0;height:24px;padding:0 12px;border:1px solid ' + btnBorder + ';border-radius:4px;background:' + btnBg + ';color:' + btnColor + ';font-size:11px;cursor:pointer;font-weight:500;transition:all .1s ease;">' + btnText + '</button>';
