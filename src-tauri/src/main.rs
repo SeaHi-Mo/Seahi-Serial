@@ -2912,6 +2912,24 @@ fn load_config() -> Result<String, String> {
     }
 }
 
+/// 备份用户配置（升级/迁移前兜底，防止旧配置被覆盖时丢失）
+#[tauri::command]
+fn backup_config() -> Result<String, String> {
+    use std::fs;
+
+    let config_dir = match dirs_config_path() {
+        Some(p) => p,
+        None => return Ok(String::new()),
+    };
+    let config_file = config_dir.join("config.json");
+    let backup_file = config_dir.join("config.json.bak");
+    // 已存在备份时覆盖；无配置文件则跳过（无配置可备份）
+    if let Ok(s) = fs::read_to_string(&config_file) {
+        fs::write(&backup_file, &s).map_err(|e| format!("备份配置失败: {}", e))?;
+    }
+    Ok(backup_file.to_string_lossy().into_owned())
+}
+
 /// 获取应用配置目录路径（跨平台）
 fn dirs_config_path() -> Option<std::path::PathBuf> {
     // Windows: %APPDATA%\seahi-serial
@@ -3630,6 +3648,7 @@ fn main() {
             get_wsl_distributions,
             save_config,
             load_config,
+            backup_config,
             check_update,
             download_update,
             install_update,

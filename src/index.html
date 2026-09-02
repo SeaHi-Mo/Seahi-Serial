@@ -4672,7 +4672,7 @@ function collectConfig() {
         var m = mid.match(/^extra-(\d+)$/);
         if (m) { var n = parseInt(m[1], 10); if (n > maxExtra) maxExtra = n; }
     });
-    var cfg = { version: 1, extraCount: maxExtra, wslExtraCount: _wslExtraCount, monitors: {}, logDir: logDirPath, wslAutoMap: _wslAutoMap, theme: _currentTheme, themeStyle: _currentThemeStyle };
+    var cfg = { version: 2, extraCount: maxExtra, wslExtraCount: _wslExtraCount, monitors: {}, logDir: logDirPath, wslAutoMap: _wslAutoMap, theme: _currentTheme, themeStyle: _currentThemeStyle };
     if (_cachedWindowSize) {
         cfg.windowWidth = _cachedWindowSize[0];
         cfg.windowHeight = _cachedWindowSize[1];
@@ -5073,11 +5073,22 @@ async function loadAndApplyConfig() {
         var raw = await invoke('load_config');
         if (!raw) { _loadingConfig = false; return; }
         var cfg = JSON.parse(raw);
-        if (!cfg || (cfg.version !== 1 && cfg.version !== 2)) { _loadingConfig = false; return; }
-        // V1 → V2 迁移：添加空 workflows
-        if (cfg.version === 1) {
+        if (!cfg) { _loadingConfig = false; return; }
+        // 旧配置可能没有 version 字段（或值不可识别）：一律按可迁移的旧版处理。
+        // 原先这里直接 return 会让配置不生效，而退出时 collectConfig 又会用默认值覆盖，
+        // 等于"升级后配置被清空"。现在先备份原文件，再补齐缺失字段并升级到当前 schema。
+        if (cfg.version !== 1 && cfg.version !== 2) {
+            try { await invoke('backup_config'); } catch (e) { console.warn('配置备份失败(跳过):', e); }
+            // 按最老的 v1 结构补齐字段，再升到当前版本
             Object.keys(cfg.monitors || {}).forEach(function(mid) {
-                if (!cfg.monitors[mid].workflows) cfg.monitors[mid].workflows = [];
+                if (cfg.monitors[mid] && !cfg.monitors[mid].workflows) cfg.monitors[mid].workflows = [];
+            });
+            cfg.version = 2;
+            invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) { console.warn('保存配置失败:', e); reportError(e, 'save-config-migrate'); });
+        } else if (cfg.version === 1) {
+            // V1 → V2 迁移：添加空 workflows
+            Object.keys(cfg.monitors || {}).forEach(function(mid) {
+                if (cfg.monitors[mid] && !cfg.monitors[mid].workflows) cfg.monitors[mid].workflows = [];
             });
             cfg.version = 2;
             invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) { console.warn('保存配置失败:', e); reportError(e, 'save-config-v2'); });
