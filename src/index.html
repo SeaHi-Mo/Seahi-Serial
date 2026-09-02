@@ -2881,23 +2881,86 @@ function termTokenStart(value) {
     return s;
 }
 
-// 补全候选：历史命令 + 快捷指令（label/value）+ 通用命令
-function getTermCompletionCandidates(mid) {
-    var m = monitors[mid];
+// ===== 通用/内置命令（基础补全词库） =====
+var GENERIC_CMDS = ['help','?','version','ver','reset','reboot','info','status','get','set','ls','dir','exit','quit','start','scan','wifi','ota','cd','pwd','cat','echo','date','ps','top','df','mount','ifconfig','ip','ping','clear','cls','type','del','copy','mkdir','rm','mv','cp','sed','grep','find','which','su','cmd'];
+
+// ===== ADB 命令树（上下文命令补全） =====
+var ADB_GLOBAL_OPTS = ['-s','-d','-e','-t','-L','--help','--version'];
+var ADB_SUBCMDS = ['connect','disconnect','devices','get-state','get-serialno','install','install-multiple','uninstall','shell','push','pull','sync','logcat','forward','reverse','reboot','sideload','root','unroot','remount','usb','tcpip','wait-for-device','start-server','kill-server','bugreport','screencap','screenrecord','version','help'];
+var ADB_SHELL_CMDS = ['ls','cat','cd','pwd','mkdir','rm','rmdir','cp','mv','chmod','chown','touch','echo','date','ps','top','df','du','mount','umount','getprop','setprop','pm','am','dumpsys','input','settings','wm','screencap','screenrecord','logcat','reboot','ifconfig','ip','netstat','ping','id','whoami','uname','env','tar','gzip','find','grep','sed','awk','which','su','cmd'];
+var ADB_SUB_OPTS = {
+    install: ['--help','-r','-t','-s','-g','-d','--no-streaming','--streaming'],
+    'install-multiple': ['--help','-r','-t','-s','-g','-d'],
+    uninstall: ['--help','-k','--user'],
+    shell: ['--help','-T','-x'],
+    logcat: ['--help','-v','-b','-f','-s','--pid'],
+    push: ['--help','--sync','-n'],
+    pull: ['--help','-a'],
+    forward: ['--help','--no-rebind','-tcp','-local','-dev','-remote'],
+    reverse: ['--help','--no-rebind','-tcp','-local','-dev','-remote'],
+    reboot: ['--help','bootloader','recovery','sideload','sideload-auto-reboot','fastboot'],
+    connect: ['--help'],
+    disconnect: ['--help'],
+    devices: ['--help','-l'],
+    'get-state': ['--help'],
+    'get-serialno': ['--help']
+};
+// 已知设备序列号（可后续由 `adb devices` 结果回填，再复用具体串号补全）
+var _adbSerials = [];
+
+// 根据「已输入的前缀 token」推断补全上下文（首词是 adb 时走命令树）
+function getAdbContextCandidates(toks) {
+    var i = 1;                                    // 跳过 'adb'
+    // 1) 消费全局取值选项及其值（-s/-t/-L/-p <值>）
+    while (i < toks.length && (toks[i] === '-s' || toks[i] === '-t' || toks[i] === '-L' || toks[i] === '-p')) {
+        if (i === toks.length - 1) return _adbSerials.slice();   // 正在补该选项的值（设备序列号）
+        i += 2;
+    }
+    // 2) 消费布尔型全局选项（-d -e --help --version ...）
+    var afterBool = false;
+    while (i < toks.length && toks[i].charAt(0) === '-') {
+        afterBool = true;
+        i += 1;
+    }
+    if (i >= toks.length) {
+        // 正在补「首个子命令」这一位：已给过布尔选项只补子命令，否则全局选项 + 子命令
+        return afterBool ? ADB_SUBCMDS : ADB_GLOBAL_OPTS.concat(ADB_SUBCMDS);
+    }
+    var sub = toks[i];
+    if (sub === 'shell') return ADB_SHELL_CMDS;   // adb shell <Tab> → 设备内命令
+    if (toks.length - 1 === i) {                  // 正在补该子命令的参数/选项
+        var opts = (ADB_SUB_OPTS[sub] || []).slice();
+        if (sub === 'install' || sub === 'install-multiple' || sub === 'push' || sub === 'pull' || sub === 'sideload') {
+            opts = opts.concat(['./', '../', '/sdcard/', '/data/local/tmp/', '<path>']);
+        }
+        if (sub === 'connect' || sub === 'disconnect') opts = opts.concat(['<ip:port>']);
+        return opts;
+    }
+    // 更深层级：多为选项/路径，回退到该子命令的选项表
+    return ADB_SUB_OPTS[sub] || [];
+}
+
+// 补全候选：首词是 adb → 走命令树（上下文感知）；否则 通用命令 + 历史 + 快捷指令
+function getTermCompletionCandidates(mid, value, tokenStart) {
+    var before = (value.slice(0, tokenStart) || '').trim();
+    var toks = before ? before.split(/\s+/) : [];
+    if (toks.length && toks[0].toLowerCase() === 'adb') {
+        return getAdbContextCandidates(toks);
+    }
     var set = [];
     var seen = {};
     function add(s) {
         s = String(s == null ? '' : s).trim();
         if (s && s.indexOf(' ') === -1 && !seen[s]) { seen[s] = 1; set.push(s); }
     }
+    var m = monitors[mid];
     if (m) {
         (m.sendHistory || []).forEach(add);
         (m.quickCmds || []).forEach(function(c) {
             if (c) { add(c.label); add(c.value); }
         });
     }
-    // 常见终端/嵌入式 shell 命令，作为开箱即用的补全词
-    ['help','?','version','ver','reset','reboot','info','status','get','set','ls','dir','exit','quit','start','scan','wifi','ota'].forEach(add);
+    GENERIC_CMDS.forEach(add);
     return set;
 }
 
@@ -2926,7 +2989,7 @@ function completeTermTab(mid) {
 
     var st = m._termComp;
     if (!st || st.token !== token) {
-        var candidates = getTermCompletionCandidates(mid);
+        var candidates = getTermCompletionCandidates(mid, value, start);
         var matches = candidates.filter(function(c) {
             return c !== token && c.toLowerCase().indexOf(token.toLowerCase()) === 0;
         });
