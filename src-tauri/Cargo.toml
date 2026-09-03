@@ -27,6 +27,7 @@ windows-sys = { version = "0.59", features = ["Win32_Devices_DeviceAndDriverInst
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 base64 = "0.22"
 crossbeam-channel = "0.5"
+portable-pty = "0.8"
 regex = "1"
 sentry = { version = "0.34", optional = true }
 chrono = "0.4"

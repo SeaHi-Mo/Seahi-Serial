@@ -3743,6 +3743,138 @@ fn report_js_error(error: String, context: String) {
     report_error(&error, &context);
 }
 
+/// PTY 会话：通过伪终端让 adb shell 交互式运行（ls 多列 + ANSI 彩色 + 标准提示符）
+struct AdbPtySession {
+    child: std::sync::Arc<std::sync::Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    /// 写入端：portable-pty 的 master 通过 take_writer() 得到可写句柄
+    writer: std::sync::Mutex<Box<dyn std::io::Write + Send>>,
+    /// 常驻读取线程推送的原始输出块
+    output: crossbeam_channel::Receiver<Vec<u8>>,
+    dead: std::sync::atomic::AtomicBool,
+    /// 保活：保存 PTY master/slave，避免 pair drop 导致 shell 退出
+    _master: std::sync::Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>,
+    _slave: std::sync::Mutex<Option<Box<dyn portable_pty::SlavePty + Send>>>,
+}
+
+/// 全局状态：ADB PTY 会话（key = session_id）
+struct AdbPtyState {
+    sessions: std::sync::Arc<Mutex<HashMap<String, std::sync::Arc<AdbPtySession>>>>,
+}
+
+/// 查找 adb，打开一个交互式 shell 会话
+#[tauri::command]
+async fn adb_open_shell(
+    state: tauri::State<'_, AdbPtyState>,
+    serial: String,
+) -> Result<String, String> {
+    let adb = find_adb().ok_or_else(|| "未找到 adb 可执行文件".to_string())?;
+    let sessions = state.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        println!("[ADB-PTY] open_shell entered, serial={}", serial);
+        let pty_system = portable_pty::native_pty_system();
+        let mut cmd = portable_pty::CommandBuilder::new(&adb);
+        cmd.arg("-s");
+        cmd.arg(&serial);
+        cmd.arg("shell");
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
+        cmd.cwd("C:\\");
+        let pair = pty_system
+            .openpty(portable_pty::PtySize { rows: 40, cols: 120, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| format!("openpty 失败: {}", e))?;
+        let child = pair.slave.spawn_command(cmd).map_err(|e| format!("spawn adb shell 失败: {}", e))?;
+        println!("[ADB-PTY] shell spawned, waiting for ready...");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        // 读线程：读 PTY 输出并推送到 channel
+        let mut reader = pair.master.try_clone_reader().map_err(|e| format!("克隆reader失败: {}", e))?;
+        let (tx, rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = [0u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => { println!("[ADB-PTY] reader EOF"); let _ = tx.send(Vec::new()); break; }
+                    Ok(n) => { println!("[ADB-PTY] reader got {} bytes", n); if tx.send(buf[..n].to_vec()).is_err() { break; } }
+                    Err(e) => { println!("[ADB-PTY] reader err {}", e); break; }
+                }
+            }
+        });
+        let session_id = format!("adb-pty-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        // 用 take_writer() 拿写入句柄
+        let writer = pair.master.take_writer().map_err(|e| format!("take_writer 失败: {}", e))?;
+        let session = std::sync::Arc::new(AdbPtySession {
+            child: std::sync::Arc::new(std::sync::Mutex::new(child)),
+            writer: std::sync::Mutex::new(writer),
+            output: rx,
+            dead: std::sync::atomic::AtomicBool::new(false),
+            _master: std::sync::Mutex::new(Some(pair.master)),
+            _slave: std::sync::Mutex::new(Some(pair.slave)),
+        });
+        { let mut s = sessions.lock().unwrap_or_else(|e| e.into_inner()); s.insert(session_id.clone(), session); }
+
+        Ok(session_id)
+    }).await.map_err(|e| format!("任务错误: {}", e))?
+}
+
+/// 向会话写入命令/字符
+#[tauri::command]
+async fn adb_shell_write(
+    state: tauri::State<'_, AdbPtyState>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
+    let sessions = state.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = { let s = sessions.lock().unwrap_or_else(|e| e.into_inner()); s.get(&session_id).cloned() };
+        let session = session.ok_or_else(|| "会话不存在".to_string())?;
+        if session.dead.load(std::sync::atomic::Ordering::Relaxed) { return Err("会话已关闭".into()); }
+        let mut w = session.writer.lock().map_err(|e| format!("锁失败: {}", e))?;
+        use std::io::Write;
+        w.write_all(data.as_bytes()).map_err(|e| format!("写入失败: {}", e))?;
+        let _ = w.flush();
+        Ok(())
+    }).await.map_err(|e| format!("任务错误: {}", e))?
+}
+
+/// 读取会话输出（非阻塞：立即返回当前累积的数据）
+#[tauri::command]
+async fn adb_shell_read(
+    state: tauri::State<'_, AdbPtyState>,
+    session_id: String,
+) -> Result<Vec<u8>, String> {
+    let sessions = state.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = { let s = sessions.lock().unwrap_or_else(|e| e.into_inner()); s.get(&session_id).cloned() };
+        let session = session.ok_or_else(|| "会话不存在".to_string())?;
+        let mut buf: Vec<u8> = Vec::new();
+        while let Ok(chunk) = session.output.try_recv() {
+            buf.extend_from_slice(&chunk);
+        }
+        Ok(buf)
+    }).await.map_err(|e| format!("任务错误: {}", e))?
+}
+
+/// 关闭会话
+#[tauri::command]
+async fn adb_shell_close(
+    state: tauri::State<'_, AdbPtyState>,
+    session_id: String,
+) -> Result<(), String> {
+    let sessions = state.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = { let mut s = sessions.lock().unwrap_or_else(|e| e.into_inner()); s.remove(&session_id) };
+        if let Some(session) = session {
+            session.dead.store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Ok(mut child) = session.child.lock() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        Ok(())
+    }).await.map_err(|e| format!("任务错误: {}", e))?
+}
+
+
 /// ===== ADB 调试命令 =====
 
 /// 查找 adb 可执行文件路径。
@@ -3963,6 +4095,9 @@ fn main() {
         .manage(WslSerialState {
             sessions: std::sync::Arc::new(Mutex::new(HashMap::new())),
         })
+        .manage(AdbPtyState {
+            sessions: std::sync::Arc::new(Mutex::new(HashMap::new())),
+        })
         .manage(WorkflowState {
             rules: Mutex::new(HashMap::new()),
             log_dirs: Mutex::new(HashMap::new()),
@@ -4022,6 +4157,10 @@ fn main() {
             adb_devices,
             adb_shell,
             adb_exec,
+            adb_open_shell,
+            adb_shell_write,
+            adb_shell_read,
+            adb_shell_close,
             #[cfg(debug_assertions)]
             test_error_report,
         ])

@@ -1033,6 +1033,8 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .add-btn.icon-btn:hover { text-decoration:none; opacity:1; border-color:var(--border-h); }
 #adbRefreshDevBtn { font-family:var(--font-ui); font-weight:400; user-select:none; }
 .add-btn.icon-btn.active { background:var(--accent-focus); border-color:var(--accent-focus); color:#fff; }
+.adb-dev-card { transition: background .15s, color .15s; }
+.adb-dev-card.active { background:var(--accent-focus) !important; color:#fff !important; border-color:var(--accent-focus) !important; }
 .app-info { display:inline-flex; align-items:center; gap:6px; margin-right:10px; cursor:default; flex-shrink:0; }
 .app-info-icon { width:22px; height:22px; flex-shrink:0; object-fit:contain; }
 .app-info-name { font-size:12px; font-weight:600; color:var(--text-b); white-space:nowrap; }
@@ -1811,7 +1813,13 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     box-shadow:0 2px 8px rgba(0,0,0,.3); opacity:0; transition:opacity .1s;
 }
 .custom-tip.show { opacity:1; }
+/* 隐藏 xterm 终端滚动条 */
+.xterm .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.xterm .xterm-viewport::-webkit-scrollbar-thumb { display: none; }
+.xterm .xterm-viewport { scrollbar-width: none; -ms-overflow-style: none; }
 </style>
+    <link rel="stylesheet" href="vendor/xterm/xterm.css">
+    <script src="vendor/xterm/xterm.js"></script>
 </head>
 <body style="display:flex;flex-direction:column;height:100vh;">
 
@@ -6272,19 +6280,24 @@ function refreshAdbDevices() {
             list.innerHTML = '<span style="font-family:var(--font-mono);font-size:12px;color:var(--text-d);">未检测到 ADB 设备</span>';
             return;
         }
-        var html = '';
+        list.innerHTML = '';
         devices.forEach(function(d) {
             var dotColor = 'var(--accent-green)';
             if (d.state === 'offline') dotColor = 'var(--accent-orange)';
             else if (d.state === 'error') dotColor = 'var(--accent-red)';
             var label = d.model ? (d.model + ' · ' + d.state) : (d.serial + ' · ' + d.state);
-            html +=
-                '<div class="adb-dev-card" style="display:inline-flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text);" onclick="openAdbSession(\'' + d.serial + '\')">' +
-                    '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';"></span>' +
-                    '<span>' + label + '</span>' +
-                '</div>';
+            var card = document.createElement('div');
+            card.className = 'adb-dev-card';
+            card.style.cssText = 'display:inline-flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text);';
+            card.innerHTML = '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';"></span><span>' + label + '</span>';
+            (function(serial){ card.addEventListener('click', function(){
+                var cards = list.querySelectorAll('.adb-dev-card');
+                for (var k=0;k<cards.length;k++) cards[k].classList.remove('active');
+                card.classList.add('active');
+                openAdbSession(serial);
+            });})(d.serial);
+            list.appendChild(card);
         });
-        list.innerHTML = html;
     }).catch(function(e) {
         console.warn('[ADB] 获取设备列表失败:', e);
         list.innerHTML = '<span style="font-family:var(--font-mono);font-size:12px;color:var(--text-d);">未检测到 ADB 设备（请检查 adb 是否已安装）</span>';
@@ -6295,57 +6308,90 @@ function openAdbSession(serial) {
     console.log('[ADB] 打开调试会话:', serial);
     var area = document.getElementById('adb-sessionArea');
     if (!area) return;
+    // 单会话切换：关闭并移除已有会话窗口
+    var exist = area.querySelectorAll('[id^="adb-session-"]');
+    for (var x=0; x<exist.length; x++) closeAdbSession(exist[x].id);
     _adbSessions++;
     var sid = 'adb-session-' + _adbSessions;
     var el = document.createElement('div');
     el.id = sid;
-    el.style.cssText = 'margin:8px;border:1px solid var(--border);border-radius:8px;display:flex;flex-direction:column;min-height:160px;background:var(--surface-1);overflow:hidden;';
-    el.innerHTML =
-        '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--toolbar-bg);font-family:var(--font-mono);font-size:12px;color:var(--text-b);">' +
-            '<span style="width:8px;height:8px;border-radius:50%;background:var(--accent-green);"></span>' +
-            '<span>设备: ' + serial + '</span>' +
-            '<span style="flex:1;"></span>' +
-            '<button id="' + sid + '-run" onclick="runAdbShell(\'' + sid + '\',\'' + serial + '\')" style="background:var(--accent-focus);border:none;color:#fff;cursor:pointer;font-size:11px;padding:2px 8px;border-radius:4px;">执行</button>' +
-            '<button onclick="closeAdbSession(\'' + sid + '\')" style="background:transparent;border:none;color:var(--text-d);cursor:pointer;font-size:14px;line-height:1;">×</button>' +
-        '</div>' +
-        '<div class="no-scrollbar" style="flex:1;overflow-y:auto;padding:10px 12px;font-family:var(--font-mono);font-size:13px;color:var(--text);background:var(--editor-bg);min-height:120px;line-height:1.6;" id="' + sid + '-output">' +
-            '<span style="color:var(--accent-focus);">root@device:#</span> 等待执行 adb shell 命令<br/>' +
-        '</div>' +
-        '<div style="display:flex;align-items:center;gap:6px;padding:8px 12px;border-top:1px solid var(--border);background:var(--toolbar-bg);">' +
-            '<input id="' + sid + '-cmd" type="text" placeholder="输入命令，如 ls / getprop ro.build.version.release" autocomplete="off" spellcheck="false" style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-mono);font-size:13px;outline:none;">' +
-        '</div>';
+    el.style.cssText = 'margin:0;flex:1;min-height:0;border:1px solid var(--border);border-radius:8px;display:flex;flex-direction:column;background:var(--surface-1);overflow:hidden;';
+    el.innerHTML = '<div id="' + sid + '-termBox" style="flex:1;min-height:0;background:var(--editor-bg);"></div>';
+    // 清空占位提示并设置纵向 flex 布局
+    area.style.display = 'flex';
+    area.style.flexDirection = 'column';
+    area.style.padding = '0';
+    var ph = area.querySelector('.no-scrollbar');
+    if (ph && ph.parentNode === area && ph.children.length === 0) area.removeChild(ph);
     area.appendChild(el);
-    // 输入框 Enter 触发执行
-    var inp = el.querySelector('#' + sid + '-cmd');
-    if (inp) {
-        inp.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') { e.preventDefault(); runAdbShell(sid, serial); }
-        });
+    // 会话状态
+    el._adbSerial = serial;
+    el._adbPtyId = null;
+    el._adbReadTimer = null;
+    el._adbTerm = null;
+    // 创建 xterm 终端
+    if (typeof Terminal === 'undefined') {
+        el.innerHTML = '<div style="color:var(--accent-red);padding:12px;font-family:var(--font-mono);font-size:12px;">xterm.js 未加载</div>';
+        return;
     }
+    var term = new Terminal({
+        cursorBlink: true,
+        fontSize: 13,
+        fontFamily: '"Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, monospace',
+        theme: { background: '#1c1e22', foreground: '#dce0e8', cursor: '#dce0e8' },
+        scrollback: 1000,
+    });
+    term.open(el.querySelector('#' + sid + '-termBox'));
+    term.writeln('');  // 留空行
+    el._adbTerm = term;
+    // 用户输入透传到后端（xterm 处理补全/历史/光标）
+    term.onData(function(data) {
+        if (el._adbPtyId) {
+            invoke('adb_shell_write', { sessionId: el._adbPtyId, data: data }).catch(function(err) {
+                console.warn('[ADB] 写PTY失败:', err);
+            });
+        }
+        if (el._adbTerm) el._adbTerm.scrollToBottom();
+    });
+    // 建立 PTY shell 会话
+    invoke('adb_open_shell', { serial: serial }).then(function(pid) {
+        console.log('[ADB] PTY会话建立 pid=', pid);
+        el._adbPtyId = pid;
+        el._adbInited = true;
+        // 启动轮询读取输出
+        el._adbReadTimer = setInterval(function() {
+            adbPtyPoll(el);
+        }, 120);
+        term.focus();
+    }).catch(function(e) {
+        console.error('[ADB] 打开PTY会话失败:', e);
+        term.writeln('\x1b[31m连接设备失败: ' + e + '\x1b[0m');
+    });
 }
 
-function runAdbShell(sid, serial) {
-    var inp = document.getElementById(sid + '-cmd');
-    var out = document.getElementById(sid + '-output');
-    var runBtn = document.getElementById(sid + '-run');
-    if (!inp || !out) return;
-    var cmd = inp.value.trim();
-    if (!cmd) return;
-    if (runBtn) { runBtn.disabled = true; runBtn.textContent = '执行中'; }
-    out.innerHTML += '<br/><span style="color:var(--accent-focus);">root@device:# ' + cmd + '</span><br/>';
-    invoke('adb_shell', { serial: serial, cmd: cmd }).then(function(res) {
-        out.innerHTML += (res || '') + '<br/>';
-    }).catch(function(e) {
-        out.innerHTML += '<span style="color:var(--accent-red);">执行失败: ' + e + '</span><br/>';
-    }).finally(function() {
-        if (runBtn) { runBtn.disabled = false; runBtn.textContent = '执行'; }
-        out.scrollTop = out.scrollHeight;
-    });
+// 读取 PTY 输出并写入 xterm（xterm 原生解析 ANSI/光标/多列）
+function adbPtyPoll(el) {
+    if (!el._adbPtyId) return;
+    var term = el._adbTerm;
+    if (!term) return;
+    invoke('adb_shell_read', { sessionId: el._adbPtyId }).then(function(bytes) {
+        if (bytes && bytes.length) {
+            term.write(new Uint8Array(bytes));
+            term.scrollToBottom();
+        }
+    }).catch(function() {});
 }
 
 function closeAdbSession(sid) {
     var el = document.getElementById(sid);
-    if (el && el.parentNode) el.parentNode.removeChild(el);
+    if (el) {
+        if (el._adbReadTimer) { clearInterval(el._adbReadTimer); el._adbReadTimer = null; }
+        if (el._adbTerm) { try { el._adbTerm.dispose(); } catch(_) {} }
+        if (el._adbPtyId) {
+            invoke('adb_shell_close', { sessionId: el._adbPtyId }).catch(function() {});
+        }
+        if (el.parentNode) el.parentNode.removeChild(el);
+    }
 }
 
 // WSL 发行版启动/关闭，操作后延迟刷新 UI
