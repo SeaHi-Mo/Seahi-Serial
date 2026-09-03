@@ -1031,6 +1031,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .add-btn:hover { text-decoration:underline; }
 .add-btn.icon-btn { padding:3px 6px; border-radius:5px; background:var(--input-bg); border:1px solid transparent; color:var(--text); }
 .add-btn.icon-btn:hover { text-decoration:none; opacity:1; border-color:var(--border-h); }
+#adbRefreshDevBtn { font-family:var(--font-ui); font-weight:400; user-select:none; }
 .add-btn.icon-btn.active { background:var(--accent-focus); border-color:var(--accent-focus); color:#fff; }
 .app-info { display:inline-flex; align-items:center; gap:6px; margin-right:10px; cursor:default; flex-shrink:0; }
 .app-info-icon { width:22px; height:22px; flex-shrink:0; object-fit:contain; }
@@ -6221,14 +6222,10 @@ function openAdb() {
         adbPane.style.flexDirection = 'column';
         adbPane.innerHTML =
             '<div style="display:flex;align-items:center;gap:16px;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--toolbar-bg);flex-shrink:0;">' +
-                '<button class="add-btn icon-btn" id="adbRefreshDevBtn" onclick="refreshAdbDevices()" title="重新扫描设备" style="padding:3px 8px;border-radius:5px;font-size:12px;">刷新设备</button>' +
-                '<div id="adb-envStatus" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-d);white-space:nowrap;">' +
-                    '<span id="adb-envState" style="color:var(--text-d);">检测 ADB 环境中...</span>' +
-                '</div>' +
-                '<span style="height:14px;width:1px;background:var(--border);flex-shrink:0;"></span>' +
                 '<div class="no-scrollbar" style="flex:1;overflow-x:auto;min-width:0;display:flex;align-items:center;gap:8px;" id="adb-deviceList">' +
                     '<div style="font-family:var(--font-mono);color:var(--text-d);font-size:12px;padding:2px 0;">尚未检测到 ADB 设备（预留设备列表区）</div>' +
                 '</div>' +
+                '<button class="add-btn icon-btn" id="adbRefreshDevBtn" onclick="refreshAdbDevices()" title="重新扫描设备" style="background:var(--accent-focus);color:#fff;border:1px solid transparent;width:45px;height:30px;box-sizing:border-box;padding:0;margin:0;gap:0;border-radius:5px;font-size:12px;flex-shrink:0;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;">刷新</button>' +
             '</div>' +
             '<div style="flex:1;overflow:hidden;min-height:0;background:var(--editor-bg);" id="adb-sessionArea">' +
                 '<div class="no-scrollbar" style="width:100%;height:100%;overflow-y:auto;display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);color:var(--text-d);font-size:13px;">选择上方设备开始调试会话</div>' +
@@ -6269,7 +6266,7 @@ function refreshAdbDevices() {
             '<span style="width:8px;height:8px;border-radius:50%;background:var(--accent-green);"></span>' +
             '<span>0123456789ABCDEF · device</span>' +
         '</div>';
-    list.innerHTML = card + card2 + '<span style="font-family:var(--font-mono);font-size:12px;color:var(--text-d);">点击设备打开调试会话</span>';
+    list.innerHTML = card + card2;
 }
 
 function openAdbSession(serial) {
