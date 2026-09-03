@@ -40,3 +40,4 @@ server/errors.db-*
 
 # AI 会话记忆（不再跟踪）
 .workbuddy/
+SESSION_MEMORY.md
