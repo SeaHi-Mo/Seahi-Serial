@@ -20,7 +20,7 @@
         "center": true,
         "decorations": false,
         "backgroundColor": "#1c1e22",
-        "devtools": false
+        "devtools": true
       }
     ],
     "security": {
