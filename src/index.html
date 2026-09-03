@@ -1836,6 +1836,10 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
         <svg id="wslToggleIcon" width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M424.256 96h175.488c78.4 0 140.544 0 189.12 6.528 50.048 6.72 90.496 20.928 122.432 52.8 31.936 32 46.08 72.448 52.864 122.496 6.528 48.64 6.528 110.72 6.528 189.12v87.68a32 32 0 1 1-64 0V544H117.312v10.688c0 81.28 0.064 139.136 5.952 183.04 5.76 42.88 16.64 67.584 34.688 85.632 18.048 18.112 42.752 28.928 85.76 34.688 43.776 5.888 101.568 5.952 182.976 5.952h128a32 32 0 0 1 0 64H424.256c-78.4 0-140.544 0-189.12-6.528-50.048-6.72-90.496-20.928-122.432-52.8-32-32-46.08-72.448-52.864-122.496C53.312 697.6 53.312 635.52 53.312 557.056V466.944c0-78.4 0-140.544 6.528-189.12 6.72-50.048 20.928-90.56 52.864-122.496 31.936-31.872 72.384-46.08 122.432-52.8 48.64-6.528 110.72-6.528 189.12-6.528z m-306.944 384h789.376v-10.688c0-81.28-0.064-139.136-6.016-183.04-5.76-42.88-16.576-67.584-34.624-85.632-18.048-18.112-42.816-28.928-85.76-34.688-43.776-5.888-101.568-5.952-182.976-5.952H426.688c-81.408 0-139.2 0.064-183.04 5.952-42.88 5.76-67.648 16.64-85.76 34.688-17.984 18.048-28.8 42.752-34.56 85.696-5.952 43.84-6.016 101.632-6.016 183.04V480z"/><path d="M576 281.6h192a38.4 38.4 0 0 1 0 76.8H576a38.4 38.4 0 1 1 0-76.8zM217.6 661.312a38.4 38.4 0 1 1 76.8 0v85.376a38.4 38.4 0 0 1-76.8 0v-85.376zM217.6 277.312a38.4 38.4 0 1 1 76.8 0v85.376a38.4 38.4 0 0 1-76.8 0V277.312zM345.6 661.312a38.4 38.4 0 1 1 76.8 0v85.376a38.4 38.4 0 0 1-76.8 0v-85.376zM345.6 277.312a38.4 38.4 0 1 1 76.8 0v85.376a38.4 38.4 0 0 1-76.8 0V277.312zM810.688 977.088a209.088 209.088 0 1 0 0-418.176 209.088 209.088 0 0 0 0 418.176z m0-341.376a132.288 132.288 0 1 1 0 264.576 132.288 132.288 0 0 1 0-264.576z"/><path d="M831.168 680.32l-5.568-4.928a38.4 38.4 0 1 0-51.2 57.28l5.632 4.992q24.768 22.08 30.656 29.12l1.024 1.216-1.024 1.28q-5.888 6.976-30.72 29.056l-5.568 4.992a38.4 38.4 0 0 0 51.2 57.344l5.568-5.056q28.8-25.728 38.272-36.864 20.48-24.32 20.48-50.752 0-26.368-20.48-50.752-9.408-11.136-38.272-36.864z"/></svg>
         <span id="wslToggleText" style="display:none;">WSL 端口映射</span>
     </span>
+    <span id="adbToggleBtn" class="add-btn icon-btn" onclick="openAdb()" style="margin-left:12px;" title="ADB 调试">
+        <svg id="adbToggleIcon" width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M252.16 776.96l-23.04-135.68H105.6l-21.76 135.68H0L103.68 192h122.24l111.36 584.96zM217.6 573.44l-53.12-308.48-48.64 308.48zM348.8 192h203.52c87.04 0 87.04 81.92 87.04 81.92v421.12c0 81.92-87.04 81.92-87.04 81.92H348.8z m205.44 93.44c0-16.64-5.76-21.76-5.76-21.76-5.12-5.12-22.4-5.12-22.4-5.12H433.92v451.84h92.16c17.28 0 22.4-5.12 22.4-5.12 5.76-5.12 5.76-16.64 5.76-21.76z m332.8 0c0-16.64-5.76-21.76-5.76-21.76-5.12-5.12-22.4-5.12-22.4-5.12h-93.44v187.52h93.44c17.28 0 22.4-5.12 22.4-5.12 5.76-5.12 5.76-22.4 5.76-21.76z m0 254.08c0-16.64-5.76-21.76-5.76-21.76-5.12-5.12-22.4-5.12-22.4-5.12h-93.44v197.76h93.44c17.28 0 22.4-5.12 22.4-5.12 5.76-5.12 5.76-21.76 5.76-21.76zM681.6 192h202.88c87.68 0 87.68 81.92 87.68 81.92v149.12c0 49.28-37.12 57.6-37.12 57.6 37.12 9.6 37.12 54.4 37.12 54.4v160c0 81.92-87.68 81.92-87.68 81.92h-202.88z"/></svg>
+        <span id="adbToggleText" style="display:none;">ADB 调试</span>
+    </span>
     <span style="flex:1;"></span>
     <span id="themeStyleWrap" class="sel" style="height:24px;width:auto;padding:0 4px;justify-content:center;" onclick="toggleThemeStyleDrop(event)" title="主题风格: 默认">
         <svg width="16" height="16" viewBox="0 0 1024 1024" fill="currentColor"><path d="M512 51.2a460.8 460.8 0 0 0 0 921.6c78.5408 0 133.12-40.0384 139.264-102.4 2.3552-23.6544-6.5536-44.9536-15.1552-65.6384-14.336-34.5088-24.6784-59.4944 9.216-93.2864s73.5232-27.4432 119.7056-20.48c29.7984 4.5056 60.416 9.0112 89.1904 1.2288C929.5872 672.0512 972.8 606.208 972.8 512A461.312 461.312 0 0 0 512 51.2z m331.3664 601.9072c-20.48 5.5296-45.568 1.8432-71.68-2.2528-47.4112-7.0656-106.496-15.9744-154.7264 31.9488-53.4528 53.248-33.0752 102.4-18.1248 138.1376a105.2672 105.2672 0 0 1 12.1856 45.8752C604.672 927.1296 533.6064 931.84 512 931.84a419.84 419.84 0 1 1 419.84-419.84c0 43.6224-11.4688 120.1152-88.4736 141.1072z"/><path d="M235.52 512m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M307.2 337.92m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M471.04 245.76m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M655.36 276.48m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M778.24 419.84m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/></svg>
@@ -1874,6 +1878,8 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 <div class="pane-container" id="paneContainer"></div>
 <!-- WSL 映射面板（常驻 DOM，display:none 时不参与 flex 布局） -->
 <div class="pane-container" id="wsl-pane" style="display:none;"></div>
+<!-- ADB 调试面板（常驻 DOM，display:none 时不参与 flex 布局） -->
+<div class="pane-container" id="adb-pane" style="display:none;"></div>
 
 <!-- 首次使用引导 -->
 <div id="onboarding-overlay">
@@ -5366,6 +5372,15 @@ function openWslMapping() {
     // 隐藏监视器，显示 WSL 面板
     document.getElementById('paneContainer').style.display = 'none';
     document.getElementById('wsl-pane').style.display = 'flex';
+    document.getElementById('adb-pane').style.display = 'none';
+    var aBtn = document.getElementById('adbToggleBtn');
+    if (aBtn) {
+        aBtn.setAttribute('title', 'ADB 调试');
+        aBtn.setAttribute('onclick', 'openAdb()');
+        aBtn.classList.remove('active');
+    }
+    var aText = document.getElementById('adbToggleText');
+    if (aText) aText.textContent = 'ADB 调试';
 
     // 面板打开期间定期刷新设备列表，保证映射后的 WSL 路径能及时解析显示
     if (_wslDevListTimer) clearInterval(_wslDevListTimer);
@@ -5378,8 +5393,6 @@ function openWslMapping() {
         btn.setAttribute('onclick', 'restoreMonitorPane()');
         btn.classList.add('active');
     }
-    var icon = document.getElementById('wslToggleIcon');
-    if (icon) icon.innerHTML = '<path d="M800 444.8V137.6a64 64 0 0 0-109.2-45.3l-448 448a64 64 0 0 0 0 90.6l448 448A64 64 0 0 0 800 1033.6V726.4c0-35.3-28.7-64-64-64H384a64 64 0 0 1 0-128h352c35.3 0 64-28.7 64-89.6z"/>';
     var text = document.getElementById('wslToggleText');
     if (text) text.textContent = '返回到串口调试器';
     // 进入 WSL 模式时，根据 WSL 运行状态设置按钮状态
@@ -6170,14 +6183,121 @@ function restoreMonitorPane() {
         btn.setAttribute('onclick', 'openWslMapping()');
         btn.classList.remove('active');
     }
-    var icon = document.getElementById('wslToggleIcon');
-    if (icon) icon.innerHTML = '<path d="M424.256 96h175.488c78.4 0 140.544 0 189.12 6.528 50.048 6.72 90.496 20.928 122.432 52.8 31.936 32 46.08 72.448 52.864 122.496 6.528 48.64 6.528 110.72 6.528 189.12v87.68a32 32 0 1 1-64 0V544H117.312v10.688c0 81.28 0.064 139.136 5.952 183.04 5.76 42.88 16.64 67.584 34.688 85.632 18.048 18.112 42.752 28.928 85.76 34.688 43.776 5.888 101.568 5.952 182.976 5.952h128a32 32 0 0 1 0 64H424.256c-78.4 0-140.544 0-189.12-6.528-50.048-6.72-90.496-20.928-122.432-52.8-32-32-46.08-72.448-52.864-122.496C53.312 697.6 53.312 635.52 53.312 557.056V466.944c0-78.4 0-140.544 6.528-189.12 6.72-50.048 20.928-90.56 52.864-122.496 31.936-31.872 72.384-46.08 122.432-52.8 48.64-6.528 110.72-6.528 189.12-6.528z m-306.944 384h789.376v-10.688c0-81.28-0.064-139.136-6.016-183.04-5.76-42.88-16.576-67.584-34.624-85.632-18.048-18.112-42.816-28.928-85.76-34.688-43.776-5.888-101.568-5.952-182.976-5.952H426.688c-81.408 0-139.2 0.064-183.04 5.952-42.88 5.76-67.648 16.64-85.76 34.688-17.984 18.048-28.8 42.752-34.56 85.696-5.952 43.84-6.016 101.632-6.016 183.04V480z"/><path d="M576 281.6h192a38.4 38.4 0 0 1 0 76.8H576a38.4 38.4 0 1 1 0-76.8zM217.6 661.312a38.4 38.4 0 1 1 76.8 0v85.376a38.4 38.4 0 0 1-76.8 0v-85.376zM217.6 277.312a38.4 38.4 0 1 1 76.8 0v85.376a38.4 38.4 0 0 1-76.8 0V277.312zM345.6 661.312a38.4 38.4 0 1 1 76.8 0v85.376a38.4 38.4 0 0 1-76.8 0v-85.376zM345.6 277.312a38.4 38.4 0 1 1 76.8 0v85.376a38.4 38.4 0 0 1-76.8 0V277.312zM810.688 977.088a209.088 209.088 0 1 0 0-418.176 209.088 209.088 0 0 0 0 418.176z m0-341.376a132.288 132.288 0 1 1 0 264.576 132.288 132.288 0 0 1 0-264.576z"/><path d="M831.168 680.32l-5.568-4.928a38.4 38.4 0 1 0-51.2 57.28l5.632 4.992q24.768 22.08 30.656 29.12l1.024 1.216-1.024 1.28q-5.888 6.976-30.72 29.056l-5.568 4.992a38.4 38.4 0 0 0 51.2 57.344l5.568-5.056q28.8-25.728 38.272-36.864 20.48-24.32 20.48-50.752 0-26.368-20.48-50.752-9.408-11.136-38.272-36.864z"/>';
     var text = document.getElementById('wslToggleText');
     if (text) text.textContent = 'WSL 端口映射';
     // 退出 WSL 模式时恢复"打开额外监视器"按钮状态
     var addBtn = document.getElementById('addMonitorBtn');
     if (addBtn) { addBtn.style.opacity = ''; addBtn.style.pointerEvents = ''; }
 
+}
+
+/* ===== ADB 调试面板（前端壳） ===== */
+function openAdb() {
+    console.log('[ADB] 打开ADB调试页面');
+    // 隐藏主面板与 WSL 面板，显示 ADB 面板
+    document.getElementById('paneContainer').style.display = 'none';
+    document.getElementById('wsl-pane').style.display = 'none';
+    document.getElementById('adb-pane').style.display = 'flex';
+    var wBtn = document.getElementById('wslToggleBtn');
+    if (wBtn) {
+        wBtn.setAttribute('title', 'WSL 端口映射');
+        wBtn.setAttribute('onclick', 'openWslMapping()');
+        wBtn.classList.remove('active');
+    }
+    var wText = document.getElementById('wslToggleText');
+    if (wText) wText.textContent = 'WSL 端口映射';
+    // 更新顶部栏按钮：进入后悬停提示「返回到串口调试器」
+    var btn = document.getElementById('adbToggleBtn');
+    if (btn) {
+        btn.setAttribute('title', '返回到串口调试器');
+        btn.setAttribute('onclick', 'closeAdb()');
+        btn.classList.add('active');
+    }
+    var text = document.getElementById('adbToggleText');
+    if (text) text.textContent = '返回到串口调试器';
+    // 首次打开时填充 ADB 面板内容（占位）
+    var adbPane = document.getElementById('adb-pane');
+    if (!adbPane._initialized) {
+        adbPane.style.flexDirection = 'column';
+        adbPane.innerHTML =
+            '<div style="display:flex;align-items:center;gap:16px;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--toolbar-bg);flex-shrink:0;">' +
+                '<button class="add-btn icon-btn" id="adbRefreshDevBtn" onclick="refreshAdbDevices()" title="重新扫描设备" style="padding:3px 8px;border-radius:5px;font-size:12px;">刷新设备</button>' +
+                '<div id="adb-envStatus" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-d);white-space:nowrap;">' +
+                    '<span id="adb-envState" style="color:var(--text-d);">检测 ADB 环境中...</span>' +
+                '</div>' +
+                '<span style="height:14px;width:1px;background:var(--border);flex-shrink:0;"></span>' +
+                '<div class="no-scrollbar" style="flex:1;overflow-x:auto;min-width:0;display:flex;align-items:center;gap:8px;" id="adb-deviceList">' +
+                    '<div style="font-family:var(--font-mono);color:var(--text-d);font-size:12px;padding:2px 0;">尚未检测到 ADB 设备（预留设备列表区）</div>' +
+                '</div>' +
+            '</div>' +
+            '<div style="flex:1;overflow:hidden;min-height:0;background:var(--editor-bg);" id="adb-sessionArea">' +
+                '<div class="no-scrollbar" style="width:100%;height:100%;overflow-y:auto;display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);color:var(--text-d);font-size:13px;">选择上方设备开始调试会话</div>' +
+            '</div>';
+        adbPane._initialized = true;
+    }
+}
+
+function closeAdb() {
+    console.log('[ADB] 返回监视器页面');
+    document.getElementById('adb-pane').style.display = 'none';
+    document.getElementById('paneContainer').style.display = 'flex';
+    // 恢复顶部栏按钮
+    var btn = document.getElementById('adbToggleBtn');
+    if (btn) {
+        btn.setAttribute('title', 'ADB 调试');
+        btn.setAttribute('onclick', 'openAdb()');
+        btn.classList.remove('active');
+    }
+    var text = document.getElementById('adbToggleText');
+    if (text) text.textContent = 'ADB 调试';
+}
+
+/* ===== ADB 设备与会话（占位骨架，后续接 Rust 数据） ===== */
+var _adbSessions = 0;
+function refreshAdbDevices() {
+    console.log('[ADB] 刷新设备列表');
+    var list = document.getElementById('adb-deviceList');
+    if (!list) return;
+    // 占位：静态设备卡片示意，后续由 adb_devices() 回填
+    var card =
+        '<div class="adb-dev-card" style="display:inline-flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text);" onclick="openAdbSession(\'0c8c1f2a\')">' +
+            '<span style="width:8px;height:8px;border-radius:50%;background:var(--accent-green);"></span>' +
+            '<span>0c8c1f2a · device</span>' +
+        '</div>';
+    var card2 =
+        '<div class="adb-dev-card" style="display:inline-flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text);" onclick="openAdbSession(\'0123456789ABCDEF\')">' +
+            '<span style="width:8px;height:8px;border-radius:50%;background:var(--accent-green);"></span>' +
+            '<span>0123456789ABCDEF · device</span>' +
+        '</div>';
+    list.innerHTML = card + card2 + '<span style="font-family:var(--font-mono);font-size:12px;color:var(--text-d);">点击设备打开调试会话</span>';
+}
+
+function openAdbSession(serial) {
+    console.log('[ADB] 打开调试会话:', serial);
+    var area = document.getElementById('adb-sessionArea');
+    if (!area) return;
+    _adbSessions++;
+    var sid = 'adb-session-' + _adbSessions;
+    var el = document.createElement('div');
+    el.id = sid;
+    el.style.cssText = 'margin:8px;border:1px solid var(--border);border-radius:8px;display:flex;flex-direction:column;min-height:160px;background:var(--surface-1);overflow:hidden;';
+    el.innerHTML =
+        '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--toolbar-bg);font-family:var(--font-mono);font-size:12px;color:var(--text-b);">' +
+            '<span style="width:8px;height:8px;border-radius:50%;background:var(--accent-green);"></span>' +
+            '<span>设备: ' + serial + '</span>' +
+            '<span style="flex:1;"></span>' +
+            '<span style="color:var(--accent-focus);">shell 终端(待接)</span>' +
+            '<button onclick="closeAdbSession(\'' + sid + '\')" style="background:transparent;border:none;color:var(--text-d);cursor:pointer;font-size:14px;line-height:1;">×</button>' +
+        '</div>' +
+        '<div class="no-scrollbar" style="flex:1;overflow-y:auto;padding:10px 12px;font-family:var(--font-mono);font-size:13px;color:var(--text);background:var(--editor-bg);min-height:120px;line-height:1.6;">' +
+            '<span style="color:var(--accent-focus);">root@device:#</span> 会话终端占位...<br/>等待接入 adb shell 命令输出<br/>' +
+        '</div>';
+    area.appendChild(el);
+}
+
+function closeAdbSession(sid) {
+    var el = document.getElementById(sid);
+    if (el && el.parentNode) el.parentNode.removeChild(el);
 }
 
 // WSL 发行版启动/关闭，操作后延迟刷新 UI
@@ -6731,6 +6851,10 @@ document.addEventListener('DOMContentLoaded', function() {
         if (el && el.id === 'wslToggleBtn') {
             var wp = document.getElementById('wsl-pane');
             text = (wp && wp.style.display === 'flex') ? '返回到串口调试器' : 'WSL 端口映射';
+        }
+        if (el && el.id === 'adbToggleBtn') {
+            var ap = document.getElementById('adb-pane');
+            text = (ap && ap.style.display === 'flex') ? '返回到串口调试器' : 'ADB 调试';
         }
         el.setAttribute('data-title', text);
         el.removeAttribute('title');

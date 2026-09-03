@@ -58,6 +58,8 @@ Name: "install_usbipd"; Description: "安装 usbipd-win(WSL USB 串口映射支�
 [Files]
 ; 主程序 - 使用 Tauri 内嵌的 WebView2，无需额外 DLL
 Source: "src-tauri\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; ADB 工具(platform-tools) - 随安装包分发，运行时零下载
+Source: "platform-tools\*"; DestDir: "{app}\platform-tools"; Flags: recursesubdirs ignoreversion
 
 [Icons]
 ; 开始菜单快捷方式

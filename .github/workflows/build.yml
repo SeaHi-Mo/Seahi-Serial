@@ -63,6 +63,18 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y
 
+      - name: Download platform-tools (ADB)
+        shell: pwsh
+        run: |
+          $zip = "$env:TEMP\platform-tools.zip"
+          $dest = "$env:GITHUB_WORKSPACE\platform-tools"
+          Write-Host "Downloading latest platform-tools..."
+          Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath "$env:TEMP" -Force
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          Move-Item -Path "$env:TEMP\platform-tools" -Destination $dest
+          Write-Host "platform-tools staged at $dest"
+
       - name: Download Chinese language pack
         continue-on-error: true
         run: |
