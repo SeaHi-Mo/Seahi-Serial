@@ -3000,6 +3000,215 @@ fn save_log(content: String, path: String) -> Result<(), String> {
     Ok(())
 }
 
+// ===== 日志隐形缓存 =====
+// 每次打开串口并产生收发内容的会话会自动缓存为一个日志文件（无需用户手动保存）。
+// 缓存目录：%APPDATA%\seahi-serial\log-cache（Windows）
+// 上限 LOG_CACHE_MAX_COUNT 个文件，新建文件时按 FIFO 删除最旧的。
+
+/// 缓存文件前缀（含时间戳，可按键排序）
+const LOG_CACHE_PREFIX: &str = "session-";
+/// 缓存文件后缀
+const LOG_CACHE_SUFFIX: &str = ".log";
+/// 最多保留的缓存文件数
+const LOG_CACHE_MAX_COUNT: usize = 10;
+
+/// 单个监视器的会话缓存状态
+struct LogCacheSession {
+    /// 会话端口名（用于文件命名）
+    port_name: String,
+    /// 已打开的文件句柄；None 表示会话尚未写入任何内容（即未创建文件）
+    file: Option<std::fs::File>,
+    /// 文件完整路径（结束会话时用于清理空文件）
+    path: std::path::PathBuf,
+}
+
+/// 全局日志隐形缓存状态（key = monitor_id）
+struct LogCacheState {
+    sessions: std::sync::Mutex<std::collections::HashMap<String, LogCacheSession>>,
+}
+
+/// 获取日志缓存目录
+fn log_cache_dir() -> std::path::PathBuf {
+    let base = dirs_config_path();
+    match base {
+        Some(p) => p.join("log-cache"),
+        None => std::env::temp_dir().join("seahi-serial-log-cache"),
+    }
+}
+
+/// 紧凑时间戳（用于文件名，Windows 用本地时间）
+fn log_cache_time_stamp() -> String {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+        use windows_sys::Win32::Foundation::SYSTEMTIME;
+        let mut st: SYSTEMTIME = unsafe { std::mem::zeroed() };
+        unsafe { GetLocalTime(&mut st) };
+        format!(
+            "{:04}{:02}{:02}-{:02}{:02}{:02}{:03}",
+            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+        format!("{}", now.as_millis())
+    }
+}
+
+/// 清洗端口名为合法的文件名片段
+fn sanitize_for_filename(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+            out.push(c);
+        } else if c == '/' || c == '\\' {
+            out.push('-');
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push_str("port");
+    }
+    out
+}
+
+/// 保证缓存目录下的文件数不超过上限：超出时删除最旧的（按文件名时间戳升序）
+fn enforce_log_cache_limit(dir: &std::path::Path) {
+    use std::fs;
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(rd) = fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with(LOG_CACHE_PREFIX) && name.ends_with(LOG_CACHE_SUFFIX) {
+                        files.push(p);
+                    }
+                }
+            }
+        }
+    }
+    files.sort(); // 文件名前缀含可排序时间戳，字典序即时间序
+    if files.len() > LOG_CACHE_MAX_COUNT {
+        let remove_count = files.len() - LOG_CACHE_MAX_COUNT;
+        for p in files.into_iter().take(remove_count) {
+            let _ = fs::remove_file(p);
+        }
+    }
+}
+
+/// 标记一次串口会话开始（幂等：已存在则保留原文件，自动重连时日志连续）
+#[tauri::command]
+fn start_log_cache(state: tauri::State<'_, LogCacheState>, monitor_id: String, port_name: String) -> Result<(), String> {
+    let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+    sessions.entry(monitor_id).or_insert_with(|| LogCacheSession {
+        port_name,
+        file: None,
+        path: std::path::PathBuf::new(),
+    });
+    Ok(())
+}
+
+/// 向当前会话缓存文件追加内容。首次写入时创建文件并清理旧缓存（FIFO，≤10 个）
+#[tauri::command]
+fn append_log_cache(state: tauri::State<'_, LogCacheState>, monitor_id: String, content: String) -> Result<(), String> {
+    use std::io::Write;
+    if content.is_empty() {
+        return Ok(());
+    }
+    let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+    let sess = sessions.entry(monitor_id).or_insert_with(|| LogCacheSession {
+        port_name: String::new(),
+        file: None,
+        path: std::path::PathBuf::new(),
+    });
+
+    // 首次写入：创建目录、清理旧缓存、新建文件
+    if sess.file.is_none() {
+        let dir = log_cache_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建日志缓存目录失败: {}", e))?;
+        enforce_log_cache_limit(&dir);
+        let filename = format!(
+            "{}{}-{}{}",
+            LOG_CACHE_PREFIX,
+            log_cache_time_stamp(),
+            sanitize_for_filename(&sess.port_name),
+            LOG_CACHE_SUFFIX
+        );
+        let path = dir.join(&filename);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| format!("创建日志缓存文件失败: {}", e))?;
+        sess.path = path;
+        sess.file = Some(file);
+    }
+
+    if let Some(f) = sess.file.as_mut() {
+        f.write_all(content.as_bytes()).map_err(|e| format!("写入日志缓存失败: {}", e))?;
+        let _ = f.flush();
+    }
+    Ok(())
+}
+
+/// 结束当前会话缓存：关闭文件句柄，若文件为空则删除，并清理会话状态
+#[tauri::command]
+fn end_log_cache(state: tauri::State<'_, LogCacheState>, monitor_id: String) -> Result<(), String> {
+    let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(sess) = sessions.remove(&monitor_id) {
+        drop(sess.file);
+        if sess.path.exists() {
+            let size = std::fs::metadata(&sess.path).map(|m| m.len()).unwrap_or(0);
+            if size == 0 {
+                let _ = std::fs::remove_file(&sess.path);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 列出当前已缓存的日志文件（供界面展示/排查，返回文件名 + 大小 + 修改时间）
+#[tauri::command]
+fn list_log_cache() -> Result<Vec<serde_json::Value>, String> {
+    use std::fs;
+    let dir = log_cache_dir();
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    if let Ok(rd) = fs::read_dir(&dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with(LOG_CACHE_PREFIX) && name.ends_with(LOG_CACHE_SUFFIX) {
+                        if let Ok(meta) = p.metadata() {
+                            let modified = meta.modified()
+                                .ok()
+                                .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+                                .map(|d| d.as_millis())
+                                .unwrap_or(0);
+                            items.push(serde_json::json!({
+                                "name": name,
+                                "size": meta.len(),
+                                "modified": modified,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    items.sort_by(|a, b| {
+        let am = a.get("modified").and_then(|v| v.as_u64()).unwrap_or(0);
+        let bm = b.get("modified").and_then(|v| v.as_u64()).unwrap_or(0);
+        bm.cmp(&am) // 新的在前
+    });
+    Ok(items)
+}
+
 // ===== 自动更新功能 =====
 
 /// GitHub Releases API 响应结构体（简化版）
@@ -3628,6 +3837,9 @@ fn main() {
             log_dirs: Mutex::new(HashMap::new()),
             regex_cache: std::sync::Arc::new(RegexCache::new()),
         })
+        .manage(LogCacheState {
+            sessions: std::sync::Mutex::new(HashMap::new()),
+        })
         .invoke_handler(tauri::generate_handler![
             list_ports,
             list_wsl_devices,
@@ -3640,6 +3852,10 @@ fn main() {
             set_rts,
             choose_log_directory,
             save_log,
+            start_log_cache,
+            append_log_cache,
+            end_log_cache,
+            list_log_cache,
             attach_port_to_wsl,
             detach_port_from_wsl,
             check_wsl_status,
