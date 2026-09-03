@@ -1827,7 +1827,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 
 <!-- 全局操作栏（自定义标题栏） -->
 <div class="global-bar" id="globalBar">
-    <span id="appInfoWrap" class="app-info" title="加载中...">
+    <span id="appInfoWrap" class="app-info" onclick="goMain()" style="cursor:pointer;" title="加载中...">
         <img class="app-info-icon" src="app-icon.png" alt="Seahi Serial">
     </span>
     <span class="add-btn icon-btn" id="addMonitorBtn" onclick="addMonitor()" title="打开额外监视器">
@@ -6232,6 +6232,8 @@ function openAdb() {
             '</div>';
         adbPane._initialized = true;
     }
+    // 进入面板即刷新设备列表
+    refreshAdbDevices();
 }
 
 function closeAdb() {
@@ -6249,26 +6251,46 @@ function closeAdb() {
     if (text) text.textContent = 'ADB 调试';
 }
 
-/* ===== ADB 设备与会话（占位骨架，后续接 Rust 数据） ===== */
+// 点击应用图标回到串口监视器主界面
+function goMain() {
+    var wsl = document.getElementById('wsl-pane');
+    if (wsl && wsl.style.display === 'flex') { restoreMonitorPane(); return; }
+    var adb = document.getElementById('adb-pane');
+    if (adb && adb.style.display === 'flex') { closeAdb(); return; }
+}
+
+/* ===== ADB 设备与会话（对接 Rust adb_devices/adb_shell） ===== */
 var _adbSessions = 0;
 function refreshAdbDevices() {
     console.log('[ADB] 刷新设备列表');
     var list = document.getElementById('adb-deviceList');
     if (!list) return;
-    // 占位：静态设备卡片示意，后续由 adb_devices() 回填
-    var card =
-        '<div class="adb-dev-card" style="display:inline-flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text);" onclick="openAdbSession(\'0c8c1f2a\')">' +
-            '<span style="width:8px;height:8px;border-radius:50%;background:var(--accent-green);"></span>' +
-            '<span>0c8c1f2a · device</span>' +
-        '</div>';
-    var card2 =
-        '<div class="adb-dev-card" style="display:inline-flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text);" onclick="openAdbSession(\'0123456789ABCDEF\')">' +
-            '<span style="width:8px;height:8px;border-radius:50%;background:var(--accent-green);"></span>' +
-            '<span>0123456789ABCDEF · device</span>' +
-        '</div>';
-    list.innerHTML = card + card2;
-}
+    list.innerHTML = '<span style="font-family:var(--font-mono);font-size:12px;color:var(--text-d);">检测设备中...</span>';
+    // 调用 Rust adb_devices() 获取真实设备列表
+    invoke('adb_devices').then(function(devices) {
+        if (!Array.isArray(devices) || devices.length === 0) {
+            list.innerHTML = '<span style="font-family:var(--font-mono);font-size:12px;color:var(--text-d);">未检测到 ADB 设备</span>';
+            return;
+        }
+        var html = '';
+        devices.forEach(function(d) {
+            var dotColor = 'var(--accent-green)';
+            if (d.state === 'offline') dotColor = 'var(--accent-orange)';
+            else if (d.state === 'error') dotColor = 'var(--accent-red)';
+            var label = d.model ? (d.model + ' · ' + d.state) : (d.serial + ' · ' + d.state);
+            html +=
+                '<div class="adb-dev-card" style="display:inline-flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text);" onclick="openAdbSession(\'' + d.serial + '\')">' +
+                    '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';"></span>' +
+                    '<span>' + label + '</span>' +
+                '</div>';
+        });
+        list.innerHTML = html;
+    }).catch(function(e) {
+        console.warn('[ADB] 获取设备列表失败:', e);
+        list.innerHTML = '<span style="font-family:var(--font-mono);font-size:12px;color:var(--text-d);">未检测到 ADB 设备（请检查 adb 是否已安装）</span>';
+    });
 
+}
 function openAdbSession(serial) {
     console.log('[ADB] 打开调试会话:', serial);
     var area = document.getElementById('adb-sessionArea');
@@ -6283,13 +6305,42 @@ function openAdbSession(serial) {
             '<span style="width:8px;height:8px;border-radius:50%;background:var(--accent-green);"></span>' +
             '<span>设备: ' + serial + '</span>' +
             '<span style="flex:1;"></span>' +
-            '<span style="color:var(--accent-focus);">shell 终端(待接)</span>' +
+            '<button id="' + sid + '-run" onclick="runAdbShell(\'' + sid + '\',\'' + serial + '\')" style="background:var(--accent-focus);border:none;color:#fff;cursor:pointer;font-size:11px;padding:2px 8px;border-radius:4px;">执行</button>' +
             '<button onclick="closeAdbSession(\'' + sid + '\')" style="background:transparent;border:none;color:var(--text-d);cursor:pointer;font-size:14px;line-height:1;">×</button>' +
         '</div>' +
-        '<div class="no-scrollbar" style="flex:1;overflow-y:auto;padding:10px 12px;font-family:var(--font-mono);font-size:13px;color:var(--text);background:var(--editor-bg);min-height:120px;line-height:1.6;">' +
-            '<span style="color:var(--accent-focus);">root@device:#</span> 会话终端占位...<br/>等待接入 adb shell 命令输出<br/>' +
+        '<div class="no-scrollbar" style="flex:1;overflow-y:auto;padding:10px 12px;font-family:var(--font-mono);font-size:13px;color:var(--text);background:var(--editor-bg);min-height:120px;line-height:1.6;" id="' + sid + '-output">' +
+            '<span style="color:var(--accent-focus);">root@device:#</span> 等待执行 adb shell 命令<br/>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:6px;padding:8px 12px;border-top:1px solid var(--border);background:var(--toolbar-bg);">' +
+            '<input id="' + sid + '-cmd" type="text" placeholder="输入命令，如 ls / getprop ro.build.version.release" autocomplete="off" spellcheck="false" style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-mono);font-size:13px;outline:none;">' +
         '</div>';
     area.appendChild(el);
+    // 输入框 Enter 触发执行
+    var inp = el.querySelector('#' + sid + '-cmd');
+    if (inp) {
+        inp.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') { e.preventDefault(); runAdbShell(sid, serial); }
+        });
+    }
+}
+
+function runAdbShell(sid, serial) {
+    var inp = document.getElementById(sid + '-cmd');
+    var out = document.getElementById(sid + '-output');
+    var runBtn = document.getElementById(sid + '-run');
+    if (!inp || !out) return;
+    var cmd = inp.value.trim();
+    if (!cmd) return;
+    if (runBtn) { runBtn.disabled = true; runBtn.textContent = '执行中'; }
+    out.innerHTML += '<br/><span style="color:var(--accent-focus);">root@device:# ' + cmd + '</span><br/>';
+    invoke('adb_shell', { serial: serial, cmd: cmd }).then(function(res) {
+        out.innerHTML += (res || '') + '<br/>';
+    }).catch(function(e) {
+        out.innerHTML += '<span style="color:var(--accent-red);">执行失败: ' + e + '</span><br/>';
+    }).finally(function() {
+        if (runBtn) { runBtn.disabled = false; runBtn.textContent = '执行'; }
+        out.scrollTop = out.scrollHeight;
+    });
 }
 
 function closeAdbSession(sid) {

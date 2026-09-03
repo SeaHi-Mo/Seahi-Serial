@@ -3743,6 +3743,137 @@ fn report_js_error(error: String, context: String) {
     report_error(&error, &context);
 }
 
+/// ===== ADB 调试命令 =====
+
+/// 查找 adb 可执行文件路径。
+/// 优先项目内 platform-tools\adb.exe（安装包分发到 {app}\platform-tools），
+/// 其次检查系统 PATH 中是否存在 adb.exe；都找不到返回 None。
+fn find_adb() -> Option<String> {
+    // 1) 应用安装目录下的 platform-tools\adb.exe
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("platform-tools").join("adb.exe");
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
+    }
+    // 2) 从可执行文件目录向上回溯到项目根，逐级检查 platform-tools\adb.exe（dev 场景兜底）
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(|d| d.to_path_buf());
+        while let Some(cur) = dir {
+            let cand = cur.join("platform-tools").join("adb.exe");
+            if cand.exists() {
+                return Some(cand.to_string_lossy().to_string());
+            }
+            dir = cur.parent().map(|d| d.to_path_buf());
+        }
+    }
+    // 3) 遍历 PATH 找 adb.exe，存在才返回
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let cand = dir.join("adb.exe");
+            if cand.exists() {
+                return Some(cand.to_string_lossy().to_string());
+            }
+        }
+    }
+    // 4) 都找不到，返回 None
+    None
+}
+
+/// 检查 adb 工具状态（是否存在、版本）
+#[tauri::command]
+async fn adb_tool_status() -> Result<serde_json::Value, String> {
+    let adb = find_adb().ok_or_else(|| "未找到 adb 可执行文件".to_string())?;
+    let mut cmd = hidden_command(&adb);
+    cmd.args(["version"]);
+    let output = run_output_timeout(&mut cmd, 5000);
+    let (found, version) = match output {
+        Some(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            let first = text.lines().next().unwrap_or("").trim().to_string();
+            (true, first)
+        }
+        _ => (false, String::new()),
+    };
+    Ok(serde_json::json!({ "found": found, "version": version, "path": adb }))
+}
+
+/// 获取 adb 设备列表（adb devices -l），返回序列号 + 状态 + 型号
+#[tauri::command]
+async fn adb_devices() -> Result<Vec<serde_json::Value>, String> {
+    let adb = find_adb().ok_or_else(|| "未找到 adb 可执行文件".to_string())?;
+    let mut cmd = hidden_command(&adb);
+    cmd.args(["devices", "-l"]);
+    let output = run_output_timeout(&mut cmd, 5000);
+    let out = match output {
+        Some(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        Some(o) => String::from_utf8_lossy(&o.stderr).to_string(),
+        None => return Err("adb devices 执行超时".to_string()),
+    };
+    let mut devices: Vec<serde_json::Value> = Vec::new();
+    for line in out.lines().skip(1) {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        // 解析 "serial state product:... model:... device:..."
+        let mut tokens = line.split_whitespace();
+        let serial = tokens.next().unwrap_or("").to_string();
+        let state = tokens.next().unwrap_or("").to_string();
+        if serial.is_empty() || state.is_empty() { continue; }
+        let mut model = String::new();
+        let mut product = String::new();
+        for t in tokens {
+            if let Some(v) = t.strip_prefix("model:") { model = v.to_string(); }
+            else if let Some(v) = t.strip_prefix("product:") { product = v.to_string(); }
+        }
+        devices.push(serde_json::json!({
+            "serial": serial,
+            "state": state,
+            "model": model,
+            "product": product,
+        }));
+    }
+    Ok(devices)
+}
+
+/// 对指定设备执行 adb shell 命令，返回输出
+#[tauri::command]
+async fn adb_shell(serial: String, cmd: String) -> Result<String, String> {
+    let adb = find_adb().ok_or_else(|| "未找到 adb 可执行文件".to_string())?;
+    let mut cmd_line = hidden_command(&adb);
+    cmd_line
+        .arg("-s")
+        .arg(&serial)
+        .arg("shell")
+        .arg(&cmd);
+    let output = run_output_timeout(&mut cmd_line, 10000);
+    match output {
+        Some(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).to_string()),
+        Some(o) => Err(String::from_utf8_lossy(&o.stderr).to_string()),
+        None => Err("adb shell 执行超时".to_string()),
+    }
+}
+
+/// 对指定设备执行 adb 命令（非 shell，用于 push/pull/logcat 等），返回输出
+#[tauri::command]
+async fn adb_exec(serial: Option<String>, cmd: String, args: Vec<String>) -> Result<String, String> {
+    let adb = find_adb().ok_or_else(|| "未找到 adb 可执行文件".to_string())?;
+    let mut cmd_line = hidden_command(&adb);
+    if let Some(s) = serial {
+        if !s.is_empty() { cmd_line.arg("-s").arg(&s); }
+    }
+    cmd_line.arg(&cmd);
+    for a in &args { cmd_line.arg(a); }
+    let output = run_output_timeout(&mut cmd_line, 15000);
+    match output {
+        Some(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).to_string()),
+        Some(o) => Err(String::from_utf8_lossy(&o.stderr).to_string()),
+        None => Err("adb 命令执行超时".to_string()),
+    }
+}
+
+
 /// DWM 标题栏颜色是否支持（缓存，避免在不支持的系统上反复失败）
 static DWM_CAPTION_COLOR_SUPPORTED: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(0); // 0=未知, 1=支持, -1=不支持
 
@@ -3887,6 +4018,10 @@ fn main() {
             set_title_bar_color,
             get_app_info,
             report_js_error,
+            adb_tool_status,
+            adb_devices,
+            adb_shell,
+            adb_exec,
             #[cfg(debug_assertions)]
             test_error_report,
         ])
