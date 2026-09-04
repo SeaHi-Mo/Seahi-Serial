@@ -54,6 +54,7 @@ chinese_simplified.WebView2DownloadFailed=下载 WebView2 Runtime 失败，请�
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"
 Name: "install_usbipd"; Description: "安装 usbipd-win(WSL USB 串口映射支持)"; Flags: unchecked
+Name: "add_adb_path"; Description: "将 ADB 工具(platform-tools)添加至系统 PATH（终端/脚本可直接使用 adb）"
 
 [Files]
 ; 主程序 - 使用 Tauri 内嵌的 WebView2，无需额外 DLL
@@ -257,7 +258,49 @@ begin
   end;
 end;
 
-/// CurStepChanged: 在安装阶段执行 usbipd 安装
+/// 修改系统 PATH（安全）：add=追加 entry、remove=移除 entry，均保留 REG_EXPAND_SZ（含 %SystemRoot% 等表达式）
+procedure ModifyPathEntry(const Op, Entry: String);
+var
+  Ps, PsPath: String;
+  ResultCode: Integer;
+begin
+  Ps :=
+    '$entry=' + '''' + Entry + '''' + #13#10 +
+    '$k=[Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(''SYSTEM\CurrentControlSet\Control\Session Manager\Environment'', $true)' + #13#10 +
+    'if($k){' + #13#10 +
+    '  $raw=$k.GetValue(''Path'','''',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)' + #13#10 +
+    '  if($raw -is [string]){' + #13#10 +
+    '    $parts=$raw -split '';''' + #13#10 +
+    '    $parts=@($parts | Where-Object { $_.Trim() -ne '''' })' + #13#10 +
+    '    if(' + '''' + Op + '''' + ' -eq ''add''){' + #13#10 +
+    '      if(-not ($parts | Where-Object { $_.Trim() -eq $entry })){' + #13#10 +
+    '        $parts += $entry' + #13#10 +
+    '        $k.SetValue(''Path'', ($parts -join '';''), [Microsoft.Win32.RegistryValueKind]::ExpandString)' + #13#10 +
+    '      }' + #13#10 +
+    '    } else {' + #13#10 +
+    '      $parts=@($parts | Where-Object { $_.Trim() -ne $entry })' + #13#10 +
+    '      $k.SetValue(''Path'', ($parts -join '';''), [Microsoft.Win32.RegistryValueKind]::ExpandString)' + #13#10 +
+    '    }' + #13#10 +
+    '  }' + #13#10 +
+    '  $k.Close()' + #13#10 +
+    '}';
+  PsPath := ExpandConstant('{tmp}\adb_path.ps1');
+  SaveStringToFile(PsPath, Ps, False);
+  // 以宿主身份运行，失败不阻断安装/卸载流程
+  Exec('powershell', '-ExecutionPolicy Bypass -NonInteractive -File "' + PsPath + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure AddAdbToPath;
+begin
+  ModifyPathEntry('add', ExpandConstant('{app}\platform-tools'));
+end;
+
+procedure RemoveAdbFromPath;
+begin
+  ModifyPathEntry('remove', ExpandConstant('{app}\platform-tools'));
+end;
+
+/// CurStepChanged: 在安装阶段执行 usbipd 安装、PATH 追加
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then begin
@@ -282,7 +325,18 @@ begin
         // 不阻断主程序安装，仅记录日志并提示用户
       end;
     end;
+  end else if CurStep = ssPostInstall then begin
+    // 安装完成后：勾选了则把 ADB 加入系统 PATH
+    if WizardIsTaskSelected('add_adb_path') then
+      AddAdbToPath;
   end;
+end;
+
+/// CurUninstallStepChanged: 卸载时移除 ADB 的 PATH 条目
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    RemoveAdbFromPath;
 end;
 
 [Run]
