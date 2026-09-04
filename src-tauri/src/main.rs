@@ -3779,8 +3779,10 @@ async fn adb_open_shell(
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.cwd("C:\\");
+        let pty_size = portable_pty::PtySize { rows: 40, cols: 120, pixel_width: 0, pixel_height: 0 };
+        println!("[ADB-PTY] openpty size rows={} cols={}", pty_size.rows, pty_size.cols);
         let pair = pty_system
-            .openpty(portable_pty::PtySize { rows: 40, cols: 120, pixel_width: 0, pixel_height: 0 })
+            .openpty(pty_size)
             .map_err(|e| format!("openpty 失败: {}", e))?;
         let child = pair.slave.spawn_command(cmd).map_err(|e| format!("spawn adb shell 失败: {}", e))?;
         println!("[ADB-PTY] shell spawned, waiting for ready...");
@@ -3794,7 +3796,7 @@ async fn adb_open_shell(
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => { println!("[ADB-PTY] reader EOF"); let _ = tx.send(Vec::new()); break; }
-                    Ok(n) => { println!("[ADB-PTY] reader got {} bytes", n); if tx.send(buf[..n].to_vec()).is_err() { break; } }
+                    Ok(n) => { if tx.send(buf[..n].to_vec()).is_err() { break; } }
                     Err(e) => { println!("[ADB-PTY] reader err {}", e); break; }
                 }
             }
@@ -3869,6 +3871,34 @@ async fn adb_shell_close(
                 let _ = child.kill();
                 let _ = child.wait();
             }
+        }
+        Ok(())
+    }).await.map_err(|e| format!("任务错误: {}", e))?
+}
+
+/// 通知 PTY 改变尺寸，使后端 shell 布局与前端 xterm 实际大小一致。
+/// 根因修复：后端此前固定 40 行 x 120 列，前端容器尺寸不同且从未同步，
+/// 导致 busybox 按 40x120 计算的光标寻址/多列布局在前端渲染错位。
+#[tauri::command]
+async fn adb_shell_resize(
+    state: tauri::State<'_, AdbPtyState>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let sessions = state.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = { let s = sessions.lock().unwrap_or_else(|e| e.into_inner()); s.get(&session_id).cloned() };
+        let session = session.ok_or_else(|| "会话不存在".to_string())?;
+        if cols == 0 || rows == 0 {
+            return Err("尺寸必须大于 0".to_string());
+        }
+        // portable-pty 的 MasterPty::resize(&self) 接受 PtySize
+        let mut master = session._master.lock().map_err(|e| format!("锁失败: {}", e))?;
+        if let Some(m) = master.as_mut() {
+            m.resize(portable_pty::PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+                .map_err(|e| format!("resize 失败: {}", e))?;
+            println!("[ADB-PTY] resized -> {}x{}", cols, rows);
         }
         Ok(())
     }).await.map_err(|e| format!("任务错误: {}", e))?
@@ -4161,6 +4191,7 @@ fn main() {
             adb_shell_write,
             adb_shell_read,
             adb_shell_close,
+            adb_shell_resize,
             #[cfg(debug_assertions)]
             test_error_report,
         ])

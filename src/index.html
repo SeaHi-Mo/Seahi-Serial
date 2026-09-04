@@ -6230,9 +6230,7 @@ function openAdb() {
         adbPane.style.flexDirection = 'column';
         adbPane.innerHTML =
             '<div style="display:flex;align-items:center;gap:16px;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--toolbar-bg);flex-shrink:0;">' +
-                '<div class="no-scrollbar" style="flex:1;overflow-x:auto;min-width:0;display:flex;align-items:center;gap:8px;" id="adb-deviceList">' +
-                    '<div style="font-family:var(--font-mono);color:var(--text-d);font-size:12px;padding:2px 0;">尚未检测到 ADB 设备（预留设备列表区）</div>' +
-                '</div>' +
+                '<div class="no-scrollbar" style="flex:1;overflow-x:auto;min-width:0;display:flex;align-items:center;gap:8px;" id="adb-deviceList"></div>' +
                 '<button class="add-btn icon-btn" id="adbRefreshDevBtn" onclick="refreshAdbDevices()" title="重新扫描设备" style="background:var(--accent-focus);color:#fff;border:1px solid transparent;width:45px;height:30px;box-sizing:border-box;padding:0;margin:0;gap:0;border-radius:5px;font-size:12px;flex-shrink:0;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;">刷新</button>' +
             '</div>' +
             '<div style="flex:1;overflow:hidden;min-height:0;background:var(--editor-bg);" id="adb-sessionArea">' +
@@ -6242,12 +6240,27 @@ function openAdb() {
     }
     // 进入面板即刷新设备列表
     refreshAdbDevices();
+    // 面板可见：恢复高频轮询
+    setAllAdbPollRate(120);
+    // ADB 面板打开期间自动刷新设备列表（每 5s；ADB 设备不在 COM 口 device-changed 通知范围内，靠此轮询）
+    if (_adbDevTimer) clearInterval(_adbDevTimer);
+    _adbDevTimer = setInterval(refreshAdbDevices, 5000);
+    // ADB 界面隐藏了主监视器区，禁用「打开额外监视器」
+    var addBtn = document.getElementById('addMonitorBtn');
+    if (addBtn) { addBtn.style.opacity = '0.4'; addBtn.style.pointerEvents = 'none'; addBtn.title = 'ADB 界面不可用'; }
 }
 
 function closeAdb() {
     console.log('[ADB] 返回监视器页面');
     document.getElementById('adb-pane').style.display = 'none';
     document.getElementById('paneContainer').style.display = 'flex';
+    // 面板隐藏：ADB 会话降频轮询，避免离开后仍高频率空转后端
+    setAllAdbPollRate(2000);
+    // 离开 ADB 面板：停止设备列表自动刷新
+    if (_adbDevTimer) { clearInterval(_adbDevTimer); _adbDevTimer = null; }
+    // 返回主界面：恢复「打开额外监视器」
+    var addBtn = document.getElementById('addMonitorBtn');
+    if (addBtn) { addBtn.style.opacity = ''; addBtn.style.pointerEvents = ''; addBtn.title = '打开额外监视器'; }
     // 恢复顶部栏按钮
     var btn = document.getElementById('adbToggleBtn');
     if (btn) {
@@ -6269,34 +6282,65 @@ function goMain() {
 
 /* ===== ADB 设备与会话（对接 Rust adb_devices/adb_shell） ===== */
 var _adbSessions = 0;
+var _adbDevTimer = null; // ADB 面板打开期间的设备列表自动刷新定时器（ADB/USB 设备不在 COM 口通知范围内，需轮询）
+// 根据 adb 设备状态返回状态点颜色
+function adbDotColor(state) {
+    var st = (state || '').toLowerCase();
+    if (st === 'device') return 'var(--accent-green)';
+    if (st === 'offline') return 'var(--accent-orange)';
+    if (st === 'unauthorized') return 'var(--accent-red)';
+    if (st === 'no' || st === 'no-permissions' || st === 'no_permissions') return 'var(--accent-red)';
+    if (st === 'recovery' || st === 'sideload' || st === 'bootloader' || st === 'connecting' || st === 'authorizing') return 'var(--accent-orange)';
+    if (st === 'error' || st === 'failed' || st === 'unknown') return 'var(--accent-red)';
+    return 'var(--accent-orange)';
+}
+
 function refreshAdbDevices() {
     console.log('[ADB] 刷新设备列表');
     var list = document.getElementById('adb-deviceList');
     if (!list) return;
-    list.innerHTML = '<span style="font-family:var(--font-mono);font-size:12px;color:var(--text-d);">检测设备中...</span>';
-    // 调用 Rust adb_devices() 获取真实设备列表
     invoke('adb_devices').then(function(devices) {
         if (!Array.isArray(devices) || devices.length === 0) {
             list.innerHTML = '<span style="font-family:var(--font-mono);font-size:12px;color:var(--text-d);">未检测到 ADB 设备</span>';
             return;
         }
-        list.innerHTML = '';
+        // 有设备：移除占位/空状态等非卡片残留，避免与设备卡并存（上次从空到有设备时不刷新出提示）
+        for (var n = list.children.length - 1; n >= 0; n--) {
+            if (!list.children[n].classList || !list.children[n].classList.contains('adb-dev-card')) list.removeChild(list.children[n]);
+        }
+        var activeSerial = getActiveAdbSerial(); // 高亮与当前会话关联
+        // 建立 serial -> 已有卡片映射，做增量更新
+        var existing = {};
+        var curCards = list.querySelectorAll('.adb-dev-card');
+        for (var i = 0; i < curCards.length; i++) existing[curCards[i].getAttribute('data-serial')] = curCards[i];
+        var seen = {};
         devices.forEach(function(d) {
-            var dotColor = 'var(--accent-green)';
-            if (d.state === 'offline') dotColor = 'var(--accent-orange)';
-            else if (d.state === 'error') dotColor = 'var(--accent-red)';
-            var label = d.model ? (d.model + ' · ' + d.state) : (d.serial + ' · ' + d.state);
-            var card = document.createElement('div');
-            card.className = 'adb-dev-card';
-            card.style.cssText = 'display:inline-flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text);';
-            card.innerHTML = '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';"></span><span>' + label + '</span>';
-            (function(serial){ card.addEventListener('click', function(){
-                var cards = list.querySelectorAll('.adb-dev-card');
-                for (var k=0;k<cards.length;k++) cards[k].classList.remove('active');
-                card.classList.add('active');
-                openAdbSession(serial);
-            });})(d.serial);
-            list.appendChild(card);
+            var dotColor = adbDotColor(d.state);
+            var label = d.model ? d.model : d.serial;
+            var card = existing[d.serial];
+            if (!card) {
+                card = document.createElement('div');
+                card.className = 'adb-dev-card';
+                card.setAttribute('data-serial', d.serial);
+                card.style.cssText = 'display:inline-flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text);';
+                card.innerHTML = '<span class="adb-dot" style="width:8px;height:8px;border-radius:50%;flex-shrink:0;"></span><span class="adb-name"></span>';
+                (function(serial){ card.addEventListener('click', function(){
+                    var cards = list.querySelectorAll('.adb-dev-card');
+                    for (var k=0;k<cards.length;k++) cards[k].classList.remove('active');
+                    card.classList.add('active');
+                    openAdbSession(serial);
+                });})(d.serial);
+                list.appendChild(card);
+            }
+            card.querySelector('.adb-dot').style.background = dotColor;
+            card.querySelector('.adb-name').textContent = label;
+            if (d.serial === activeSerial) card.classList.add('active'); else card.classList.remove('active');
+            seen[d.serial] = true;
+        });
+        // 移除已不在列表中的设备卡
+        Object.keys(existing).forEach(function(serial) {
+            var c = existing[serial];
+            if (!seen[serial] && c && c.parentNode) c.parentNode.removeChild(c);
         });
     }).catch(function(e) {
         console.warn('[ADB] 获取设备列表失败:', e);
@@ -6304,13 +6348,71 @@ function refreshAdbDevices() {
     });
 
 }
+// 让后端 PTY 尺寸与前端 xterm 实际容器尺寸保持一致。
+// 修复：后端以往固定 40x120，前端容器尺寸不同且从未同步，
+// 导致 busybox 按 40x120 的光标寻址/多列布局在前端渲染错位（乱码/重复/空白）。
+function syncAdbTermSize(el) {
+    if (!el) return;
+    var term = el._adbTerm;
+    if (!term) return;
+    var box = term.element && term.element.parentElement;
+    if (!box) return;
+    // 面板隐藏（display:none）时容器尺寸为 0，此时跳过：
+    // 否则会把终端/PTY 缩成 2x2，压碎缓冲区与 shell 布局（导致 "回到界面状态被清空/只剩提示符碎片"）。
+    if (box.offsetParent === null) return;
+    var boxW = box.clientWidth, boxH = box.clientHeight;
+    if (!boxW || !boxH) return;
+    var cw = 0, ch = 0;
+    try {
+        var d = term._core && term._core._renderService && term._core._renderService.dimensions;
+        if (d && d.css && d.css.cell && d.css.cell.width > 0) {
+            cw = d.css.cell.width; ch = d.css.cell.height;
+        }
+    } catch (_) {}
+    if (cw <= 0 || ch <= 0) {
+        try {
+            var probe = document.createElement('span');
+            probe.textContent = '0'.repeat(200);
+            probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;left:-9999px;font-family:' +
+                getComputedStyle(box).fontFamily + ';font-size:' + getComputedStyle(box).fontSize + ';';
+            box.appendChild(probe);
+            cw = probe.offsetWidth / 200;
+            ch = parseFloat(getComputedStyle(box).lineHeight) || 16;
+            probe.remove();
+        } catch (_) { return; }
+    }
+    var cols = Math.max(2, Math.floor(boxW / cw));
+    var rows = Math.max(2, Math.floor(boxH / ch));
+    if (cols !== term.cols || rows !== term.rows) {
+        term.resize(cols, rows);
+    }
+    console.log('[ADB] term size cols=' + cols + ' rows=' + rows + ' (实际 ' + term.cols + 'x' + term.rows + ')');
+    if (el._adbPtyId) {
+        invoke('adb_shell_resize', { sessionId: el._adbPtyId, cols: cols, rows: rows }).catch(function(e) {
+            console.warn('[ADB] resize PTY 失败:', e);
+        });
+    }
+}
+
+// 当前正在显示的 ADB 会话元素（多会话：所有会话常驻，仅一个显示）
+// 当前打开的 ADB 会话对应的设备序列号（单会话模型，最多一个）
+function getActiveAdbSerial() {
+    var area = document.getElementById('adb-sessionArea');
+    if (!area) return null;
+    var el = area.querySelector('[id^="adb-session-"]');
+    return el ? (el._adbSerial || null) : null;
+}
+
 function openAdbSession(serial) {
     console.log('[ADB] 打开调试会话:', serial);
     var area = document.getElementById('adb-sessionArea');
     if (!area) return;
+    // 已在打开/已连接的同一设备，忽略重复点击（避免重复连接）
+    var cur = area.querySelector('[id^="adb-session-"]');
+    if (cur && cur._adbSerial === serial) { if (cur._adbTerm) cur._adbTerm.focus(); return; }
     // 单会话切换：关闭并移除已有会话窗口
     var exist = area.querySelectorAll('[id^="adb-session-"]');
-    for (var x=0; x<exist.length; x++) closeAdbSession(exist[x].id);
+    for (var x = 0; x < exist.length; x++) closeAdbSession(exist[x].id);
     _adbSessions++;
     var sid = 'adb-session-' + _adbSessions;
     var el = document.createElement('div');
@@ -6344,7 +6446,13 @@ function openAdbSession(serial) {
     term.open(el.querySelector('#' + sid + '-termBox'));
     term.writeln('');  // 留空行
     el._adbTerm = term;
-    // 用户输入透传到后端（xterm 处理补全/历史/光标）
+    syncAdbTermSize(el);
+    term.onResize(function() { syncAdbTermSize(el); });
+    var tBox = el.querySelector('#' + sid + '-termBox');
+    if (window.ResizeObserver) {
+        el._adbResizeObserver = new ResizeObserver(function() { syncAdbTermSize(el); });
+        el._adbResizeObserver.observe(tBox);
+    }
     term.onData(function(data) {
         if (el._adbPtyId) {
             invoke('adb_shell_write', { sessionId: el._adbPtyId, data: data }).catch(function(err) {
@@ -6355,18 +6463,35 @@ function openAdbSession(serial) {
     });
     // 建立 PTY shell 会话
     invoke('adb_open_shell', { serial: serial }).then(function(pid) {
+        // 若会话在打开期间已被关闭（如快速切换设备），立即回收刚建立的 PTY，避免孤儿连接
+        if (el._adbClosed) { invoke('adb_shell_close', { sessionId: pid }).catch(function() {}); if (el._adbTerm) { try { el._adbTerm.dispose(); } catch(_) {} } return; }
         console.log('[ADB] PTY会话建立 pid=', pid);
         el._adbPtyId = pid;
         el._adbInited = true;
-        // 启动轮询读取输出
-        el._adbReadTimer = setInterval(function() {
-            adbPtyPoll(el);
-        }, 120);
+        // 会话建立后立刻把当前容器尺寸推给后端 PTY，并启动高频轮询
+        syncAdbTermSize(el);
+        setAdbPollRate(el, 120);
         term.focus();
     }).catch(function(e) {
         console.error('[ADB] 打开PTY会话失败:', e);
         term.writeln('\x1b[31m连接设备失败: ' + e + '\x1b[0m');
     });
+}
+
+// 设置某个 ADB 会话的轮询频率（ms）。用 setInterval 复用 _adbReadTimer。
+function setAdbPollRate(el, ms) {
+    if (!el) return;
+    if (el._adbReadTimer) { clearInterval(el._adbReadTimer); el._adbReadTimer = null; }
+    el._adbReadTimer = setInterval(function() { adbPtyPoll(el); }, ms);
+}
+
+// 根据面板显隐统一调整所有 ADB 会话的轮询频率：可见 120ms，隐藏降频到 2000ms，
+// 避免离开 ADB 界面后仍以 8 次/秒空轮询后端 adb_shell_read（浪费 IPC/CPU）。
+function setAllAdbPollRate(ms) {
+    var area = document.getElementById('adb-sessionArea');
+    if (!area) return;
+    var els = area.querySelectorAll('[id^="adb-session-"]');
+    for (var i = 0; i < els.length; i++) setAdbPollRate(els[i], ms);
 }
 
 // 读取 PTY 输出并写入 xterm（xterm 原生解析 ANSI/光标/多列）
@@ -6385,7 +6510,9 @@ function adbPtyPoll(el) {
 function closeAdbSession(sid) {
     var el = document.getElementById(sid);
     if (el) {
+        el._adbClosed = true; // 标记已关闭：若 adb_open_shell 尚未 resolve，回调里据此回收 PTY
         if (el._adbReadTimer) { clearInterval(el._adbReadTimer); el._adbReadTimer = null; }
+        if (el._adbResizeObserver) { try { el._adbResizeObserver.disconnect(); } catch(_) {} el._adbResizeObserver = null; }
         if (el._adbTerm) { try { el._adbTerm.dispose(); } catch(_) {} }
         if (el._adbPtyId) {
             invoke('adb_shell_close', { sessionId: el._adbPtyId }).catch(function() {});
@@ -6438,6 +6565,7 @@ var _wslSelectedBusid = null; // 选中的设备行
 var _wslAutoMap = {}; // { vidpid: portName } 开启自动映射的设备（按 VID:PID 匹配，而非 busid）
 var _wslAutoFailCount = {}; // { vidpid: n } 自动映射连续失败次数（>=3 暂停重试）
 var _wslAutoMapTimer = null;
+var _wslAutoMapRunning = false; // autoMapCheck 重入保护：定时器与设备变更事件可能并发触发
 var _wslSavedConfig = null; // 缓存从配置文件加载的 WSL 监视器配置，防止主监视器保存时丢失
 var _wslStatusUnlisten = null; // WSL 状态事件监听取消函数
 var _wslRunning = false; // WSL 是否正在运行
@@ -6823,7 +6951,8 @@ function toggleAutoMap(vidpid, portName, on) {
 function updateAutoMapPolling() {
     var hasAny = Object.keys(_wslAutoMap).length > 0;
     if (hasAny && !_wslAutoMapTimer) {
-        _wslAutoMapTimer = setInterval(autoMapCheck, 5000);
+        // 后台自动映射降频到 15s（原 5s）；快速响应改由 device-changed 事件触发（见事件监听）
+        _wslAutoMapTimer = setInterval(autoMapCheck, 15000);
     } else if (!hasAny && _wslAutoMapTimer) {
         clearInterval(_wslAutoMapTimer);
         _wslAutoMapTimer = null;
@@ -6832,6 +6961,8 @@ function updateAutoMapPolling() {
 
 async function autoMapCheck() {
     if (Object.keys(_wslAutoMap).length === 0) return;
+    if (_wslAutoMapRunning) return; // 已在执行，避免并发重复映射
+    _wslAutoMapRunning = true;
     try {
         var devices = await invokeTimeout('list_wsl_devices', null, 15000);
         // 收集需要映射的设备，并发执行
@@ -6897,6 +7028,8 @@ async function autoMapCheck() {
         // 静默失败，下次轮询重试；但接入上报以便诊断自动映射为何失效
         console.error('[WSL] 自动映射检查异常:', e);
         reportError(e, 'autoMapCheck');
+    } finally {
+        _wslAutoMapRunning = false;
     }
 }
 
@@ -7018,6 +7151,13 @@ document.addEventListener('DOMContentLoaded', function() {
                             refreshPorts(mid, true);
                         }
                     });
+                    // WSL 自动映射：拔插事件到来立即检查一次（配合后台 15s 降频轮询，插拔仍能快速响应）
+                    if (_wslAutoMapTimer) autoMapCheck();
+                    // ADB 面板打开时，设备变更事件也刷新一次 ADB 设备列表（即时响应）
+                    var adbPane = document.getElementById('adb-pane');
+                    if (adbPane && adbPane.style.display === 'flex' && typeof refreshAdbDevices === 'function') {
+                        refreshAdbDevices();
+                    }
                     // WSL 页面打开时也刷新设备列表
                     var wslList = document.querySelector('[id$="-wslDeviceList"]');
                     if (wslList) {
