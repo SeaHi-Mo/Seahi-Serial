@@ -1,3 +1,16 @@
+## v0.3.6
+
+### ✨ 改进
+
+- **ADB 工具添加至系统 PATH** — 安装时（默认勾选）将 `platform-tools` 目录加入系统 `PATH`，终端/脚本可直接使用 `adb`；卸载时精确移除该条目，不会破坏系统环境变量（安全保留 `REG_EXPAND_SZ`）
+
+### 📦 下载
+
+| 文件 | 说明 |
+|------|------|
+| `Seahi-Serial-Setup-{VERSION}.exe` | Inno Setup 安装程序（推荐，含 ADB platform-tools，安装后可系统级使用 adb） |
+| `Seahi.Serial_{VERSION}_x64_en-US.msi` | MSI 安装包 |
+
 ## v0.3.5
 
 ### ✨ 新增
