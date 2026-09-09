@@ -1038,7 +1038,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 /* ===== 蓝牙(BLE) 调试面板 ===== */
 .ble-body { flex:1; display:flex; min-height:0; }
 .ble-left { display:flex; flex-direction:column; width:320px; min-width:240px; max-width:380px; border-right:1px solid var(--border); background:var(--editor-bg); }
-.ble-left-head { display:flex; align-items:center; gap:10px; padding:8px 12px; border-bottom:1px solid var(--border); background:var(--toolbar-bg); flex-shrink:0; }
+.ble-left-head { display:flex; align-items:center; gap:10px; padding:8px 12px; border-bottom:1px solid var(--border); background:var(--toolbar-bg); flex-shrink:0; min-height:44px; }
 .ble-left-title { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--text-b); white-space:nowrap; min-width:0; }
 .ble-left-title svg { color:var(--link); }
 .ble-devList { flex:1; min-height:0; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px; }
@@ -1059,7 +1059,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-empty b { color:var(--text-b); }
 .ble-detail { flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; }
 .ble-detail-empty { margin:auto; color:var(--text-d); font-size:13px; }
-.ble-detail-head { display:flex; align-items:center; gap:14px; padding:14px 18px; border-bottom:1px solid var(--border); flex-shrink:0; }
+.ble-detail-head { display:flex; align-items:center; gap:14px; padding:8px 16px; border-bottom:1px solid var(--border); flex-shrink:0; min-height:44px; }
 .ble-detail-name { font-size:15px; font-weight:600; color:var(--text-b); }
 .ble-detail-meta { font-size:12px; color:var(--text-d); font-family:var(--font-mono); }
 .ble-connect-btn { margin-left:auto; }
@@ -1094,11 +1094,15 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-adv-toggle.expanded .ble-svc-caret { transform:rotate(90deg); }
 .ble-adv-count { margin-left:auto; color:var(--text-d); font-size:11px; font-family:var(--font-mono); flex-shrink:0; }
 .ble-adv-body { margin-top:8px; }
-.ble-adv-raw { font-family:var(--font-mono); font-size:11px; line-height:1.7; color:var(--text); background:var(--editor-bg); border:1px solid var(--border); border-radius:6px; padding:8px 10px; word-break:break-all; white-space:pre-wrap; }
-.ble-adv-brief { margin-top:8px; display:flex; flex-direction:column; gap:5px; }
+.ble-adv-raw { font-family:var(--font-mono); font-size:11px; line-height:1.6; color:var(--text); background:var(--editor-bg); border:1px solid var(--border); border-radius:6px; padding:8px 10px; display:flex; flex-wrap:wrap; align-items:flex-end; gap:4px 6px; }
+.ble-adv-seg { display:flex; flex-direction:column; align-items:center; }
+.ble-adv-seg-label { font-style:normal; color:var(--text-d); font-size:10px; margin-bottom:3px; }
+.ble-adv-seg-hex { white-space:nowrap; }
+.ble-adv-sep { align-self:flex-end; color:var(--text-d); opacity:.5; padding-bottom:2px; }
+.ble-adv-brief { margin-top:8px; display:grid; grid-template-columns:repeat(2, max-content minmax(0,1fr)); gap:6px 20px; align-items:baseline; }
 .ble-adv-row { display:flex; gap:10px; align-items:baseline; font-size:12px; }
-.ble-adv-k { width:78px; flex-shrink:0; color:var(--text-d); }
-.ble-adv-v { color:var(--text); font-family:var(--font-mono); word-break:break-all; }
+.ble-adv-k { color:var(--text-d); white-space:nowrap; flex:0 0 auto; width:118px; }
+.ble-adv-v { color:var(--text); font-family:var(--font-mono); word-break:break-all; flex:1; min-width:0; }
 .ble-adv-empty { color:var(--text-d); font-size:12px; }
 .ble-log-sec { flex:1; min-height:0; display:flex; flex-direction:column; }
 .ble-log { flex:1; min-height:0; overflow-y:auto; font-family:var(--font-mono); font-size:12px; line-height:1.7; color:var(--text); background:var(--editor-bg); border:1px solid var(--border); border-radius:6px; padding:10px; white-space:pre-wrap; word-break:break-all; }
@@ -6440,19 +6444,19 @@ function refreshBleDevices() {
     // TODO: 对接 Rust — invoke('ble_peripherals') 获取真实扫描结果
     // 示例数据：展示 BLE scan 可能返回的多种设备如何显示
     _bleDevices = [
-        { address: 'F4:12:FA:01:AA:10', name: 'Nordic_Thingy91', rssi: -42, connected: false, services: ['1800','180F','6E400001-B5A3-F393-E0A9-E50E24DCCA9E'],
-          adv: { adName: 'Thingy:91', addressType: 'Public', txPower: 8, appearance: 0x0340, raw: '02 01 1A 09 54 68 69 6E 67 79 3A 39 31 03 03 0F 18 04 0A 05 34 03 FF 00 01',
+        { address: 'F4:12:FA:01:AA:10', name: 'Nordic_Thingy91', rssi: -42, connected: false, addressType: 'Public', services: ['1800','180F','6E400001-B5A3-F393-E0A9-E50E24DCCA9E'],
+          adv: { adName: 'Thingy:91', txPower: 8, appearance: 0x0340, svcs: ['180F','1800'], raw: '02 01 1A 0A 09 54 68 69 6E 67 79 3A 39 31 05 03 0F 18 00 18 02 0A 08 03 19 40 03 06 FF 59 00 0F 10 08 05 16 0F 18 5A 01',
                  manufacturerData: [{ id: 0x0059, hex: '0F 10 08' }], serviceData: [{ uuid: '180F', hex: '5A 01' }] } },
-        { address: 'C8:FD:19:2B:33:44', name: 'Seahi_DevKit', rssi: -55, connected: false, services: ['180A','FE59'],
-          adv: { adName: 'SeahiDev', addressType: 'Random', txPower: 4, appearance: 0x0200, raw: '02 01 1A 0A 53 65 61 68 69 44 65 76 03 03 0A 18 02 0A 00', manufacturerData: [], serviceData: [] } },
-        { address: 'A4:C1:38:90:12:EF', name: 'LED_Controller', rssi: -31, connected: false, services: ['FF00'],
-          adv: { adName: 'LED-Ctrl', addressType: 'Public', txPower: 12, raw: '02 01 06 0A 4C 45 44 2D 43 74 72 6C 03 03 00 FF', manufacturerData: [], serviceData: [] } },
-        { address: '00:1A:7D:DA:71:13', name: '', rssi: -66, connected: false, services: ['1801'], adv: null },
-        { address: 'D2:55:0B:CC:5E:77', name: 'HeartRate_Monitor', rssi: -78, connected: false, services: ['180D'],
-          adv: { adName: 'HRM', addressType: 'Random', txPower: 0, raw: '02 01 06 05 53 65 61 48 52 4D 03 03 0D 18', manufacturerData: [], serviceData: [] } },
-        { address: '5C:F3:70:12:34:56', name: 'nRF52840_Mesh', rssi: -50, connected: false, services: ['1800','180A'],
-          adv: { adName: 'MeshNode', addressType: 'Public', txPower: 6, raw: '02 01 1A 09 4D 65 73 68 4E 6F 64 65 03 03 00 18 02 0A 00', manufacturerData: [], serviceData: [] } },
-        { address: 'E1:0A:6B:4C:8F:22', name: 'Weather_Station', rssi: -63, connected: false, services: ['181A'], adv: null }
+        { address: 'C8:FD:19:2B:33:44', name: 'Seahi_DevKit', rssi: -55, connected: false, addressType: 'Random', services: ['180A','FE59'],
+          adv: { adName: 'SeahiDev', txPower: 4, appearance: 0x0200, svcs: ['180A','FE59'], raw: '02 01 06 09 09 53 65 61 68 69 44 65 76 05 03 0A 18 59 FE 02 0A 04 03 19 00 02', manufacturerData: [], serviceData: [] } },
+        { address: 'A4:C1:38:90:12:EF', name: 'LED_Controller', rssi: -31, connected: false, addressType: 'Public', services: ['FF00'],
+          adv: { adName: 'LED-Ctrl', txPower: 12, svcs: ['FF00'], raw: '02 01 06 09 09 4C 45 44 2D 43 74 72 6C 03 03 00 FF 02 0A 0C', manufacturerData: [], serviceData: [] } },
+        { address: '00:1A:7D:DA:71:13', name: '', rssi: -66, connected: false, addressType: 'Random', services: ['1801'], adv: null },
+        { address: 'D2:55:0B:CC:5E:77', name: 'HeartRate_Monitor', rssi: -78, connected: false, addressType: 'Public', services: ['180D'],
+          adv: { adName: 'HRM', txPower: 0, svcs: ['180D'], raw: '02 01 06 04 09 48 52 4D 03 03 0D 18 02 0A 00', manufacturerData: [], serviceData: [] } },
+        { address: '5C:F3:70:12:34:56', name: 'nRF52840_Mesh', rssi: -50, connected: false, addressType: 'Public', services: ['1800','180A'],
+          adv: { adName: 'MeshNode', txPower: 6, svcs: ['1800','180A'], raw: '02 01 1A 09 09 4D 65 73 68 4E 6F 64 65 05 03 00 18 0A 18 02 0A 06', manufacturerData: [], serviceData: [] } },
+        { address: 'E1:0A:6B:4C:8F:22', name: 'Weather_Station', rssi: -63, connected: false, addressType: 'Random', services: ['181A'], adv: null }
     ];
     renderBleDeviceList();
     renderBleDetail();
@@ -6526,7 +6530,7 @@ function renderBleDetail() {
     detail.innerHTML =
         '<div class="ble-detail-head">' +
             '<div class="ble-detail-name">' + (dev.name || '未知设备') + '</div>' +
-            '<div class="ble-detail-meta">' + dev.address + ' · ' + dev.rssi + ' dBm</div>' +
+            '<div class="ble-detail-meta">' + dev.address + ' · ' + (dev.addressType || '—') + ' · ' + dev.rssi + ' dBm</div>' +
             '<button class="add-btn icon-btn ble-connect-btn' + (dev.connected ? ' connected' : '') + '" onclick="toggleBleConnect()" title="连接/断开">' + (dev.connected ? '断开设备' : '连接设备') + '</button>' +
         '</div>' +
         '<div class="ble-detail-sec ble-adv-sec">' +
@@ -6543,27 +6547,67 @@ function renderBleDetail() {
         '</div>';
 }
 
-// 广播内容展开体：原始 16 进制数据 + 简要解析
+// 解析广播 raw（空格分隔的 hex）为 AD 结构段
+function parseBleAdv(hexStr) {
+    var bytes = hexStr.trim().split(/\s+/);
+    var segs = [];
+    var i = 0;
+    while (i < bytes.length) {
+        var len = parseInt(bytes[i], 16);
+        if (isNaN(len) || len <= 0 || i + 1 + len > bytes.length) break;
+        var type = parseInt(bytes[i + 1], 16);
+        segs.push({ label: advTypeLabel(type), hex: bytes.slice(i + 1, i + 1 + len).join(' ') });
+        i += 1 + len;
+    }
+    return segs;
+}
+function advTypeLabel(t) {
+    switch (t) {
+        case 0x01: return 'Flags';
+        case 0x02: case 0x03: return '广播服务';
+        case 0x04: case 0x05: return '广播服务(32bit)';
+        case 0x06: case 0x07: return '广播服务(128bit)';
+        case 0x08: return '广播名(简)';
+        case 0x09: return '广播名';
+        case 0x0A: return '发射功率';
+        case 0x16: case 0x17: case 0x18: return '服务数据';
+        case 0x19: return '外观';
+        case 0xFF: return '厂商数据';
+        default: return '数据';
+    }
+}
+// 广播内容展开体：分段标注的原始 16 进制数据 + 从报文解析的摘要
 function renderBleAdv(dev) {
     if (!dev.adv) return '<div class="ble-adv-empty">无广播数据</div>';
     var a = dev.adv;
     var html = '';
-    if (a.raw) html += '<div class="ble-adv-raw">' + a.raw + '</div>';
+    if (a.raw) {
+        var segHtml = parseBleAdv(a.raw).map(function(s) {
+            return '<span class="ble-adv-seg"><em class="ble-adv-seg-label">' + s.label + '</em><span class="ble-adv-seg-hex">' + s.hex.replace(/ /g,'') + '</span></span>';
+        }).join('<span class="ble-adv-sep">|</span>');
+        if (segHtml) html += '<div class="ble-adv-raw">' + segHtml + '</div>';
+    }
     var brief = [];
     if (a.adName) brief.push(advRow('广播名', a.adName));
-    if (a.addressType) brief.push(advRow('地址类型', a.addressType));
-    if (a.txPower != null) brief.push(advRow('发射功率', a.txPower + ' dBm'));
+    if (a.svcs && a.svcs.length) brief.push(advRow('广播服务', a.svcs.map(function(s){ return '0x' + s.toUpperCase(); }).join(' | ')));
     if (a.appearance != null) brief.push(advRow('外观', '0x' + a.appearance.toString(16).toUpperCase()));
+    if (a.txPower != null) brief.push(advRow('发射功率', a.txPower + ' dBm'));
     if (a.manufacturerData && a.manufacturerData.length)
-        brief.push(advRow('厂商数据', a.manufacturerData.map(function(m){ return '0x' + m.id.toString(16).toUpperCase() + ' [' + m.hex + ']'; }).join('<br>')));
+        brief.push(a.manufacturerData.map(function(m){ return advRow('厂商数据(0x' + m.id.toString(16).toUpperCase() + ')', hexToLe(m.hex)); }).join(''));
     if (a.serviceData && a.serviceData.length)
-        brief.push(advRow('服务数据', a.serviceData.map(function(s){ return s.uuid + ' [' + s.hex + ']'; }).join('<br>')));
-    if (dev.services && dev.services.length) brief.push(advRow('广播服务', dev.services.join('<br>')));
+        brief.push(a.serviceData.map(function(s){ return advRow('服务数据(0x' + s.uuid + ')', hexToLe(s.hex)); }).join(''));
     if (brief.length) html += '<div class="ble-adv-brief">' + brief.join('') + '</div>';
     return html;
 }
 function advRow(k, v) {
-    return '<div class="ble-adv-row"><span class="ble-adv-k">' + k + '</span><span class="ble-adv-v">' + v + '</span></div>';
+    return '<span class="ble-adv-k">' + k + '</span><span class="ble-adv-v">' + v + '</span>';
+}
+// 空格分隔的 hex 字节串 → 合并为小端(little-endian)整数并补足字节宽度，如 '0F 10 08' → 0x08100F
+function hexToLe(hexStr) {
+    var bytes = hexStr.split(' ').map(function(b){ return parseInt(b, 16); });
+    var v = 0;
+    for (var i = 0; i < bytes.length; i++) v |= bytes[i] << (8 * i);
+    return '0x' + v.toString(16).toUpperCase().padStart(bytes.length * 2, '0');
 }
 // 展开/收起广播内容（默认折叠）
 function toggleBleAdv(el) {
