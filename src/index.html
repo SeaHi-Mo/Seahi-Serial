@@ -1063,6 +1063,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-detail-name { font-size:15px; font-weight:600; color:var(--text-b); }
 .ble-detail-meta { font-size:12px; color:var(--text-d); font-family:var(--font-mono); }
 .ble-connect-btn { margin-left:auto; }
+.ble-connect-btn.connected { background:var(--accent-focus); border-color:var(--accent-focus); color:#fff; }
 .ble-detail-sec { padding:14px 18px; border-bottom:1px solid var(--border); overflow-y:auto; }
 .ble-sec-title { font-size:11px; font-weight:600; color:var(--text-d); margin-bottom:10px; text-transform:uppercase; letter-spacing:.04em; }
 .ble-svc { display:flex; align-items:center; gap:8px; padding:8px 10px; border-radius:6px; border:1px solid var(--border); margin-bottom:6px; background:var(--input-bg); cursor:pointer; transition: border-color .15s; }
@@ -1070,6 +1071,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-svc.expanded { border-color:var(--accent-focus); }
 .ble-svc-caret { font-size:10px; color:var(--text-d); width:12px; flex-shrink:0; transition: transform .15s; }
 .ble-svc.expanded .ble-svc-caret { transform:rotate(90deg); }
+.ble-svc-attr { font-size:9px; font-weight:700; color:var(--text-d); border:1px solid var(--border); border-radius:4px; padding:0 4px; flex-shrink:0; line-height:14px; letter-spacing:.02em; text-align:center; min-width:18px; }
 .ble-svc-uuid { font-family:var(--font-mono); font-size:12px; color:var(--text); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ble-svc-name { font-size:11px; color:var(--text-d); margin-left:6px; flex-shrink:0; }
 .ble-svc-tag { font-size:10px; color:var(--text-d); border:1px solid var(--border); padding:0 6px; border-radius:4px; margin-left:auto; flex-shrink:0; }
@@ -1077,7 +1079,27 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-char { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:6px; background:var(--editor-bg); border:1px solid var(--border); }
 .ble-char-uuid { font-family:var(--font-mono); font-size:12px; color:var(--text); }
 .ble-char-name { font-size:11px; color:var(--text-d); margin-left:6px; flex-shrink:0; }
+.ble-char-actions { display:flex; align-items:center; gap:6px; flex-shrink:0; margin-left:auto; }
+.ble-ch-action { display:inline-flex; align-items:center; justify-content:center; color:var(--text-d); cursor:not-allowed; transition: color .15s; }
+.ble-ch-action svg { width:18px; height:18px; }
+.ble-ch-action.ready { cursor:pointer; }
+.ble-ch-action.ready:hover { color:var(--link); }
+.ble-ch-action.on { color:var(--accent-focus); cursor:pointer; }
+.ble-ch-action.on:hover { color:var(--link); }
 .ble-char-tag { font-size:10px; color:var(--text-d); margin-left:auto; flex-shrink:0; }
+.ble-adv { display:flex; flex-direction:column; gap:6px; }
+.ble-adv-sec { padding-bottom:10px; }
+.ble-adv-toggle { display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none; }
+.ble-adv-toggle .ble-svc-caret { font-size:10px; color:var(--text-d); width:12px; flex-shrink:0; transition: transform .15s; }
+.ble-adv-toggle.expanded .ble-svc-caret { transform:rotate(90deg); }
+.ble-adv-count { margin-left:auto; color:var(--text-d); font-size:11px; font-family:var(--font-mono); flex-shrink:0; }
+.ble-adv-body { margin-top:8px; }
+.ble-adv-raw { font-family:var(--font-mono); font-size:11px; line-height:1.7; color:var(--text); background:var(--editor-bg); border:1px solid var(--border); border-radius:6px; padding:8px 10px; word-break:break-all; white-space:pre-wrap; }
+.ble-adv-brief { margin-top:8px; display:flex; flex-direction:column; gap:5px; }
+.ble-adv-row { display:flex; gap:10px; align-items:baseline; font-size:12px; }
+.ble-adv-k { width:78px; flex-shrink:0; color:var(--text-d); }
+.ble-adv-v { color:var(--text); font-family:var(--font-mono); word-break:break-all; }
+.ble-adv-empty { color:var(--text-d); font-size:12px; }
 .ble-log-sec { flex:1; min-height:0; display:flex; flex-direction:column; }
 .ble-log { flex:1; min-height:0; overflow-y:auto; font-family:var(--font-mono); font-size:12px; line-height:1.7; color:var(--text); background:var(--editor-bg); border:1px solid var(--border); border-radius:6px; padding:10px; white-space:pre-wrap; word-break:break-all; }
 .app-info { display:inline-flex; align-items:center; gap:6px; margin-right:10px; cursor:default; flex-shrink:0; }
@@ -6264,6 +6286,89 @@ function restoreMonitorPane() {
 var _bleDevices = [];     // 当前扫描到的设备
 var _bleSelected = null;  // 选中设备的 address
 var _bleScanning = false;
+var _bleSubs = {};  // 订阅/功能启用状态：key = uuid::prop -> true/false（notify/indicate 布尔开关）
+
+// BLE 属性 icon（取自 BluetoothIcons，转为 currentColor 以便按连接状态点亮）
+var BLE_ICONS = {
+    read:     '<svg viewBox="0 0 36 30" fill="currentColor" fill-rule="evenodd"><path d="M0.00 25.75 L0.00 29.75 L35.75 29.75 L35.75 25.75 Z M14.50 0.00 L14.50 10.50 L13.50 11.00 L9.75 11.00 L9.50 11.50 L17.25 22.25 L18.50 22.50 L26.50 11.25 L22.25 11.00 L21.50 10.25 L21.75 0.00 Z"/></svg>',
+    write:    '<svg viewBox="0 0 36 28" fill="currentColor" fill-rule="evenodd"><path d="M0.00 23.75 L0.00 27.75 L35.75 27.75 L35.75 23.75 Z M16.00 0.00 L10.00 8.25 L9.00 10.50 L13.50 10.75 L14.25 11.50 L14.25 20.75 L20.50 21.00 L21.25 20.50 L21.25 11.25 L21.75 10.75 L25.75 10.75 L26.25 10.00 L24.75 7.25 L21.75 4.00 L21.75 3.25 L19.75 1.00 L19.50 0.00 Z"/></svg>',
+    notify_enable:   '<svg viewBox="0 0 36 31" fill="currentColor" fill-rule="evenodd"><path d="M0.00 26.75 L0.00 30.75 L35.75 30.75 L35.75 26.75 Z M31.25 0.25 L27.50 0.00 L26.25 0.75 L26.00 8.50 L25.50 9.00 L23.50 9.00 L22.75 10.75 L22.00 10.50 L22.00 2.00 L21.25 1.25 L16.00 1.50 L15.75 10.50 L13.50 11.25 L12.75 10.50 L12.75 3.25 L6.00 3.00 L5.75 13.50 L1.25 13.75 L0.75 14.50 L8.75 25.50 L9.50 25.75 L10.00 25.25 L10.00 24.25 L12.75 21.50 L12.75 20.50 L15.25 18.00 L18.50 22.00 L19.50 22.00 L25.25 13.75 L26.00 14.25 L26.00 15.50 L28.00 18.25 L29.00 19.00 L29.75 18.75 L33.75 12.75 L35.75 10.75 L35.75 9.00 L32.50 9.25 L32.00 8.75 L32.00 1.25 Z"/></svg>',
+    notify_disable:  '<svg viewBox="0 0 35 30" fill="currentColor" fill-rule="evenodd"><path d="M7.00 29.50 L27.00 29.75 L26.50 28.75 L23.00 25.75 L11.25 25.75 Z M5.00 7.50 L4.75 12.50 L0.00 12.75 L0.00 14.50 L0.75 14.75 L5.00 20.75 L6.25 21.00 L12.00 15.25 L12.00 14.50 L5.50 7.50 Z M30.75 6.00 L30.00 6.00 L24.00 12.75 L24.00 13.75 L28.00 18.00 L28.75 17.75 L32.75 11.75 L34.75 9.75 L34.75 8.00 L31.50 8.25 Z M11.00 4.00 L11.00 4.75 L11.75 5.00 L11.75 4.00 Z M4.25 1.00 L2.75 3.25 L14.00 15.00 L2.75 26.50 L2.75 27.25 L4.25 28.75 L5.25 29.00 L17.00 17.75 L28.50 29.00 L29.25 29.00 L30.75 27.50 L31.00 26.50 L19.75 14.75 L30.75 3.75 L30.75 2.25 L28.50 0.75 L16.75 12.00 L5.25 0.75 Z M20.25 0.00 L15.25 0.00 L14.75 1.00 L14.75 8.25 L16.50 10.00 L20.00 7.50 L21.00 5.75 L21.25 1.75 Z"/></svg>',
+    indicate_enable: '<svg viewBox="0 0 36 29" fill="currentColor" fill-rule="evenodd"><path d="M0.00 24.75 L0.00 28.75 L35.75 28.75 L35.75 24.75 Z M26.00 0.00 L26.00 0.75 L23.00 4.25 L22.75 5.25 L18.75 10.00 L18.75 11.00 L19.50 11.75 L22.75 11.75 L23.50 12.50 L23.25 21.25 L24.00 22.00 L29.75 22.00 L30.50 21.25 L30.25 12.50 L31.00 11.75 L35.75 11.75 L35.75 10.25 L33.75 8.25 L28.25 0.25 Z M6.00 0.00 L6.00 10.25 L5.25 11.00 L1.00 11.00 L0.75 12.00 L8.00 22.25 L9.50 23.25 L18.00 11.25 L17.25 10.75 L13.50 11.00 L12.75 10.50 L12.75 0.00 Z"/></svg>',
+    indicate_disable:'<svg viewBox="0 0 35 29" fill="currentColor" fill-rule="evenodd"><path d="M8.00 27.75 L8.00 28.75 L25.75 28.75 L26.00 28.25 L23.25 24.75 L11.50 24.75 Z M5.00 6.50 L5.00 10.25 L4.25 11.00 L0.00 11.00 L0.00 12.75 L5.00 19.50 L6.25 20.00 L11.50 15.00 L12.00 13.50 L8.25 10.00 L5.75 6.75 Z M31.00 5.75 L29.25 6.25 L27.25 8.75 L24.00 11.25 L22.25 13.75 L22.50 15.25 L25.25 17.75 L26.25 18.00 L26.75 19.25 L29.00 21.25 L29.50 21.25 L29.25 12.50 L30.00 11.75 L34.75 11.75 L34.75 10.25 Z M7.75 0.00 L11.00 3.75 L11.75 3.75 L11.75 0.00 Z M4.00 0.00 L2.75 2.25 L14.00 14.00 L2.75 25.50 L3.00 26.50 L5.25 28.00 L16.50 16.75 L17.25 16.75 L28.50 28.00 L29.50 27.75 L31.00 25.50 L19.75 13.75 L31.00 2.25 L29.75 0.00 L28.00 0.00 L17.25 11.00 L16.50 11.00 L5.75 0.00 Z"/></svg>'
+};
+
+var BLE_PROP_META = {
+    read:     { label:'Read',     title:'读取特征值',        icon:'read' },
+    write:    { label:'Write',    title:'写入特征值 (发送)', icon:'write' },
+    notify:   { label:'Notify',   titleOn:'启用通知', titleOff:'禁用通知', iconOn:'notify_enable',   iconOff:'notify_disable' },
+    indicate: { label:'Indicate', titleOn:'启用指示', titleOff:'禁用指示', iconOn:'indicate_enable', iconOff:'indicate_disable' }
+};
+
+function getSelectedBleDev() {
+    if (!_bleSelected) return null;
+    for (var i = 0; i < _bleDevices.length; i++) {
+        if (_bleDevices[i].address === _bleSelected) return _bleDevices[i];
+    }
+    return null;
+}
+
+// 演示特征（接后端后由 ble_services 返回真实特征及其属性）
+function getDemoChars() {
+    return [
+        { uuid:'2A00', name:'Device Name',      props:['read'] },
+        { uuid:'2A01', name:'Appearance',       props:['read'] },
+        { uuid:'2A05', name:'Service Changed',  props:['read','write'] },
+        { uuid:'2A19', name:'Battery Level',    props:['read','notify','indicate'] }
+    ];
+}
+
+function renderCharRow(ch) {
+    var dev = getSelectedBleDev();
+    var conn = !!(dev && dev.connected);
+    var actions = ch.props.map(function(p) {
+        var m = BLE_PROP_META[p];
+        if (!m) return '';
+        var key = ch.uuid + '::' + p;
+        var toggle = (p === 'notify' || p === 'indicate');
+        var enabled = toggle ? !!_bleSubs[key] : false;
+        var iconKey = toggle ? (enabled ? m.iconOff : m.iconOn) : m.icon;
+        var title = toggle ? (enabled ? m.titleOff : m.titleOn) : m.title;
+        var cls = 'ble-ch-action' + (enabled ? ' on' : (conn ? ' ready' : ''));
+        return '<span class="' + cls + '" title="' + title + '" onclick="bleCharAction(this,\'' + key + '\')">' + BLE_ICONS[iconKey] + '</span>';
+    }).join('');
+    return '<div class="ble-char">' +
+                '<span class="ble-char-uuid">' + ch.uuid + '</span>' +
+                '<span class="ble-char-name">' + ch.name + '</span>' +
+                '<span class="ble-char-actions">' + actions + '</span>' +
+            '</div>';
+}
+
+function bleCharAction(el, key) {
+    var dev = getSelectedBleDev();
+    if (!dev || !dev.connected) { console.warn('[BLE] 请先连接设备再操作'); return; }
+    var parts = key.split('::');
+    var charUuid = parts[0], prop = parts[1];
+    var m = BLE_PROP_META[prop];
+    if (!m) return;
+    if (prop === 'notify' || prop === 'indicate') {
+        // 布尔开关：未订阅→启用（显示 disable 图标），再点→关闭（显示 enable 图标）
+        _bleSubs[key] = !_bleSubs[key];
+        var enabled = _bleSubs[key];
+        el.innerHTML = BLE_ICONS[ enabled ? m.iconOff : m.iconOn ];
+        el.classList.toggle('on', enabled);
+        el.classList.add('ready');
+        el.title = enabled ? m.titleOff : m.titleOn;
+        // TODO: 对接 Rust — enabled ? invoke('ble_subscribe') : invoke('ble_unsubscribe')
+        console.log('[BLE] ' + prop + ' 订阅 ' + (enabled ? '启用' : '关闭') + ' 特征 ' + charUuid);
+    } else if (prop === 'read') {
+        // 一次性读取 — TODO: invoke('ble_read', { char })
+        console.log('[BLE] 读取特征 ' + charUuid);
+    } else if (prop === 'write') {
+        // 一次性写入/发送 — TODO: invoke('ble_write', { char })
+        console.log('[BLE] 写入特征 ' + charUuid);
+    }
+}
 
 function openBle() {
     console.log('[BLE] 打开蓝牙调试页面');
@@ -6335,13 +6440,19 @@ function refreshBleDevices() {
     // TODO: 对接 Rust — invoke('ble_peripherals') 获取真实扫描结果
     // 示例数据：展示 BLE scan 可能返回的多种设备如何显示
     _bleDevices = [
-        { address: 'F4:12:FA:01:AA:10', name: 'Nordic_Thingy91',       rssi: -42, connected: false, services: ['1800','180F','6E400001-B5A3-F393-E0A9-E50E24DCCA9E'] },
-        { address: 'C8:FD:19:2B:33:44', name: 'Seahi_DevKit',          rssi: -55, connected: false, services: ['180A','FE59'] },
-        { address: 'A4:C1:38:90:12:EF', name: 'LED_Controller',        rssi: -31, connected: false, services: ['FF00'] },
-        { address: '00:1A:7D:DA:71:13', name: '',                      rssi: -66, connected: false, services: ['1801'] },
-        { address: 'D2:55:0B:CC:5E:77', name: 'HeartRate_Monitor',     rssi: -78, connected: false, services: ['180D'] },
-        { address: '5C:F3:70:12:34:56', name: 'nRF52840_Mesh',          rssi: -50, connected: false, services: ['1800','180A'] },
-        { address: 'E1:0A:6B:4C:8F:22', name: 'Weather_Station',       rssi: -63, connected: false, services: ['181A'] }
+        { address: 'F4:12:FA:01:AA:10', name: 'Nordic_Thingy91', rssi: -42, connected: false, services: ['1800','180F','6E400001-B5A3-F393-E0A9-E50E24DCCA9E'],
+          adv: { adName: 'Thingy:91', addressType: 'Public', txPower: 8, appearance: 0x0340, raw: '02 01 1A 09 54 68 69 6E 67 79 3A 39 31 03 03 0F 18 04 0A 05 34 03 FF 00 01',
+                 manufacturerData: [{ id: 0x0059, hex: '0F 10 08' }], serviceData: [{ uuid: '180F', hex: '5A 01' }] } },
+        { address: 'C8:FD:19:2B:33:44', name: 'Seahi_DevKit', rssi: -55, connected: false, services: ['180A','FE59'],
+          adv: { adName: 'SeahiDev', addressType: 'Random', txPower: 4, appearance: 0x0200, raw: '02 01 1A 0A 53 65 61 68 69 44 65 76 03 03 0A 18 02 0A 00', manufacturerData: [], serviceData: [] } },
+        { address: 'A4:C1:38:90:12:EF', name: 'LED_Controller', rssi: -31, connected: false, services: ['FF00'],
+          adv: { adName: 'LED-Ctrl', addressType: 'Public', txPower: 12, raw: '02 01 06 0A 4C 45 44 2D 43 74 72 6C 03 03 00 FF', manufacturerData: [], serviceData: [] } },
+        { address: '00:1A:7D:DA:71:13', name: '', rssi: -66, connected: false, services: ['1801'], adv: null },
+        { address: 'D2:55:0B:CC:5E:77', name: 'HeartRate_Monitor', rssi: -78, connected: false, services: ['180D'],
+          adv: { adName: 'HRM', addressType: 'Random', txPower: 0, raw: '02 01 06 05 53 65 61 48 52 4D 03 03 0D 18', manufacturerData: [], serviceData: [] } },
+        { address: '5C:F3:70:12:34:56', name: 'nRF52840_Mesh', rssi: -50, connected: false, services: ['1800','180A'],
+          adv: { adName: 'MeshNode', addressType: 'Public', txPower: 6, raw: '02 01 1A 09 4D 65 73 68 4E 6F 64 65 03 03 00 18 02 0A 00', manufacturerData: [], serviceData: [] } },
+        { address: 'E1:0A:6B:4C:8F:22', name: 'Weather_Station', rssi: -63, connected: false, services: ['181A'], adv: null }
     ];
     renderBleDeviceList();
     renderBleDetail();
@@ -6356,12 +6467,13 @@ function renderBleDeviceList() {
     }
     list.innerHTML = '';
     _bleDevices.forEach(function(dev) {
+        var isActive = (dev.address === _bleSelected);
         var card = document.createElement('div');
-        card.className = 'ble-dev-card' + (dev.address === _bleSelected ? ' active' : '');
+        card.className = 'ble-dev-card' + (isActive ? ' active' : '');
         // 连接状态点：已连接绿、可发现橙
         var dotColor = dev.connected ? 'var(--accent-green)' : 'var(--accent-orange)';
-        // RSSI 颜色与信号条强度
-        var rssiColor = dev.rssi >= -55 ? 'var(--accent-green)' : (dev.rssi >= -75 ? 'var(--accent-orange)' : 'var(--accent-red)');
+        // RSSI 颜色与信号条强度（选中态用白色，避免蓝底上彩色不友好）
+        var rssiColor = isActive ? '#fff' : (dev.rssi >= -55 ? 'var(--accent-green)' : (dev.rssi >= -75 ? 'var(--accent-orange)' : 'var(--accent-red)'));
         var pct = Math.max(0, Math.min(100, Math.round((dev.rssi + 100) / 90 * 100)));
         card.innerHTML =
             '<span class="ble-dot" style="background:' + dotColor + '"></span>' +
@@ -6391,18 +6503,35 @@ function renderBleDetail() {
         detail.innerHTML = '<div class="ble-detail-empty">从左侧选择设备查看详情与 GATT 服务</div>';
         return;
     }
+    var BLE_SVC_NAMES = {
+        '1800':'Generic Access','1801':'Generic Attribute','180A':'Device Information',
+        '180D':'Heart Rate','180F':'Battery','181A':'Environmental Sensing',
+        'FF00':'Vendor','FE59':'Nordic DFU','6E400001-B5A3-F393-E0A9-E50E24DCCA9E':'Nordic UART'
+    };
     var svcHtml = dev.services.map(function(s, idx) {
+        var u = String(s).toUpperCase();
+        var primary = (idx % 2 === 0);   // 演示：交替主/从服务，展示属性列
+        var svcAttr = primary ? 'P' : 'S';
+        var svcName = BLE_SVC_NAMES[u] || '';
         return '<div class="ble-svc" onclick="toggleBleService(this)">' +
+                    '<span class="ble-svc-attr" title="' + (primary ? '主服务 Primary' : '从服务 Secondary') + '">' + svcAttr + '</span>' +
                     '<span class="ble-svc-caret">&#9654;</span>' +
                     '<span class="ble-svc-uuid">' + s + '</span>' +
+                    (svcName ? '<span class="ble-svc-name">' + svcName + '</span>' : '') +
                     '<span class="ble-svc-tag">Service</span>' +
                 '</div>';
     }).join('');
+    var advHtml = renderBleAdv(dev);
+    var advBytes = (dev.adv && dev.adv.raw) ? dev.adv.raw.split(' ').length : 0;
     detail.innerHTML =
         '<div class="ble-detail-head">' +
             '<div class="ble-detail-name">' + (dev.name || '未知设备') + '</div>' +
             '<div class="ble-detail-meta">' + dev.address + ' · ' + dev.rssi + ' dBm</div>' +
-            '<button class="add-btn icon-btn ble-connect-btn" onclick="toggleBleConnect()" title="连接/断开">连接设备</button>' +
+            '<button class="add-btn icon-btn ble-connect-btn' + (dev.connected ? ' connected' : '') + '" onclick="toggleBleConnect()" title="连接/断开">' + (dev.connected ? '断开设备' : '连接设备') + '</button>' +
+        '</div>' +
+        '<div class="ble-detail-sec ble-adv-sec">' +
+            '<div class="ble-sec-title ble-adv-toggle" onclick="toggleBleAdv(this)"><span class="ble-svc-caret">&#9654;</span>广播内容 <span class="ble-adv-count">' + (advBytes > 0 ? advBytes + ' B' : '') + '</span></div>' +
+            '<div class="ble-adv-body" style="display:none;">' + advHtml + '</div>' +
         '</div>' +
         '<div class="ble-detail-sec">' +
             '<div class="ble-sec-title">GATT 服务 / 特征</div>' +
@@ -6412,6 +6541,37 @@ function renderBleDetail() {
             '<div class="ble-sec-title">数据日志</div>' +
             '<div class="ble-log" id="ble-log">等待订阅通知...</div>' +
         '</div>';
+}
+
+// 广播内容展开体：原始 16 进制数据 + 简要解析
+function renderBleAdv(dev) {
+    if (!dev.adv) return '<div class="ble-adv-empty">无广播数据</div>';
+    var a = dev.adv;
+    var html = '';
+    if (a.raw) html += '<div class="ble-adv-raw">' + a.raw + '</div>';
+    var brief = [];
+    if (a.adName) brief.push(advRow('广播名', a.adName));
+    if (a.addressType) brief.push(advRow('地址类型', a.addressType));
+    if (a.txPower != null) brief.push(advRow('发射功率', a.txPower + ' dBm'));
+    if (a.appearance != null) brief.push(advRow('外观', '0x' + a.appearance.toString(16).toUpperCase()));
+    if (a.manufacturerData && a.manufacturerData.length)
+        brief.push(advRow('厂商数据', a.manufacturerData.map(function(m){ return '0x' + m.id.toString(16).toUpperCase() + ' [' + m.hex + ']'; }).join('<br>')));
+    if (a.serviceData && a.serviceData.length)
+        brief.push(advRow('服务数据', a.serviceData.map(function(s){ return s.uuid + ' [' + s.hex + ']'; }).join('<br>')));
+    if (dev.services && dev.services.length) brief.push(advRow('广播服务', dev.services.join('<br>')));
+    if (brief.length) html += '<div class="ble-adv-brief">' + brief.join('') + '</div>';
+    return html;
+}
+function advRow(k, v) {
+    return '<div class="ble-adv-row"><span class="ble-adv-k">' + k + '</span><span class="ble-adv-v">' + v + '</span></div>';
+}
+// 展开/收起广播内容（默认折叠）
+function toggleBleAdv(el) {
+    var body = el.nextElementSibling;
+    if (!body || !body.classList.contains('ble-adv-body')) return;
+    var show = (body.style.display !== 'none');
+    body.style.display = show ? 'none' : 'block';
+    el.classList.toggle('expanded', !show);
 }
 
 // 展开/收起某个服务下的特征（骨架示例特征）
@@ -6430,17 +6590,18 @@ function toggleBleService(el) {
     });
     var groupHtml = document.createElement('div');
     groupHtml.className = 'ble-charGroup';
-    groupHtml.innerHTML =
-        '<div class="ble-char"><span class="ble-char-uuid">2A00</span><span class="ble-char-name">Device Name</span><span class="ble-char-tag">Read</span></div>' +
-        '<div class="ble-char"><span class="ble-char-uuid">2A01</span><span class="ble-char-name">Appearance</span><span class="ble-char-tag">Read</span></div>' +
-        '<div class="ble-char"><span class="ble-char-uuid">2A05</span><span class="ble-char-name">Service Changed</span><span class="ble-char-tag">Read · Write</span></div>';
+    groupHtml.innerHTML = getDemoChars().map(renderCharRow).join('');
     el.after(groupHtml);
     el.classList.add('expanded');
 }
 
 function toggleBleConnect() {
+    var dev = getSelectedBleDev();
+    if (!dev) { console.warn('[BLE] 请先选择设备'); return; }
+    dev.connected = !dev.connected;
     // TODO: 对接 Rust — invoke('ble_connect', { address }) / invoke('ble_disconnect')
-    console.log('[BLE] 连接占位');
+    console.log('[BLE] 连接状态 ->', dev.connected, dev.address);
+    renderBleDetail();   // 重新渲染，驱动属性 icon 亮/灰
 }
 
 /* ===== ADB 调试面板（前端壳） ===== */
