@@ -6291,6 +6291,8 @@ var _bleDevices = [];     // 当前扫描到的设备
 var _bleSelected = null;  // 选中设备的 address
 var _bleScanning = false;
 var _bleSubs = {};  // 订阅/功能启用状态：key = uuid::prop -> true/false（notify/indicate 布尔开关）
+var _bleOpenSvcs = {};  // 已展开的 GATT 服务 uuid（连接/断开重建后恢复展开）
+var _bleAdvOpen = false;  // 广播内容是否展开（重建后恢复）
 
 // BLE 属性 icon（取自 BluetoothIcons，转为 currentColor 以便按连接状态点亮）
 var BLE_ICONS = {
@@ -6517,7 +6519,7 @@ function renderBleDetail() {
         var primary = (idx % 2 === 0);   // 演示：交替主/从服务，展示属性列
         var svcAttr = primary ? 'P' : 'S';
         var svcName = BLE_SVC_NAMES[u] || '';
-        return '<div class="ble-svc" onclick="toggleBleService(this)">' +
+        return '<div class="ble-svc" data-uuid="' + s + '" onclick="toggleBleService(this)">' +
                     '<span class="ble-svc-attr" title="' + (primary ? '主服务 Primary' : '从服务 Secondary') + '">' + svcAttr + '</span>' +
                     '<span class="ble-svc-caret">&#9654;</span>' +
                     '<span class="ble-svc-uuid">' + s + '</span>' +
@@ -6545,6 +6547,19 @@ function renderBleDetail() {
             '<div class="ble-sec-title">数据日志</div>' +
             '<div class="ble-log" id="ble-log">等待订阅通知...</div>' +
         '</div>';
+    // 恢复广播内容展开状态
+    if (_bleAdvOpen) {
+        var advBody = detail.querySelector('.ble-adv-body');
+        var advToggle = detail.querySelector('.ble-adv-toggle');
+        if (advBody) advBody.style.display = 'block';
+        if (advToggle) advToggle.classList.add('expanded');
+    }
+    // 恢复此前展开的 GATT 服务（连接/断开等重建后不丢失展开状态）
+    var openSvc = null;
+    detail.querySelectorAll('.ble-svc').forEach(function(svc) {
+        if (!openSvc && _bleOpenSvcs[svc.getAttribute('data-uuid')]) openSvc = svc;
+    });
+    if (openSvc) toggleBleService(openSvc);
 }
 
 // 解析广播 raw（空格分隔的 hex）为 AD 结构段
@@ -6616,14 +6631,17 @@ function toggleBleAdv(el) {
     var show = (body.style.display !== 'none');
     body.style.display = show ? 'none' : 'block';
     el.classList.toggle('expanded', !show);
+    _bleAdvOpen = !show;
 }
 
 // 展开/收起某个服务下的特征（骨架示例特征）
 function toggleBleService(el) {
+    var uuid = el.getAttribute('data-uuid');
     var group = el.nextElementSibling;
     if (group && group.classList.contains('ble-charGroup')) {
         group.remove();
         el.classList.remove('expanded');
+        if (uuid) delete _bleOpenSvcs[uuid];
         return;
     }
     // 收起其它已展开的服务
@@ -6631,12 +6649,15 @@ function toggleBleService(el) {
         var g = open.nextElementSibling;
         if (g && g.classList.contains('ble-charGroup')) g.remove();
         open.classList.remove('expanded');
+        var ou = open.getAttribute('data-uuid');
+        if (ou) delete _bleOpenSvcs[ou];
     });
     var groupHtml = document.createElement('div');
     groupHtml.className = 'ble-charGroup';
     groupHtml.innerHTML = getDemoChars().map(renderCharRow).join('');
     el.after(groupHtml);
     el.classList.add('expanded');
+    if (uuid) _bleOpenSvcs[uuid] = true;
 }
 
 function toggleBleConnect() {
