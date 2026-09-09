@@ -4118,6 +4118,281 @@ fn main() {
         None
     };
 
+/* ===== 蓝牙(BLE) 调试 - 后端（btleplug） ===== */
+use btleplug::api::{Central, Peripheral as PeripheralTrait, ScanFilter, CharPropFlags, WriteType, Manager as ManagerTrait};
+use btleplug::api::{Service as BtService, Characteristic as BtChar, PeripheralProperties};
+use btleplug::platform::{Adapter as BtAdapter, Manager as BleManager, Peripheral as BtPeripheral};
+
+struct BleState {
+    adapter: Mutex<Option<BtAdapter>>,
+    scanning: std::sync::atomic::AtomicBool,
+    connected: Mutex<Option<BtPeripheral>>,
+    services: Mutex<Vec<BtService>>,
+    notify_buf: std::sync::Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>,
+    notify_spawned: std::sync::atomic::AtomicBool,
+}
+
+fn ble_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
+}
+fn ble_addr_type(at: &Option<btleplug::api::AddressType>) -> &'static str {
+    match at {
+        Some(btleplug::api::AddressType::Public) => "Public",
+        Some(btleplug::api::AddressType::Random) => "Random",
+        None => "",
+    }
+}
+// 构造一个 BLE AD section：[len][type][payload]
+fn ble_adv_section(ad_type: u8, payload: &[u8]) -> Vec<u8> {
+    let mut v = vec![(payload.len() as u8) + 1, ad_type];
+    v.extend_from_slice(payload);
+    v
+}
+// 从已解析字段重组标准广播字节（btleplug 不暴露原始 AD bytes，此为按 AD 规范重组）
+fn ble_encode_adv(p: &PeripheralProperties) -> String {
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(&ble_adv_section(0x01, &[0x06])); // Flags
+    if let Some(name) = &p.local_name {
+        let nb = name.as_bytes();
+        if nb.len() <= 29 && nb.iter().all(|b| *b < 0x80) {
+            bytes.extend_from_slice(&ble_adv_section(0x09, nb)); // Complete Local Name
+        }
+    }
+    let mut svc16: Vec<u8> = Vec::new();
+    for u in &p.services {
+        let v = u.as_u128();
+        if v <= 0xFFFF {
+            svc16.push((v & 0xFF) as u8);
+            svc16.push(((v >> 8) & 0xFF) as u8);
+        }
+    }
+    if !svc16.is_empty() {
+        bytes.extend_from_slice(&ble_adv_section(0x03, &svc16)); // 16-bit services
+    }
+    if let Some(tx) = p.tx_power_level {
+        bytes.extend_from_slice(&ble_adv_section(0x0A, &[tx as u8])); // Tx Power
+    }
+    if let Some(app) = p.appearance {
+        bytes.extend_from_slice(&ble_adv_section(0x19, &app.to_le_bytes())); // Appearance
+    }
+    for (id, data) in &p.manufacturer_data {
+        let mut payload = id.to_le_bytes().to_vec();
+        payload.extend_from_slice(data);
+        bytes.extend_from_slice(&ble_adv_section(0xFF, &payload)); // Manufacturer Data
+    }
+    for (u, data) in &p.service_data {
+        let v = u.as_u128();
+        let mut payload = Vec::new();
+        if v <= 0xFFFF {
+            payload.push((v & 0xFF) as u8);
+            payload.push(((v >> 8) & 0xFF) as u8);
+            bytes.extend_from_slice(&ble_adv_section(0x16, &payload));
+        } else {
+            payload.extend(u.as_bytes().iter().rev()); // 128-bit uuid LE
+            payload.extend_from_slice(data);
+            bytes.extend_from_slice(&ble_adv_section(0x18, &payload));
+        }
+    }
+    ble_hex(&bytes)
+}
+fn ble_props_json(p: &PeripheralProperties) -> serde_json::Value {
+    json!({
+        "address": p.address.to_string(),
+        "address_type": ble_addr_type(&p.address_type),
+        "local_name": p.local_name,
+        "advertisement_name": p.advertisement_name,
+        "rssi": p.rssi,
+        "tx_power_level": p.tx_power_level,
+        "appearance": p.appearance,
+        "manufacturer_data": p.manufacturer_data.iter().map(|(id, v)| json!({"id": id, "hex": ble_hex(v)})).collect::<Vec<_>>(),
+        "service_data": p.service_data.iter().map(|(u, v)| json!({"uuid": u.to_string(), "hex": ble_hex(v)})).collect::<Vec<_>>(),
+        "services": p.services.iter().map(|u| u.to_string()).collect::<Vec<_>>(),
+        "adv_raw": ble_encode_adv(p),
+    })
+}
+fn ble_char_props(p: CharPropFlags) -> Vec<&'static str> {
+    let mut v = Vec::new();
+    if p.contains(CharPropFlags::READ) { v.push("read"); }
+    if p.contains(CharPropFlags::WRITE) { v.push("write"); }
+    if p.contains(CharPropFlags::WRITE_WITHOUT_RESPONSE) { v.push("write_without_response"); }
+    if p.contains(CharPropFlags::NOTIFY) { v.push("notify"); }
+    if p.contains(CharPropFlags::INDICATE) { v.push("indicate"); }
+    if p.contains(CharPropFlags::BROADCAST) { v.push("broadcast"); }
+    v
+}
+fn ble_char_json(c: &BtChar) -> serde_json::Value {
+    json!({
+        "uuid": c.uuid.to_string(),
+        "service_uuid": c.service_uuid.to_string(),
+        "properties": ble_char_props(c.properties),
+        "descriptors": c.descriptors.iter().map(|d| json!({"uuid": d.uuid.to_string()})).collect::<Vec<_>>(),
+    })
+}
+fn ble_service_json(s: &BtService) -> serde_json::Value {
+    json!({
+        "uuid": s.uuid.to_string(),
+        "primary": s.primary,
+        "characteristics": s.characteristics.iter().map(ble_char_json).collect::<Vec<_>>(),
+    })
+}
+fn ble_find_char(services: &[BtService], uuid: &str) -> Option<BtChar> {
+    for s in services {
+        if let Some(c) = s.characteristics.iter().find(|c| c.uuid.to_string() == uuid) {
+            return Some(c.clone());
+        }
+    }
+    None
+}
+async fn ble_notify_loop(peripheral: BtPeripheral, buf: std::sync::Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>) {
+    use futures::StreamExt;
+    if let Ok(mut stream) = peripheral.notifications().await {
+        while let Some(n) = stream.next().await {
+            let item = json!({
+                "uuid": n.uuid.to_string(),
+                "service_uuid": n.service_uuid.to_string(),
+                "value_hex": ble_hex(&n.value),
+            });
+            if let Ok(mut b) = buf.lock() { b.push_back(item); }
+        }
+    }
+}
+
+#[tauri::command]
+async fn ble_get_adapters() -> Result<Vec<serde_json::Value>, String> {
+    let manager = BleManager::new().await.map_err(|e| format!("BLE manager: {e}"))?;
+    let adapters = manager.adapters().await.map_err(|e| format!("BLE adapters: {e}"))?;
+    let mut out = Vec::new();
+    for a in &adapters {
+        let info = a.adapter_info().await.unwrap_or_default();
+        out.push(json!({"info": info}));
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+async fn ble_start_scan(state: tauri::State<'_, BleState>) -> Result<(), String> {
+    let manager = BleManager::new().await.map_err(|e| format!("BLE manager: {e}"))?;
+    let adapters = manager.adapters().await.map_err(|e| format!("BLE adapters: {e}"))?;
+    let adapter = adapters.into_iter().next().ok_or("未找到蓝牙适配器")?;
+    adapter.start_scan(ScanFilter::default()).await.map_err(|e| format!("start_scan: {e}"))?;
+    *state.adapter.lock().unwrap() = Some(adapter);
+    state.scanning.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+async fn ble_stop_scan(state: tauri::State<'_, BleState>) -> Result<(), String> {
+    let adapter = state.adapter.lock().unwrap().clone();
+    if let Some(a) = adapter {
+        let _ = a.stop_scan().await;
+    }
+    state.scanning.store(false, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+async fn ble_get_devices(state: tauri::State<'_, BleState>) -> Result<Vec<serde_json::Value>, String> {
+    let adapter = match state.adapter.lock().unwrap().clone() {
+        Some(a) => a,
+        None => return Ok(Vec::new()),
+    };
+    let periphs = adapter.peripherals().await.map_err(|e| format!("peripherals: {e}"))?;
+    let mut out = Vec::new();
+    for p in periphs {
+        if let Ok(Some(props)) = p.properties().await {
+            out.push(ble_props_json(&props));
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+async fn ble_connect(state: tauri::State<'_, BleState>, address: String) -> Result<(), String> {
+    let adapter = match state.adapter.lock().unwrap().clone() {
+        Some(a) => a,
+        None => return Err("请先扫描设备".to_string()),
+    };
+    let periphs = adapter.peripherals().await.map_err(|e| format!("peripherals: {e}"))?;
+    let target = periphs.into_iter().find(|p| p.address().to_string().eq_ignore_ascii_case(&address))
+        .ok_or("未找到该设备")?;
+    target.connect().await.map_err(|e| format!("connect: {e}"))?;
+    target.discover_services().await.map_err(|e| format!("discover: {e}"))?;
+    let svcs: Vec<BtService> = target.services().iter().cloned().collect();
+    *state.services.lock().unwrap() = svcs;
+    *state.connected.lock().unwrap() = Some(target);
+    Ok(())
+}
+
+#[tauri::command]
+async fn ble_disconnect(state: tauri::State<'_, BleState>) -> Result<(), String> {
+    let p = state.connected.lock().unwrap().take();
+    if let Some(p) = p {
+        let _ = p.disconnect().await;
+    }
+    state.services.lock().unwrap().clear();
+    Ok(())
+}
+
+#[tauri::command]
+async fn ble_get_services(state: tauri::State<'_, BleState>) -> Result<Vec<serde_json::Value>, String> {
+    let svcs = state.services.lock().unwrap();
+    Ok(svcs.iter().map(ble_service_json).collect())
+}
+
+#[tauri::command]
+async fn ble_read(state: tauri::State<'_, BleState>, char_uuid: String) -> Result<Vec<u8>, String> {
+    let p = state.connected.lock().unwrap().clone().ok_or("未连接")?;
+    let c = {
+        let svcs = state.services.lock().unwrap();
+        ble_find_char(&svcs, &char_uuid).ok_or("未找到特征")?
+    };
+    p.read(&c).await.map_err(|e| format!("read: {e}"))
+}
+
+#[tauri::command]
+async fn ble_write(state: tauri::State<'_, BleState>, char_uuid: String, data: Vec<u8>, write_type: Option<String>) -> Result<(), String> {
+    let p = state.connected.lock().unwrap().clone().ok_or("未连接")?;
+    let c = {
+        let svcs = state.services.lock().unwrap();
+        ble_find_char(&svcs, &char_uuid).ok_or("未找到特征")?
+    };
+    let wt = if write_type.as_deref() == Some("without_response") { WriteType::WithoutResponse } else { WriteType::WithResponse };
+    p.write(&c, &data, wt).await.map_err(|e| format!("write: {e}"))
+}
+
+#[tauri::command]
+async fn ble_subscribe(state: tauri::State<'_, BleState>, char_uuid: String) -> Result<(), String> {
+    let p = state.connected.lock().unwrap().clone().ok_or("未连接")?;
+    let c = {
+        let svcs = state.services.lock().unwrap();
+        ble_find_char(&svcs, &char_uuid).ok_or("未找到特征")?
+    };
+    p.subscribe(&c).await.map_err(|e| format!("subscribe: {e}"))?;
+    if !state.notify_spawned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        let buf = state.notify_buf.clone();
+        tauri::async_runtime::spawn(async move {
+            ble_notify_loop(p.clone(), buf).await;
+        });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn ble_unsubscribe(state: tauri::State<'_, BleState>, char_uuid: String) -> Result<(), String> {
+    let p = state.connected.lock().unwrap().clone().ok_or("未连接")?;
+    let c = {
+        let svcs = state.services.lock().unwrap();
+        ble_find_char(&svcs, &char_uuid).ok_or("未找到特征")?
+    };
+    p.unsubscribe(&c).await.map_err(|e| format!("unsubscribe: {e}"))
+}
+
+#[tauri::command]
+async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec<serde_json::Value>, String> {
+    let mut b = state.notify_buf.lock().unwrap();
+    Ok(b.drain(..).collect())
+}
+
     tauri::Builder::default()
         .manage(PortState {
             readers: RwLock::new(HashMap::new()),
@@ -4135,6 +4410,14 @@ fn main() {
         })
         .manage(LogCacheState {
             sessions: std::sync::Mutex::new(HashMap::new()),
+        })
+        .manage(BleState {
+            adapter: Mutex::new(None),
+            scanning: std::sync::atomic::AtomicBool::new(false),
+            connected: Mutex::new(None),
+            services: Mutex::new(Vec::new()),
+            notify_buf: std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            notify_spawned: std::sync::atomic::AtomicBool::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             list_ports,
@@ -4192,6 +4475,18 @@ fn main() {
             adb_shell_read,
             adb_shell_close,
             adb_shell_resize,
+            ble_get_adapters,
+            ble_start_scan,
+            ble_stop_scan,
+            ble_get_devices,
+            ble_connect,
+            ble_disconnect,
+            ble_get_services,
+            ble_read,
+            ble_write,
+            ble_subscribe,
+            ble_unsubscribe,
+            ble_poll_notifications,
             #[cfg(debug_assertions)]
             test_error_report,
         ])

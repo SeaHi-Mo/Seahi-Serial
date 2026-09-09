@@ -31,3 +31,6 @@ portable-pty = "0.8"
 regex = "1"
 sentry = { version = "0.34", optional = true }
 chrono = "0.4"
+btleplug = "0.13"
+uuid = { version = "1", features = ["v4"] }
+futures = "0.3"
