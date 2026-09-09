@@ -1035,6 +1035,51 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .add-btn.icon-btn.active { background:var(--accent-focus); border-color:var(--accent-focus); color:#fff; }
 .adb-dev-card { transition: background .15s, color .15s; }
 .adb-dev-card.active { background:var(--accent-focus) !important; color:#fff !important; border-color:var(--accent-focus) !important; }
+/* ===== 蓝牙(BLE) 调试面板 ===== */
+.ble-body { flex:1; display:flex; min-height:0; }
+.ble-left { display:flex; flex-direction:column; width:320px; min-width:240px; max-width:380px; border-right:1px solid var(--border); background:var(--editor-bg); }
+.ble-left-head { display:flex; align-items:center; gap:10px; padding:8px 12px; border-bottom:1px solid var(--border); background:var(--toolbar-bg); flex-shrink:0; }
+.ble-left-title { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--text-b); white-space:nowrap; min-width:0; }
+.ble-left-title svg { color:var(--link); }
+.ble-devList { flex:1; min-height:0; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px; }
+.ble-right { flex:1; min-width:0; display:flex; flex-direction:column; }
+.ble-dev-card { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; border:1px solid var(--border); background:var(--input-bg); cursor:pointer; transition: background .15s, border-color .15s, color .15s; }
+.ble-dev-card:hover { border-color:var(--border-h); }
+.ble-dev-card.active { border-color:var(--accent-focus); background:var(--accent-focus); }
+.ble-dev-card.active .ble-dev-name { color:#fff; }
+.ble-dev-card.active .ble-dev-sub { color:rgba(255,255,255,.85); }
+.ble-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.ble-dev-main { flex:1; min-width:0; }
+.ble-dev-name { font-size:13px; font-weight:500; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ble-dev-sub { font-size:11px; color:var(--text-d); font-family:var(--font-mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; }
+.ble-dev-rssi { font-size:11px; font-family:var(--font-mono); flex-shrink:0; }
+.ble-dev-rssi-bar { width:34px; height:5px; border-radius:3px; background:var(--border); overflow:hidden; flex-shrink:0; }
+.ble-dev-rssi-bar > span { display:block; height:100%; border-radius:3px; }
+.ble-empty { margin:auto; text-align:center; color:var(--text-d); font-size:13px; line-height:2; }
+.ble-empty b { color:var(--text-b); }
+.ble-detail { flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; }
+.ble-detail-empty { margin:auto; color:var(--text-d); font-size:13px; }
+.ble-detail-head { display:flex; align-items:center; gap:14px; padding:14px 18px; border-bottom:1px solid var(--border); flex-shrink:0; }
+.ble-detail-name { font-size:15px; font-weight:600; color:var(--text-b); }
+.ble-detail-meta { font-size:12px; color:var(--text-d); font-family:var(--font-mono); }
+.ble-connect-btn { margin-left:auto; }
+.ble-detail-sec { padding:14px 18px; border-bottom:1px solid var(--border); overflow-y:auto; }
+.ble-sec-title { font-size:11px; font-weight:600; color:var(--text-d); margin-bottom:10px; text-transform:uppercase; letter-spacing:.04em; }
+.ble-svc { display:flex; align-items:center; gap:8px; padding:8px 10px; border-radius:6px; border:1px solid var(--border); margin-bottom:6px; background:var(--input-bg); cursor:pointer; transition: border-color .15s; }
+.ble-svc:hover { border-color:var(--border-h); }
+.ble-svc.expanded { border-color:var(--accent-focus); }
+.ble-svc-caret { font-size:10px; color:var(--text-d); width:12px; flex-shrink:0; transition: transform .15s; }
+.ble-svc.expanded .ble-svc-caret { transform:rotate(90deg); }
+.ble-svc-uuid { font-family:var(--font-mono); font-size:12px; color:var(--text); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ble-svc-name { font-size:11px; color:var(--text-d); margin-left:6px; flex-shrink:0; }
+.ble-svc-tag { font-size:10px; color:var(--text-d); border:1px solid var(--border); padding:0 6px; border-radius:4px; margin-left:auto; flex-shrink:0; }
+.ble-charGroup { padding:4px 0 8px 22px; display:flex; flex-direction:column; gap:4px; }
+.ble-char { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:6px; background:var(--editor-bg); border:1px solid var(--border); }
+.ble-char-uuid { font-family:var(--font-mono); font-size:12px; color:var(--text); }
+.ble-char-name { font-size:11px; color:var(--text-d); margin-left:6px; flex-shrink:0; }
+.ble-char-tag { font-size:10px; color:var(--text-d); margin-left:auto; flex-shrink:0; }
+.ble-log-sec { flex:1; min-height:0; display:flex; flex-direction:column; }
+.ble-log { flex:1; min-height:0; overflow-y:auto; font-family:var(--font-mono); font-size:12px; line-height:1.7; color:var(--text); background:var(--editor-bg); border:1px solid var(--border); border-radius:6px; padding:10px; white-space:pre-wrap; word-break:break-all; }
 .app-info { display:inline-flex; align-items:center; gap:6px; margin-right:10px; cursor:default; flex-shrink:0; }
 .app-info-icon { width:22px; height:22px; flex-shrink:0; object-fit:contain; }
 .app-info-name { font-size:12px; font-weight:600; color:var(--text-b); white-space:nowrap; }
@@ -1849,6 +1894,10 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
         <svg id="adbToggleIcon" width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M252.16 776.96l-23.04-135.68H105.6l-21.76 135.68H0L103.68 192h122.24l111.36 584.96zM217.6 573.44l-53.12-308.48-48.64 308.48zM348.8 192h203.52c87.04 0 87.04 81.92 87.04 81.92v421.12c0 81.92-87.04 81.92-87.04 81.92H348.8z m205.44 93.44c0-16.64-5.76-21.76-5.76-21.76-5.12-5.12-22.4-5.12-22.4-5.12H433.92v451.84h92.16c17.28 0 22.4-5.12 22.4-5.12 5.76-5.12 5.76-16.64 5.76-21.76z m332.8 0c0-16.64-5.76-21.76-5.76-21.76-5.12-5.12-22.4-5.12-22.4-5.12h-93.44v187.52h93.44c17.28 0 22.4-5.12 22.4-5.12 5.76-5.12 5.76-22.4 5.76-21.76z m0 254.08c0-16.64-5.76-21.76-5.76-21.76-5.12-5.12-22.4-5.12-22.4-5.12h-93.44v197.76h93.44c17.28 0 22.4-5.12 22.4-5.12 5.76-5.12 5.76-21.76 5.76-21.76zM681.6 192h202.88c87.68 0 87.68 81.92 87.68 81.92v149.12c0 49.28-37.12 57.6-37.12 57.6 37.12 9.6 37.12 54.4 37.12 54.4v160c0 81.92-87.68 81.92-87.68 81.92h-202.88z"/></svg>
         <span id="adbToggleText" style="display:none;">ADB 调试</span>
     </span>
+    <span id="bleToggleBtn" class="add-btn icon-btn" onclick="openBle()" style="margin-left:12px;" title="蓝牙调试">
+        <svg id="bleToggleIcon" width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M466.125 149.709a45.875 45.875 0 0 1 70.349-39.936l1.638 1.126 250.982 178.483a48.128 48.128 0 0 1 2.253 76.186l-1.843 1.331L593.92 508.723l194.56 137.728a48.026 48.026 0 0 1 1.946 76.493l-1.844 1.434-250.47 178.483a45.773 45.773 0 0 1-71.68-36.762V601.6L287.437 731.238a45.056 45.056 0 0 1-62.157-9.523l-1.331-1.945a48.23 48.23 0 0 1 9.216-64.41l1.843-1.434 198.246-144.179L235.52 369.664a48.026 48.026 0 0 1-13.107-63.693l1.229-2.048a45.056 45.056 0 0 1 61.44-13.517l1.945 1.332 179.2 126.566z m92.16 448.102V773.94l123.801-87.859z m0-358.4V419.84l124.928-90.624z" p-id="13027"></path></svg>
+        <span id="bleToggleText" style="display:none;">蓝牙调试</span>
+    </span>
     <span style="flex:1;"></span>
     <span id="themeStyleWrap" class="sel" style="height:24px;width:auto;padding:0 4px;justify-content:center;" onclick="toggleThemeStyleDrop(event)" title="主题风格: 默认">
         <svg width="16" height="16" viewBox="0 0 1024 1024" fill="currentColor"><path d="M512 51.2a460.8 460.8 0 0 0 0 921.6c78.5408 0 133.12-40.0384 139.264-102.4 2.3552-23.6544-6.5536-44.9536-15.1552-65.6384-14.336-34.5088-24.6784-59.4944 9.216-93.2864s73.5232-27.4432 119.7056-20.48c29.7984 4.5056 60.416 9.0112 89.1904 1.2288C929.5872 672.0512 972.8 606.208 972.8 512A461.312 461.312 0 0 0 512 51.2z m331.3664 601.9072c-20.48 5.5296-45.568 1.8432-71.68-2.2528-47.4112-7.0656-106.496-15.9744-154.7264 31.9488-53.4528 53.248-33.0752 102.4-18.1248 138.1376a105.2672 105.2672 0 0 1 12.1856 45.8752C604.672 927.1296 533.6064 931.84 512 931.84a419.84 419.84 0 1 1 419.84-419.84c0 43.6224-11.4688 120.1152-88.4736 141.1072z"/><path d="M235.52 512m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M307.2 337.92m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M471.04 245.76m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M655.36 276.48m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M778.24 419.84m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/></svg>
@@ -1889,6 +1938,8 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 <div class="pane-container" id="wsl-pane" style="display:none;"></div>
 <!-- ADB 调试面板（常驻 DOM，display:none 时不参与 flex 布局） -->
 <div class="pane-container" id="adb-pane" style="display:none;"></div>
+<!-- 蓝牙(BLE) 调试面板（常驻 DOM，display:none 时不参与 flex 布局） -->
+<div class="pane-container" id="ble-pane" style="display:none;"></div>
 
 <!-- 首次使用引导 -->
 <div id="onboarding-overlay">
@@ -5382,6 +5433,7 @@ function openWslMapping() {
     document.getElementById('paneContainer').style.display = 'none';
     document.getElementById('wsl-pane').style.display = 'flex';
     document.getElementById('adb-pane').style.display = 'none';
+    document.getElementById('ble-pane').style.display = 'none';
     var aBtn = document.getElementById('adbToggleBtn');
     if (aBtn) {
         aBtn.setAttribute('title', 'ADB 调试');
@@ -5390,6 +5442,14 @@ function openWslMapping() {
     }
     var aText = document.getElementById('adbToggleText');
     if (aText) aText.textContent = 'ADB 调试';
+    var bBtn = document.getElementById('bleToggleBtn');
+    if (bBtn) {
+        bBtn.setAttribute('title', '蓝牙调试');
+        bBtn.setAttribute('onclick', 'openBle()');
+        bBtn.classList.remove('active');
+    }
+    var bText = document.getElementById('bleToggleText');
+    if (bText) bText.textContent = '蓝牙调试';
 
     // 面板打开期间定期刷新设备列表，保证映射后的 WSL 路径能及时解析显示
     if (_wslDevListTimer) clearInterval(_wslDevListTimer);
@@ -6200,6 +6260,189 @@ function restoreMonitorPane() {
 
 }
 
+/* ===== 蓝牙(BLE) 调试面板（前端壳） ===== */
+var _bleDevices = [];     // 当前扫描到的设备
+var _bleSelected = null;  // 选中设备的 address
+var _bleScanning = false;
+
+function openBle() {
+    console.log('[BLE] 打开蓝牙调试页面');
+    document.getElementById('paneContainer').style.display = 'none';
+    document.getElementById('wsl-pane').style.display = 'none';
+    document.getElementById('adb-pane').style.display = 'none';
+    document.getElementById('ble-pane').style.display = 'flex';
+    // 收起其它面板按钮的 active 态
+    var wBtn = document.getElementById('wslToggleBtn');
+    if (wBtn) { wBtn.setAttribute('title', 'WSL 端口映射'); wBtn.setAttribute('onclick', 'openWslMapping()'); wBtn.classList.remove('active'); }
+    var aBtn = document.getElementById('adbToggleBtn');
+    if (aBtn) { aBtn.setAttribute('title', 'ADB 调试'); aBtn.setAttribute('onclick', 'openAdb()'); aBtn.classList.remove('active'); }
+    // 蓝牙按钮切到 active
+    var btn = document.getElementById('bleToggleBtn');
+    if (btn) { btn.setAttribute('title', '返回到串口调试器'); btn.setAttribute('onclick', 'closeBle()'); btn.classList.add('active'); }
+    var text = document.getElementById('bleToggleText');
+    if (text) text.textContent = '返回到串口调试器';
+    // 首次填充面板内容
+    var blePane = document.getElementById('ble-pane');
+    if (!blePane._initialized) {
+        blePane.style.flexDirection = 'column';
+        blePane.innerHTML =
+            '<div class="ble-body">' +
+                '<div class="ble-left">' +
+                    '<div class="ble-left-head">' +
+                        '<div class="ble-left-title"><svg width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M466.125 149.709a45.875 45.875 0 0 1 70.349-39.936l1.638 1.126 250.982 178.483a48.128 48.128 0 0 1 2.253 76.186l-1.843 1.331L593.92 508.723l194.56 137.728a48.026 48.026 0 0 1 1.946 76.493l-1.844 1.434-250.47 178.483a45.773 45.773 0 0 1-71.68-36.762V601.6L287.437 731.238a45.056 45.056 0 0 1-62.157-9.523l-1.331-1.945a48.23 48.23 0 0 1 9.216-64.41l1.843-1.434 198.246-144.179L235.52 369.664a48.026 48.026 0 0 1-13.107-63.693l1.229-2.048a45.056 45.056 0 0 1 61.44-13.517l1.945 1.332 179.2 126.566z m92.16 448.102V773.94l123.801-87.859z m0-358.4V419.84l124.928-90.624z" p-id="13027"></path></svg>蓝牙列表</div>' +
+                        '<button class="add-btn icon-btn" id="bleScanBtn" onclick="toggleBleScan()" title="开始/停止扫描" style="background:var(--accent-focus);color:#fff;border:1px solid transparent;width:auto;height:28px;box-sizing:border-box;padding:0 12px;margin-left:auto;gap:0;border-radius:5px;font-size:12px;flex-shrink:0;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;">开始扫描</button>' +
+                    '</div>' +
+                    '<div class="ble-devList no-scrollbar" id="ble-devList"></div>' +
+                '</div>' +
+                '<div class="ble-right">' +
+                    '<div class="ble-detail" id="ble-detail"></div>' +
+                '</div>' +
+            '</div>';
+        blePane._initialized = true;
+    }
+    // BLE 界面隐藏主监视器区，禁用「打开额外监视器」
+    var addBtn = document.getElementById('addMonitorBtn');
+    if (addBtn) { addBtn.style.opacity = '0.4'; addBtn.style.pointerEvents = 'none'; addBtn.title = '蓝牙界面不可用'; }
+    // 进入面板即刷新设备列表（当前为示例数据）
+    refreshBleDevices();
+}
+
+function closeBle() {
+    console.log('[BLE] 返回监视器页面');
+    document.getElementById('ble-pane').style.display = 'none';
+    document.getElementById('paneContainer').style.display = 'flex';
+    var addBtn = document.getElementById('addMonitorBtn');
+    if (addBtn) { addBtn.style.opacity = ''; addBtn.style.pointerEvents = ''; addBtn.title = '打开额外监视器'; }
+    var btn = document.getElementById('bleToggleBtn');
+    if (btn) { btn.setAttribute('title', '蓝牙调试'); btn.setAttribute('onclick', 'openBle()'); btn.classList.remove('active'); }
+    var text = document.getElementById('bleToggleText');
+    if (text) text.textContent = '蓝牙调试';
+}
+
+function toggleBleScan() {
+    _bleScanning = !_bleScanning;
+    var btn = document.getElementById('bleScanBtn');
+    if (_bleScanning) {
+        if (btn) btn.textContent = '停止扫描';
+        // TODO: 对接 Rust — invoke('ble_start_scan')
+    } else {
+        if (btn) btn.textContent = '开始扫描';
+        // TODO: 对接 Rust — invoke('ble_stop_scan')
+    }
+}
+
+function refreshBleDevices() {
+    // TODO: 对接 Rust — invoke('ble_peripherals') 获取真实扫描结果
+    // 示例数据：展示 BLE scan 可能返回的多种设备如何显示
+    _bleDevices = [
+        { address: 'F4:12:FA:01:AA:10', name: 'Nordic_Thingy91',       rssi: -42, connected: false, services: ['1800','180F','6E400001-B5A3-F393-E0A9-E50E24DCCA9E'] },
+        { address: 'C8:FD:19:2B:33:44', name: 'Seahi_DevKit',          rssi: -55, connected: false, services: ['180A','FE59'] },
+        { address: 'A4:C1:38:90:12:EF', name: 'LED_Controller',        rssi: -31, connected: false, services: ['FF00'] },
+        { address: '00:1A:7D:DA:71:13', name: '',                      rssi: -66, connected: false, services: ['1801'] },
+        { address: 'D2:55:0B:CC:5E:77', name: 'HeartRate_Monitor',     rssi: -78, connected: false, services: ['180D'] },
+        { address: '5C:F3:70:12:34:56', name: 'nRF52840_Mesh',          rssi: -50, connected: false, services: ['1800','180A'] },
+        { address: 'E1:0A:6B:4C:8F:22', name: 'Weather_Station',       rssi: -63, connected: false, services: ['181A'] }
+    ];
+    renderBleDeviceList();
+    renderBleDetail();
+}
+
+function renderBleDeviceList() {
+    var list = document.getElementById('ble-devList');
+    if (!list) return;
+    if (!_bleDevices.length) {
+        list.innerHTML = '<div class="ble-empty"><b>未发现蓝牙设备</b><br><span>点击「开始扫描」搜索周边 BLE 设备</span></div>';
+        return;
+    }
+    list.innerHTML = '';
+    _bleDevices.forEach(function(dev) {
+        var card = document.createElement('div');
+        card.className = 'ble-dev-card' + (dev.address === _bleSelected ? ' active' : '');
+        // 连接状态点：已连接绿、可发现橙
+        var dotColor = dev.connected ? 'var(--accent-green)' : 'var(--accent-orange)';
+        // RSSI 颜色与信号条强度
+        var rssiColor = dev.rssi >= -55 ? 'var(--accent-green)' : (dev.rssi >= -75 ? 'var(--accent-orange)' : 'var(--accent-red)');
+        var pct = Math.max(0, Math.min(100, Math.round((dev.rssi + 100) / 90 * 100)));
+        card.innerHTML =
+            '<span class="ble-dot" style="background:' + dotColor + '"></span>' +
+            '<div class="ble-dev-main">' +
+                '<div class="ble-dev-name">' + (dev.name || '未知设备') + '</div>' +
+                '<div class="ble-dev-sub">' + dev.address + '</div>' +
+            '</div>' +
+            '<div class="ble-dev-rssi-bar"><span style="width:' + pct + '%;background:' + rssiColor + '"></span></div>' +
+            '<div class="ble-dev-rssi" style="color:' + rssiColor + '">' + dev.rssi + ' dBm</div>';
+        card.addEventListener('click', function() {
+            _bleSelected = dev.address;
+            renderBleDeviceList();
+            renderBleDetail();
+        });
+        list.appendChild(card);
+    });
+}
+
+function renderBleDetail() {
+    var detail = document.getElementById('ble-detail');
+    if (!detail) return;
+    var dev = null;
+    for (var i = 0; i < _bleDevices.length; i++) {
+        if (_bleDevices[i].address === _bleSelected) { dev = _bleDevices[i]; break; }
+    }
+    if (!dev) {
+        detail.innerHTML = '<div class="ble-detail-empty">从左侧选择设备查看详情与 GATT 服务</div>';
+        return;
+    }
+    var svcHtml = dev.services.map(function(s, idx) {
+        return '<div class="ble-svc" onclick="toggleBleService(this)">' +
+                    '<span class="ble-svc-caret">&#9654;</span>' +
+                    '<span class="ble-svc-uuid">' + s + '</span>' +
+                    '<span class="ble-svc-tag">Service</span>' +
+                '</div>';
+    }).join('');
+    detail.innerHTML =
+        '<div class="ble-detail-head">' +
+            '<div class="ble-detail-name">' + (dev.name || '未知设备') + '</div>' +
+            '<div class="ble-detail-meta">' + dev.address + ' · ' + dev.rssi + ' dBm</div>' +
+            '<button class="add-btn icon-btn ble-connect-btn" onclick="toggleBleConnect()" title="连接/断开">连接设备</button>' +
+        '</div>' +
+        '<div class="ble-detail-sec">' +
+            '<div class="ble-sec-title">GATT 服务 / 特征</div>' +
+            '<div>' + svcHtml + '</div>' +
+        '</div>' +
+        '<div class="ble-detail-sec ble-log-sec">' +
+            '<div class="ble-sec-title">数据日志</div>' +
+            '<div class="ble-log" id="ble-log">等待订阅通知...</div>' +
+        '</div>';
+}
+
+// 展开/收起某个服务下的特征（骨架示例特征）
+function toggleBleService(el) {
+    var group = el.nextElementSibling;
+    if (group && group.classList.contains('ble-charGroup')) {
+        group.remove();
+        el.classList.remove('expanded');
+        return;
+    }
+    // 收起其它已展开的服务
+    document.querySelectorAll('#ble-detail .ble-svc.expanded').forEach(function(open) {
+        var g = open.nextElementSibling;
+        if (g && g.classList.contains('ble-charGroup')) g.remove();
+        open.classList.remove('expanded');
+    });
+    var groupHtml = document.createElement('div');
+    groupHtml.className = 'ble-charGroup';
+    groupHtml.innerHTML =
+        '<div class="ble-char"><span class="ble-char-uuid">2A00</span><span class="ble-char-name">Device Name</span><span class="ble-char-tag">Read</span></div>' +
+        '<div class="ble-char"><span class="ble-char-uuid">2A01</span><span class="ble-char-name">Appearance</span><span class="ble-char-tag">Read</span></div>' +
+        '<div class="ble-char"><span class="ble-char-uuid">2A05</span><span class="ble-char-name">Service Changed</span><span class="ble-char-tag">Read · Write</span></div>';
+    el.after(groupHtml);
+    el.classList.add('expanded');
+}
+
+function toggleBleConnect() {
+    // TODO: 对接 Rust — invoke('ble_connect', { address }) / invoke('ble_disconnect')
+    console.log('[BLE] 连接占位');
+}
+
 /* ===== ADB 调试面板（前端壳） ===== */
 function openAdb() {
     console.log('[ADB] 打开ADB调试页面');
@@ -6207,12 +6450,21 @@ function openAdb() {
     document.getElementById('paneContainer').style.display = 'none';
     document.getElementById('wsl-pane').style.display = 'none';
     document.getElementById('adb-pane').style.display = 'flex';
+    document.getElementById('ble-pane').style.display = 'none';
     var wBtn = document.getElementById('wslToggleBtn');
     if (wBtn) {
         wBtn.setAttribute('title', 'WSL 端口映射');
         wBtn.setAttribute('onclick', 'openWslMapping()');
         wBtn.classList.remove('active');
     }
+    var bBtn = document.getElementById('bleToggleBtn');
+    if (bBtn) {
+        bBtn.setAttribute('title', '蓝牙调试');
+        bBtn.setAttribute('onclick', 'openBle()');
+        bBtn.classList.remove('active');
+    }
+    var bText = document.getElementById('bleToggleText');
+    if (bText) bText.textContent = '蓝牙调试';
     var wText = document.getElementById('wslToggleText');
     if (wText) wText.textContent = 'WSL 端口映射';
     // 更新顶部栏按钮：进入后悬停提示「返回到串口调试器」
@@ -6278,6 +6530,8 @@ function goMain() {
     if (wsl && wsl.style.display === 'flex') { restoreMonitorPane(); return; }
     var adb = document.getElementById('adb-pane');
     if (adb && adb.style.display === 'flex') { closeAdb(); return; }
+    var ble = document.getElementById('ble-pane');
+    if (ble && ble.style.display === 'flex') { closeBle(); return; }
 }
 
 /* ===== ADB 设备与会话（对接 Rust adb_devices/adb_shell） ===== */
@@ -7082,6 +7336,10 @@ document.addEventListener('DOMContentLoaded', function() {
         if (el && el.id === 'adbToggleBtn') {
             var ap = document.getElementById('adb-pane');
             text = (ap && ap.style.display === 'flex') ? '返回到串口调试器' : 'ADB 调试';
+        }
+        if (el && el.id === 'bleToggleBtn') {
+            var bp = document.getElementById('ble-pane');
+            text = (bp && bp.style.display === 'flex') ? '返回到串口调试器' : '蓝牙调试';
         }
         el.setAttribute('data-title', text);
         el.removeAttribute('title');
