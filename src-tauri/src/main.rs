@@ -209,12 +209,13 @@ fn start_device_watcher(app: tauri::AppHandle) {
         }
         dbg_log("device_watcher: stopped");
 
-        // 回收 AppHandle Box，避免泄漏（此前用 Box::into_raw 换取回调内指针有效性）
-        let _ = Box::from_raw(context as *mut tauri::AppHandle);
-        // 注销设备通知
+        // 先注销通知：注销后回调不会再被调用，此时才能安全回收 context。
+        // （此前顺序相反：先 Box::from_raw 释放，再注销 —— 窗口内回调解引用已释放内存）
         if !notify_handle.is_null() {
             let _ = CM_Unregister_Notification(notify_handle);
         }
+        // 回收 AppHandle Box，避免泄漏（此前用 Box::into_raw 换取回调内指针有效性）
+        let _ = Box::from_raw(context as *mut tauri::AppHandle);
     });
 }
 
@@ -788,23 +789,36 @@ fn execute_workflow_actions_bg(
                         bytes.extend_from_slice(le_bytes);
                     }
                     sent_parts.push(action.data.clone());
-                    let mut p = port_clone.lock().unwrap_or_else(|e| e.into_inner());
-                    match p.write_all(&bytes) {
-                        Ok(()) => { let _ = p.flush(); }
+                    // 与 send_data 保持一致：锁带超时。此前用无限期 lock()，
+                    // 一旦设备不排空导致 write_all 阻塞，该串口就被永久占住，
+                    // 读线程再也拿不到锁 → 该串口停止接收、后续写命令全部超时（假死）。
+                    match lock_port_with_timeout(&port_clone, 500) {
+                        Ok(mut p) => match p.write_all(&bytes) {
+                            Ok(()) => { let _ = p.flush(); }
+                            Err(e) => {
+                                eprintln!("[Workflow] 写入串口失败: {}", e);
+                                sent_parts.pop();
+                            }
+                        },
                         Err(e) => {
-                            eprintln!("[Workflow] 写入串口失败: {}", e);
+                            eprintln!("[Workflow] 取串口锁失败: {}", e);
                             sent_parts.pop();
                         }
                     }
                 }
                 "toggle_dtr_rts" => {
-                    let mut p = port_clone.lock().unwrap_or_else(|e| e.into_inner());
-                    let ok = match action.signal.as_str() {
-                        "dtr" => p.write_data_terminal_ready(action.level).is_ok(),
-                        "rts" => p.write_request_to_send(action.level).is_ok(),
-                        _ => false,
-                    };
-                    if ok { sent_parts.push(format!("[{} {}]", action.signal.to_uppercase(), if action.level { "ON" } else { "OFF" })); }
+                    // 同上传送动作：锁带超时，避免占死串口
+                    match lock_port_with_timeout(&port_clone, 500) {
+                        Ok(mut p) => {
+                            let ok = match action.signal.as_str() {
+                                "dtr" => p.write_data_terminal_ready(action.level).is_ok(),
+                                "rts" => p.write_request_to_send(action.level).is_ok(),
+                                _ => false,
+                            };
+                            if ok { sent_parts.push(format!("[{} {}]", action.signal.to_uppercase(), if action.level { "ON" } else { "OFF" })); }
+                        }
+                        Err(e) => eprintln!("[Workflow] 取串口锁失败({}): {}", action.signal, e),
+                    }
                 }
                 "save_log" => {
                     if !ld.is_empty() {
@@ -2565,13 +2579,7 @@ fn attach_port_to_wsl_blocking(port_name: String, distro: Option<String>, author
     let list_str = String::from_utf8_lossy(&list_out.stdout).to_string();
 
     // 2. 找到目标行：如果传入的是 busid 格式则按 busid 匹配，否则按 COM 口名匹配
-    let is_busid = port_name.contains('-') && {
-        let mut parts = port_name.splitn(2, '-');
-        let a = parts.next().unwrap_or("");
-        let b = parts.next().unwrap_or("");
-        !a.is_empty() && a.chars().all(|c| c.is_ascii_digit())
-            && !b.is_empty() && b.chars().all(|c| c.is_ascii_digit())
-    };
+    let is_busid = is_valid_busid(&port_name);
 
     let target_line = if is_busid {
         list_str.lines()
@@ -2835,10 +2843,30 @@ async fn detach_port_from_wsl(busid: String) -> Result<String, String> {
     .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
+/// busid 白名单：只接受 `数字-数字`（如 `1-4`）。
+/// 这个值会被插进以**管理员权限**执行的 PowerShell 脚本（usbipd detach/attach），
+/// 必须严格校验，否则 `1-1; <命令>` 就是一条提权命令执行路径。
+fn is_valid_busid(s: &str) -> bool {
+    let mut parts = s.splitn(2, '-');
+    let a = parts.next().unwrap_or("");
+    let b = parts.next().unwrap_or("");
+    !a.is_empty() && a.chars().all(|c| c.is_ascii_digit())
+        && !b.is_empty() && b.chars().all(|c| c.is_ascii_digit())
+}
+
 /// 通过 UAC 提权执行 usbipd detach
 fn run_usbipd_detach_elevated(busid: &str) -> Option<String> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static DETACH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    // busid 来自前端，会被直接插进下面那段**以管理员身份执行**的 PowerShell 脚本，
+    // 必须严格白名单校验（busid="1-1; <任意命令>" 否则即为提权命令执行）。
+    // 兄弟函数 attach_port_to_wsl_blocking 对同一语义参数有同样校验，这里此前漏了。
+    if !is_valid_busid(busid) {
+        #[cfg(debug_assertions)]
+        dbg_log(&format!("run_usbipd_detach_elevated: busid 非法已拒绝: {busid}"));
+        return None;
+    }
     let unique_id = DETACH_COUNTER.fetch_add(1, Ordering::Relaxed);
     let tmp_result = std::env::temp_dir().join(format!(
         "usbipd_detach_{}_{}_{}.txt",
@@ -3436,6 +3464,24 @@ mod util_tests {
         // 空 / 过短不 panic
         assert!(!super::is_ibeacon_payload(&[]));
         assert!(!super::is_ibeacon_payload(&[0x02]));
+    }
+
+    #[test]
+    fn busid_whitelist_rejects_shell_metacharacters() {
+        // 合法：usbipd 的 busid 形如 1-4（数字-数字）
+        assert!(super::is_valid_busid("1-4"));
+        assert!(super::is_valid_busid("12-34"));
+        // 非法：这条值会进提权 PowerShell 脚本，任何拼接/元字符都必须拒绝
+        assert!(!super::is_valid_busid("1-1; Start-Process calc"));
+        assert!(!super::is_valid_busid("1-1' ; whoami #"));
+        assert!(!super::is_valid_busid("1-1 | Out-Null; calc"));
+        assert!(!super::is_valid_busid("$(calc)"));
+        assert!(!super::is_valid_busid("1-1 2-2"));      // 多段
+        assert!(!super::is_valid_busid("1-"));           // 缺后半
+        assert!(!super::is_valid_busid("-1"));           // 缺前半
+        assert!(!super::is_valid_busid("1-a"));          // 非数字
+        assert!(!super::is_valid_busid(""));             // 空
+        assert!(!super::is_valid_busid("1-1-1"));        // 三段
     }
 }
 
