@@ -41,6 +41,7 @@ server/errors.db-*
 # AI 会话记忆（不再跟踪）
 .workbuddy/
 SESSION_MEMORY.md
+TODO.md
 
 # ADB platform-tools（本地开发用，不纳入版本库；安装包由 CI 单独下载）
 platform-tools/
