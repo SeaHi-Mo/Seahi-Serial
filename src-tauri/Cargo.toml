@@ -34,3 +34,6 @@ chrono = "0.4"
 btleplug = "0.13"
 uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
+
+[patch.crates-io]
+btleplug = { path = "D:\\Users\\Seahi\\Desktop\\btleplug" }

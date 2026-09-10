@@ -4196,6 +4196,11 @@ fn ble_encode_adv(p: &PeripheralProperties) -> String {
     ble_hex(&bytes)
 }
 fn ble_props_json(p: &PeripheralProperties) -> serde_json::Value {
+    // 优先用 btleplug 记录的原始广播字节（fork 暴露）；无则回退按字段重组
+    let adv_raw = match &p.advertisement_data {
+        Some(raw) => ble_hex(raw),
+        None => ble_encode_adv(p),
+    };
     json!({
         "address": p.address.to_string(),
         "address_type": ble_addr_type(&p.address_type),
@@ -4207,7 +4212,7 @@ fn ble_props_json(p: &PeripheralProperties) -> serde_json::Value {
         "manufacturer_data": p.manufacturer_data.iter().map(|(id, v)| json!({"id": id, "hex": ble_hex(v)})).collect::<Vec<_>>(),
         "service_data": p.service_data.iter().map(|(u, v)| json!({"uuid": u.to_string(), "hex": ble_hex(v)})).collect::<Vec<_>>(),
         "services": p.services.iter().map(|u| u.to_string()).collect::<Vec<_>>(),
-        "adv_raw": ble_encode_adv(p),
+        "adv_raw": adv_raw,
     })
 }
 fn ble_char_props(p: CharPropFlags) -> Vec<&'static str> {

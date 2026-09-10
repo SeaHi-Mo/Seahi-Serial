@@ -6691,24 +6691,66 @@ function parseBleAdv(hexStr) {
         var len = parseInt(bytes[i], 16);
         if (isNaN(len) || len <= 0 || i + 1 + len > bytes.length) break;
         var type = parseInt(bytes[i + 1], 16);
-        segs.push({ label: advTypeLabel(type), hex: bytes.slice(i + 1, i + 1 + len).join(' ') });
+        segs.push({ label: advTypeLabel(type), hex: bytes.slice(i, i + 1 + len).join(' ') });
         i += 1 + len;
     }
     return segs;
 }
+// BLE 广播 AD type 表（来源：Bluetooth SIG Assigned Numbers — Generic Access Profile）
 function advTypeLabel(t) {
     switch (t) {
         case 0x01: return 'Flags';
-        case 0x02: case 0x03: return '广播服务';
-        case 0x04: case 0x05: return '广播服务(32bit)';
-        case 0x06: case 0x07: return '广播服务(128bit)';
+        case 0x02: return '服务UUID(16bit·不完整)';
+        case 0x03: return '服务UUID(16bit)';
+        case 0x04: return '服务UUID(32bit·不完整)';
+        case 0x05: return '服务UUID(32bit)';
+        case 0x06: return '服务UUID(128bit·不完整)';
+        case 0x07: return '服务UUID(128bit)';
         case 0x08: return '广播名(简)';
         case 0x09: return '广播名';
         case 0x0A: return '发射功率';
-        case 0x16: case 0x17: case 0x18: return '服务数据';
+        case 0x0D: return '设备类别';
+        case 0x0E: return '配对Hash C-192';
+        case 0x0F: return '配对Randomizer R-192';
+        case 0x10: return 'Device ID';
+        case 0x11: return 'SM TK Value';
+        case 0x12: return 'SM OOB Flags';
+        case 0x14: return '服务请求UUID(16bit)';
+        case 0x15: return '服务请求UUID(32bit)';
+        case 0x16: return '服务数据(16bit)';
+        case 0x17: return 'Public Target Address';
+        case 0x18: return 'Random Target Address';
         case 0x19: return '外观';
+        case 0x1A: return '广播间隔';
+        case 0x1B: return 'LE 设备地址';
+        case 0x1C: return 'LE Role';
+        case 0x1D: return '配对Hash C-256';
+        case 0x1E: return '配对Randomizer R-256';
+        case 0x1F: return '服务请求UUID(128bit)';
+        case 0x20: return '服务数据(32bit)';
+        case 0x21: return '服务数据(128bit)';
+        case 0x22: return 'LE SC Confirmation';
+        case 0x23: return 'LE SC Random';
+        case 0x24: return 'URI';
+        case 0x25: return '室内定位';
+        case 0x26: return '传输发现数据';
+        case 0x27: return 'LE 支持特性';
+        case 0x28: return '信道图更新';
+        case 0x29: return 'PB-ADV';
+        case 0x2A: return 'Mesh Message';
+        case 0x2B: return 'Mesh Beacon';
+        case 0x2C: return 'BIGInfo';
+        case 0x2D: return 'Broadcast_Code';
+        case 0x2E: return 'Resolvable Set ID';
+        case 0x2F: return '广播间隔(16bit UUID)';
+        case 0x30: return '广播间隔(32bit UUID)';
+        case 0x31: return '广播间隔(128bit UUID)';
+        case 0x32: return '广播名(加密)';
+        case 0x33: return '加密广播数据';
+        case 0x34: return 'PA 响应时序';
+        case 0x3D: return '3D 信息';
         case 0xFF: return '厂商数据';
-        default: return '数据';
+        default: return '0x' + ('0' + t.toString(16)).slice(-2).toUpperCase();
     }
 }
 // 广播内容展开体：分段标注的原始 16 进制数据 + 从报文解析的摘要
@@ -6728,9 +6770,9 @@ function renderBleAdv(dev) {
     if (a.appearance != null) brief.push(advRow('外观', '0x' + a.appearance.toString(16).toUpperCase()));
     if (a.txPower != null) brief.push(advRow('发射功率', a.txPower + ' dBm'));
     if (a.manufacturerData && a.manufacturerData.length)
-        brief.push(a.manufacturerData.map(function(m){ return advRow('厂商数据(0x' + m.id.toString(16).toUpperCase() + ')', hexToLe(m.hex)); }).join(''));
+        brief.push(a.manufacturerData.map(function(m){ return advRow('厂商数据(0x' + m.id.toString(16).toUpperCase() + ')', bleDataVal(m.hex)); }).join(''));
     if (a.serviceData && a.serviceData.length)
-        brief.push(a.serviceData.map(function(s){ return advRow('服务数据(0x' + s.uuid + ')', hexToLe(s.hex)); }).join(''));
+        brief.push(a.serviceData.map(function(s){ return advRow('服务数据(0x' + s.uuid + ')', bleDataVal(s.hex)); }).join(''));
     if (brief.length) html += '<div class="ble-adv-brief">' + brief.join('') + '</div>';
     return html;
 }
@@ -6743,6 +6785,12 @@ function hexToLe(hexStr) {
     var v = 0;
     for (var i = 0; i < bytes.length; i++) v |= bytes[i] << (8 * i);
     return '0x' + v.toString(16).toUpperCase().padStart(bytes.length * 2, '0');
+}
+// 数据值显示：短数据(≤4字节)小端合并为 0x 整数；长数据保持字节串(0x + 连续hex)，避免精度丢失
+function bleDataVal(hexStr) {
+    var bytes = hexStr.trim().split(/\s+/);
+    if (bytes.length <= 4) return hexToLe(hexStr);
+    return '0x' + bytes.join('');
 }
 // 展开/收起广播内容（默认折叠）
 function toggleBleAdv(el) {
