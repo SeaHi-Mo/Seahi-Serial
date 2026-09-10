@@ -56,6 +56,12 @@ impl BLEDevice {
         let async_op = GattSession::FromDeviceIdAsync(&device.BluetoothDeviceId()?)
             .map_err(|_| Error::DeviceNotFound)?;
         let gatt_session = async_op.await.map_err(|_| Error::DeviceNotFound)?;
+        // 本项目 fork 改动（第 3 处，另两处在 api/mod.rs 与 winrtble/peripheral.rs）：让系统保持连接。
+        // WinRT 的 GattSession.MaintainConnection 默认为 false —— 此时只要「没有进行中的
+        // GATT 操作」，Windows 就会回收空闲链路（实测：连上后切到别的页面约 150s 即断开，
+        // 表现为 ble_get_connection 返回 is_connected=false）。
+        // 设为 true 后由系统保持连接，直到显式 disconnect。
+        let _ = gatt_session.SetMaintainConnection(true);
 
         let connection_status_handler =
             TypedEventHandler::<BluetoothLEDevice, _>::new(move |sender, _| {

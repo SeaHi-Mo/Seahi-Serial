@@ -556,6 +556,12 @@ impl ApiPeripheral for Peripheral {
             }
         }
         let mut d = self.shared.device.lock().await;
+        // 本项目 fork 改动（第 4 处，另三处在 api/mod.rs、winrtble/peripheral.rs 的
+        // update_properties、winrtble/ble/device.rs）：重连时清掉旧的 GATT 缓存。
+        // connect() 会用新的 BLEDevice 替换旧的（旧对象随之关闭），但 ble_services 里
+        // 缓存的服务/特征对象仍指向旧设备；而 discover_services() 对已缓存的 UUID 会跳过，
+        // 于是后续 write/subscribe 拿到的是已关闭的对象 → 报「该对象已经关闭」(RO_E_CLOSED)。
+        self.shared.ble_services.clear();
         *d = Some(device);
         self.shared.connected.store(true, Ordering::Relaxed);
         self.emit_event(CentralEvent::DeviceConnected(self.shared.address.into()));
