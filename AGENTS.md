@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-基于 Tauri 2 的串口调试桌面工具，仅支持 Windows。前端为纯 HTML/CSS/JS（无框架），后端为单个 Rust 文件。
+基于 Tauri 2 的串口/蓝牙调试桌面工具，仅支持 Windows。前端为纯 HTML/CSS/JS（无框架），后端为单个 Rust 文件。
 
 ## 常用命令
 
@@ -10,27 +10,36 @@
 npm install        # 安装前端依赖 (@tauri-apps/cli)
 npm run dev        # 开发模式（热重载）
 npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
+cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/busid 白名单）
 ```
 
-项目无 lint、类型检查、格式化工具或测试套件。
+无 lint 与类型检查；后端有少量单测（`main.rs` 末尾 `#[cfg(test)]`，9 条），前端无自动化测试。
+另有开发期辅助脚本在 `.walkthrough/`（未纳入版本库）：`gen_ble_preview.js` 是前端无头断言集（75 条）。
 
 ## 项目结构
 
-- `src/index.html` — 整个前端（单文件，约 4400 行，VS Code Dark 主题风格）
-- `src-tauri/src/main.rs` — 整个 Rust 后端（约 1745 行）：串口枚举（SetupAPI）、多串口连接/断开、DTR/RTS 切换、收发数据、WSL 端口映射、USB 设备管理
-- `src-tauri/Cargo.toml` — Rust 依赖（serialport 3.3, rfd 0.15, winapi 0.3, windows-sys 0.59, reqwest 0.12, base64 0.22）
-- `src-tauri/tauri.conf.json` — Tauri 窗口配置，CSP 设为 `null`（无安全限制）
-- `src-tauri/capabilities/default.json` — 窗口/Webview 的 ACL 权限
+- `src/index.html` — 整个前端（单文件，约 8500 行，含 12 套主题变量；串口 / WSL / ADB / 蓝牙 四个面板）
+- `src-tauri/src/main.rs` — 整个 Rust 后端（约 4850 行，72 个 `#[tauri::command]`）：串口枚举（SetupAPI）、多串口连接/断开、DTR/RTS 切换、收发数据、WSL 端口映射、USB 设备管理、ADB 会话、**BLE 调试（btleplug，相关代码全在 `fn main()` 内）**
+- `src-tauri/Cargo.toml` — Rust 依赖（serialport 3.3, rfd 0.15, winapi 0.3, windows-sys 0.59, reqwest 0.12, base64 0.22, btleplug 0.13）
+- `src-tauri/vendor/btleplug/` — **btleplug 的 vendored fork**（`[patch.crates-io]` 指向此处），共 4 处本地补丁；**升级依赖时必须按 `vendor/btleplug/VENDOR.md` 重新打**
+- `src-tauri/tauri.conf.json` — Tauri 窗口配置，CSP 设为 `null`；**不要擅自设 CSP**：Tauri 会注入 nonce，按规范 `'unsafe-inline'` 即失效，本应用的内联样式与 172 处内联 onclick 会全被拦（界面掉样式）。要设 CSP 必须先做「内联外置」重构
+- `src-tauri/capabilities/default.json` — 窗口/Webview 的 ACL 权限（仅 `core:*`，无 shell/fs/http 插件权限）
 - `src-tauri/wsl-daemon/` — WSL bridge 脚本（base64 编码嵌入）
 - `installer.iss` — Inno Setup 安装脚本（包含 usbipd-win.msi 打包）
+- `doc/` — 架构、交接、代码评估（`CODE_REVIEW_FULL_2026-09.md`）、BLE 真机验证（`BLE_VERIFICATION.md`）等
 - `skills/seahi-serial-dev/SKILL.md` — AI 开发技能指南
 
 ## 版本号同步
 
-版本号必须**同时更新 3 个文件**：
-1. `src-tauri/Cargo.toml` → `version`
-2. `src-tauri/tauri.conf.json` → `version`
+发布时版本号必须**同时更新 4 个文件 + 锁文件**（漏改会导致"装着 0.3.6 却提示 0.3.7"这类更新异常）：
+1. `src-tauri/Cargo.toml` → `version`（运行时版本来源：`env!("CARGO_PKG_VERSION")`）
+2. `src-tauri/tauri.conf.json` → `version`（安装包 / MSI 版本来源）
 3. `installer.iss` → `MyAppVersion`
+4. `package.json` → `version`（曾漂移成 0.3.0，已修正）
+5. `src-tauri/Cargo.lock` → `seahi-serial` 条目的 `version`
+
+> CI（`.github/workflows/build.yml`）目前**不校验**版本一致性 —— 建议加一条断言：
+> tag `vX.Y.Z` 与上述各处一致，否则构建失败。详见 `doc/CODE_REVIEW_FULL_2026-09.md` M25。
 
 ## 关键约定
 
