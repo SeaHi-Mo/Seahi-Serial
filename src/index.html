@@ -2488,7 +2488,9 @@ function createMonitorPane(mid, title, closable) {
         var _loadingHistory = false;
         var _mouseDown = false;
         outputEl.addEventListener('mousedown', function() { _mouseDown = true; });
-        document.addEventListener('mouseup', function() { _mouseDown = false; });
+        // 绑在 outputEl 而不是 document：绑 document 时每个监视器都会留一个永不解绑的
+        // 监听器（闭包还持有整个 initMonitor 作用域），反复开关串口就持续泄漏
+        outputEl.addEventListener('mouseup', function() { _mouseDown = false; });
         outputEl.addEventListener('scroll', function() {
             if (_loadingHistory || _mouseDown) return;
             // 用户有文本选中时不加载，避免打断复制操作
@@ -3533,6 +3535,8 @@ function startReading(mid) {
                 try {
                     await invoke('close_port', { monitorId: mid });
                 } catch (_) {}
+                // await 期间用户可能已经关掉这个监视器（closeMonitor 会 delete monitors[mid]）
+                if (!monitors[mid]) return;
                 monitors[mid].isConnected = false;
                 stopReading(mid);
                 updateMonitorUI(mid, false, true);
@@ -3816,10 +3820,7 @@ function getOutputText(mid) {
 }
 
 /* ===== 输出区 ===== */
-function decodeData(mid, bytes) { 
-    var vm = document.getElementById(mid + '-viewMode');
-    return decodeRaw(bytes, vm ? (vm.getAttribute('data-val') || 'text') : 'text'); 
-}
+// 说明：原 decodeData() 包装函数已删除（零调用，功能由 decodeRaw 直接承担）。
 function decodeRaw(bytes, mode) {
     mode = mode || 'text';
     var arr = new Uint8Array(bytes);
@@ -6277,65 +6278,9 @@ function openWslTerminal(dist) {
     });
 }
 
-// 绑定监视器事件监听器
-function bindMonitorEvents(mid) {
-    // 绑定键盘：Enter 发送，上/下箭头浏览历史
-    var sendInput = document.getElementById(mid + '-sendInput');
-    if (sendInput) {
-        sendInput.addEventListener('keydown', function(e) {
-            var hist = monitors[mid].sendHistory;
-            var histEl = document.getElementById(mid + '-sendHist');
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                if (histEl && histEl.classList.contains('open')) {
-                    var selItem = histEl.querySelector('.send-hist-item.selected');
-                    if (selItem) {
-                        sendInput.value = selItem.textContent;
-                        histEl.classList.remove('open');
-                        sendInput.focus();
-                        return;
-                    }
-                }
-                sendData(mid);
-                if (histEl) histEl.classList.remove('open');
-            } else if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                if (histEl && histEl.classList.contains('open')) {
-                    var selItem = histEl.querySelector('.send-hist-item.selected');
-                    if (selItem && selItem.nextElementSibling) {
-                        selItem.classList.remove('selected');
-                        selItem.nextElementSibling.classList.add('selected');
-                        selItem.nextElementSibling.scrollIntoView({ block: 'nearest' });
-                    }
-                } else if (hist.length > 0) {
-                    showSendHistory(mid);
-                    var items = histEl ? histEl.querySelectorAll('.send-hist-item') : [];
-                    if (items.length > 0) items[0].classList.add('selected');
-                }
-            } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                if (histEl && histEl.classList.contains('open')) {
-                    var selItem = histEl.querySelector('.send-hist-item.selected');
-                    if (selItem && selItem.previousElementSibling) {
-                        selItem.classList.remove('selected');
-                        selItem.previousElementSibling.classList.add('selected');
-                        selItem.previousElementSibling.scrollIntoView({ block: 'nearest' });
-                    } else if (!selItem || !selItem.previousElementSibling) {
-                        histEl.classList.remove('open');
-                    }
-                } else if (hist.length > 0) {
-                    monitors[mid].histNavIdx = Math.min(monitors[mid].histNavIdx + 1, hist.length - 1);
-                    sendInput.value = hist[monitors[mid].histNavIdx];
-                }
-            } else if (e.key === 'Escape') {
-                if (histEl) histEl.classList.remove('open');
-                monitors[mid].histNavIdx = -1;
-            }
-        });
-        // 输入时重置历史导航索引
-        sendInput.addEventListener('input', function() { monitors[mid].histNavIdx = -1; });
-    }
-}
+// 说明：原 bindMonitorEvents(mid) 已删除 —— 它是主串口发送框键盘绑定的**重复实现**
+// （真正生效的绑定在 initMonitor 内，见 sendInput.addEventListener('keydown')），
+// 且从未被调用；留着会让人误以为改这里就能改发送行为。
 
 // 快照 WSL 监视器的当前设置到状态中（DOM 即将被替换时调用）
 function snapshotWslSettings(wmid) {
@@ -6357,9 +6302,6 @@ function snapshotWslSettings(wmid) {
         rts:          chkRTS   ? chkRTS.checked : true,
         panelHeight:  monPanel ? monPanel.offsetHeight : 0,
     };
-    // 保存 WSL 输出内容
-    var wslOutput = document.getElementById(wmid + '-output');
-    if (wslOutput) monitors[wmid]._savedOutputHtml = wslOutput.innerHTML;
     scheduleConfigSave();
 }
 
@@ -6407,12 +6349,16 @@ var _bleFilterText = '';  // 设备过滤关键字（名称或 MAC）
 var _bleFilterOpen = false;  // 过滤区是否展开
 var _bleServices = [];     // 当前连接设备的 GATT 服务树（ble_get_services）
 var _bleConnAddr = null;   // 后端真实已连接设备地址（ble_get_connection），切页回来恢复用
+var _bleConnecting = false; // 连接进行中门闩：防止连点对同一设备重复 connect
 var _bleLog = [];          // 数据日志缓冲（只反映「当前设备本次会话」，切设备/断开都会清空）
 var _bleLogMax = 400;      // 日志上限，避免长时间运行无限增长
 var _bleDevTimer = null;   // 扫描期间设备列表刷新定时器
 var _bleNotifyTimer = null;  // 通知轮询定时器
 var _bleRssiTimer = null;    // 已连接设备的 RSSI 刷新定时器
 var BLE_RSSI_INTERVAL = 3000;  // RSSI 刷新间隔（ms）：后端每次会做一次约 800ms 的短扫描脉冲
+// 连接显式超时（ms）：WinRT 的 connect 在设备无响应时可能长时间不返回，
+// 靠这个超时给出明确失败提示，而不是让界面一直停在「连接中」
+var BLE_CONNECT_TIMEOUT_MS = 15000;
 var _bleScanStopTimer = null;  // 扫描 5 秒自动停止定时器
 var BLE_CHAR_NAMES = { '2A00':'Device Name','2A01':'Appearance','2A05':'Service Changed','2A19':'Battery Level','2A37':'Heart Rate Measurement','2A29':'Manufacturer Name' };
 
@@ -6475,14 +6421,8 @@ function getSelectedBleDev() {
 }
 
 // 演示特征（接后端后由 ble_services 返回真实特征及其属性）
-function getDemoChars() {
-    return [
-        { uuid:'2A00', name:'Device Name',      props:['read'] },
-        { uuid:'2A01', name:'Appearance',       props:['read'] },
-        { uuid:'2A05', name:'Service Changed',  props:['read','write'] },
-        { uuid:'2A19', name:'Battery Level',    props:['read','notify','indicate'] }
-    ];
-}
+// 说明：早期的演示特征表 getDemoChars() 已删除 —— 现在特征全部来自后端 ble_get_services，
+// 它只剩零调用（保留会误导后来者以为还有 demo 分支）。
 
 function renderCharRow(ch) {
     var dev = getSelectedBleDev();
@@ -6845,7 +6785,11 @@ function syncBleConnection() {
 
 function showBleIncompatible(msg) {
     var list = document.getElementById('ble-devList');
-    if (list) list.innerHTML = '<div class="ble-err">' + msg + '</div>';
+    if (!list) return;
+    // 用 textContent 而非拼 innerHTML：这个函数现在是字面量调用，
+    // 但一旦有人传动态文案就会变成注入口（同类问题见 BLE 详情头曾漏转义设备名）
+    list.innerHTML = '<div class="ble-err"></div>';
+    list.firstChild.textContent = msg;
 }
 function toggleBleFilter(el) {
     _bleFilterOpen = !_bleFilterOpen;
@@ -7070,7 +7014,7 @@ function renderBleDetail() {
     var advBytes = (dev.adv && dev.adv.raw) ? dev.adv.raw.split(' ').length : 0;
     detail.innerHTML =
         '<div class="ble-detail-head">' +
-            '<div class="ble-detail-name">' + (dev.name || '未知设备') + '</div>' +
+            '<div class="ble-detail-name">' + escapeHtml(dev.name || '未知设备') + '</div>' +
             '<div class="ble-detail-meta">' + dev.address + ' · ' + (dev.addressType || '—') + ' · ' + (typeof dev.rssi === 'number' ? dev.rssi + ' dBm' : '—') + '</div>' +
             '<button class="add-btn icon-btn ble-connect-btn' + (dev.connected ? ' connected' : '') + '" onclick="toggleBleConnect()" title="连接/断开">' + (dev.connected ? '断开设备' : '连接设备') + '</button>' +
         '</div>' +
@@ -7266,21 +7210,30 @@ function toggleBleService(el) {
 }
 
 function toggleBleConnect() {
+    // 连接进行中门闩：连点会对同一设备重复 connect（后端会换掉底层设备对象）
+    if (_bleConnecting) { showToast('正在连接，请稍候…', 'info'); return; }
     var dev = getSelectedBleDev();
     if (!dev) { console.warn('[BLE] 请先选择设备'); return; }
     var address = dev.address;
     var label = dev.name || '未知设备';
     if (!dev.connected) {
         logBle('[连接中] ' + label + ' (' + address + ')');
-        invoke('ble_connect', { address: address }).then(function() {
-            dev.connected = true;
+        _bleConnecting = true;
+        // 显式超时（TODO#3）+ 门闩：避免无限等待与重复连接
+        invokeTimeout('ble_connect', { address: address }, BLE_CONNECT_TIMEOUT_MS).then(function() {
+            _bleConnecting = false;
+            // 连接期间列表可能整体刷新过 → 按地址在当前列表里重新定位，
+            // 否则会写到一个已不在列表中的孤儿对象上
+            var cur = null;
+            _bleDevices.forEach(function(d) { if (d.address === address) cur = d; });
+            if (cur) cur.connected = true;
             // 同一时刻只可能连一台：把其它设备的标记清掉，
             // 否则换连另一台时旧设备会一直显示「已连接」（后端只承认最后一台）
-            _bleDevices.forEach(function(d) { if (d !== dev) d.connected = false; });
+            _bleDevices.forEach(function(d) { if (d.address !== address) d.connected = false; });
             _bleConnAddr = address;
             // 记住它的展示信息：连上后它可能就不再广播了，列表里会查不到
-            _bleConnInfo = { address: address, name: dev.name, rssi: dev.rssi,
-                             addressType: dev.addressType, deviceType: dev.deviceType };
+            _bleConnInfo = { address: address, name: label, rssi: (cur ? cur.rssi : null),
+                             addressType: (cur ? cur.addressType : ''), deviceType: (cur ? cur.deviceType : 'ble') };
             _bleSubs = {};   // 新连接从零开始，不继承上一轮的订阅显示
             return invoke('ble_get_services').then(function(svcs) {
                 _bleServices = svcs || [];
@@ -7296,6 +7249,7 @@ function toggleBleConnect() {
                 showToast('获取服务失败: ' + e, 'error');
             });
         }).catch(function(e) {
+            _bleConnecting = false;
             logBle('[连接失败] ' + label + ' (' + address + ') · ' + e);
             console.warn('[BLE] 连接失败:', e);
             showToast('连接失败: ' + e, 'error');
@@ -7784,7 +7738,9 @@ async function loadWslDevices(mid) {
         renderWslDeviceList(mid);
     } catch (e) {
         console.error('[WSL] 加载设备列表失败:', e);
-        container.innerHTML = '<div style="color:var(--accent-red);text-align:center;padding:20px;">加载失败: ' + e + '</div>';
+        // 错误文本可能含 usbipd/WSL 命令输出 → 用 textContent，不要拼进 innerHTML
+        container.innerHTML = '<div style="color:var(--accent-red);text-align:center;padding:20px;"></div>';
+        container.firstChild.textContent = '加载失败: ' + e;
         reportError(e, 'loadWslDevices');
     } finally {
         _wslRefreshing = false;
@@ -8165,10 +8121,7 @@ async function autoMapCheck() {
     }
 }
 
-function refreshWslDevices() {
-    // WSL 设备区为共享单实例，固定使用 'main' 前缀
-    loadWslDevices('main');
-}
+// 说明：原 refreshWslDevices() 已删除（零调用，等价于 loadWslDevices('main')）。
 
 /* ===== 窗口控制 ===== */
 function winMinimize() { try { window.__TAURI__.window.getCurrentWindow().minimize(); } catch (err) { console.warn('minimize failed:', err); } }
