@@ -1048,9 +1048,18 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-dev-card.active { border-color:var(--accent-focus); background:var(--accent-focus); }
 .ble-dev-card.active .ble-dev-name { color:#fff; }
 .ble-dev-card.active .ble-dev-sub { color:rgba(255,255,255,.85); }
-.ble-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
 .ble-dev-main { flex:1; min-width:0; }
-.ble-dev-name { font-size:13px; font-weight:500; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ble-dev-name { font-size:13px; font-weight:500; color:var(--text); display:flex; align-items:baseline; min-width:0; }
+.ble-dev-text { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 类型提示（仅 iBeacon / Mesh）：设备名后的灰色后缀，如「NexBeacon Pro (iBeacon)」 */
+.ble-dev-tag { flex-shrink:0; margin-left:3px; font-size:12px; font-weight:400; color:var(--text-d); }
+.ble-dev-card.active .ble-dev-tag { color:rgba(255,255,255,.75); }
+/* 类型图标：垂直居中于「名称+地址」两行块（块高 31px），视觉高度取 22px 更协调；
+   四类图标统一高度（viewBox 已按各自内容裁紧）→ 视觉尺寸一致 */
+.ble-dev-icon { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; opacity:.75; }
+.ble-dev-icon svg { height:22px; width:auto; display:block; }
+.ble-dev-card.connected .ble-dev-icon { color:var(--accent-green); opacity:1; }
+.ble-dev-card.active .ble-dev-icon { color:#fff; opacity:.95; }
 .ble-dev-sub { font-size:11px; color:var(--text-d); font-family:var(--font-mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; }
 .ble-dev-rssi { font-size:11px; font-family:var(--font-mono); flex-shrink:0; }
 .ble-dev-rssi-bar { width:34px; height:5px; border-radius:3px; background:var(--border); overflow:hidden; flex-shrink:0; }
@@ -1111,10 +1120,12 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-adv-seg-label { font-style:normal; color:var(--text-d); font-size:10px; margin-bottom:3px; }
 .ble-adv-seg-hex { white-space:nowrap; }
 .ble-adv-sep { align-self:flex-end; color:var(--text-d); opacity:.5; padding-bottom:2px; }
+/* 摘要：分栏显示，每行两对「标签 + 值」（每对 = max-content 标签列 + 自适应值列） */
 .ble-adv-brief { margin-top:8px; display:grid; grid-template-columns:repeat(2, max-content minmax(0,1fr)); gap:6px 20px; align-items:baseline; }
 .ble-adv-row { display:flex; gap:10px; align-items:baseline; font-size:12px; }
-.ble-adv-k { color:var(--text-d); white-space:nowrap; flex:0 0 auto; width:118px; }
-.ble-adv-v { color:var(--text); font-family:var(--font-mono); word-break:break-all; flex:1; min-width:0; }
+.ble-adv-k { color:var(--text-d); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:0 0 auto; width:118px; }
+/* 长值优先在空格/分隔符处换行，避免把 UUID 从中间硬断开 */
+.ble-adv-v { color:var(--text); font-family:var(--font-mono); overflow-wrap:anywhere; word-break:normal; flex:1; min-width:0; }
 .ble-adv-empty { color:var(--text-d); font-size:12px; }
 .ble-log-sec { flex:1; min-height:0; display:flex; flex-direction:column; }
 .ble-log { flex:1; min-height:0; overflow-y:auto; font-family:var(--font-mono); font-size:12px; line-height:1.7; color:var(--text); background:var(--editor-bg); border:1px solid var(--border); border-radius:6px; padding:10px; white-space:pre-wrap; word-break:break-all; }
@@ -6313,6 +6324,19 @@ var _bleNotifyTimer = null;  // 通知轮询定时器
 var _bleScanStopTimer = null;  // 扫描 5 秒自动停止定时器
 var BLE_CHAR_NAMES = { '2A00':'Device Name','2A01':'Appearance','2A05':'Service Changed','2A19':'Battery Level','2A37':'Heart Rate Measurement','2A29':'Manufacturer Name' };
 
+// 128 位 UUID → 短格式（仅当命中 Bluetooth SIG 基础 UUID 时），返回大写十六进制串。
+// 例：'0000fe3c-0000-1000-8000-00805f9b34fb' → 'FE3C'；自定义 128 位 UUID 原样返回。
+// 注意：只用于显示；data-uuid 与 invoke 参数必须继续使用原始完整 UUID。
+function shortUuid(u) {
+    if (!u) return '';
+    var s = String(u).toUpperCase();
+    var m16 = /^0000([0-9A-F]{4})-0000-1000-8000-00805F9B34FB$/.exec(s);
+    if (m16) return m16[1];
+    var m32 = /^([0-9A-F]{8})-0000-1000-8000-00805F9B34FB$/.exec(s);
+    if (m32) return m32[1];
+    return s;
+}
+
 // BLE 属性 icon（取自 BluetoothIcons，转为 currentColor 以便按连接状态点亮）
 var BLE_ICONS = {
     read:     '<svg viewBox="0 0 36 30" fill="currentColor" fill-rule="evenodd"><path d="M0.00 25.75 L0.00 29.75 L35.75 29.75 L35.75 25.75 Z M14.50 0.00 L14.50 10.50 L13.50 11.00 L9.75 11.00 L9.50 11.50 L17.25 22.25 L18.50 22.50 L26.50 11.25 L22.25 11.00 L21.50 10.25 L21.75 0.00 Z"/></svg>',
@@ -6321,6 +6345,26 @@ var BLE_ICONS = {
     notify_disable:  '<svg viewBox="0 0 35 30" fill="currentColor" fill-rule="evenodd"><path d="M7.00 29.50 L27.00 29.75 L26.50 28.75 L23.00 25.75 L11.25 25.75 Z M5.00 7.50 L4.75 12.50 L0.00 12.75 L0.00 14.50 L0.75 14.75 L5.00 20.75 L6.25 21.00 L12.00 15.25 L12.00 14.50 L5.50 7.50 Z M30.75 6.00 L30.00 6.00 L24.00 12.75 L24.00 13.75 L28.00 18.00 L28.75 17.75 L32.75 11.75 L34.75 9.75 L34.75 8.00 L31.50 8.25 Z M11.00 4.00 L11.00 4.75 L11.75 5.00 L11.75 4.00 Z M4.25 1.00 L2.75 3.25 L14.00 15.00 L2.75 26.50 L2.75 27.25 L4.25 28.75 L5.25 29.00 L17.00 17.75 L28.50 29.00 L29.25 29.00 L30.75 27.50 L31.00 26.50 L19.75 14.75 L30.75 3.75 L30.75 2.25 L28.50 0.75 L16.75 12.00 L5.25 0.75 Z M20.25 0.00 L15.25 0.00 L14.75 1.00 L14.75 8.25 L16.50 10.00 L20.00 7.50 L21.00 5.75 L21.25 1.75 Z"/></svg>',
     indicate_enable: '<svg viewBox="0 0 36 29" fill="currentColor" fill-rule="evenodd"><path d="M0.00 24.75 L0.00 28.75 L35.75 28.75 L35.75 24.75 Z M26.00 0.00 L26.00 0.75 L23.00 4.25 L22.75 5.25 L18.75 10.00 L18.75 11.00 L19.50 11.75 L22.75 11.75 L23.50 12.50 L23.25 21.25 L24.00 22.00 L29.75 22.00 L30.50 21.25 L30.25 12.50 L31.00 11.75 L35.75 11.75 L35.75 10.25 L33.75 8.25 L28.25 0.25 Z M6.00 0.00 L6.00 10.25 L5.25 11.00 L1.00 11.00 L0.75 12.00 L8.00 22.25 L9.50 23.25 L18.00 11.25 L17.25 10.75 L13.50 11.00 L12.75 10.50 L12.75 0.00 Z"/></svg>',
     indicate_disable:'<svg viewBox="0 0 35 29" fill="currentColor" fill-rule="evenodd"><path d="M8.00 27.75 L8.00 28.75 L25.75 28.75 L26.00 28.25 L23.25 24.75 L11.50 24.75 Z M5.00 6.50 L5.00 10.25 L4.25 11.00 L0.00 11.00 L0.00 12.75 L5.00 19.50 L6.25 20.00 L11.50 15.00 L12.00 13.50 L8.25 10.00 L5.75 6.75 Z M31.00 5.75 L29.25 6.25 L27.25 8.75 L24.00 11.25 L22.25 13.75 L22.50 15.25 L25.25 17.75 L26.25 18.00 L26.75 19.25 L29.00 21.25 L29.50 21.25 L29.25 12.50 L30.00 11.75 L34.75 11.75 L34.75 10.25 Z M7.75 0.00 L11.00 3.75 L11.75 3.75 L11.75 0.00 Z M4.00 0.00 L2.75 2.25 L14.00 14.00 L2.75 25.50 L3.00 26.50 L5.25 28.00 L16.50 16.75 L17.25 16.75 L28.50 28.00 L29.50 27.75 L31.00 25.50 L19.75 13.75 L31.00 2.25 L29.75 0.00 L28.00 0.00 L17.25 11.00 L16.50 11.00 L5.75 0.00 Z"/></svg>'
+};
+
+// BLE 设备类型 icon（依据后端 device_type 判定结果；currentColor 随主题与选中态变色）
+// viewBox 已按各图标内容包围盒裁紧，使各图标渲染高度一致时视觉尺寸相同
+var BLE_DEV_ICONS = {
+    ble:     '<svg viewBox="210.11 104.13 604.79 815.74" fill="currentColor" preserveAspectRatio="xMidYMid meet"><path d="M792.576 348.672c9.728 46.592 14.336 100.864 14.336 163.328 0 61.952-4.608 116.736-14.336 163.328s-22.528 84.992-38.912 114.688c-16.384 29.696-37.376 54.272-62.464 72.704s-52.224 31.232-80.896 38.4c-28.672 7.168-61.44 10.752-97.792 10.752-36.352 0-69.12-3.584-97.792-10.752-28.672-7.168-55.808-19.968-80.896-38.4s-46.08-42.496-62.464-72.704c-16.384-29.696-29.696-68.096-38.912-114.688-9.728-46.592-14.336-100.864-14.336-163.328 0-61.952 4.608-116.736 14.336-163.328s22.528-84.992 38.912-114.688c15.36-29.696 36.352-53.76 61.44-72.192 25.6-18.432 52.736-31.744 81.408-38.912 28.672-7.168 61.44-10.752 97.792-10.752 36.352 0 69.12 3.584 97.792 10.752 28.672 7.168 55.808 19.968 80.896 38.4s46.08 42.496 62.464 72.704 30.208 68.096 39.424 114.688z m-306.688 506.88l206.848-207.36L556.544 512l136.704-136.704-207.36-207.36v272.896L372.224 327.168l-41.472 41.472L473.6 512 330.752 655.36l41.472 41.472 113.664-113.664v272.384z m58.368-546.304l66.56 66.56-66.048 66.048-0.512-132.608z m0.512 272.896l66.048 66.048-66.56 66.56 0.512-132.608z"/></svg>',
+    apple:   '<svg viewBox="37.38 -10.26 901.78 1046.96" fill="currentColor" preserveAspectRatio="xMidYMid meet"><path d="M791.488 544.095c-1.28-129.695 105.76-191.871 110.528-194.975-60.16-88.032-153.856-100.064-187.232-101.472-79.744-8.064-155.584 46.944-196.064 46.944-40.352 0-102.816-45.76-168.96-44.544-86.912 1.28-167.072 50.528-211.808 128.384-90.304 156.703-23.136 388.831 64.896 515.935 43.008 62.208 94.304 132.064 161.632 129.568 64.832-2.592 89.376-41.952 167.744-41.952s100.416 41.952 169.056 40.672c69.76-1.312 113.984-63.392 156.704-125.792 49.376-72.16 69.728-142.048 70.912-145.632-1.536-0.704-136.064-52.224-137.408-207.136zM662.56 163.52C698.304 120.16 722.432 60 715.84 0c-51.488 2.112-113.888 34.304-150.816 77.536-33.152 38.368-62.144 99.616-54.368 158.432 57.472 4.48 116.128-29.216 151.904-72.448z"/></svg>',
+    ibeacon: '<svg viewBox="104.44 104.44 933.36 933.39" fill="currentColor" preserveAspectRatio="xMidYMid meet"><path d="M687.870362 574.278394c0-63.114537-50.477431-113.591968-113.591968-113.591968s-113.591968 50.477431-113.591968 113.591968 50.477431 113.591968 113.591968 113.591968c56.795984 6.318553 113.591968-44.158878 113.591968-113.591968z m302.900083-176.706506c-31.557269-82.034699-94.671806-157.750846-170.387953-201.94522C744.666346 145.149237 656.313093 113.591968 567.959841 113.591968c-63.114537 0-119.910521 12.637106-176.706506 31.557269-82.034699 31.557269-151.46779 94.671806-201.945221 170.387952C145.149237 391.253335 113.591968 479.606588 113.591968 574.278394c0 50.477431 6.318553 100.954862 25.238716 151.46779 44.158878 145.149237 164.069399 252.422652 302.900082 296.617027 18.920162 6.318553 37.875822-6.318553 44.158878-25.238716 6.318553-25.238715-6.318553-37.875822-25.238716-44.158877-82.034699-25.238715-151.46779-75.716146-195.626667-138.830684-25.238715-31.557269-44.158878-69.433091-56.795984-107.273415s-25.238715-82.034699-25.238716-126.229074c0-50.477431 12.637106-100.954862 31.557269-151.46779 31.557269-69.433091 75.716146-126.229075 138.830683-170.387953 63.114537-37.875822 132.51213-63.114537 214.54683-63.114537 50.477431 0 100.954862 12.637106 151.46779 31.557269 69.433091 31.557269 126.229075 82.034699 170.387952 138.830683 37.875822 63.114537 63.114537 138.830684 63.114538 214.54683 0 44.158878-6.318553 88.353253-25.238716 126.229075-37.875822 113.591968-132.51213 208.263774-252.422651 246.104098-18.920162 6.318553-31.557269 31.557269-25.238716 44.158878 6.318553 18.920162 31.557269 31.557269 44.158878 25.238715a528.806109 528.806109 0 0 0 239.821043-164.069399c31.557269-37.875822 50.477431-82.034699 69.43309-126.229074s25.238715-100.954862 25.238715-151.46779c0-69.433091-12.637106-126.229075-37.875821-183.025059z m-296.58153 435.447711c44.158878-25.238715 88.353253-56.795984 113.591968-100.954862 31.557269-44.158878 44.158878-100.954862 44.158878-157.750846 0-37.875822-6.318553-75.716146-25.238715-107.273415-25.238715-50.477431-56.795984-94.671806-100.954862-126.229074s-100.954862-44.158878-157.750846-44.158878c-37.875822 0-75.716146 6.318553-107.273415 25.238716-50.477431 25.238715-94.671806 56.795984-119.910521 100.954861-31.557269 44.158878-44.158878 100.954862-44.158878 164.069399 0 56.795984 18.920162 107.273415 44.158878 157.750846s69.433091 82.034699 113.591968 100.954862c18.920162 6.318553 31.557269 0 44.158878-18.920162 6.318553-18.920162 0-37.875822-18.920163-44.158878-31.557269-18.920162-69.433091-44.158878-88.353252-82.034699-25.238715-31.557269-31.557269-75.716146-31.557269-113.591969 0-31.557269 6.318553-56.795984 18.920162-88.353252 18.920162-37.875822 37.875822-75.716146 75.716147-100.954862 31.557269-25.238715 75.716146-31.557269 119.910521-31.557269 31.557269 0 56.795984 6.318553 82.034699 18.920163 37.875822 18.920162 69.433091 44.158878 94.671806 82.034699 25.238715 31.557269 31.557269 75.716146 31.557269 119.910521s-12.637106 88.353253-31.557269 113.591969c-25.238715 31.557269-50.477431 63.114537-88.353252 82.034699-18.920162 6.318553-25.238715 31.557269-18.920163 44.158878 6.318553 6.318553 31.557269 18.920162 50.477431 6.318553z"/></svg>',
+    pc:      '<svg viewBox="56.97 66.18 860.92 874.23" fill="currentColor" preserveAspectRatio="xMidYMid meet"><path d="M454.656 863.232l-1.024-343.04 455.68 2.048 0 409.6zM453.632 143.36l455.68-68.608 0 378.88-455.68 0 0-310.272zM65.536 519.168l325.632 1.024 0 336.896-325.632-52.224 0-285.696zM65.536 453.632l0-251.904 325.632-52.224 0 304.128-325.632 0z"/></svg>',
+    mesh:    '<svg viewBox="121.66 113.37 773.68 784.96" fill="currentColor" preserveAspectRatio="xMidYMid meet"><path d="M847.39 603.78V399a50.38 50.38 0 0 0 32-63.18l-0.22-0.6a50.41 50.41 0 0 0-80-22.82L647.91 191.74a50.43 50.43 0 0 0-35.74-69.55l-0.59-0.12a51.08 51.08 0 0 0-9.88-1 50.41 50.41 0 0 0-50.3 47.62l-198.15 45.25a50.26 50.26 0 0 0-55.64-25.1l-0.5 0.13a50.5 50.5 0 0 0-32.76 25.34l-0.37-0.08 0.3 0.24a50.34 50.34 0 0 0 11.92 61.88l-87 180.6a50.21 50.21 0 0 0-55.2 28.48l-0.58-0.14 0.47 0.38a50 50 0 0 0 0 41.63l0.11 0.24A50.22 50.22 0 0 0 189.23 556l87.7 182.12a50.41 50.41 0 1 0 77 61.06l197.41 45.06A50.29 50.29 0 0 0 611 889.73l1.15-0.22A50.43 50.43 0 0 0 648.23 821l159.3-127a50.43 50.43 0 1 0 39.86-90.15z m-401-325.64L412.66 305l-57.88-46.17c0.22-0.48 0.46-0.94 0.67-1.43zM340 738.11c-0.24-0.19-0.48-0.35-0.72-0.53L370 673.91l25.28 20.16z m39.62-84.29l39.06-81.13 44.55 10.17L483.06 624l-70.4 56.15z m-60.77-168.47l87.78-20 19.83 41.16-19.83 41.17-87.78-20z m-21.74 37.3l-66.9-15.27v-0.9-0.9l66.9-15.26z m44.61-246.43l53.51 42.68L370 339.06l-29.68-61.64c0.44-0.42 0.92-0.79 1.4-1.2z m70.94 56.58l70.4 56.14-19.82 41.17-44.55 10.16-39.07-81.13z m368.42 21.74c0.07 1 0.15 2 0.28 3L712 373.32l-18.69-38.81z m-59.39 265l14-29.13 54.79 43.7c-0.14 0.35-0.25 0.71-0.38 1.06z m81.31-3.3l-57.56-45.9 18.69-38.81L804.29 615c-0.46 0.42-0.9 0.83-1.29 1.24z m-75-59.81l-62.64-49.95 62.64-50 24 50z m-115.83-92.34v-45.68l87.78-20 18.34 38.07-70.4 56.14z m18.28 42.39l-18.28 14.59V491.9z m-40-59.72l-22.8-18.19 22.8-5.2z m0 27.8v63.84l-49.91 39.8-62.26-14.2-27.7-57.52 27.7-57.48 62.24-14.21z m0 91.64v23.39l-22.8-5.2z m21.74-17.33l35.72-28.49 70.4 56.14L700 614.59l-87.78-20z m177.46-169.34l-53.93 43-14-29.13 67.07-15.31c0.27 0.48 0.55 0.97 0.86 1.44z m-44.26 63.1l60.31-48.1 0.18 0.11-41.8 86.79z m-55.11-64.34l-78.11 17.82V316l54.05 12.34z m-78.11-84.59v-72.82c0.69-0.15 1.37-0.36 2.05-0.53l39.94 82.93z m-21.74-73v68.07l-31.53-7.2 29.56-61.38c0.66 0.15 1.31 0.33 1.97 0.48z m0 90.36v90.05l-44.54 10.16-35.72-28.49 39.06-81.12z m-71.64 106.4l-28.45 6.49 10.15-21.08z m-67.61 37.72l-12.66 26.29-10.15-21.08z m-12.66 76.38l12.65 26.28-22.8-5.2z m51.82 57.52l28.44 6.49-18.29 14.58z m55.55 12.68l44.54 10.16v90l-41.2 9.41-39.06-81.13z m44.54 122.5V791c-0.84 0.19-1.68 0.41-2.5 0.64l-29-60.26z m21.74 66.65v-71.64l42-9.59-39.42 81.86c-0.87-0.23-1.75-0.47-2.58-0.66z m0-93.91v-80.15l78.11 17.83-24.06 50zM712 639.64l74.93 17.1v0.34l-93.63 21.37z m111.44-34.94l-47.3-98.22 49.51-102.81v200.46c-0.74 0.18-1.48 0.36-2.21 0.57zM784.34 333l-103.08-23.53-47.62-98.9c0.49-0.4 1-0.85 1.43-1.28l150.77 120.24c-0.54 1.14-1.05 2.29-1.5 3.47zM568 209c0.41 0.37 0.81 0.77 1.24 1.13l-32 66.5-42-9.58z m-40.5 87.66l-34.76 72.19-62.65-50 43.35-34.57z m-208.65-9.24c0.64-0.13 1.25-0.31 1.89-0.46l31.78 66-33.67 26.85zM362.2 373l34.8 72.23-78.11 17.83v-55.45z m-65.09 95l-72 16.43c-0.25-0.5-0.47-1-0.73-1.52l72.7-58z m-72 60.5l72 16.42V588l-72.71-58c0.27-0.46 0.49-1 0.74-1.48z m93.71 21.38L397 567.73l-34.8 72.19-43.35-34.57zM352.52 660l-32.88 68.28c-0.27-0.06-0.52-0.15-0.79-0.2v-94.93z m1.11 95l59-47.08 33.67 26.85-92.3 21.12c-0.1-0.28-0.23-0.56-0.37-0.84z m76.47-61l62.64-50 34.76 72.3-54.06 12.34z m107.07 42.31L568.75 802c-0.53 0.47-1 0.95-1.57 1.43l-72-57.42zM634 801.58l47.24-98.09 111.28-25.39-156.79 125c-0.56-0.49-1.12-1.02-1.73-1.52z m-79.13-611.37c0.14 0.35 0.25 0.71 0.4 1.06l-87.2 69.54L359.23 236c0-0.37 0-0.73-0.05-1.1z m-259.45 96.33c0.56 0.15 1.12 0.3 1.69 0.43v110.18l-86.8 69.22c-0.36-0.28-0.72-0.55-1.1-0.82z m-86.21 260.87c0.37-0.26 0.74-0.54 1.1-0.82l86.8 69.23v112.53l-0.68 0.17z m149.7 229.66l109.16-24.92 86.77 69.19c-0.18 0.43-0.32 0.87-0.48 1.3L358.89 778v-0.58c0-0.2 0.02-0.22 0.02-0.35z"/></svg>'
+};
+
+// 设备类型标题（tooltip）与名称后缀提示；key 与后端 ble_device_type 返回值一致
+// tag 只在需要显式点明类型时给出（iBeacon / Mesh），其余类型不加后缀
+var BLE_DEV_TYPE_META = {
+    ble:     { title: '标准 BLE 设备' },
+    apple:   { title: 'Apple 设备（iPhone / iPad / Mac）' },
+    ibeacon: { title: 'iBeacon 信标（Apple 厂商数据 02 15 结构）', tag: 'iBeacon' },
+    pc:      { title: '个人电脑' },
+    mesh:    { title: 'BLE Mesh 设备', tag: 'Mesh' }
 };
 
 var BLE_PROP_META = {
@@ -6364,7 +6408,7 @@ function renderCharRow(ch) {
         return '<span class="' + cls + '" title="' + title + '" onclick="bleCharAction(this,\'' + key + '\')">' + BLE_ICONS[iconKey] + '</span>';
     }).join('');
     return '<div class="ble-char">' +
-                '<span class="ble-char-uuid">' + ch.uuid + '</span>' +
+                '<span class="ble-char-uuid" title="' + ch.uuid + '">0x' + shortUuid(ch.uuid) + '</span>' +
                 '<span class="ble-char-name">' + ch.name + '</span>' +
                 '<span class="ble-char-actions">' + actions + '</span>' +
             '</div>';
@@ -6542,6 +6586,7 @@ function refreshBleDevices() {
                 rssi: j.rssi,
                 connected: false,
                 addressType: j.address_type || '',
+                deviceType: j.device_type || 'ble',
                 services: j.services || [],
                 adv: {
                     adName: j.advertisement_name || j.local_name || '',
@@ -6590,16 +6635,23 @@ function renderBleDeviceList() {
     shown.forEach(function(dev) {
         var isActive = (dev.address === _bleSelected);
         var card = document.createElement('div');
-        card.className = 'ble-dev-card' + (isActive ? ' active' : '');
-        // 连接状态点：已连接绿、可发现橙
-        var dotColor = dev.connected ? 'var(--accent-green)' : 'var(--accent-orange)';
+        card.className = 'ble-dev-card' + (isActive ? ' active' : '') + (dev.connected ? ' connected' : '');
         // RSSI 颜色与信号条强度（选中态用白色，避免蓝底上彩色不友好）
         var rssiColor = isActive ? '#fff' : (dev.rssi >= -55 ? 'var(--accent-green)' : (dev.rssi >= -75 ? 'var(--accent-orange)' : 'var(--accent-red)'));
         var pct = Math.max(0, Math.min(100, Math.round((dev.rssi + 100) / 90 * 100)));
+        // 设备类型图标 + 名称后缀提示（由后端依据广播特征判定：apple / ibeacon / pc / mesh / ble）
+        var dtKey = BLE_DEV_ICONS[dev.deviceType] ? dev.deviceType : 'ble';
+        var dtIcon = BLE_DEV_ICONS[dtKey];
+        var dtMeta = BLE_DEV_TYPE_META[dtKey];
+        var dtTitle = dtMeta.title;
+        // 灰色后缀：仅 iBeacon / Mesh 这类「需要显式点明」的类型带 tag
+        var dtTag = dtMeta.tag ? '<span class="ble-dev-tag">(' + dtMeta.tag + ')</span>' : '';
         card.innerHTML =
-            '<span class="ble-dot" style="background:' + dotColor + '"></span>' +
+            '<span class="ble-dev-icon" title="' + dtTitle + '">' + dtIcon + '</span>' +
             '<div class="ble-dev-main">' +
-                '<div class="ble-dev-name">' + (dev.name || '未知设备') + '</div>' +
+                '<div class="ble-dev-name">' +
+                    '<span class="ble-dev-text">' + escapeHtml(dev.name || '未知设备') + '</span>' + dtTag +
+                '</div>' +
                 '<div class="ble-dev-sub">' + dev.address + '</div>' +
             '</div>' +
             '<div class="ble-dev-rssi-bar"><span style="width:' + pct + '%;background:' + rssiColor + '"></span></div>' +
@@ -6636,13 +6688,13 @@ function renderBleDetail() {
         svcList = (dev.services || []).map(function(uuid, idx){ return { uuid: uuid, primary: (idx % 2 === 0), chars: [] }; });
     }
     var svcHtml = svcList.map(function(s, idx) {
-        var u = String(s.uuid).toUpperCase();
+        var su = shortUuid(s.uuid);
         var svcAttr = s.primary ? 'P' : 'S';
-        var svcName = BLE_SVC_NAMES[u] || '';
+        var svcName = BLE_SVC_NAMES[su] || '';
         return '<div class="ble-svc" data-uuid="' + s.uuid + '" onclick="toggleBleService(this)">' +
                     '<span class="ble-svc-attr" title="' + (s.primary ? '主服务 Primary' : '从服务 Secondary') + '">' + svcAttr + '</span>' +
                     '<span class="ble-svc-caret">&#9654;</span>' +
-                    '<span class="ble-svc-uuid">' + s.uuid + '</span>' +
+                    '<span class="ble-svc-uuid" title="' + s.uuid + '">0x' + su + '</span>' +
                     (svcName ? '<span class="ble-svc-name">' + svcName + '</span>' : '') +
                     '<span class="ble-svc-tag">Service</span>' +
                 '</div>';
@@ -6766,24 +6818,29 @@ function renderBleAdv(dev) {
     }
     var brief = [];
     if (a.adName) brief.push(advRow('广播名', a.adName));
-    if (a.svcs && a.svcs.length) brief.push(advRow('广播服务', a.svcs.map(function(s){ return '0x' + s.toUpperCase(); }).join(' | ')));
+    if (a.svcs && a.svcs.length) brief.push(advRow('广播服务', a.svcs.map(function(s){ return '0x' + shortUuid(s); }).join(' | ')));
     if (a.appearance != null) brief.push(advRow('外观', '0x' + a.appearance.toString(16).toUpperCase()));
     if (a.txPower != null) brief.push(advRow('发射功率', a.txPower + ' dBm'));
     if (a.manufacturerData && a.manufacturerData.length)
         brief.push(a.manufacturerData.map(function(m){ return advRow('厂商数据(0x' + m.id.toString(16).toUpperCase() + ')', bleDataVal(m.hex)); }).join(''));
     if (a.serviceData && a.serviceData.length)
-        brief.push(a.serviceData.map(function(s){ return advRow('服务数据(0x' + s.uuid + ')', bleDataVal(s.hex)); }).join(''));
+        brief.push(a.serviceData.map(function(s){ return advRow('服务数据(0x' + shortUuid(s.uuid) + ')', bleDataVal(s.hex)); }).join(''));
     if (brief.length) html += '<div class="ble-adv-brief">' + brief.join('') + '</div>';
     return html;
 }
+// 摘要行：标签固定宽 + 值（长值换行）。标签过长会被截断，用 title 保留完整内容
 function advRow(k, v) {
-    return '<span class="ble-adv-k">' + k + '</span><span class="ble-adv-v">' + v + '</span>';
+    return '<span class="ble-adv-k" title="' + escapeHtml(k) + '">' + escapeHtml(k) + '</span>' +
+           '<span class="ble-adv-v">' + escapeHtml(v) + '</span>';
 }
 // 空格分隔的 hex 字节串 → 合并为小端(little-endian)整数并补足字节宽度，如 '0F 10 08' → 0x08100F
+// 注意：用乘法而非 << 累加，避免 4 字节最高位为 1 时被当成有符号 32 位整数而输出 '0x-80000000'
 function hexToLe(hexStr) {
-    var bytes = hexStr.split(' ').map(function(b){ return parseInt(b, 16); });
-    var v = 0;
-    for (var i = 0; i < bytes.length; i++) v |= bytes[i] << (8 * i);
+    var parts = hexStr.trim().split(/\s+/).filter(function(b){ return b !== ''; });
+    var bytes = parts.map(function(b){ return parseInt(b, 16); });
+    if (!bytes.length || bytes.some(function(b){ return isNaN(b); })) return '0x' + parts.join('');
+    var v = 0, mul = 1;
+    for (var i = 0; i < bytes.length; i++) { v += bytes[i] * mul; mul *= 256; }
     return '0x' + v.toString(16).toUpperCase().padStart(bytes.length * 2, '0');
 }
 // 数据值显示：短数据(≤4字节)小端合并为 0x 整数；长数据保持字节串(0x + 连续hex)，避免精度丢失
@@ -6829,7 +6886,7 @@ function toggleBleService(el) {
     }
     if (svc && svc.characteristics && svc.characteristics.length) {
         groupHtml.innerHTML = svc.characteristics.map(function(c) {
-            return renderCharRow({ uuid: c.uuid, name: BLE_CHAR_NAMES[c.uuid] || '', props: c.properties || [] });
+            return renderCharRow({ uuid: c.uuid, name: BLE_CHAR_NAMES[shortUuid(c.uuid)] || '', props: c.properties || [] });
         }).join('');
     } else {
         groupHtml.innerHTML = '<div class="ble-char-empty">连接设备后查看特征</div>';

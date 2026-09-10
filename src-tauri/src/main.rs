@@ -3394,6 +3394,49 @@ mod util_tests {
         let raw = b"NAME          STATE";
         assert_eq!(super::decode_wsl_output(raw), "NAME          STATE");
     }
+
+    #[test]
+    fn ble_adv_has_type_scans_ad_sections() {
+        // Flags(02 01 06) + Complete Local Name(06 09 "SeaHi") + Mesh Beacon(02 2B 00)
+        let adv = [
+            0x02, 0x01, 0x06,
+            0x06, 0x09, b'S', b'e', b'a', b'H', b'i',
+            0x02, 0x2B, 0x00,
+        ];
+        assert!(super::ble_adv_has_type(&adv, 0x01));   // Flags
+        assert!(super::ble_adv_has_type(&adv, 0x09));   // Complete Local Name
+        assert!(super::ble_adv_has_type(&adv, 0x2B));   // Mesh Beacon
+        assert!(!super::ble_adv_has_type(&adv, 0x2A));  // 不含 Mesh Message
+        assert!(!super::ble_adv_has_type(&adv, 0xFF));  // 不含厂商数据
+        // 空数据不 panic
+        assert!(!super::ble_adv_has_type(&[], 0x01));
+        // 0x00 为广播结束段，其后不再解析
+        assert!(!super::ble_adv_has_type(&[0x00, 0x01, 0x06], 0x01));
+        // 段长度越界（数据被截断）不 panic，且不误判
+        assert!(!super::ble_adv_has_type(&[0x09, 0x2B], 0x2B));
+    }
+
+    #[test]
+    fn is_ibeacon_payload_only_matches_ibeacon_structure() {
+        // 标准 iBeacon：02 15 + 16B Proximity UUID + 2B Major + 2B Minor + 1B TxPower = 23 字节
+        let mut beacon = vec![0x02, 0x15];
+        beacon.extend_from_slice(&[0x11; 16]);
+        beacon.extend_from_slice(&[0x00, 0x01]);
+        beacon.extend_from_slice(&[0x00, 0x02]);
+        beacon.push(0xC5);
+        assert_eq!(beacon.len(), 23);
+        assert!(super::is_ibeacon_payload(&beacon));
+
+        // iPhone/Mac 常见的 Nearby Info(0x10) 不能被当成 iBeacon（实机抓到的真实值）
+        assert!(!super::is_ibeacon_payload(&[0x10, 0x85, 0x25, 0x1C, 0x31, 0xFD, 0xE4]));
+        // Proximity Pairing(0x07) 同理
+        assert!(!super::is_ibeacon_payload(&[0x07, 0x19, 0x01]));
+        // 前缀对但长度不足（截断报文）不认
+        assert!(!super::is_ibeacon_payload(&[0x02, 0x15, 0x00, 0x01]));
+        // 空 / 过短不 panic
+        assert!(!super::is_ibeacon_payload(&[]));
+        assert!(!super::is_ibeacon_payload(&[0x02]));
+    }
 }
 
 /// 解析版本号字符串，返回 (major, minor, patch) 元组
@@ -4091,6 +4134,27 @@ fn set_title_bar_color(window: tauri::Window, r: u8, g: u8, b: u8) -> Result<(),
 static DEVICE_WATCHER_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static WSL_WATCHER_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// 遍历广播 AD 结构（[len][type][payload...]）判断是否含指定 AD type
+/// 置于 crate 根（不在 main 内部）以便单元测试直接覆盖
+fn ble_adv_has_type(raw: &[u8], ad_type: u8) -> bool {
+    let mut i = 0usize;
+    while i < raw.len() {
+        let len = raw[i] as usize;
+        if len == 0 { break; }                    // 0x00：广播结束段
+        if i + 1 + len > raw.len() { break; }     // 长度越界：数据不完整，停止解析
+        if raw[i + 1] == ad_type { return true; }
+        i += 1 + len;
+    }
+    false
+}
+
+/// iBeacon payload 判定：Apple 厂商数据（Company ID 之后的字节）为固定前缀
+/// `02 15` + 16B Proximity UUID + 2B Major + 2B Minor + 1B TxPower，共 23 字节。
+/// 置于 crate 根（不在 main 内部）以便单元测试直接覆盖
+fn is_ibeacon_payload(d: &[u8]) -> bool {
+    d.len() >= 23 && d[0] == 0x02 && d[1] == 0x15
+}
+
 fn main() {
     // 初始化错误上报通道
     init_error_reporter();
@@ -4121,6 +4185,7 @@ fn main() {
 /* ===== 蓝牙(BLE) 调试 - 后端（btleplug） ===== */
 use btleplug::api::{Central, Peripheral as PeripheralTrait, ScanFilter, CharPropFlags, WriteType, Manager as ManagerTrait};
 use btleplug::api::{Service as BtService, Characteristic as BtChar, PeripheralProperties};
+use btleplug::api::bleuuid::BleUuid;
 use btleplug::platform::{Adapter as BtAdapter, Manager as BleManager, Peripheral as BtPeripheral};
 
 struct BleState {
@@ -4195,6 +4260,39 @@ fn ble_encode_adv(p: &PeripheralProperties) -> String {
     }
     ble_hex(&bytes)
 }
+
+/// 设备类型判定（依据 Bluetooth SIG Assigned Numbers）
+/// - `mesh`：BLE Mesh —— AD type 0x2B(Mesh Beacon) / 0x2A(Mesh Message)，或服务 UUID 0x1827 / 0x1828
+/// - `ibeacon`：Apple iBeacon —— 厂商数据 Company ID 0x004C 且 payload 为 `02 15 …` 结构
+/// - `apple`：iPhone / iPad / Mac —— 厂商数据 Company ID 0x004C（非 iBeacon 结构）
+/// - `pc`：个人电脑 —— 厂商数据 Company ID 0x0006(Microsoft)
+/// - `ble`：标准 BLE 设备（默认）
+fn ble_device_type(p: &PeripheralProperties) -> &'static str {
+    // 1) BLE Mesh：先看专用 AD type，再看 Mesh Provisioning / Proxy 服务
+    if let Some(raw) = &p.advertisement_data {
+        if ble_adv_has_type(raw, 0x2B) || ble_adv_has_type(raw, 0x2A) {
+            return "mesh";
+        }
+    }
+    if p.services.iter().any(|u| matches!(u.to_ble_u16(), Some(0x1827) | Some(0x1828))) {
+        return "mesh";
+    }
+    // 2) iBeacon：与 iPhone/Mac 同用 Company ID 0x004C，只能靠 payload 结构区分，
+    //    因此必须先于 apple 分支判断，否则会被当成 iPhone
+    if matches!(p.manufacturer_data.get(&0x004C), Some(d) if is_ibeacon_payload(d)) {
+        return "ibeacon";
+    }
+    // 3) Apple：其余带 Company ID 0x004C 的（iPhone/iPad/Mac/AirPods 等）
+    if p.manufacturer_data.contains_key(&0x004C) {
+        return "apple";
+    }
+    // 4) PC：Windows（Swift Pair 等）带 Company ID 0x0006
+    if p.manufacturer_data.contains_key(&0x0006) {
+        return "pc";
+    }
+    // 5) 其余归为标准 BLE 设备
+    "ble"
+}
 fn ble_props_json(p: &PeripheralProperties) -> serde_json::Value {
     // 优先用 btleplug 记录的原始广播字节（fork 暴露）；无则回退按字段重组
     let adv_raw = match &p.advertisement_data {
@@ -4204,6 +4302,7 @@ fn ble_props_json(p: &PeripheralProperties) -> serde_json::Value {
     json!({
         "address": p.address.to_string(),
         "address_type": ble_addr_type(&p.address_type),
+        "device_type": ble_device_type(p),
         "local_name": p.local_name,
         "advertisement_name": p.advertisement_name,
         "rssi": p.rssi,
