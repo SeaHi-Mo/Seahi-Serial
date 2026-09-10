@@ -154,13 +154,14 @@ function parseQuery(queryString) {
 async function handleReport(req, res) {
   try {
     const data = await parseBody(req);
-    const {
-      app_version = 'unknown',
-      os = 'unknown',
-      error = 'Unknown error',
-      stack = '',
-      context = ''
-    } = data;
+    // 字段长度上限：此前只限制单请求 1MB，字段本身无上限（可用超长字段撑爆存储）
+    const cap = (v, n) => String(v == null ? '' : v).slice(0, n);
+    const raw = data || {};
+    const app_version = cap(raw.app_version || 'unknown', 64);
+    const os = cap(raw.os || 'unknown', 128);
+    const error = cap(raw.error || 'Unknown error', 8 * 1024);
+    const stack = cap(raw.stack || '', 32 * 1024);
+    const context = cap(raw.context || '', 16 * 1024);
     
     const errorHash = generateHash(error, stack);
     
@@ -584,6 +585,60 @@ loadData();
 
 // 主服务器
 const allowedOrigin = process.env.ALLOWED_ORIGIN || 'http://localhost:3000';
+
+// ── 鉴权 ────────────────────────────────────────────────────────────────
+// 客户端（Rust 端）会带 X-API-Key 头，但本文件此前完全不读它 —— 配了 key 也等于没鉴权。
+// 策略（fail-safe，避免"部署到公网却忘配 key"直接裸奔）：
+//   1) 设置了 ERROR_API_KEY → 所有接口必须带匹配的 X-API-Key，否则 401；
+//   2) 未设置 → 只接受来自本机的请求（127.0.0.1/::1），远程一律 401。
+const API_KEY = process.env.ERROR_API_KEY || '';
+
+function isLocalRequest(req) {
+  const ip = (req.socket && req.socket.remoteAddress) || '';
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
+function checkAuth(req, res) {
+  if (API_KEY) {
+    const got = req.headers['x-api-key'] || '';
+    const a = Buffer.from(String(got));
+    const b = Buffer.from(API_KEY);
+    // 长度不同时 timingSafeEqual 会抛错，故先比长度
+    const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+    if (!ok) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return false;
+    }
+    return true;
+  }
+  if (!isLocalRequest(req)) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'unauthorized: 未配置 ERROR_API_KEY，仅允许本机访问' }));
+    return false;
+  }
+  return true;
+}
+
+// 每 IP 令牌桶限速（防灌库/DoS）：默认每分钟 60 次
+const RATE_LIMIT_PER_MIN = parseInt(process.env.RATE_LIMIT_PER_MIN || '60', 10);
+const _rateBuckets = new Map();
+function checkRate(req, res) {
+  const ip = (req.socket && req.socket.remoteAddress) || 'unknown';
+  const now = Date.now();
+  const bucket = _rateBuckets.get(ip) || { ts: now, n: 0 };
+  if (now - bucket.ts > 60000) { bucket.ts = now; bucket.n = 0; }
+  bucket.n += 1;
+  _rateBuckets.set(ip, bucket);
+  if (_rateBuckets.size > 10000) _rateBuckets.clear();   // 兜底：避免表无限增长
+  if (bucket.n > RATE_LIMIT_PER_MIN) {
+    res.writeHead(429, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'too many requests' }));
+    return false;
+  }
+  return true;
+}
+
 const server = http.createServer((req, res) => {
   // 只对可信来源放行 CORS，防止任意网站跨源读取错误数据；
   // 无 Origin 头（Tauri 应用 / 同源页面）不受影响
@@ -592,13 +647,17 @@ const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key');
   
   if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
   
   const parsed = url.parse(req.url, true);
   const pathname = parsed.pathname;
   const query = parsed.query;
+
+  // 鉴权 + 限速（Web UI 的静态页不拦，方便本机直接打开）
+  if (pathname !== '/' && !checkAuth(req, res)) return;
+  if (!checkRate(req, res)) return;
   
   // API 路由
   if (req.method === 'POST' && pathname === '/report') {
@@ -625,4 +684,11 @@ server.listen(PORT, () => {
   console.log('Web 界面: http://localhost:' + PORT);
   console.log('上报接口: http://localhost:' + PORT + '/report');
   console.log('API 接口: http://localhost:' + PORT + '/api/errors');
+  if (API_KEY) {
+    console.log('鉴权: 已启用（需带 X-API-Key 头）');
+  } else {
+    console.log('⚠️  未设置 ERROR_API_KEY：接口仅接受本机(127.0.0.1)请求，远程会返回 401。');
+    console.log('    如需远程/公网部署，请设置 ERROR_API_KEY=<随机串> 并在客户端配置同名环境变量。');
+  }
+  console.log('限速: 每 IP ' + RATE_LIMIT_PER_MIN + ' 次/分钟（RATE_LIMIT_PER_MIN 可调）');
 });

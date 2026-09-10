@@ -38,15 +38,14 @@ export default {
     
     try {
       if (request.method === 'POST' && url.pathname === '/report') {
-        // /report 需要 API Key 认证（仅在配置了 ERROR_API_KEY 时验证）
-        if (env.ERROR_API_KEY) {
-          const apiKey = request.headers.get('X-API-Key');
-          if (apiKey !== env.ERROR_API_KEY) {
-            return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-              status: 401,
-              headers: { ...publicCors, 'Content-Type': 'application/json' }
-            });
-          }
+        // /report 必须带 API Key：Worker 部署在公网，没有"仅本机"这种退路，
+        // 因此未配置 ERROR_API_KEY 时直接 401（fail-closed），不再"未配置即放行"。
+        const apiKey = request.headers.get('X-API-Key');
+        if (!env.ERROR_API_KEY || apiKey !== env.ERROR_API_KEY) {
+          return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+            status: 401,
+            headers: { ...publicCors, 'Content-Type': 'application/json' }
+          });
         }
         return await handleReport(request, DB, publicCors);
       } else if (request.method === 'GET' && url.pathname === '/api/errors') {
