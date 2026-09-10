@@ -1054,11 +1054,15 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 /* 类型提示（仅 iBeacon / Mesh）：设备名后的灰色后缀，如「NexBeacon Pro (iBeacon)」 */
 .ble-dev-tag { flex-shrink:0; margin-left:3px; font-size:12px; font-weight:400; color:var(--text-d); }
 .ble-dev-card.active .ble-dev-tag { color:rgba(255,255,255,.75); }
+/* 连接状态提示：设备名后的绿色「已连接」文字（用文字而非改图标颜色，避免与设备类型混淆） */
+.ble-dev-conn { flex-shrink:0; margin-left:5px; font-size:12px; font-weight:500; color:var(--accent-green); }
+.ble-dev-card.active .ble-dev-conn { color:rgba(255,255,255,.9); }
 /* 类型图标：垂直居中于「名称+地址」两行块（块高 31px），视觉高度取 22px 更协调；
    四类图标统一高度（viewBox 已按各自内容裁紧）→ 视觉尺寸一致 */
 .ble-dev-icon { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; opacity:.75; }
 .ble-dev-icon svg { height:22px; width:auto; display:block; }
-.ble-dev-card.connected .ble-dev-icon { color:var(--accent-green); opacity:1; }
+/* 说明：类型图标只表示「设备类型」，不随连接状态变色 ——
+   否则会出现"绿色苹果标"这类混淆（连接状态看右侧详情按钮即可） */
 .ble-dev-card.active .ble-dev-icon { color:#fff; opacity:.95; }
 .ble-dev-sub { font-size:11px; color:var(--text-d); font-family:var(--font-mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; }
 .ble-dev-rssi { font-size:11px; font-family:var(--font-mono); flex-shrink:0; }
@@ -1128,7 +1132,48 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-adv-v { color:var(--text); font-family:var(--font-mono); overflow-wrap:anywhere; word-break:normal; flex:1; min-width:0; }
 .ble-adv-empty { color:var(--text-d); font-size:12px; }
 .ble-log-sec { flex:1; min-height:0; display:flex; flex-direction:column; }
+.ble-log-title { display:flex; align-items:baseline; }
+.ble-log-clear { margin-left:auto; font-size:11px; font-weight:400; color:var(--text-d); cursor:pointer; letter-spacing:0; text-transform:none; }
+.ble-log-clear:hover { color:var(--accent-focus); }
 .ble-log { flex:1; min-height:0; overflow-y:auto; font-family:var(--font-mono); font-size:12px; line-height:1.7; color:var(--text); background:var(--editor-bg); border:1px solid var(--border); border-radius:6px; padding:10px; white-space:pre-wrap; word-break:break-all; }
+/* BLE 写入（发送）弹窗：与 onboarding 遮罩同款层次，配色取自主题变量 */
+.ble-modal-mask { position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,.45);
+                  display:none; align-items:center; justify-content:center; }
+.ble-modal-mask.show { display:flex; }
+.ble-modal { width:490px; max-width:calc(100vw - 40px); background:var(--editor-bg);
+             border:1px solid var(--border); border-radius:10px; overflow:hidden;
+             box-shadow:0 12px 32px rgba(0,0,0,.45); }
+.ble-modal-head { display:flex; align-items:center; gap:10px; padding:11px 14px;
+                  background:var(--toolbar-bg); border-bottom:1px solid var(--border); }
+.ble-modal-title { font-size:13px; font-weight:600; color:var(--text); flex-shrink:0; }
+.ble-modal-sub { flex:1; min-width:0; text-align:right; font-family:var(--font-mono); font-size:11px;
+                 color:var(--text-d); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ble-modal-close { flex-shrink:0; width:22px; height:22px; border-radius:5px; cursor:pointer;
+                   display:inline-flex; align-items:center; justify-content:center;
+                   color:var(--text-d); font-size:13px; }
+.ble-modal-close:hover { background:var(--input-bg); color:var(--text); }
+.ble-modal-body { padding:14px; }
+.ble-modal-label { display:block; font-size:11px; color:var(--text-d); margin-bottom:6px; }
+.ble-modal-row { display:flex; align-items:center; gap:8px; }
+.ble-modal-inp { flex:1; min-width:0; height:30px; box-sizing:border-box; padding:0 10px;
+                 background:var(--input-bg); border:1px solid var(--border); border-radius:6px;
+                 color:var(--text); font-family:var(--font-mono); font-size:13px; outline:none;
+                 transition:border-color .15s; }
+.ble-modal-inp:focus { border-color:var(--accent-focus); }
+.ble-modal-hint { margin-top:8px; font-size:11px; color:var(--text-d); }
+.ble-modal-foot { display:flex; justify-content:flex-end; gap:8px; padding:0 14px 14px; }
+.ble-modal-btn { height:28px; padding:0 16px; border-radius:6px; cursor:pointer; font-size:12px;
+                 background:var(--input-bg); border:1px solid var(--border); color:var(--text); }
+.ble-modal-btn:hover { border-color:var(--border-h); }
+.ble-modal-btn.primary { background:var(--accent-focus); border-color:transparent; color:#fff; }
+.ble-modal-btn.primary:hover { filter:brightness(1.08); }
+/* 数据日志滚动条：与串口输出区同风格（细、圆角、半透明），
+   否则会落到 Chromium 默认的白色滚动条，在深色主题下很扎眼。
+   用中性灰半透明，浅色/深色主题下都可见，无需逐主题覆盖 */
+.ble-log::-webkit-scrollbar { width:12px; }
+.ble-log::-webkit-scrollbar-track { background:transparent; }
+.ble-log::-webkit-scrollbar-thumb { background:rgba(128,134,146,.42); border:3px solid transparent; background-clip:content-box; border-radius:6px; }
+.ble-log::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
 .app-info { display:inline-flex; align-items:center; gap:6px; margin-right:10px; cursor:default; flex-shrink:0; }
 .app-info-icon { width:22px; height:22px; flex-shrink:0; object-fit:contain; }
 .app-info-name { font-size:12px; font-weight:600; color:var(--text-b); white-space:nowrap; }
@@ -1989,6 +2034,44 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 <div class="pane-container" id="adb-pane" style="display:none;"></div>
 <!-- 蓝牙(BLE) 调试面板（常驻 DOM，display:none 时不参与 flex 布局） -->
 <div class="pane-container" id="ble-pane" style="display:none;"></div>
+
+<!-- BLE 写入（发送）弹窗：点特征行的「写入」图标弹出 -->
+<div class="ble-modal-mask" id="bleWriteModal" onclick="closeBleWriteModal()">
+    <div class="ble-modal" onclick="event.stopPropagation()">
+        <div class="ble-modal-head">
+            <span class="ble-modal-title">写入特征值</span>
+            <span class="ble-modal-sub" id="bleWriteChar"></span>
+            <span class="ble-modal-close" onclick="closeBleWriteModal()" title="关闭">&#10005;</span>
+        </div>
+        <div class="ble-modal-body">
+            <span class="ble-modal-label">Value</span>
+            <div class="ble-modal-row">
+                <input class="ble-modal-inp" id="bleWriteValue" placeholder="输入要写入的值，回车发送" autocomplete="off" spellcheck="false">
+                <div class="send-as" id="bleWriteModeWrap" onclick="toggleBleWriteMode()">
+                    <span class="send-as-text" id="bleWriteModeText">写响应</span>
+                    <span class="send-as-arrow">&#9660;</span>
+                    <div class="send-as-drop" id="bleWriteModeDrop">
+                        <div class="send-as-opt active" data-val="write" onclick="setBleWriteMode('write',this,event)">写响应</div>
+                        <div class="send-as-opt" data-val="write_without_response" onclick="setBleWriteMode('write_without_response',this,event)">无响应</div>
+                    </div>
+                </div>
+                <div class="send-as" onclick="toggleBleWriteAs()">
+                    <span class="send-as-text" id="bleWriteAsText">文本</span>
+                    <span class="send-as-arrow">&#9660;</span>
+                    <div class="send-as-drop" id="bleWriteAsDrop">
+                        <div class="send-as-opt active" data-val="text" onclick="setBleWriteAs('text',this,event)">文本</div>
+                        <div class="send-as-opt" data-val="hex" onclick="setBleWriteAs('hex',this,event)">HEX</div>
+                    </div>
+                </div>
+            </div>
+            <div class="ble-modal-hint">文本按 UTF-8 编码，支持 \r \n \t 转义；HEX 形如 01 A0 FF；写响应会等外设回执</div>
+        </div>
+        <div class="ble-modal-foot">
+            <button class="ble-modal-btn" onclick="closeBleWriteModal()">关闭</button>
+            <button class="ble-modal-btn primary" id="bleWriteSendBtn" onclick="sendBleWrite()">发送</button>
+        </div>
+    </div>
+</div>
 
 <!-- 首次使用引导 -->
 <div id="onboarding-overlay">
@@ -6311,6 +6394,10 @@ function restoreMonitorPane() {
 
 /* ===== 蓝牙(BLE) 调试面板（前端壳） ===== */
 var _bleDevices = [];     // 当前扫描到的设备
+// 已连接设备的展示信息（名称/类型等）。连接后设备常常停止广播，
+// 之后重新扫描列表里就没有它了 —— 详情面板靠 _bleDevices 定位，会因此空掉，
+// 所以这里留一份记录，刷新时把它补回列表。
+var _bleConnInfo = null;
 var _bleSelected = null;  // 选中设备的 address
 var _bleScanning = false;
 var _bleSubs = {};  // 订阅/功能启用状态：key = uuid::prop -> true/false（notify/indicate 布尔开关）
@@ -6319,8 +6406,13 @@ var _bleAdvOpen = false;  // 广播内容是否展开（重建后恢复）
 var _bleFilterText = '';  // 设备过滤关键字（名称或 MAC）
 var _bleFilterOpen = false;  // 过滤区是否展开
 var _bleServices = [];     // 当前连接设备的 GATT 服务树（ble_get_services）
+var _bleConnAddr = null;   // 后端真实已连接设备地址（ble_get_connection），切页回来恢复用
+var _bleLog = [];          // 数据日志缓冲（只反映「当前设备本次会话」，切设备/断开都会清空）
+var _bleLogMax = 400;      // 日志上限，避免长时间运行无限增长
 var _bleDevTimer = null;   // 扫描期间设备列表刷新定时器
 var _bleNotifyTimer = null;  // 通知轮询定时器
+var _bleRssiTimer = null;    // 已连接设备的 RSSI 刷新定时器
+var BLE_RSSI_INTERVAL = 3000;  // RSSI 刷新间隔（ms）：后端每次会做一次约 800ms 的短扫描脉冲
 var _bleScanStopTimer = null;  // 扫描 5 秒自动停止定时器
 var BLE_CHAR_NAMES = { '2A00':'Device Name','2A01':'Appearance','2A05':'Service Changed','2A19':'Battery Level','2A37':'Heart Rate Measurement','2A29':'Manufacturer Name' };
 
@@ -6395,7 +6487,17 @@ function getDemoChars() {
 function renderCharRow(ch) {
     var dev = getSelectedBleDev();
     var conn = !!(dev && dev.connected);
+    // 两种写入属性合并成一个「发送」图标：
+    //   write（带响应）与 write_without_response（无响应）是 BLE 的两个独立属性，
+    //   但只差「要不要外设回执」，分开渲染会出现两个一模一样的图标（用户反馈的困惑点）。
+    //   具体用哪种方式，放到写入弹窗里选。
+    var writeModes = [];
+    if (ch.props.indexOf('write') >= 0) writeModes.push('write');
+    if (ch.props.indexOf('write_without_response') >= 0) writeModes.push('write_without_response');
+    var hasWrite = writeModes.indexOf('write') >= 0;
     var actions = ch.props.map(function(p0) {
+        // 已有 write 时，write_without_response 由 write 图标统一承载，不再单独出图标
+        if (p0 === 'write_without_response' && hasWrite) return '';
         var p = (p0 === 'write_without_response') ? 'write' : p0;
         var m = BLE_PROP_META[p];
         if (!m) return '';
@@ -6404,8 +6506,13 @@ function renderCharRow(ch) {
         var enabled = toggle ? !!_bleSubs[key] : false;
         var iconKey = toggle ? (enabled ? m.iconOff : m.iconOn) : m.icon;
         var title = toggle ? (enabled ? m.titleOff : m.titleOn) : m.title;
+        var extra = '';
+        if (p === 'write' && writeModes.length) {
+            extra = ' data-modes="' + writeModes.join(',') + '"';
+            if (writeModes.length > 1) title = '写入特征值（可在窗口里选写响应/无响应）';
+        }
         var cls = 'ble-ch-action' + (enabled ? ' on' : (conn ? ' ready' : ''));
-        return '<span class="' + cls + '" title="' + title + '" onclick="bleCharAction(this,\'' + key + '\')">' + BLE_ICONS[iconKey] + '</span>';
+        return '<span class="' + cls + '"' + extra + ' title="' + title + '" onclick="bleCharAction(this,\'' + key + '\')">' + BLE_ICONS[iconKey] + '</span>';
     }).join('');
     return '<div class="ble-char">' +
                 '<span class="ble-char-uuid" title="' + ch.uuid + '">0x' + shortUuid(ch.uuid) + '</span>' +
@@ -6431,25 +6538,38 @@ function bleCharAction(el, key) {
             el.innerHTML = BLE_ICONS[ on ? m.iconOff : m.iconOn ];
             el.title = on ? m.titleOff : m.titleOn;
             console.log('[BLE] ' + prop + ' 订阅 ' + (on ? '启用' : '关闭') + ' 特征 ' + charUuid);
+            logBle('[' + (on ? '订阅' : '取消订阅') + '] ' + prop + ' · ' + charUuid);
         }).catch(function(e) { console.warn('[BLE] 订阅失败:', e); showToast('订阅失败: ' + e, 'error'); });
     } else if (prop === 'read') {
         invoke('ble_read', { charUuid: charUuid }).then(function(data) {
             logBle('[读取] ' + charUuid + ': ' + bleBytesToHex(data));
         }).catch(function(e) { console.warn('[BLE] 读取失败:', e); showToast('读取失败: ' + e, 'error'); });
     } else if (prop === 'write') {
-        // 演示：写 0x01（后续可加输入框）
-        invoke('ble_write', { charUuid: charUuid, data: [0x01], writeType: 'without_response' }).then(function() {
-            logBle('[写入] ' + charUuid + ': 0x01');
-        }).catch(function(e) { console.warn('[BLE] 写入失败:', e); showToast('写入失败: ' + e, 'error'); });
+        // 点写入图标 → 弹出写入窗口（不再写死演示值 0x01）
+        // data-modes 给出该特征支持的写入方式（write / write_without_response）
+        var modes = ((el && el.getAttribute('data-modes')) || 'write').split(',');
+        openBleWriteModal(charUuid, BLE_CHAR_NAMES[shortUuid(charUuid)] || '', modes);
     }
 }
 
+// 数据日志：内容存在 _bleLog 缓冲里，DOM 只负责显示。
+// 定位是「当前设备本次连接会话」的记录 ——
+//   切换设备时清空、断开连接时清空（见 renderBleDeviceList 的点击与 toggleBleConnect），
+//   切页/重渲染不清空（所以缓冲放在 JS 层，不依赖 DOM）。
 function logBle(text) {
+    _bleLog.push(text);
+    if (_bleLog.length > _bleLogMax) _bleLog.splice(0, _bleLog.length - _bleLogMax);
+    renderBleLog();
+}
+function renderBleLog() {
     var log = document.getElementById('ble-log');
-    if (!log) return;
-    if (log.dataset.cleared !== '1') { log.innerHTML = ''; log.dataset.cleared = '1'; }
-    log.innerHTML += text + '\n';
+    if (!log) return;                      // 面板尚未渲染/未展开：缓冲照常保留
+    log.textContent = _bleLog.length ? (_bleLog.join('\n') + '\n') : '暂无日志';
     log.scrollTop = log.scrollHeight;
+}
+function clearBleLog() {
+    _bleLog = [];
+    renderBleLog();
 }
 function bleBytesToHex(arr) {
     if (!arr) return '';
@@ -6463,8 +6583,187 @@ function startBleNotifyPoll() {
         }).catch(function() {});
     }, 400);
 }
+// ---- BLE 写入（发送）弹窗 ----
+// 点特征行的「写入」图标 → 弹出该窗口；以前是直接写死 0x01 演示值
+var _bleWriteTarget = null;   // { uuid, name, prop }
+
+function openBleWriteModal(uuid, name, modes) {
+    modes = (modes && modes.length) ? modes : ['write'];
+    _bleWriteTarget = { uuid: uuid, name: name || '', modes: modes, mode: modes[0] };
+    var sub = document.getElementById('bleWriteChar');
+    if (sub) sub.textContent = '0x' + shortUuid(uuid) + (name ? ' · ' + name : '');
+    // 写入方式：两种都支持时才显示选择器，只有一种时隐藏（避免多一个没用的控件）
+    var wrap = document.getElementById('bleWriteModeWrap');
+    if (wrap) wrap.style.display = (modes.length > 1) ? '' : 'none';
+    setBleWriteMode(modes[0]);
+    var mask = document.getElementById('bleWriteModal');
+    if (mask) mask.classList.add('show');
+    var inp = document.getElementById('bleWriteValue');
+    if (inp) {
+        inp.value = '';
+        if (!inp.dataset.bound) {          // 只绑一次
+            inp.dataset.bound = '1';
+            inp.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendBleWrite(); }
+                else if (e.key === 'Escape') { closeBleWriteModal(); }
+            });
+        }
+        setTimeout(function() { inp.focus(); }, 30);
+    }
+}
+function toggleBleWriteMode() {
+    var d = document.getElementById('bleWriteModeDrop');
+    if (d) d.classList.toggle('open');
+}
+function setBleWriteMode(val, el, e) {
+    if (e) e.stopPropagation();
+    var label = val === 'write_without_response' ? '无响应' : '写响应';
+    var t = document.getElementById('bleWriteModeText');
+    if (t) t.textContent = label;
+    if (_bleWriteTarget) _bleWriteTarget.mode = val;
+    var drop = document.getElementById('bleWriteModeDrop');
+    if (drop) {
+        drop.querySelectorAll('.send-as-opt').forEach(function(o) {
+            o.classList.toggle('active', o.getAttribute('data-val') === val);
+        });
+        if (e) drop.classList.remove('open');
+    }
+}
+function closeBleWriteModal() {
+    var mask = document.getElementById('bleWriteModal');
+    if (mask) mask.classList.remove('show');
+    _bleWriteTarget = null;
+}
+// 弹窗打开时按 Esc 关闭（焦点不一定在输入框上，所以监听文档级）
+document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape') return;
+    var mask = document.getElementById('bleWriteModal');
+    if (mask && mask.classList.contains('show')) { e.preventDefault(); closeBleWriteModal(); }
+});
+function toggleBleWriteAs() {
+    var d = document.getElementById('bleWriteAsDrop');
+    if (d) d.classList.toggle('open');
+}
+function setBleWriteAs(val, el, e) {
+    if (e) e.stopPropagation();
+    var t = document.getElementById('bleWriteAsText');
+    if (t) t.textContent = val === 'hex' ? 'HEX' : '文本';
+    var drop = document.getElementById('bleWriteAsDrop');
+    if (drop) {
+        drop.querySelectorAll('.send-as-opt').forEach(function(o) { o.classList.remove('active'); });
+        drop.classList.remove('open');
+    }
+    if (el) el.classList.add('active');
+    var inp = document.getElementById('bleWriteValue');
+    if (inp) inp.focus();
+}
+// 输入内容 → 字节数组：HEX 模式按十六进制解析；文本模式先处理 \r\n 等转义再按 UTF-8 编码
+// 统一转成普通数组（hexToBytes 返回 Uint8Array），与 invoke 传参习惯保持一致
+function bleSendBytes(text, hexMode) {
+    if (hexMode) return Array.from(hexToBytes(text));
+    return Array.from(new TextEncoder().encode(parseEscapes(text)));
+}
+function sendBleWrite() {
+    if (!_bleWriteTarget) { showToast('请先点特征行的「写入」图标', 'error'); return; }
+    var dev = getSelectedBleDev();
+    if (!dev || !dev.connected) { showToast('请先连接设备', 'error'); return; }
+    var inp = document.getElementById('bleWriteValue');
+    var text = inp ? inp.value : '';
+    if (!text) { showToast('请输入要写入的值', 'error'); if (inp) inp.focus(); return; }
+    var hexMode = document.getElementById('bleWriteAsText').textContent === 'HEX';
+    var bytes;
+    try { bytes = bleSendBytes(text, hexMode); }
+    catch (e) { logBle('[格式错误] ' + e); showToast('格式错误: ' + e, 'error'); return; }
+    if (!bytes.length) { showToast('内容为空', 'error'); return; }
+    // 写入方式由弹窗里的选择决定（特征同时支持两种时可选，否则用其唯一支持的那种）
+    var writeType = (_bleWriteTarget.mode === 'write_without_response') ? 'without_response' : 'with_response';
+    var hex = bleBytesToHex(bytes).replace(/ /g, '');
+    logBle('[发送] 0x' + shortUuid(_bleWriteTarget.uuid) + ' ← 0x' + hex +
+           '（' + (hexMode ? 'HEX' : '文本') + ' · ' + (writeType === 'without_response' ? '无响应' : '写响应') + '）');
+    invoke('ble_write', { charUuid: _bleWriteTarget.uuid, data: bytes, writeType: writeType })
+        .then(function() {
+            logBle('[发送成功] 0x' + hex + ' · ' + bytes.length + ' 字节');
+            showToast('发送成功：0x' + hex, 'success');
+            if (inp) { inp.value = ''; inp.focus(); }   // 发完一条即清空
+        })
+        .catch(function(e) {
+            logBle('[发送失败] ' + e);
+            showToast('发送失败: ' + e, 'error');       // 失败保留输入内容，便于修正重发
+        });
+}
+
 function stopBleNotifyPoll() {
     if (_bleNotifyTimer) { clearInterval(_bleNotifyTimer); _bleNotifyTimer = null; }
+}
+
+// RSSI 颜色（选中态用白色，避免蓝底上彩色不友好）
+function bleRssiColor(rssi, isActive) {
+    if (isActive) return '#fff';
+    return rssi >= -55 ? 'var(--accent-green)' : (rssi >= -75 ? 'var(--accent-orange)' : 'var(--accent-red)');
+}
+
+// ---- 已连接设备的信号强度周期刷新 ----
+// Windows 上 RSSI 只随广播包更新，后端 ble_refresh_rssi 会做一次短扫描脉冲取新值。
+// 仅在「已连接 + 蓝牙面板可见」时刷新，切到其它页面自动空转（不占无线电）。
+function startBleRssiPoll() {
+    if (_bleRssiTimer) return;
+    _bleRssiTimer = setInterval(refreshBleRssi, BLE_RSSI_INTERVAL);
+}
+function stopBleRssiPoll() {
+    if (_bleRssiTimer) { clearInterval(_bleRssiTimer); _bleRssiTimer = null; }
+}
+function refreshBleRssi() {
+    if (!_bleConnAddr) { stopBleRssiPoll(); return; }
+    var pane = document.getElementById('ble-pane');
+    if (!pane || pane.style.display === 'none') return;   // 不在蓝牙页：本轮不刷
+    invoke('ble_refresh_rssi').then(function(info) {
+        if (!info) return;
+        // 后端顺带回报链路状态：设备主动断开时立刻切成未连接，
+        // 否则界面会一直停在假的「已连接 / 断开设备」上
+        if (info.connected === false) { onBleLinkLost(); return; }
+        if (info.rssi == null) return;
+        applyLiveRssi(_bleConnAddr, info.rssi);
+    }).catch(function() {});
+}
+// 链路自行断开（设备主动断开 / 关机 / 超出范围）：把界面同步成未连接
+function onBleLinkLost() {
+    var addr = _bleConnAddr;
+    if (!addr) return;
+    _bleConnAddr = null;
+    _bleConnInfo = null;
+    _bleServices = [];
+    _bleSubs = {};
+    stopBleNotifyPoll();
+    stopBleRssiPoll();
+    closeBleWriteModal();
+    _bleDevices.forEach(function(d) { d.connected = false; });
+    clearBleLog();                                          // 本次会话结束 → 先清空
+    logBle('[已断开] 设备侧断开或超出范围（' + addr + '）');   // 再留一行原因，便于排查
+    showToast('设备已断开连接', 'error');
+    renderBleDeviceList();
+    renderBleDetail();
+}
+// 只更新该设备的信号强度显示：不重排列表、不重建详情，避免跳动与滚动位置复位
+function applyLiveRssi(address, rssi) {
+    var dev = null;
+    for (var i = 0; i < _bleDevices.length; i++) {
+        if (_bleDevices[i].address === address) { dev = _bleDevices[i]; break; }
+    }
+    if (dev) dev.rssi = rssi;
+    var isActive = (address === _bleSelected);
+    var color = bleRssiColor(rssi, isActive);
+    var pct = Math.max(0, Math.min(100, Math.round((rssi + 100) / 90 * 100)));
+    var card = document.querySelector('.ble-dev-card[data-addr="' + address + '"]');
+    if (card) {
+        var txt = card.querySelector('.ble-dev-rssi');
+        if (txt) { txt.textContent = rssi + ' dBm'; txt.style.color = color; }
+        var bar = card.querySelector('.ble-dev-rssi-bar > span');
+        if (bar) { bar.style.width = pct + '%'; bar.style.background = color; }
+    }
+    if (isActive && dev) {
+        var meta = document.querySelector('#ble-detail .ble-detail-meta');
+        if (meta) meta.textContent = dev.address + ' · ' + (dev.addressType || '—') + ' · ' + rssi + ' dBm';
+    }
 }
 
 function openBle() {
@@ -6515,8 +6814,33 @@ function openBle() {
     // 进入面板即刷新设备列表；先检测蓝牙兼容性（无适配器/蓝牙栈不可用 → 红字提示）
     invoke('ble_get_adapters').then(function(list) {
         if (!list || !list.length) { showBleIncompatible('当前电脑蓝牙不兼容'); _bleDevices = []; renderBleDeviceList(); return; }
-        refreshBleDevices();
+        // 切页回来：BLE 连接在后端是持续存在的，先按后端真实状态恢复
+        // GATT 服务树与通知轮询，再刷新设备列表（否则会显示成未连接）
+        syncBleConnection().then(refreshBleDevices);
     }).catch(function() { showBleIncompatible('当前电脑蓝牙不兼容'); _bleDevices = []; renderBleDeviceList(); });
+}
+
+// 同步后端真实连接态：地址 + GATT 服务 + 通知轮询
+function syncBleConnection() {
+    var prevAddr = _bleConnAddr;   // 用于判断「切页期间链路自己断了」
+    return invoke('ble_get_connection').catch(function() { return null; }).then(function(addr) {
+        _bleConnAddr = addr || null;
+        if (!_bleConnAddr) {
+            _bleServices = [];
+            _bleSubs = {};   // 连接已不在（含链路自行断开）：订阅显示一并复位
+            stopBleNotifyPoll();
+            stopBleRssiPoll();
+            clearBleLog();   // 连接不在了 → 日志也清空（与「断开即清空」一致）
+            if (prevAddr) logBle('[已断开] 设备侧断开或超出范围（' + prevAddr + '）');
+            return null;
+        }
+        _bleSelected = _bleConnAddr;
+        return invoke('ble_get_services').then(function(svcs) {
+            _bleServices = svcs || [];
+            startBleNotifyPoll();
+            startBleRssiPoll();
+        }).catch(function(e) { console.warn('[BLE] 恢复 GATT 服务失败:', e); });
+    });
 }
 
 function showBleIncompatible(msg) {
@@ -6578,13 +6902,21 @@ function enableBleScanAutoStop() {
 }
 
 function refreshBleDevices() {
-    invoke('ble_get_devices').then(function(devs) {
-        _bleDevices = (devs || []).map(function(j) {
+    // 连接态以后端为准：每次刷新都带上真实已连接地址，
+    // 否则重建列表时会把 connected 硬编码成 false（切页回来显示成未连接）
+    Promise.all([
+        invoke('ble_get_devices'),
+        invoke('ble_get_connection').catch(function() { return null; })
+    ]).then(function(res) {
+        var devs = res[0] || [];
+        var connAddr = res[1] || null;
+        _bleConnAddr = connAddr;
+        _bleDevices = devs.map(function(j) {
             return {
                 address: j.address || '',
                 name: j.local_name || j.advertisement_name || '',
                 rssi: j.rssi,
-                connected: false,
+                connected: !!connAddr && j.address === connAddr,
                 addressType: j.address_type || '',
                 deviceType: j.device_type || 'ble',
                 services: j.services || [],
@@ -6599,6 +6931,34 @@ function refreshBleDevices() {
                 }
             };
         });
+        // 连接后设备常常停止广播 —— 扫描列表里就没有它了。
+        // 而详情面板是靠 _bleDevices 定位设备的，找不到就会显示成空面板
+        // （现象：已连接设备切到别的页面再切回来，右侧一片空白）。
+        // 这里把已连接设备补进列表，保证详情始终能渲染。
+        if (connAddr) {
+            var foundConn = null;
+            for (var k = 0; k < _bleDevices.length; k++) {
+                if (_bleDevices[k].address === connAddr) { foundConn = _bleDevices[k]; break; }
+            }
+            if (foundConn) {
+                _bleConnInfo = { address: foundConn.address, name: foundConn.name, rssi: foundConn.rssi,
+                                 addressType: foundConn.addressType, deviceType: foundConn.deviceType };
+            } else {
+                var info = (_bleConnInfo && _bleConnInfo.address === connAddr) ? _bleConnInfo : {};
+                _bleDevices.unshift({
+                    address: connAddr,
+                    name: info.name || '已连接设备',
+                    rssi: (typeof info.rssi === 'number' ? info.rssi : null),
+                    connected: true,
+                    addressType: info.addressType || '',
+                    deviceType: info.deviceType || 'ble',
+                    services: [],
+                    adv: null
+                });
+            }
+        }
+        // 已连接时把选中项落在该设备上，避免右侧详情与左侧高亮对不上
+        if (connAddr) _bleSelected = connAddr;
         renderBleDeviceList();
         renderBleDetail();
     }).catch(function(e) {
@@ -6636,9 +6996,12 @@ function renderBleDeviceList() {
         var isActive = (dev.address === _bleSelected);
         var card = document.createElement('div');
         card.className = 'ble-dev-card' + (isActive ? ' active' : '') + (dev.connected ? ' connected' : '');
+        card.setAttribute('data-addr', dev.address);   // 供 RSSI 定点刷新定位卡片
         // RSSI 颜色与信号条强度（选中态用白色，避免蓝底上彩色不友好）
-        var rssiColor = isActive ? '#fff' : (dev.rssi >= -55 ? 'var(--accent-green)' : (dev.rssi >= -75 ? 'var(--accent-orange)' : 'var(--accent-red)'));
-        var pct = Math.max(0, Math.min(100, Math.round((dev.rssi + 100) / 90 * 100)));
+        // 已连接但不再广播的设备没有 RSSI（null）：显示「—」，不能显示成 null dBm / 满格信号条
+        var hasRssi = (typeof dev.rssi === 'number');
+        var rssiColor = hasRssi ? bleRssiColor(dev.rssi, isActive) : 'var(--text-d)';
+        var pct = hasRssi ? Math.max(0, Math.min(100, Math.round((dev.rssi + 100) / 90 * 100))) : 0;
         // 设备类型图标 + 名称后缀提示（由后端依据广播特征判定：apple / ibeacon / pc / mesh / ble）
         var dtKey = BLE_DEV_ICONS[dev.deviceType] ? dev.deviceType : 'ble';
         var dtIcon = BLE_DEV_ICONS[dtKey];
@@ -6646,17 +7009,21 @@ function renderBleDeviceList() {
         var dtTitle = dtMeta.title;
         // 灰色后缀：仅 iBeacon / Mesh 这类「需要显式点明」的类型带 tag
         var dtTag = dtMeta.tag ? '<span class="ble-dev-tag">(' + dtMeta.tag + ')</span>' : '';
+        // 已连接提示：用文字而非改图标颜色，避免与设备类型混淆
+        var connTag = dev.connected ? '<span class="ble-dev-conn" title="BLE 已连接">已连接</span>' : '';
         card.innerHTML =
             '<span class="ble-dev-icon" title="' + dtTitle + '">' + dtIcon + '</span>' +
             '<div class="ble-dev-main">' +
                 '<div class="ble-dev-name">' +
-                    '<span class="ble-dev-text">' + escapeHtml(dev.name || '未知设备') + '</span>' + dtTag +
+                    '<span class="ble-dev-text">' + escapeHtml(dev.name || '未知设备') + '</span>' + dtTag + connTag +
                 '</div>' +
                 '<div class="ble-dev-sub">' + dev.address + '</div>' +
             '</div>' +
             '<div class="ble-dev-rssi-bar"><span style="width:' + pct + '%;background:' + rssiColor + '"></span></div>' +
-            '<div class="ble-dev-rssi" style="color:' + rssiColor + '">' + dev.rssi + ' dBm</div>';
+            '<div class="ble-dev-rssi" style="color:' + rssiColor + '">' + (hasRssi ? dev.rssi + ' dBm' : '—') + '</div>';
         card.addEventListener('click', function() {
+            // 切换设备即清空日志与写入窗口：它们只属于「当前设备本次会话」
+            if (dev.address !== _bleSelected) { clearBleLog(); closeBleWriteModal(); }
             _bleSelected = dev.address;
             renderBleDeviceList();
             renderBleDetail();
@@ -6704,7 +7071,7 @@ function renderBleDetail() {
     detail.innerHTML =
         '<div class="ble-detail-head">' +
             '<div class="ble-detail-name">' + (dev.name || '未知设备') + '</div>' +
-            '<div class="ble-detail-meta">' + dev.address + ' · ' + (dev.addressType || '—') + ' · ' + dev.rssi + ' dBm</div>' +
+            '<div class="ble-detail-meta">' + dev.address + ' · ' + (dev.addressType || '—') + ' · ' + (typeof dev.rssi === 'number' ? dev.rssi + ' dBm' : '—') + '</div>' +
             '<button class="add-btn icon-btn ble-connect-btn' + (dev.connected ? ' connected' : '') + '" onclick="toggleBleConnect()" title="连接/断开">' + (dev.connected ? '断开设备' : '连接设备') + '</button>' +
         '</div>' +
         '<div class="ble-detail-sec ble-adv-sec">' +
@@ -6716,8 +7083,8 @@ function renderBleDetail() {
             '<div>' + svcHtml + '</div>' +
         '</div>' +
         '<div class="ble-detail-sec ble-log-sec">' +
-            '<div class="ble-sec-title">数据日志</div>' +
-            '<div class="ble-log" id="ble-log">等待订阅通知...</div>' +
+            '<div class="ble-sec-title ble-log-title">数据日志<span class="ble-log-clear" onclick="clearBleLog()" title="清空数据日志">清空</span></div>' +
+            '<div class="ble-log" id="ble-log">暂无日志</div>' +
         '</div>';
     // 恢复广播内容展开状态
     if (_bleAdvOpen) {
@@ -6732,6 +7099,8 @@ function renderBleDetail() {
         if (!openSvc && _bleOpenSvcs[svc.getAttribute('data-uuid')]) openSvc = svc;
     });
     if (openSvc) toggleBleService(openSvc);
+    // 日志 DOM 刚被重建，把缓冲贴回去（切页 / 重渲染都不丢）
+    renderBleLog();
 }
 
 // 解析广播 raw（空格分隔的 hex）为 AD 结构段
@@ -6807,7 +7176,7 @@ function advTypeLabel(t) {
 }
 // 广播内容展开体：分段标注的原始 16 进制数据 + 从报文解析的摘要
 function renderBleAdv(dev) {
-    if (!dev.adv) return '<div class="ble-adv-empty">无广播数据</div>';
+    if (!dev.adv) return '<div class="ble-adv-empty">' + (dev.connected ? '已连接：设备已停止广播，无广播数据' : '无广播数据') + '</div>';
     var a = dev.adv;
     var html = '';
     if (a.raw) {
@@ -6900,22 +7269,55 @@ function toggleBleConnect() {
     var dev = getSelectedBleDev();
     if (!dev) { console.warn('[BLE] 请先选择设备'); return; }
     var address = dev.address;
+    var label = dev.name || '未知设备';
     if (!dev.connected) {
+        logBle('[连接中] ' + label + ' (' + address + ')');
         invoke('ble_connect', { address: address }).then(function() {
             dev.connected = true;
+            // 同一时刻只可能连一台：把其它设备的标记清掉，
+            // 否则换连另一台时旧设备会一直显示「已连接」（后端只承认最后一台）
+            _bleDevices.forEach(function(d) { if (d !== dev) d.connected = false; });
+            _bleConnAddr = address;
+            // 记住它的展示信息：连上后它可能就不再广播了，列表里会查不到
+            _bleConnInfo = { address: address, name: dev.name, rssi: dev.rssi,
+                             addressType: dev.addressType, deviceType: dev.deviceType };
+            _bleSubs = {};   // 新连接从零开始，不继承上一轮的订阅显示
             return invoke('ble_get_services').then(function(svcs) {
                 _bleServices = svcs || [];
+                var chars = 0;
+                _bleServices.forEach(function(s) { chars += (s.characteristics || []).length; });
+                logBle('[连接成功] ' + label + ' (' + address + ') · 服务 ' + _bleServices.length + ' · 特征 ' + chars);
                 renderBleDetail();
+                renderBleDeviceList();   // 让列表立刻出现「已连接」提示
                 startBleNotifyPoll();
-            }).catch(function(e) { showToast('获取服务失败: ' + e, 'error'); });
-        }).catch(function(e) { console.warn('[BLE] 连接失败:', e); showToast('连接失败: ' + e, 'error'); });
+                startBleRssiPoll();   // 连接期间周期刷新信号强度
+            }).catch(function(e) {
+                logBle('[服务获取失败] ' + e);
+                showToast('获取服务失败: ' + e, 'error');
+            });
+        }).catch(function(e) {
+            logBle('[连接失败] ' + label + ' (' + address + ') · ' + e);
+            console.warn('[BLE] 连接失败:', e);
+            showToast('连接失败: ' + e, 'error');
+        });
     } else {
         invoke('ble_disconnect').then(function() {
             dev.connected = false;
+            _bleConnAddr = null;
+            _bleConnInfo = null;   // 已连接设备的展示信息一并失效
             _bleServices = [];
+            _bleSubs = {};   // 订阅随连接失效：不清会一直显示「启用」，实际已无订阅
             stopBleNotifyPoll();
+            stopBleRssiPoll();
+            clearBleLog();   // 断开即清空：本次连接会话结束
+            closeBleWriteModal();   // 写入窗口随连接失效
             renderBleDetail();
-        }).catch(function(e) { console.warn('[BLE] 断开失败:', e); showToast('断开失败: ' + e, 'error'); });
+            renderBleDeviceList();   // 去掉列表里的「已连接」提示
+        }).catch(function(e) {
+            logBle('[断开失败] ' + e);
+            console.warn('[BLE] 断开失败:', e);
+            showToast('断开失败: ' + e, 'error');
+        });
     }
 }
 

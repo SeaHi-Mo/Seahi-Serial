@@ -4192,9 +4192,19 @@ struct BleState {
     adapter: Mutex<Option<BtAdapter>>,
     scanning: std::sync::atomic::AtomicBool,
     connected: Mutex<Option<BtPeripheral>>,
+    /// 上次断开时保留的外设对象。
+    /// btleplug 在 DeviceDisconnected 时会把它从适配器表里删掉，若直接丢弃，
+    /// 重连就只能靠重新广播（要等设备恢复广播，常常 1~2 秒都扫不到）。
+    /// WinRT 的 connect() 内部按地址重建连接、不依赖适配器表，所以留着它可秒连。
+    last_peripheral: Mutex<Option<BtPeripheral>>,
+    /// 已连接设备的地址（与 connected 同步维护）。
+    /// 前端切换页面回来时靠它恢复连接态，关闭程序时靠它做主动断开。
+    connected_addr: Mutex<Option<String>>,
     services: Mutex<Vec<BtService>>,
     notify_buf: std::sync::Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>,
-    notify_spawned: std::sync::atomic::AtomicBool,
+    /// 通知循环是否在跑。用 Arc 是为了让循环结束时能自行复位 ——
+    /// 断开会让通知流结束，若不复位则重连后再订阅不会起新循环（收不到通知）。
+    notify_spawned: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn ble_hex(bytes: &[u8]) -> String {
@@ -4416,14 +4426,58 @@ async fn ble_connect(state: tauri::State<'_, BleState>, address: String) -> Resu
         Some(a) => a,
         None => return Err("请先扫描设备".to_string()),
     };
-    let periphs = adapter.peripherals().await.map_err(|e| format!("peripherals: {e}"))?;
-    let target = periphs.into_iter().find(|p| p.address().to_string().eq_ignore_ascii_case(&address))
-        .ok_or("未找到该设备")?;
-    target.connect().await.map_err(|e| format!("connect: {e}"))?;
+    // 找设备，三条路依次兜底：
+    // 1) 适配器表（扫描时已在表内，最快）
+    // 2) 上次断开保留的外设对象（按地址重连，不需要广播，断开后立刻重连走这条）
+    // 3) 短扫描脉冲重试若干轮（设备不在表内、也没有保留对象时兜底）
+    let mut target = ble_find_peripheral(&adapter, &address).await?;
+    if target.is_none() {
+        let last = state.last_peripheral.lock().unwrap().clone();
+        if let Some(p) = last {
+            if p.address().to_string().eq_ignore_ascii_case(&address) {
+                #[cfg(debug_assertions)]
+                dbg_log(&format!("ble_connect: {address} 复用上次断开保留的外设对象"));
+                target = Some(p);
+            }
+        }
+    }
+    if target.is_none() {
+        #[cfg(debug_assertions)]
+        dbg_log(&format!("ble_connect: {address} 不在适配器表内，补短扫描重试"));
+        for _ in 0..3 {
+            ble_scan_pulse(&adapter, &state.scanning, 1500).await;
+            target = ble_find_peripheral(&adapter, &address).await?;
+            if target.is_some() { break; }
+        }
+    }
+    let target = target.ok_or("未找到该设备（重新扫描后仍未发现，请确认设备在范围内）")?;
+    // 已经连着就不要再 connect 一次：connect() 会换掉底层设备对象，
+    // 旧对象随之关闭；若 GATT 缓存没跟着刷新，后续写入/订阅会用到已关闭的对象。
+    // （前端状态一旦与后端不同步，用户就可能对同一台设备重复点「连接设备」）
+    if target.is_connected().await.unwrap_or(false) {
+        #[cfg(debug_assertions)]
+        dbg_log(&format!("ble_connect: {address} 已处于连接状态，跳过重复连接"));
+    } else {
+        target.connect().await.map_err(|e| {
+            let s = e.to_string();
+            // WinRT 对「设备已离开范围」和「随机地址已轮换」都只报含糊的 Device not found，
+            // 这里翻译成用户能理解的提示（随机地址设备过一段时间旧地址就失效）
+            if s.contains("not found") || s.contains("Not found") {
+                format!("设备已离线或地址已变化（{s}）：随机地址设备会轮换地址，请重新扫描后再试")
+            } else {
+                format!("connect: {s}")
+            }
+        })?;
+    }
     target.discover_services().await.map_err(|e| format!("discover: {e}"))?;
     let svcs: Vec<BtService> = target.services().iter().cloned().collect();
+    let addr = target.address().to_string();
+    // 新连接不继承上一台设备的残留通知
+    state.notify_buf.lock().unwrap().clear();
     *state.services.lock().unwrap() = svcs;
+    *state.connected_addr.lock().unwrap() = Some(addr);
     *state.connected.lock().unwrap() = Some(target);
+    *state.last_peripheral.lock().unwrap() = None;   // 已成为当前连接，槽位清空
     Ok(())
 }
 
@@ -4432,9 +4486,135 @@ async fn ble_disconnect(state: tauri::State<'_, BleState>) -> Result<(), String>
     let p = state.connected.lock().unwrap().take();
     if let Some(p) = p {
         let _ = p.disconnect().await;
+        // 保留对象：btleplug 已把它从适配器表里删掉，留着才能立刻重连（不必等重新广播）
+        *state.last_peripheral.lock().unwrap() = Some(p);
     }
     state.services.lock().unwrap().clear();
+    *state.connected_addr.lock().unwrap() = None;
+    // 订阅随连接一起失效：清掉残留通知并复位通知循环标志，
+    // 否则重连后「再次订阅」不会起新循环（前端也会一直显示启用状态）
+    state.notify_buf.lock().unwrap().clear();
+    state.notify_spawned.store(false, std::sync::atomic::Ordering::Relaxed);
     Ok(())
+}
+
+/// 查询真实连接状态：返回已连接设备地址；未连接或链路已断返回 None。
+/// 前端切换页面回来时据此恢复连接态，避免「后端仍连着却显示成未连接」。
+#[tauri::command]
+async fn ble_get_connection(state: tauri::State<'_, BleState>) -> Result<Option<String>, String> {
+    let addr = match state.connected_addr.lock().unwrap().clone() {
+        Some(a) => a,
+        None => return Ok(None),
+    };
+    // 先把外设克隆出来再 await，避免把 std Mutex 的 guard 跨 await 持有
+    let periph = state.connected.lock().unwrap().clone();
+    match periph {
+        Some(p) => match p.is_connected().await {
+            Ok(true) => Ok(Some(addr)),
+            Ok(false) => {
+                // 链路已断（例如设备主动断开/系统空闲回收）：清理后端状态，保持前后端一致
+                #[cfg(debug_assertions)]
+                dbg_log(&format!("ble_get_connection: {addr} is_connected=false -> 清理连接状态"));
+                // 注意：锁守卫必须在 await 之前释放（MutexGuard 非 Send，
+                // 若在 if let 的条件里直接 take，守卫会跨过 .await 导致 future 不 Send）
+                let dropped = state.connected.lock().unwrap().take();
+                if let Some(p) = dropped {
+                    // 顺手 disconnect：它会清掉 GATT 服务缓存。
+                    // 只把对象存起来的话，重连后缓存里还是已关闭的旧对象，
+                    // 写入/订阅会报「该对象已经关闭」。
+                    let _ = p.disconnect().await;
+                    *state.last_peripheral.lock().unwrap() = Some(p);   // 保留以便快速重连
+                }
+                state.services.lock().unwrap().clear();
+                *state.connected_addr.lock().unwrap() = None;
+                state.notify_buf.lock().unwrap().clear();
+                state.notify_spawned.store(false, std::sync::atomic::Ordering::Relaxed);
+                Ok(None)
+            }
+            Err(_) => Ok(Some(addr)),   // 查询失败不误报为断开
+        },
+        None => Ok(None),
+    }
+}
+
+/// 短扫描脉冲：Windows 上「设备发现」与「RSSI」都只来自广播包，必须让扫描处于活动态。
+/// 若用户已在扫描则只等待，不重复开关（避免抢走用户的扫描）；
+/// 收尾前复查一次，防止脉冲期间用户点了「开始扫描」被误关。
+async fn ble_scan_pulse(
+    adapter: &BtAdapter,
+    scanning: &std::sync::atomic::AtomicBool,
+    ms: u64,
+) {
+    let already = scanning.load(std::sync::atomic::Ordering::Relaxed);
+    if !already {
+        let _ = adapter.start_scan(ScanFilter::default()).await;
+    }
+    // 等广播到达；用 spawn_blocking 睡，避免为一次 sleep 引入 tokio 直接依赖
+    let _ = tauri::async_runtime::spawn_blocking(
+        move || std::thread::sleep(std::time::Duration::from_millis(ms))
+    ).await;
+    if !already && !scanning.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = adapter.stop_scan().await;
+    }
+}
+
+/// 在适配器已知设备里按地址查找（忽略大小写）
+async fn ble_find_peripheral(adapter: &BtAdapter, address: &str) -> Result<Option<BtPeripheral>, String> {
+    let periphs = adapter.peripherals().await.map_err(|e| format!("peripherals: {e}"))?;
+    Ok(periphs.into_iter().find(|p| p.address().to_string().eq_ignore_ascii_case(address)))
+}
+
+/// RSSI 轮询的返回：顺带报告链路是否还在。
+/// 设备主动断开（关机/走远/另一台手机连走）时，光靠切页或刷新列表才发现，
+/// 会让界面一直停在假的「已连接」上；这里每轮轮询都如实回报。
+#[derive(serde::Serialize)]
+struct BleRssiInfo {
+    rssi: Option<i16>,
+    connected: bool,
+}
+
+/// 刷新已连接设备的信号强度，返回最新 RSSI 与链路状态（未连接返回 connected=false）。
+/// Windows 上 RSSI 只随广播包更新（btleplug 文档明确：需要扫描处于活动状态），
+/// 因此这里做一次「短扫描脉冲」后再读缓存值。
+#[tauri::command]
+async fn ble_refresh_rssi(state: tauri::State<'_, BleState>) -> Result<BleRssiInfo, String> {
+    let periph = match state.connected.lock().unwrap().clone() {
+        Some(p) => p,
+        None => return Ok(BleRssiInfo { rssi: None, connected: false }),
+    };
+    // 链路已断：顺手清理后端状态并如实告知前端（前端据此切回未连接）
+    if !periph.is_connected().await.unwrap_or(true) {
+        #[cfg(debug_assertions)]
+        dbg_log("ble_refresh_rssi: 链路已断（设备侧断开）-> 清理连接状态");
+        let dropped = state.connected.lock().unwrap().take();
+        if let Some(p) = dropped {
+            let _ = p.disconnect().await;   // 顺带清 GATT 缓存
+            *state.last_peripheral.lock().unwrap() = Some(p);   // 保留以便快速重连
+        }
+        state.services.lock().unwrap().clear();
+        *state.connected_addr.lock().unwrap() = None;
+        state.notify_buf.lock().unwrap().clear();
+        state.notify_spawned.store(false, std::sync::atomic::Ordering::Relaxed);
+        return Ok(BleRssiInfo { rssi: None, connected: false });
+    }
+    let adapter = match state.adapter.lock().unwrap().clone() {
+        Some(a) => a,
+        None => return Ok(BleRssiInfo { rssi: None, connected: true }),
+    };
+    ble_scan_pulse(&adapter, &state.scanning, 800).await;
+    // 广播回调会把设备（可能是一个新的外设对象）放进适配器表，
+    // 优先用表里那个读 RSSI；表里没有再退回我们持有的连接对象（其 last_rssi 可能偏旧）
+    let addr = periph.address().to_string();
+    let mut rssi = None;
+    if let Some(p) = ble_find_peripheral(&adapter, &addr).await? {
+        rssi = p.read_rssi().await.ok();
+    }
+    if rssi.is_none() {
+        rssi = periph.read_rssi().await.ok();
+    }
+    #[cfg(debug_assertions)]
+    dbg_log(&format!("ble_refresh_rssi: rssi={:?}", rssi));
+    Ok(BleRssiInfo { rssi: rssi, connected: true })
 }
 
 #[tauri::command]
@@ -4472,10 +4652,13 @@ async fn ble_subscribe(state: tauri::State<'_, BleState>, char_uuid: String) -> 
         ble_find_char(&svcs, &char_uuid).ok_or("未找到特征")?
     };
     p.subscribe(&c).await.map_err(|e| format!("subscribe: {e}"))?;
-    if !state.notify_spawned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+    let flag = state.notify_spawned.clone();
+    if !flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
         let buf = state.notify_buf.clone();
         tauri::async_runtime::spawn(async move {
             ble_notify_loop(p.clone(), buf).await;
+            // 通知流结束（断开连接会走到这里）：复位标志，下次订阅才能重新起循环
+            flag.store(false, std::sync::atomic::Ordering::Relaxed);
         });
     }
     Ok(())
@@ -4519,9 +4702,11 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec
             adapter: Mutex::new(None),
             scanning: std::sync::atomic::AtomicBool::new(false),
             connected: Mutex::new(None),
+            last_peripheral: Mutex::new(None),
+            connected_addr: Mutex::new(None),
             services: Mutex::new(Vec::new()),
             notify_buf: std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new())),
-            notify_spawned: std::sync::atomic::AtomicBool::new(false),
+            notify_spawned: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
         .invoke_handler(tauri::generate_handler![
             list_ports,
@@ -4585,6 +4770,8 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec
             ble_get_devices,
             ble_connect,
             ble_disconnect,
+            ble_get_connection,
+            ble_refresh_rssi,
             ble_get_services,
             ble_read,
             ble_write,
@@ -4641,6 +4828,18 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec
                         let _ = c.kill();
                         let _ = c.wait();
                     }
+                }
+
+                // 断开 BLE：主动 disconnect，让外设侧立刻感知断开，
+                // 否则对端要等监督超时才释放链路（表现为「App 关了但设备仍显示已连接」）
+                if let Some(state) = window.try_state::<BleState>() {
+                    let periph = state.connected.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    if let Some(p) = periph {
+                        let _ = tauri::async_runtime::block_on(async { p.disconnect().await });
+                        dbg_log("CloseRequested: BLE disconnected");
+                    }
+                    state.services.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    *state.connected_addr.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 }
 
                 dbg_log("CloseRequested: cleanup done");
