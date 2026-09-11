@@ -46,8 +46,5 @@ TODO.md
 # ADB platform-tools（本地开发用，不纳入版本库；安装包由 CI 单独下载）
 platform-tools/
 
-# 开发期 GUI 测试工具（脚本入库，见 .walkthrough/README.md；截图等产物不入库）
-.walkthrough/shots/
-.walkthrough/**/*.bmp
+# 开发期 GUI 测试工具（.walkthrough 整体入库，见其 README.md；仅忽略 Python 缓存）
 .walkthrough/__pycache__/
-.walkthrough/*.png
