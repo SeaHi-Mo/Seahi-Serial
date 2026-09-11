@@ -2213,7 +2213,10 @@ function parseAnsi(text) {
         if (text.charCodeAt(i) !== 27) { i++; continue; }   // 非 ESC
         flush(i);                                           // 先输出位于转义序列之前的纯文本
         var end = consumeAnsi(text, i);
-        if (end < 0) { last = n; break; }                   // 未完整序列 → 剥离剩余
+        // 未完整序列：先前是 last = n 直接**丢弃本块剩余全部文本**（分块边界切到一半转义序列时
+        // 会静默吞掉其后所有内容，最多可达一整块）。改为把剩余部分按字面文本输出 ——
+        // 最坏只是短暂显示半截转义字符，不会丢数据。
+        if (end < 0) { flush(n); break; }
         var seq = text.slice(i, end);
         // CSI: ESC [ ... 最终字节(0x40-0x7e)
         if (seq.length >= 3 && seq.charCodeAt(1) === 91) {
@@ -3111,8 +3114,19 @@ var ADB_SUB_OPTS = {
     'get-state': ['--help'],
     'get-serialno': ['--help']
 };
-// 已知设备序列号（可后续由 `adb devices` 结果回填，再复用具体串号补全）
+// 已知设备序列号（由 ADB 设备列表回填，用于 `adb -s <TAB>` 的设备补全）
 var _adbSerials = [];
+
+// 从 adb_devices 的返回中取出可用于补全的序列号（纯函数，便于无头断言）
+function pickAdbSerials(devices) {
+    if (!Array.isArray(devices)) return [];
+    var out = [];
+    devices.forEach(function(d) {
+        var s = (d && d.serial) ? String(d.serial) : '';
+        if (s && out.indexOf(s) < 0) out.push(s);
+    });
+    return out;
+}
 
 // 根据「已输入的前缀 token」推断补全上下文（首词是 adb 时走命令树）
 function getAdbContextCandidates(toks) {
@@ -7386,6 +7400,9 @@ function refreshAdbDevices() {
     var list = document.getElementById('adb-deviceList');
     if (!list) return;
     invoke('adb_devices').then(function(devices) {
+        // 回填 TAB 补全用的设备序列号：此前 _adbSerials 恒为空，
+        // 导致 `adb -s <TAB>` 没有任何候选（钩子早就留好了，只是没人填）
+        _adbSerials = pickAdbSerials(devices);
         if (!Array.isArray(devices) || devices.length === 0) {
             list.innerHTML = '<span style="font-family:var(--font-mono);font-size:12px;color:var(--text-d);">未检测到 ADB 设备</span>';
             return;
