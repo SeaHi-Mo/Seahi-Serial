@@ -6383,6 +6383,36 @@ var BLE_CONNECT_TIMEOUT_MS = 15000;
 var _bleScanStopTimer = null;  // 扫描 5 秒自动停止定时器
 var BLE_CHAR_NAMES = { '2A00':'Device Name','2A01':'Appearance','2A05':'Service Changed','2A19':'Battery Level','2A37':'Heart Rate Measurement','2A29':'Manufacturer Name' };
 
+// GATT 服务名（Bluetooth SIG Assigned Numbers）。
+// 用途：服务行左侧显示名称；**表里查不到**的服务在右侧统一标 "Custom Service"
+// （即自定义/厂商私有的 128 位 UUID 服务）。因此这张表要尽量覆盖标准服务，
+// 否则像 0x1809 体温计、0x1812 HID 这类标准服务会被误标为 Custom Service。
+var BLE_SVC_NAMES = {
+    '1800':'Generic Access','1801':'Generic Attribute','1802':'Immediate Alert','1803':'Link Loss',
+    '1804':'Tx Power','1805':'Current Time','1806':'Reference Time Update','1807':'Next DST Change',
+    '1808':'Glucose','1809':'Health Thermometer','180A':'Device Information','180D':'Heart Rate',
+    '180E':'Phone Alert Status','180F':'Battery','1810':'Blood Pressure','1811':'Alert Notification',
+    '1812':'Human Interface Device','1813':'Scan Parameters','1814':'Running Speed and Cadence',
+    '1815':'Automation IO','1816':'Cycling Speed and Cadence','1818':'Cycling Power',
+    '1819':'Location and Navigation','181A':'Environmental Sensing','181B':'Body Composition',
+    '181C':'User Data','181D':'Weight Scale','181E':'Bond Management',
+    '181F':'Continuous Glucose Monitoring','1820':'Internet Protocol Support','1821':'Indoor Positioning',
+    '1822':'Pulse Oximeter','1823':'HTTP Proxy','1824':'Transport Discovery','1825':'Object Transfer',
+    '1826':'Fitness Machine','1827':'Mesh Provisioning','1828':'Mesh Proxy',
+    '1829':'Reconnection Configuration','183A':'Insulin Delivery','183B':'Binary Sensor',
+    '183C':'Emergency Configuration','183D':'Authorization Control','183E':'Physical Activity Monitor',
+    '183F':'Elapsed Time','1840':'Generic Health Sensor','1843':'Audio Input Control',
+    '1844':'Volume Control','1845':'Volume Offset Control','1846':'Coordinated Set Identification',
+    '1847':'Device Time','1848':'Media Control','1849':'Generic Media Control',
+    '184A':'Constant Tone Extension','184B':'Telephone Bearer','184C':'Generic Telephone Bearer',
+    '184D':'Microphone Control','184E':'Audio Stream Control','184F':'Broadcast Audio Scan',
+    '1850':'Published Audio Capabilities','1851':'Basic Audio Announcement',
+    '1852':'Broadcast Audio Announcement','1853':'Common Audio','1854':'Hearing Access',
+    '1855':'Telephony and Media Audio','1856':'Public Broadcast Announcement','1857':'Electronic Shelf Label',
+    // 常见厂商私有服务（非 SIG 标准名，但业界通用叫法，保留以便识别）
+    'FE59':'Nordic DFU','6E400001-B5A3-F393-E0A9-E50E24DCCA9E':'Nordic UART'
+};
+
 // GATT 描述符名（Bluetooth SIG 分配号 0x2900~0x290E）。
 // 描述符挂在特征下面，移动端常见的 0x2902(CCCD)/0x2901(User Description) 就是它们 ——
 // 后端 ble_char_json 一直在返回，但前端此前既不传递也不渲染，导致界面上完全看不到。
@@ -6456,6 +6486,22 @@ function getSelectedBleDev() {
 // 演示特征（接后端后由 ble_services 返回真实特征及其属性）
 // 说明：早期的演示特征表 getDemoChars() 已删除 —— 现在特征全部来自后端 ble_get_services，
 // 它只剩零调用（保留会误导后来者以为还有 demo 分支）。
+
+// 服务行（GATT 服务/特征树的顶层条目）
+// 左侧：主/从标记 P/S、展开箭头、服务 UUID、标准服务名（BLE_SVC_NAMES 查得到时）
+// 右侧：查不到类型的服务统一标 "Custom Service"（原先一律标 "Service"，没有信息量）
+function renderBleServiceRow(s) {
+    var su = shortUuid(s.uuid);
+    var svcAttr = s.primary ? 'P' : 'S';
+    var svcName = BLE_SVC_NAMES[su] || '';
+    return '<div class="ble-svc" data-uuid="' + s.uuid + '" onclick="toggleBleService(this)">' +
+                '<span class="ble-svc-attr" title="' + (s.primary ? '主服务 Primary' : '从服务 Secondary') + '">' + svcAttr + '</span>' +
+                '<span class="ble-svc-caret">&#9654;</span>' +
+                '<span class="ble-svc-uuid" title="' + s.uuid + '">0x' + su + '</span>' +
+                (svcName ? '<span class="ble-svc-name">' + svcName + '</span>' : '') +
+                (svcName ? '' : '<span class="ble-svc-tag">Custom Service</span>') +
+            '</div>';
+}
 
 function renderCharRow(ch) {
     var dev = getSelectedBleDev();
@@ -7034,29 +7080,16 @@ function renderBleDetail() {
         detail.innerHTML = '<div class="ble-detail-empty">从左侧选择设备查看详情与 GATT 服务</div>';
         return;
     }
-    var BLE_SVC_NAMES = {
-        '1800':'Generic Access','1801':'Generic Attribute','180A':'Device Information',
-        '180D':'Heart Rate','180F':'Battery','181A':'Environmental Sensing',
-        'FF00':'Vendor','FE59':'Nordic DFU','6E400001-B5A3-F393-E0A9-E50E24DCCA9E':'Nordic UART'
-    };
+    // 服务行右侧标签：识别到的服务左侧已显示名称，不再重复标 "Service"；
+    // 识别不到类型的（自定义/厂商私有 128 位 UUID）统一标 Custom Service。
+    // 名称表见模块级 BLE_SVC_NAMES（Bluetooth SIG Assigned Numbers）。
     var svcList;
     if (_bleServices.length) {
         svcList = _bleServices.map(function(s){ return { uuid: s.uuid, primary: !!s.primary, chars: s.characteristics || [] }; });
     } else {
         svcList = (dev.services || []).map(function(uuid, idx){ return { uuid: uuid, primary: (idx % 2 === 0), chars: [] }; });
     }
-    var svcHtml = svcList.map(function(s, idx) {
-        var su = shortUuid(s.uuid);
-        var svcAttr = s.primary ? 'P' : 'S';
-        var svcName = BLE_SVC_NAMES[su] || '';
-        return '<div class="ble-svc" data-uuid="' + s.uuid + '" onclick="toggleBleService(this)">' +
-                    '<span class="ble-svc-attr" title="' + (s.primary ? '主服务 Primary' : '从服务 Secondary') + '">' + svcAttr + '</span>' +
-                    '<span class="ble-svc-caret">&#9654;</span>' +
-                    '<span class="ble-svc-uuid" title="' + s.uuid + '">0x' + su + '</span>' +
-                    (svcName ? '<span class="ble-svc-name">' + svcName + '</span>' : '') +
-                    '<span class="ble-svc-tag">Service</span>' +
-                '</div>';
-    }).join('');
+    var svcHtml = svcList.map(function(s) { return renderBleServiceRow(s); }).join('');
     var advHtml = renderBleAdv(dev);
     var advBytes = (dev.adv && dev.adv.raw) ? dev.adv.raw.split(' ').length : 0;
     detail.innerHTML =

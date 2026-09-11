@@ -410,6 +410,27 @@ console.log('preview ->', out);
   check(noDesc.indexOf('ble-char-descs') < 0, '无描述符时不渲染描述符行（不占位）');
   check(/if \(!descs\.length\) return ''/.test(html), '描述符为空时提前返回（避免空行）');
 
+  // ---- 5e-3) 服务行右侧标签：识别到类型不标，识别不到统一 Custom Service ----
+  const sb9 = { console };
+  vm.createContext(sb9);
+  vm.runInContext([
+    extractObject('BLE_SVC_NAMES'), extractFunction('shortUuid'), extractFunction('renderBleServiceRow'),
+  ].join('\n'), sb9);
+  const rowStd = sb9.renderBleServiceRow({ uuid: '00001800-0000-1000-8000-00805f9b34fb', primary: true });
+  check(rowStd.indexOf('Generic Access') > 0, '标准服务 0x1800 显示名称 Generic Access');
+  check(rowStd.indexOf('Custom Service') < 0, '标准服务不打 Custom Service 标签');
+  check(rowStd.indexOf('>Service</span>') < 0, '不再出现无信息量的固定 "Service" 标签');
+  const rowCustom = sb9.renderBleServiceRow({ uuid: '00010203-0405-0607-0809-0a0b0c0d1912', primary: true });
+  check(rowCustom.indexOf('Custom Service') > 0, '自定义 128 位服务标 Custom Service', 'HEPPYd 服务');
+  check(rowCustom.indexOf('ble-svc-name') < 0, '自定义服务左侧不显示名称');
+  check(!!sb9.BLE_SVC_NAMES['1809'] && !!sb9.BLE_SVC_NAMES['1812'],
+    '名称表覆盖常见标准服务（0x1809 体温计 / 0x1812 HID）');
+  check(!sb9.BLE_SVC_NAMES['FF00'], '已移除泛化的 FF00=Vendor（按厂商私有处理，标 Custom Service）');
+  const rowVendor = sb9.renderBleServiceRow({ uuid: '0000ff00-0000-1000-8000-00805f9b34fb', primary: true });
+  check(rowVendor.indexOf('Custom Service') > 0, '0xFF00 归为 Custom Service（不是标准 SIG 服务）');
+  check(sb9.renderBleServiceRow({ uuid: '00001800-0000-1000-8000-00805f9b34fb', primary: false })
+        .indexOf('>S</span>') > 0, '从服务标记为 S');
+
   // ---- 5f) 已连接设备不在扫描列表里时，仍要补进列表 ----
   // （复现路径：经「保留外设对象」重连的设备不在适配器表内 → ble_get_devices 不含它
   //   → 切页回来 refreshBleDevices 后列表里没有它 → 右侧详情空掉）
