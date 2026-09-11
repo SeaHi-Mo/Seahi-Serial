@@ -1163,6 +1163,8 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-log-clear { margin-left:auto; font-size:11px; font-weight:400; color:var(--text-d); cursor:pointer; letter-spacing:0; text-transform:none; }
 .ble-log-clear:hover { color:var(--accent-focus); }
 .ble-log { flex:1; min-height:0; overflow-y:auto; font-family:var(--font-mono); font-size:12px; line-height:1.7; color:var(--text); background:var(--editor-bg); border:1px solid var(--border); border-radius:6px; padding:10px; white-space:pre-wrap; word-break:break-all; }
+/* 日志里灰显的部分（如「文本后面附的十六进制」） */
+.ble-log-dim { color:var(--text-d); }
 /* BLE 写入（发送）弹窗：与 onboarding 遮罩同款层次，配色取自主题变量 */
 .ble-modal-mask { position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,.45);
                   display:none; align-items:center; justify-content:center; }
@@ -6866,15 +6868,36 @@ function bleCharAction(el, key) {
 // 定位是「当前设备本次连接会话」的记录 ——
 //   切换设备时清空、断开连接时清空（见 renderBleDeviceList 的点击与 toggleBleConnect），
 //   切页/重渲染不清空（所以缓冲放在 JS 层，不依赖 DOM）。
+// 条目形态：字符串，或 { text, dim }（dim 是 text 的结尾部分，显示为灰色，
+// 目前用于「文本 + 灰色十六进制」）。
 function logBle(text) {
-    _bleLog.push(text);
+    _bleLog.push({ text: text });
     if (_bleLog.length > _bleLogMax) _bleLog.splice(0, _bleLog.length - _bleLogMax);
     renderBleLog();
+}
+// 末尾灰显的日志：把 dim 部分用 .ble-log-dim 包裹（内容仍完整保存在 text 里）
+function logBleDim(text, dim) {
+    _bleLog.push({ text: text, dim: dim });
+    if (_bleLog.length > _bleLogMax) _bleLog.splice(0, _bleLog.length - _bleLogMax);
+    renderBleLog();
+}
+// 日志缓冲 → HTML（纯函数，便于无头断言）。
+// **所有内容都经 esc 转义**：日志里既有设备名/广播数据也有通知原始字节，
+// 绝不能当 HTML 插入（否则设备侧数据就成了注入面）。
+function bleLogToHtml(entries, esc) {
+    return (entries || []).map(function(e) {
+        var t = (typeof e === 'string') ? { text: e } : e;
+        var text = t.text || '';
+        if (!t.dim) return esc(text);
+        var head = text.slice(0, Math.max(0, text.length - t.dim.length));
+        return esc(head) + '<span class="ble-log-dim">' + esc(t.dim) + '</span>';
+    }).join('\n');
 }
 function renderBleLog() {
     var log = document.getElementById('ble-log');
     if (!log) return;                      // 面板尚未渲染/未展开：缓冲照常保留
-    log.textContent = _bleLog.length ? (_bleLog.join('\n') + '\n') : '暂无日志';
+    if (!_bleLog.length) { log.textContent = '暂无日志'; return; }
+    log.innerHTML = bleLogToHtml(_bleLog, escapeHtml) + '\n';   // 内容已全部转义
     log.scrollTop = log.scrollHeight;
 }
 function clearBleLog() {
@@ -6885,20 +6908,26 @@ function bleBytesToHex(arr) {
     if (!arr) return '';
     return arr.map(function(b){ return ('0' + b.toString(16)).slice(-2).toUpperCase(); }).join(' ');
 }
+// 能否当文本读：整体是合法 UTF-8，且除 \r \n \t 外不含控制字符（\x00-\x08 \x0b \x0c \x0e-\x1f \x7f）
+function bleCanShowAsText(bytes) {
+    var arr = bytes || [];
+    if (!arr.length) return false;
+    var s;
+    try {
+        s = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(arr));
+    } catch (e) {
+        return false;
+    }
+    return !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(s);
+}
 // 接收数据的默认显示：**能当文本读就显示文本**，否则退回十六进制。
-// 判据：整体是合法 UTF-8，且除 \r \n \t 外不含控制字符（\x00-\x08 \x0b \x0c \x0e-\x1f \x7f）；
 // 文本里的回车/换行/制表符转成可见转义，避免一条通知把日志撑成多行。
 // 例：E4 BD A0 E6 98 AF E8 B0 81 0D 0A → 你是谁\r\n
 function bleFmtBytes(bytes) {
     var arr = bytes || [];
     if (!arr.length) return '';
-    var s;
-    try {
-        s = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(arr));
-    } catch (e) {
-        return bleBytesToHex(arr);   // 非法 UTF-8 → 按二进制显示
-    }
-    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(s)) return bleBytesToHex(arr);
+    if (!bleCanShowAsText(arr)) return bleBytesToHex(arr);
+    var s = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(arr));
     return s.replace(/\\/g, '\\\\').replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
 }
 // 后端通知给的是十六进制串（value_hex）→ 解析后按上面的规则显示
@@ -6912,7 +6941,18 @@ function startBleNotifyPoll() {
     if (_bleNotifyTimer) return;
     _bleNotifyTimer = setInterval(function() {
         invoke('ble_poll_notifications').then(function(items) {
-            (items || []).forEach(function(it) { logBle('[通知] ' + it.uuid + ': ' + bleFmtHex(it.value_hex)); });
+            (items || []).forEach(function(it) {
+                var hex = it.value_hex || '';
+                var bytes = null;
+                try { bytes = Array.from(hexToBytes(hex)); } catch (e) { bytes = null; }
+                var label = '[通知] ' + it.uuid + ': ';
+                if (bytes && bytes.length && bleCanShowAsText(bytes)) {
+                    // 文本可读：文本在前，十六进制灰显跟在后面（用户要求 A）
+                    logBleDim(label + bleFmtBytes(bytes) + ' · ', hex);
+                } else {
+                    logBle(label + hex);
+                }
+            });
         }).catch(function() {});
     }, 400);
 }

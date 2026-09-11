@@ -340,14 +340,14 @@ console.log('preview ->', out);
 
   // ---- 5c) 数据日志：追加 / 清空（切设备、断开时调用 clearBleLog）----
   const sb3 = { console, _bleLog: [], _bleLogMax: 400, _bleSelected: 'AA:BB:CC:DD:EE:01' };
-  const logEl = { textContent: '', scrollTop: 0, scrollHeight: 10 };
+  const logEl = { textContent: '', innerHTML: '', scrollTop: 0, scrollHeight: 10 };
   sb3.document = { getElementById: (id) => (id === 'ble-log' ? logEl : null) };
   vm.createContext(sb3);
-  vm.runInContext(['logBle', 'renderBleLog', 'clearBleLog'].map(extractFunction).join('\n'), sb3);
+  vm.runInContext(['logBle', 'bleLogToHtml', 'escapeHtml', 'renderBleLog', 'clearBleLog'].map(extractFunction).join('\n'), sb3);
   sb3.logBle('[连接中] X');
   sb3.logBle('[连接成功] X · 服务 5 · 特征 8');
   check(sb3._bleLog.length === 2, 'logBle 追加日志', String(sb3._bleLog.length));
-  check(logEl.textContent.indexOf('[连接成功] X') >= 0, 'renderBleLog 把内容贴到 DOM');
+  check(logEl.innerHTML.indexOf('[连接成功] X') >= 0, 'renderBleLog 把内容贴到 DOM（innerHTML，已转义）');
   sb3.clearBleLog();
   check(sb3._bleLog.length === 0 && logEl.textContent === '暂无日志',
     'clearBleLog 清空并显示占位', logEl.textContent);
@@ -709,7 +709,7 @@ console.log('preview ->', out);
     '链路断开：清空连接态/服务/订阅');
   check(sb6._bleDevices.every((d) => !d.connected), '链路断开：清掉列表里的「已连接」标记');
   check(sb6._stopped === 1, '链路断开：停止轮询', String(sb6._stopped));
-  check(sb6._bleLog.length === 1 && sb6._bleLog[0].indexOf('[已断开]') === 0,
+  check(sb6._bleLog.length === 1 && (sb6._bleLog[0].text || '').indexOf('[已断开]') === 0,
     '链路断开：日志留一行原因（已清空后只此一行）', JSON.stringify(sb6._bleLog));
   check(sb6._toasts[0] === 'error', '链路断开：弹出提示');
   const sb4 = { console, TextEncoder };
@@ -842,13 +842,35 @@ console.log('preview ->', out);
   check(onConnCount >= 3, '成功路径复用同一个 bleOnConnected（含配对后重连）', String(onConnCount));
 
   // ---- 8) 通知/接收数据默认按文本显示（用户反馈：文本 payload 被显示成十六进制）----
-  check(/\(items \|\| \[\]\)\.forEach\(function\(it\) \{ logBle\('\[通知\] ' \+ it\.uuid \+ ': ' \+ bleFmtHex\(it\.value_hex\)\); \}\);/.test(html),
-    '通知日志改用 bleFmtHex（不再直接打印 value_hex）');
+  // 文本 case：文本在前、十六进制灰显跟在后面（用户选 A）：走 logBleDim + .ble-log-dim
+  check(/logBleDim\(label \+ bleFmtBytes\(bytes\) \+ ' · ', hex\);/.test(html),
+    '文本可读时：文本 + 灰色十六进制（用 logBleDim 追加灰显段）');
+  check(/\.ble-log-dim \{ color:var\(--text-d\); \}/.test(html), '灰色段有对应样式 .ble-log-dim');
+  check(/logBle\(label \+ hex\);/.test(html), '二进制/解析失败时仍直接显示十六进制');
+  check(/function logBleDim\(text, dim\)/.test(html) && /_bleLog\.push\(\{ text: text, dim: dim \}\)/.test(html),
+    'logBleDim 以结构化条目入缓冲（{text, dim}）');
+  // 日志渲染改成 innerHTML → 必须全部转义（设备数据是注入面）
+  check(/log\.innerHTML = bleLogToHtml\(_bleLog, escapeHtml\) \+ '\\n';/.test(html),
+    '日志渲染经 bleLogToHtml + escapeHtml（内容全部转义后才插入）');
+  const sbLog = { console };
+  vm.createContext(sbLog);
+  vm.runInContext([extractFunction('bleLogToHtml'), extractFunction('escapeHtml')].join('\n'), sbLog);
+  const esc = function(s) { return sbLog.escapeHtml(s); };
+  check(sbLog.bleLogToHtml([{ text: '[通知] X: 你是谁\\r\\n · E4 BD A0' }], esc) === '[通知] X: 你是谁\\r\\n · E4 BD A0',
+    '纯文本条目原样输出');
+  const dimHtml = sbLog.bleLogToHtml([{ text: 'a · E4 BD', dim: 'E4 BD' }], esc);
+  check(dimHtml === 'a · <span class="ble-log-dim">E4 BD</span>',
+    'dim 段被包进 .ble-log-dim（前半段仍正常显示）', dimHtml);
+  const inj = sbLog.bleLogToHtml([{ text: '<img src=x onerror=alert(1)>', dim: 'x>' }], esc);
+  check(inj.indexOf('<img') < 0 && inj.indexOf('&lt;img') === 0,
+    '日志内容里的 HTML 被转义（设备数据不能当 HTML 插入）', inj);
+  check(sbLog.bleLogToHtml([], esc) === '' && sbLog.bleLogToHtml(null, esc) === '', '空缓冲安全返回');
+  check(sbLog.bleLogToHtml(['旧格式字符串'], esc) === '旧格式字符串', '兼容历史字符串条目');
   const sbFmt = { console, TextDecoder };
   vm.createContext(sbFmt);
   vm.runInContext([
     extractFunction('bleBytesToHex'), extractFunction('hexToBytes'),
-    extractFunction('bleFmtBytes'), extractFunction('bleFmtHex'),
+    extractFunction('bleCanShowAsText'), extractFunction('bleFmtBytes'), extractFunction('bleFmtHex'),
   ].join('\n'), sbFmt);
   // 用户截图里的真实 payload：E4 BD A0 E6 98 AF E8 B0 81 0D 0A = "你是谁\r\n"
   check(sbFmt.bleFmtBytes([0xE4, 0xBD, 0xA0, 0xE6, 0x98, 0xAF, 0xE8, 0xB0, 0x81, 0x0D, 0x0A]) === '你是谁\\r\\n',
