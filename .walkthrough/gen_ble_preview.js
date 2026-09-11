@@ -531,8 +531,8 @@ console.log('preview ->', out);
     '内容随窗口伸缩：body 吃掉剩余高度');
   check(/\.ble-modal-row \{ display:flex; align-items:stretch; gap:8px; flex:1; min-height:0; \}/.test(html),
     '行也拉伸，输入框填满可用空间');
-  check(/\.ble-modal-row \.send-as \{ align-self:flex-start; \}/.test(html),
-    '写响应/文本选择器顶部对齐（不随高度拉伸）');
+  check(/\.ble-modal-row \.ble-write-opts \{ align-self:flex-start; \}/.test(html),
+    '右侧选项列顶部对齐（不随输入框高度拉伸）');
   check(/\.ble-modal-grip \{ position:absolute; right:2px; bottom:2px;/.test(html) && /pointer-events:none/.test(html),
     '右下角有手柄提示且不拦截拖动（pointer-events:none，事件交给原生 resize）');
   check(!/ble-modal-close/.test(html), '多余的 ✕ 关闭按钮已删除（底部已有「关闭」）');
@@ -540,6 +540,32 @@ console.log('preview ->', out);
     '遮罩改为按下点判定：拖弹窗时松手落到遮罩上不会误关');
   check(/if \(pressedOnMask && e\.target && e\.target\.id === 'bleWriteModal'\) closeBleWriteModal\(\);/.test(html),
     '只有「按下点就在遮罩上」才关闭弹窗');
+
+  // ---- 5m) 弹窗新增「行尾」选项（与串口监视器一致）----
+  check(/id="bleWriteLineEnd"/.test(html), '弹窗里有行尾下拉 #bleWriteLineEnd');
+  check(html.indexOf('id="bleWriteAsText"') < html.indexOf('id="bleWriteLineEnd"'),
+    '「行尾」位于「文本」格式设置下方（DOM 顺序）');
+  check(/<span class="ble-write-le-label">行尾<\/span>/.test(html), '行尾控件带「行尾」标签（同串口监视器）');
+  const mLe = html.slice(html.indexOf('id="bleWriteLineEnd"'), html.indexOf('id="bleWriteLineEnd"') + 1000);
+  check(['crlf', 'lf', 'cr', 'none'].every((v) => mLe.indexOf('data-val="' + v + '"') > 0),
+    '行尾取值与串口监视器一致：CRLF / LF / CR / 无');
+  check(/\.ble-write-opts \{ display:flex; flex-direction:column;/.test(html),
+    '右侧选项列改为纵向排列（文本下方就是行尾）');
+  const sb12 = { console };
+  vm.createContext(sb12);
+  vm.runInContext(extractFunction('leEscOf'), sb12);
+  check(sb12.leEscOf('crlf') === '\\r\\n' && sb12.leEscOf('lf') === '\\n'
+     && sb12.leEscOf('cr') === '\\r' && sb12.leEscOf('none') === '',
+    'leEscOf 映射与串口 leStr 语义一致', JSON.stringify([sb12.leEscOf('crlf'), sb12.leEscOf('lf'), sb12.leEscOf('cr'), sb12.leEscOf('none')]));
+  check(sb12.leEscOf(undefined) === '' && sb12.leEscOf('bogus') === '',
+    '未取到值时不追加（不会写入垃圾字节）');
+  check(/var payload = hexMode \? text : \(text \+ leEscOf\(leVal\)\);/.test(html),
+    '发送时按行尾拼接：仅文本模式追加（HEX 不追加，与串口一致）');
+  check(/var leVal = leEl \? \(leEl\.getAttribute\('data-val'\) \|\| 'crlf'\) : 'crlf';/.test(html),
+    '读不到控件时回退 crlf（与串口默认一致）');
+  check(/var leLog = \(hexMode \|\| leVal === 'none'\) \? '' : ' · 行尾 ' \+ leVal\.toUpperCase\(\);/.test(html),
+    '日志里标明追加的行尾');
+  check((html.match(/\+ leLog \+/g) || []).length === 2, '特征与描述符两条发送日志都带上行尾信息');
 
   // ---- 5j) 内嵌监视器的宽度拖拽（用户反馈「向左拖动失效」：原来根本没做拖拽）----
   check(/id="ble-monResize"/.test(html) && /title="拖动调节宽度"/.test(html), '监视器区有宽度拖拽手柄');

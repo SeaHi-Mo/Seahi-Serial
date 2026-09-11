@@ -1184,7 +1184,11 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 /* 弹窗内容随窗口尺寸伸缩：body 吃掉剩余高度、行内元素拉伸、输入框填满 */
 .ble-modal-body { padding:14px; flex:1; min-height:0; display:flex; }
 .ble-modal-row { display:flex; align-items:stretch; gap:8px; flex:1; min-height:0; }
-.ble-modal-row .send-as { align-self:flex-start; }
+.ble-modal-row .ble-write-opts { align-self:flex-start; }
+/* 弹窗右侧选项列：写响应 / 文本(HEX) / 行尾 自上而下，宽度对齐 */
+.ble-write-opts { display:flex; flex-direction:column; gap:6px; flex-shrink:0; align-items:stretch; }
+.ble-write-le { display:flex; align-items:center; gap:6px; }
+.ble-write-le-label { font-size:11px; color:var(--text-d); flex-shrink:0; }
 .ble-modal-inp { flex:1; min-width:0; min-height:64px; box-sizing:border-box;
                  padding:7px 10px; background:var(--input-bg); border:1px solid var(--border); border-radius:6px;
                  color:var(--text); font-family:var(--font-mono); font-size:13px; outline:none;
@@ -2074,20 +2078,37 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
         <div class="ble-modal-body">
             <div class="ble-modal-row">
                 <textarea class="ble-modal-inp" id="bleWriteValue" rows="3" placeholder="要写入的值，回车发送；支持 \r \n \t 转义，HEX 形如 01 A0 FF" autocomplete="off" spellcheck="false"></textarea>
-                <div class="send-as" id="bleWriteModeWrap" onclick="toggleBleWriteMode()">
-                    <span class="send-as-text" id="bleWriteModeText">写响应</span>
-                    <span class="send-as-arrow">&#9660;</span>
-                    <div class="send-as-drop" id="bleWriteModeDrop">
-                        <div class="send-as-opt active" data-val="write" onclick="setBleWriteMode('write',this,event)">写响应</div>
-                        <div class="send-as-opt" data-val="write_without_response" onclick="setBleWriteMode('write_without_response',this,event)">无响应</div>
+                <!-- 右侧选项列：写响应 / 文本(HEX) / 行尾 自上而下 -->
+                <div class="ble-write-opts">
+                    <div class="send-as" id="bleWriteModeWrap" onclick="toggleBleWriteMode()">
+                        <span class="send-as-text" id="bleWriteModeText">写响应</span>
+                        <span class="send-as-arrow">&#9660;</span>
+                        <div class="send-as-drop" id="bleWriteModeDrop">
+                            <div class="send-as-opt active" data-val="write" onclick="setBleWriteMode('write',this,event)">写响应</div>
+                            <div class="send-as-opt" data-val="write_without_response" onclick="setBleWriteMode('write_without_response',this,event)">无响应</div>
+                        </div>
                     </div>
-                </div>
-                <div class="send-as" onclick="toggleBleWriteAs()">
-                    <span class="send-as-text" id="bleWriteAsText">文本</span>
-                    <span class="send-as-arrow">&#9660;</span>
-                    <div class="send-as-drop" id="bleWriteAsDrop">
-                        <div class="send-as-opt active" data-val="text" onclick="setBleWriteAs('text',this,event)">文本</div>
-                        <div class="send-as-opt" data-val="hex" onclick="setBleWriteAs('hex',this,event)">HEX</div>
+                    <div class="send-as" onclick="toggleBleWriteAs()">
+                        <span class="send-as-text" id="bleWriteAsText">文本</span>
+                        <span class="send-as-arrow">&#9660;</span>
+                        <div class="send-as-drop" id="bleWriteAsDrop">
+                            <div class="send-as-opt active" data-val="text" onclick="setBleWriteAs('text',this,event)">文本</div>
+                            <div class="send-as-opt" data-val="hex" onclick="setBleWriteAs('hex',this,event)">HEX</div>
+                        </div>
+                    </div>
+                    <!-- 行尾：与串口监视器的行尾选项一致（无 / CR / LF / CRLF），
+                         文本模式下自动追加到内容末尾；HEX 模式不追加（与串口一致） -->
+                    <div class="ble-write-le">
+                        <span class="ble-write-le-label">行尾</span>
+                        <div class="sel" id="bleWriteLineEnd" data-val="crlf" onclick="toggleSelDrop(this)">
+                            <span class="sel-text">CRLF</span><span class="sel-arrow">&#9660;</span>
+                            <div class="sel-drop">
+                                <div class="sel-opt active" data-val="crlf" onclick="setSel(this,'crlf',event)">CRLF</div>
+                                <div class="sel-opt" data-val="lf" onclick="setSel(this,'lf',event)">LF</div>
+                                <div class="sel-opt" data-val="cr" onclick="setSel(this,'cr',event)">CR</div>
+                                <div class="sel-opt" data-val="none" onclick="setSel(this,'none',event)">无</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -6920,6 +6941,12 @@ function bleSendBytes(text, hexMode) {
     if (hexMode) return Array.from(hexToBytes(text));
     return Array.from(new TextEncoder().encode(parseEscapes(text)));
 }
+// 行尾取值 → 转义文本（纯函数，便于无头断言）。
+// 与串口监视器 leStr 的语义一致：crlf/lf/cr 分别对应 \r\n \n \r，none 不追加。
+// 用"转义文本"而不是原始字符，是为了复用 bleSendBytes 里已有的 parseEscapes。
+function leEscOf(v) {
+    return v === 'crlf' ? '\\r\\n' : (v === 'lf' ? '\\n' : (v === 'cr' ? '\\r' : ''));
+}
 function sendBleWrite() {
     if (!_bleWriteTarget) { showToast('请先点特征行的「写入」图标', 'error'); return; }
     var dev = getSelectedBleDev();
@@ -6928,14 +6955,20 @@ function sendBleWrite() {
     var text = inp ? inp.value : '';
     if (!text) { showToast('请输入要写入的值', 'error'); if (inp) inp.focus(); return; }
     var hexMode = document.getElementById('bleWriteAsText').textContent === 'HEX';
+    // 行尾：与串口监视器一致 —— 仅文本模式追加（HEX 模式不追加）
+    var leEl = document.getElementById('bleWriteLineEnd');
+    var leVal = leEl ? (leEl.getAttribute('data-val') || 'crlf') : 'crlf';
+    var payload = hexMode ? text : (text + leEscOf(leVal));
     var bytes;
-    try { bytes = bleSendBytes(text, hexMode); }
+    try { bytes = bleSendBytes(payload, hexMode); }
     catch (e) { logBle('[格式错误] ' + e); showToast('格式错误: ' + e, 'error'); return; }
     if (!bytes.length) { showToast('内容为空', 'error'); return; }
     // 写入方式由弹窗里的选择决定（特征同时支持两种时可选，否则用其唯一支持的那种）
     var writeType = (_bleWriteTarget.mode === 'write_without_response') ? 'without_response' : 'with_response';
     var hex = bleBytesToHex(bytes).replace(/ /g, '');
     var isDesc = _bleWriteTarget.kind === 'desc';
+    // 日志标明追加的行尾（HEX 模式或选「无」时不显示）
+    var leLog = (hexMode || leVal === 'none') ? '' : ' · 行尾 ' + leVal.toUpperCase();
     var onOk = function() {
         logBle('[发送成功] 0x' + hex + ' · ' + bytes.length + ' 字节');
         showToast('发送成功：0x' + hex, 'success');
@@ -6947,14 +6980,14 @@ function sendBleWrite() {
     };
     if (isDesc) {
         logBle('[发送] 描述符 0x' + shortUuid(_bleWriteTarget.uuid) + ' ← 0x' + hex +
-               '（' + (hexMode ? 'HEX' : '文本') + '）');
+               '（' + (hexMode ? 'HEX' : '文本') + leLog + '）');
         invoke('ble_write_descriptor', { charUuid: _bleWriteTarget.charUuid,
                                          descUuid: _bleWriteTarget.uuid, data: bytes })
             .then(onOk).catch(onFail);
         return;
     }
     logBle('[发送] 0x' + shortUuid(_bleWriteTarget.uuid) + ' ← 0x' + hex +
-           '（' + (hexMode ? 'HEX' : '文本') + ' · ' + (writeType === 'without_response' ? '无响应' : '写响应') + '）');
+           '（' + (hexMode ? 'HEX' : '文本') + ' · ' + (writeType === 'without_response' ? '无响应' : '写响应') + leLog + '）');
     invoke('ble_write', { charUuid: _bleWriteTarget.uuid, data: bytes, writeType: writeType })
         .then(onOk).catch(onFail);
 }
