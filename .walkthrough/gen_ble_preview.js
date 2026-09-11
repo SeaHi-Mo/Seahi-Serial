@@ -841,6 +841,31 @@ console.log('preview ->', out);
   const onConnCount = (html.match(/bleOnConnected\(address, label\)/g) || []).length;
   check(onConnCount >= 3, '成功路径复用同一个 bleOnConnected（含配对后重连）', String(onConnCount));
 
+  // ---- 8) 通知/接收数据默认按文本显示（用户反馈：文本 payload 被显示成十六进制）----
+  check(/\(items \|\| \[\]\)\.forEach\(function\(it\) \{ logBle\('\[通知\] ' \+ it\.uuid \+ ': ' \+ bleFmtHex\(it\.value_hex\)\); \}\);/.test(html),
+    '通知日志改用 bleFmtHex（不再直接打印 value_hex）');
+  const sbFmt = { console, TextDecoder };
+  vm.createContext(sbFmt);
+  vm.runInContext([
+    extractFunction('bleBytesToHex'), extractFunction('hexToBytes'),
+    extractFunction('bleFmtBytes'), extractFunction('bleFmtHex'),
+  ].join('\n'), sbFmt);
+  // 用户截图里的真实 payload：E4 BD A0 E6 98 AF E8 B0 81 0D 0A = "你是谁\r\n"
+  check(sbFmt.bleFmtBytes([0xE4, 0xBD, 0xA0, 0xE6, 0x98, 0xAF, 0xE8, 0xB0, 0x81, 0x0D, 0x0A]) === '你是谁\\r\\n',
+    'UTF-8 文本按文本显示，CRLF 转义为可见形式',
+    JSON.stringify(sbFmt.bleFmtBytes([0xE4, 0xBD, 0xA0, 0xE6, 0x98, 0xAF, 0xE8, 0xB0, 0x81, 0x0D, 0x0A])));
+  check(sbFmt.bleFmtHex('E4 BD A0 E6 98 AF E8 B0 81 0D 0A') === '你是谁\\r\\n',
+    'bleFmtHex 对同样的十六进制串给出同样的文本');
+  check(sbFmt.bleFmtBytes([0x01, 0xA0, 0xFF]) === '01 A0 FF', '非法 UTF-8 → 仍显示十六进制',
+    sbFmt.bleFmtBytes([0x01, 0xA0, 0xFF]));
+  check(sbFmt.bleFmtBytes([0x41, 0x00, 0x42]) === '41 00 42', '含 NUL 等控制字符 → 退回十六进制',
+    sbFmt.bleFmtBytes([0x41, 0x00, 0x42]));
+  check(sbFmt.bleFmtBytes([0x41, 0x09, 0x42]) === 'A\\tB', '制表符转义为 \\t（不破坏单行日志）');
+  check(sbFmt.bleFmtBytes([]) === '' && sbFmt.bleFmtHex('') === '', '空数据返回空串（不抛错）');
+  check(sbFmt.bleFmtHex('ZZ') !== undefined, '非法十六进制串不抛错（原样返回）', JSON.stringify(sbFmt.bleFmtHex('ZZ')));
+  check(sbFmt.bleFmtBytes([0x5C, 0x6E]) === '\\\\n', '反斜杠本身被转义（不会与 \\n 混淆）',
+    JSON.stringify(sbFmt.bleFmtBytes([0x5C, 0x6E])));
+
   console.log(`\n结果: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

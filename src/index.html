@@ -6885,11 +6885,34 @@ function bleBytesToHex(arr) {
     if (!arr) return '';
     return arr.map(function(b){ return ('0' + b.toString(16)).slice(-2).toUpperCase(); }).join(' ');
 }
+// 接收数据的默认显示：**能当文本读就显示文本**，否则退回十六进制。
+// 判据：整体是合法 UTF-8，且除 \r \n \t 外不含控制字符（\x00-\x08 \x0b \x0c \x0e-\x1f \x7f）；
+// 文本里的回车/换行/制表符转成可见转义，避免一条通知把日志撑成多行。
+// 例：E4 BD A0 E6 98 AF E8 B0 81 0D 0A → 你是谁\r\n
+function bleFmtBytes(bytes) {
+    var arr = bytes || [];
+    if (!arr.length) return '';
+    var s;
+    try {
+        s = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(arr));
+    } catch (e) {
+        return bleBytesToHex(arr);   // 非法 UTF-8 → 按二进制显示
+    }
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(s)) return bleBytesToHex(arr);
+    return s.replace(/\\/g, '\\\\').replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
+}
+// 后端通知给的是十六进制串（value_hex）→ 解析后按上面的规则显示
+function bleFmtHex(hexStr) {
+    if (!hexStr) return '';
+    var arr;
+    try { arr = Array.from(hexToBytes(hexStr)); } catch (e) { return hexStr; }
+    return bleFmtBytes(arr);
+}
 function startBleNotifyPoll() {
     if (_bleNotifyTimer) return;
     _bleNotifyTimer = setInterval(function() {
         invoke('ble_poll_notifications').then(function(items) {
-            (items || []).forEach(function(it) { logBle('[通知] ' + it.uuid + ': ' + it.value_hex); });
+            (items || []).forEach(function(it) { logBle('[通知] ' + it.uuid + ': ' + bleFmtHex(it.value_hex)); });
         }).catch(function() {});
     }, 400);
 }
