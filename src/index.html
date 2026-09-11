@@ -1101,9 +1101,10 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
    服务的 UUID 有 0x1800（6 字符）也有 128 位的 38 字符，不固定列宽时名称就会参差不齐。
    38ch = "0x" + 36 个十六进制字符，正好容纳最长的 128 位 UUID；
    用 ch 单位与字体无关（等宽字体下 1ch = 字符宽度）。 */
-.ble-svc-uuid { font-family:var(--font-mono); font-size:12px; color:var(--text); flex:0 0 auto; width:38ch; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.ble-svc-name { font-size:11px; color:var(--text-d); margin-left:6px; flex-shrink:0; white-space:nowrap; }
-.ble-svc-tag { font-size:10px; color:var(--text-d); border:1px solid var(--border); padding:0 6px; border-radius:4px; margin-left:auto; flex-shrink:0; }
+/* 服务类型名称统一右对齐（标准名 或 Custom Service），margin-left:auto 推到最右。
+   UUID 不再需要固定列宽：名称移到最后，对齐由右对齐本身保证。 */
+.ble-svc-uuid { font-family:var(--font-mono); font-size:12px; color:var(--text); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ble-svc-type { margin-left:auto; flex-shrink:0; font-size:11px; color:var(--text-d); white-space:nowrap; }
 .ble-charGroup { padding:4px 0 8px 22px; display:flex; flex-direction:column; gap:4px; }
 .ble-char { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:6px; background:var(--editor-bg); border:1px solid var(--border); }
 .ble-char-uuid { font-family:var(--font-mono); font-size:12px; color:var(--text); flex:0 0 auto; width:38ch; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -6508,19 +6509,42 @@ function getSelectedBleDev() {
 // 说明：早期的演示特征表 getDemoChars() 已删除 —— 现在特征全部来自后端 ble_get_services，
 // 它只剩零调用（保留会误导后来者以为还有 demo 分支）。
 
+// 当前查看的设备是否就是「已连接设备」
+function isViewingConnectedDevice(dev, connAddr) {
+    return !!(dev && connAddr && dev.address === connAddr);
+}
+
+// GATT 区该展示谁的服务（纯函数，便于无头断言）：
+//   - 正在查看的设备 == 已连接设备 → 用真实 GATT 服务树（ble_get_services 的结果）
+//   - 否则（未连接，或看的是另一台设备）→ 用该设备广播里的服务 UUID 列表
+// 之前的 bug：无条件使用 _bleServices（那是「已连接设备」的全局缓存），
+// 于是选中一台**未连接**的设备时，右侧却显示着另一台已连接设备的 GATT 服务。
+function pickBleSvcList(dev, bleServices, connAddr) {
+    if (isViewingConnectedDevice(dev, connAddr) && bleServices && bleServices.length) {
+        return bleServices.map(function(s) {
+            return { uuid: s.uuid, primary: !!s.primary, chars: s.characteristics || [] };
+        });
+    }
+    // 广播里没有主/从信息，沿用既有的展示方式
+    return ((dev && dev.services) || []).map(function(uuid, idx) {
+        return { uuid: uuid, primary: (idx % 2 === 0), chars: [] };
+    });
+}
+
 // 服务行（GATT 服务/特征树的顶层条目）
 // 左侧：主/从标记 P/S、展开箭头、服务 UUID、标准服务名（BLE_SVC_NAMES 查得到时）
 // 右侧：查不到类型的服务统一标 "Custom Service"（原先一律标 "Service"，没有信息量）
 function renderBleServiceRow(s) {
     var su = shortUuid(s.uuid);
     var svcAttr = s.primary ? 'P' : 'S';
-    var svcName = BLE_SVC_NAMES[su] || '';
+    // 服务类型名称：识别到的用标准名，识别不到的统一 Custom Service
+    var typeName = BLE_SVC_NAMES[su] || 'Custom Service';
     return '<div class="ble-svc" data-uuid="' + s.uuid + '" onclick="toggleBleService(this)">' +
                 '<span class="ble-svc-attr" title="' + (s.primary ? '主服务 Primary' : '从服务 Secondary') + '">' + svcAttr + '</span>' +
                 '<span class="ble-svc-caret">&#9654;</span>' +
                 '<span class="ble-svc-uuid" title="' + s.uuid + '">0x' + su + '</span>' +
-                (svcName ? '<span class="ble-svc-name">' + svcName + '</span>' : '') +
-                (svcName ? '' : '<span class="ble-svc-tag">Custom Service</span>') +
+                // 类型名称统一右对齐（margin-left:auto 推到最右）
+                '<span class="ble-svc-type" title="' + typeName + '">' + typeName + '</span>' +
             '</div>';
 }
 
@@ -7176,12 +7200,7 @@ function renderBleDetail() {
     // 服务行右侧标签：识别到的服务左侧已显示名称，不再重复标 "Service"；
     // 识别不到类型的（自定义/厂商私有 128 位 UUID）统一标 Custom Service。
     // 名称表见模块级 BLE_SVC_NAMES（Bluetooth SIG Assigned Numbers）。
-    var svcList;
-    if (_bleServices.length) {
-        svcList = _bleServices.map(function(s){ return { uuid: s.uuid, primary: !!s.primary, chars: s.characteristics || [] }; });
-    } else {
-        svcList = (dev.services || []).map(function(uuid, idx){ return { uuid: uuid, primary: (idx % 2 === 0), chars: [] }; });
-    }
+    var svcList = pickBleSvcList(dev, _bleServices, _bleConnAddr);
     var svcHtml = svcList.map(function(s) { return renderBleServiceRow(s); }).join('');
     var advHtml = renderBleAdv(dev);
     var advBytes = (dev.adv && dev.adv.raw) ? dev.adv.raw.split(' ').length : 0;
@@ -7365,10 +7384,14 @@ function toggleBleService(el) {
     });
     var groupHtml = document.createElement('div');
     groupHtml.className = 'ble-charGroup';
-    // 从连接后的服务树取特征；未连接则提示
+    // 从连接后的服务树取特征；**仅当查看的就是已连接设备**才允许，
+    // 否则会把已连接设备的特征挂到未连接设备名下（用户反馈的 bug）；未连接则提示
+    var dev = getSelectedBleDev();
     var svc = null;
-    for (var i = 0; i < _bleServices.length; i++) {
-        if (_bleServices[i].uuid === uuid) { svc = _bleServices[i]; break; }
+    if (isViewingConnectedDevice(dev, _bleConnAddr)) {
+        for (var i = 0; i < _bleServices.length; i++) {
+            if (_bleServices[i].uuid === uuid) { svc = _bleServices[i]; break; }
+        }
     }
     if (svc && svc.characteristics && svc.characteristics.length) {
         groupHtml.innerHTML = svc.characteristics.map(function(c) {

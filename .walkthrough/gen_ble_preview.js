@@ -445,13 +445,39 @@ console.log('preview ->', out);
     '描述符操作图标有明确的 CSS 尺寸（否则 SVG 不显示）');
   check(/\.ble-ch-action svg \{ width:18px; height:18px; \}/.test(html),
     '特征行操作图标仍有尺寸（对照，防误删）');
-  // 名称列对齐：UUID 必须是固定列宽，否则长 UUID 行的名称会往右跑
-  check(/\.ble-svc-uuid \{[^}]*flex:0 0 auto; width:38ch;/.test(html),
-    '服务 UUID 固定列宽 38ch → 服务名从同一 x 开始');
+  // 服务类型名称统一右对齐（识别到用标准名、识别不到用 Custom Service，同一元素同一位置）
+  check(/\.ble-svc-type \{ margin-left:auto;/.test(html),
+    '服务类型名称右对齐（margin-left:auto 推到最右）');
+
+  check(!/ble-svc-name|ble-svc-tag/.test(html),
+    '旧的「左侧名称 / 右侧标签」已移除（名称只有一个位置）');
   check(/\.ble-char-uuid \{[^}]*flex:0 0 auto; width:38ch;/.test(html),
-    '特征 UUID 同样固定列宽 → 特征名对齐');
-  check(/\.ble-svc-name \{[^}]*white-space:nowrap/.test(html),
-    '服务名不换行（避免长名称挤成两行破坏对齐）');
+    '特征 UUID 仍固定列宽（特征名内联对齐，未受影响）');
+  // ---- 5h) GATT 区只展示「正在查看的设备」的服务（用户反馈：未连接设备显示了已连接设备的 GATT）----
+  const sb10 = { console };
+  vm.createContext(sb10);
+  vm.runInContext([extractFunction('isViewingConnectedDevice'), extractFunction('pickBleSvcList')].join('\n'), sb10);
+  const connDev = { address: 'AA:BB:CC:DD:EE:01', services: ['0000180f-0000-1000-8000-00805f9b34fb'] };
+  const otherDev = { address: '00:11:22:33:44:55', services: ['0000180d-0000-1000-8000-00805f9b34fb'] };
+  const realSvcs = [{ uuid: 'REAL-SVC-1', primary: true, characteristics: [{ uuid: 'C1' }] }];
+  const svcA = sb10.pickBleSvcList(connDev, realSvcs, 'AA:BB:CC:DD:EE:01');
+  check(svcA.length === 1 && svcA[0].uuid === 'REAL-SVC-1' && svcA[0].chars.length === 1,
+    '查看「已连接设备」→ 用真实 GATT 服务树');
+  const svcB = sb10.pickBleSvcList(otherDev, realSvcs, 'AA:BB:CC:DD:EE:01');
+  check(svcB.length === 1 && svcB[0].uuid === '0000180d-0000-1000-8000-00805f9b34fb' && svcB[0].chars.length === 0,
+    '查看「未连接的其它设备」→ 用该设备广播里的服务', JSON.stringify(svcB.map((x) => x.uuid)));
+  check(svcB.every((x) => x.uuid !== 'REAL-SVC-1'),
+    '修复回归：未连接设备下不再出现已连接设备的服务（本次用户反馈的 bug）');
+  check(sb10.pickBleSvcList(otherDev, realSvcs, null)[0].uuid.indexOf('180d') > 0,
+    '完全没有连接 → 用广播里的服务');
+  check(sb10.pickBleSvcList({ address: '00:11:22:33:44:55' }, realSvcs, 'AA:BB:CC:DD:EE:01').length === 0,
+    '该设备广播里没有服务 → 空列表（而不是拿别人的）');
+  check(sb10.isViewingConnectedDevice(connDev, 'AA:BB:CC:DD:EE:01') === true
+     && sb10.isViewingConnectedDevice(otherDev, 'AA:BB:CC:DD:EE:01') === false
+     && sb10.isViewingConnectedDevice(null, 'AA:BB:CC:DD:EE:01') === false,
+    'isViewingConnectedDevice 判定正确（含空设备）');
+  check(/if \(isViewingConnectedDevice\(dev, _bleConnAddr\)\) \{/.test(html),
+    '展开服务取特征时同样做了守卫（不会把别人的特征挂过来）');
 
   // ---- 5e-3) 服务行右侧标签：识别到类型不标，识别不到统一 Custom Service ----
   const sb9 = { console };
@@ -469,7 +495,10 @@ console.log('preview ->', out);
   check(!!sb9.BLE_SVC_NAMES['1809'] && !!sb9.BLE_SVC_NAMES['1812'],
     '名称表覆盖常见标准服务（0x1809 体温计 / 0x1812 HID）');
   check(!sb9.BLE_SVC_NAMES['FF00'], '已移除泛化的 FF00=Vendor（按厂商私有处理，标 Custom Service）');
-  const rowVendor = sb9.renderBleServiceRow({ uuid: '0000ff00-0000-1000-8000-00805f9b34fb', primary: true });
+  check(/class="ble-svc-type" title="Generic Access">Generic Access</.test(rowStd),
+    '标准服务的名称落在最右的类型位上（同一元素）');
+  check(/class="ble-svc-type" title="Custom Service">Custom Service</.test(rowCustom),
+    '未识别服务在最右显示 Custom Service（同一元素、同一位置）');  const rowVendor = sb9.renderBleServiceRow({ uuid: '0000ff00-0000-1000-8000-00805f9b34fb', primary: true });
   check(rowVendor.indexOf('Custom Service') > 0, '0xFF00 归为 Custom Service（不是标准 SIG 服务）');
   check(sb9.renderBleServiceRow({ uuid: '00001800-0000-1000-8000-00805f9b34fb', primary: false })
         .indexOf('>S</span>') > 0, '从服务标记为 S');
