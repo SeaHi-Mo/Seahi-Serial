@@ -512,6 +512,16 @@ console.log('preview ->', out);
   check(/支持 \\\\r \\\\n \\\\t 转义，HEX 形如 01 A0 FF/.test(html),
     '转义/HEX 提示已并入 placeholder');
   check(/CCCD：0100 开启通知，0200 开启指示，0000 关闭/.test(html), 'CCCD 的取值提示也在 placeholder 里');
+  // 输入框由单行 input 改为多行 textarea：默认更高，且可拖动调整高度（原生 resize:vertical）
+  check(/<textarea class="ble-modal-inp" id="bleWriteValue" rows="3"/.test(html),
+    '写入输入框是 textarea 且默认 3 行（比原单行 input 高）');
+  check(/\.ble-modal-inp \{[^}]*min-height:64px;[^}]*resize:vertical;/.test(html),
+    '输入框可拖动调整高度（resize:vertical）并有最小高度');
+  check(/\.ble-modal-inp \{[^}]*max-height:52vh;/.test(html), '输入框有最大高度（不会撑破弹窗）');
+  check(/\.ble-modal-row \{ display:flex; align-items:flex-start;/.test(html),
+    '输入框变高后，写响应/文本选择器顶部对齐（不再垂直居中）');
+  check(/if \(e\.key === 'Enter' && !e\.shiftKey\) \{ e\.preventDefault\(\); sendBleWrite\(\); \}/.test(html),
+    'Enter 仍发送；Shift+Enter 交给 textarea 插入换行（多行值可用）');
 
   // ---- 5j) 内嵌监视器的宽度拖拽（用户反馈「向左拖动失效」：原来根本没做拖拽）----
   check(/id="ble-monResize"/.test(html) && /title="拖动调节宽度"/.test(html), '监视器区有宽度拖拽手柄');

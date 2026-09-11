@@ -1178,10 +1178,11 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
                    color:var(--text-d); font-size:13px; }
 .ble-modal-close:hover { background:var(--input-bg); color:var(--text); }
 .ble-modal-body { padding:14px; }
-.ble-modal-row { display:flex; align-items:center; gap:8px; }
-.ble-modal-inp { flex:1; min-width:0; height:30px; box-sizing:border-box; padding:0 10px;
-                 background:var(--input-bg); border:1px solid var(--border); border-radius:6px;
+.ble-modal-row { display:flex; align-items:flex-start; gap:8px; }
+.ble-modal-inp { flex:1; min-width:0; min-height:64px; max-height:52vh; box-sizing:border-box;
+                 padding:7px 10px; background:var(--input-bg); border:1px solid var(--border); border-radius:6px;
                  color:var(--text); font-family:var(--font-mono); font-size:13px; outline:none;
+                 line-height:1.45; resize:vertical; overflow:auto;
                  transition:border-color .15s; }
 .ble-modal-inp:focus { border-color:var(--accent-focus); }
 .ble-modal-foot { display:flex; justify-content:flex-end; gap:8px; padding:0 14px 14px; }
@@ -2067,7 +2068,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
         </div>
         <div class="ble-modal-body">
             <div class="ble-modal-row">
-                <input class="ble-modal-inp" id="bleWriteValue" placeholder="要写入的值，回车发送；支持 \r \n \t 转义，HEX 形如 01 A0 FF" autocomplete="off" spellcheck="false">
+                <textarea class="ble-modal-inp" id="bleWriteValue" rows="3" placeholder="要写入的值，回车发送；支持 \r \n \t 转义，HEX 形如 01 A0 FF" autocomplete="off" spellcheck="false"></textarea>
                 <div class="send-as" id="bleWriteModeWrap" onclick="toggleBleWriteMode()">
                     <span class="send-as-text" id="bleWriteModeText">写响应</span>
                     <span class="send-as-arrow">&#9660;</span>
