@@ -1114,11 +1114,17 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-char-tag { font-size:10px; color:var(--text-d); margin-left:auto; flex-shrink:0; }
 /* 特征描述符行（0x2902 CCCD 等）：比特征行更淡、缩进一格，胶囊展示 */
 .ble-char-descs { display:flex; flex-wrap:wrap; gap:5px; padding:0 10px 2px 18px; }
-.ble-desc { display:inline-flex; align-items:baseline; gap:4px; font-family:var(--font-mono);
+.ble-desc { display:inline-flex; align-items:center; gap:4px; font-family:var(--font-mono);
             font-size:10px; color:var(--text-d); background:var(--input-bg);
             border:1px solid var(--border); border-radius:4px; padding:1px 6px; white-space:nowrap; }
 .ble-desc em { font-style:normal; opacity:.75; }
 .ble-desc:hover { color:var(--text); }
+/* 描述符上的操作图标（读取/写入）：比特征行的 18px 小一号。
+   图标 SVG 只带 viewBox、不自带宽高，没有这条规则就会撑不开/看不见 */
+.ble-desc-act { display:inline-flex; align-items:center; justify-content:center;
+                margin-left:2px; cursor:pointer; color:var(--text-d); }
+.ble-desc-act svg { width:13px; height:13px; display:block; }
+.ble-desc-act:hover { color:var(--link); }
 .ble-adv { display:flex; flex-direction:column; gap:6px; }
 .ble-adv-sec { padding-bottom:10px; }
 .ble-adv-toggle { display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none; }

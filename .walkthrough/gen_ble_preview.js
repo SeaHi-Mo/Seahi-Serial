@@ -439,6 +439,12 @@ console.log('preview ->', out);
     '描述符写入走 ble_write_descriptor（不误用 ble_write）');
   check(/\.ble-dev-conn \{ flex-shrink:0; margin-left:10px;/.test(html),
     '「已连接」与设备名的间距已加大到 10px');
+  // 回归：图标 SVG 只带 viewBox、不自带宽高 —— 必须由 CSS 给出尺寸，否则不可见
+  // （此前的 bug：.ble-desc-act 没有任何样式，描述符胶囊里看不到读写图标）
+  check(/\.ble-desc-act svg \{ width:13px; height:13px;/.test(html),
+    '描述符操作图标有明确的 CSS 尺寸（否则 SVG 不显示）');
+  check(/\.ble-ch-action svg \{ width:18px; height:18px; \}/.test(html),
+    '特征行操作图标仍有尺寸（对照，防误删）');
 
   // ---- 5e-3) 服务行右侧标签：识别到类型不标，识别不到统一 Custom Service ----
   const sb9 = { console };
