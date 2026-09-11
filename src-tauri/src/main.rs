@@ -836,7 +836,12 @@ fn execute_workflow_actions_bg(
     }
     if !all_sent.is_empty() {
         let msg = format!("[Auto] {}", all_sent.join(" "));
-        if let Ok(mut evts) = events_clone.lock() { evts.push(msg); }
+        // 上限保护：这些事件由前端轮询取走；工作流高频触发时避免无限堆积
+        const WF_EVENTS_MAX: usize = 200;
+        if let Ok(mut evts) = events_clone.lock() {
+            while evts.len() >= WF_EVENTS_MAX { evts.remove(0); }
+            evts.push(msg);
+        }
     }
 }
 
@@ -3881,11 +3886,24 @@ async fn adb_open_shell(
         let (tx, rx) = crossbeam_channel::unbounded::<Vec<u8>>();
         std::thread::spawn(move || {
             use std::io::Read;
+            /// 通道积压上限：ADB 侧若刷得很快（logcat/top）而前端没及时取走，
+            /// 无上限通道会让内存线性增长。超限丢弃本块并提示，避免 OOM。
+            const ADB_PTY_QUEUE_MAX: usize = 512;
             let mut buf = [0u8; 8192];
+            let mut dropped: u64 = 0;
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => { println!("[ADB-PTY] reader EOF"); let _ = tx.send(Vec::new()); break; }
-                    Ok(n) => { if tx.send(buf[..n].to_vec()).is_err() { break; } }
+                    Ok(n) => {
+                        if tx.len() >= ADB_PTY_QUEUE_MAX {
+                            dropped += 1;
+                            if dropped == 1 || dropped % 200 == 0 {
+                                eprintln!("[ADB-PTY] 前端消费不及时，已丢弃 {} 块输出", dropped);
+                            }
+                            continue;
+                        }
+                        if tx.send(buf[..n].to_vec()).is_err() { break; }
+                    }
                     Err(e) => { println!("[ADB-PTY] reader err {}", e); break; }
                 }
             }
@@ -4405,6 +4423,10 @@ fn ble_find_char(services: &[BtService], uuid: &str) -> Option<BtChar> {
 }
 async fn ble_notify_loop(peripheral: BtPeripheral, buf: std::sync::Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>) {
     use futures::StreamExt;
+    /// 通知缓冲上限：前端每 400ms 轮询取走（drain），正常远到不了这个量。
+    /// 但前端若停止轮询（切到别的页面、或自身异常），通知会在这里无限堆积 ——
+    /// 加上限后丢最旧的，内存不会随设备持续上报而线性增长。
+    const NOTIFY_BUF_MAX: usize = 500;
     if let Ok(mut stream) = peripheral.notifications().await {
         while let Some(n) = stream.next().await {
             let item = json!({
@@ -4412,7 +4434,10 @@ async fn ble_notify_loop(peripheral: BtPeripheral, buf: std::sync::Arc<Mutex<std
                 "service_uuid": n.service_uuid.to_string(),
                 "value_hex": ble_hex(&n.value),
             });
-            if let Ok(mut b) = buf.lock() { b.push_back(item); }
+            if let Ok(mut b) = buf.lock() {
+                while b.len() >= NOTIFY_BUF_MAX { b.pop_front(); }
+                b.push_back(item);
+            }
         }
     }
 }
@@ -4435,14 +4460,14 @@ async fn ble_start_scan(state: tauri::State<'_, BleState>) -> Result<(), String>
     let adapters = manager.adapters().await.map_err(|e| format!("BLE adapters: {e}"))?;
     let adapter = adapters.into_iter().next().ok_or("未找到蓝牙适配器")?;
     adapter.start_scan(ScanFilter::default()).await.map_err(|e| format!("start_scan: {e}"))?;
-    *state.adapter.lock().unwrap() = Some(adapter);
+    *state.adapter.lock().unwrap_or_else(|e| e.into_inner()) = Some(adapter);
     state.scanning.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
 #[tauri::command]
 async fn ble_stop_scan(state: tauri::State<'_, BleState>) -> Result<(), String> {
-    let adapter = state.adapter.lock().unwrap().clone();
+    let adapter = state.adapter.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(a) = adapter {
         let _ = a.stop_scan().await;
     }
@@ -4452,7 +4477,7 @@ async fn ble_stop_scan(state: tauri::State<'_, BleState>) -> Result<(), String> 
 
 #[tauri::command]
 async fn ble_get_devices(state: tauri::State<'_, BleState>) -> Result<Vec<serde_json::Value>, String> {
-    let adapter = match state.adapter.lock().unwrap().clone() {
+    let adapter = match state.adapter.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         Some(a) => a,
         None => return Ok(Vec::new()),
     };
@@ -4468,7 +4493,7 @@ async fn ble_get_devices(state: tauri::State<'_, BleState>) -> Result<Vec<serde_
 
 #[tauri::command]
 async fn ble_connect(state: tauri::State<'_, BleState>, address: String) -> Result<(), String> {
-    let adapter = match state.adapter.lock().unwrap().clone() {
+    let adapter = match state.adapter.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         Some(a) => a,
         None => return Err("请先扫描设备".to_string()),
     };
@@ -4478,7 +4503,7 @@ async fn ble_connect(state: tauri::State<'_, BleState>, address: String) -> Resu
     // 3) 短扫描脉冲重试若干轮（设备不在表内、也没有保留对象时兜底）
     let mut target = ble_find_peripheral(&adapter, &address).await?;
     if target.is_none() {
-        let last = state.last_peripheral.lock().unwrap().clone();
+        let last = state.last_peripheral.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(p) = last {
             if p.address().to_string().eq_ignore_ascii_case(&address) {
                 #[cfg(debug_assertions)]
@@ -4519,27 +4544,27 @@ async fn ble_connect(state: tauri::State<'_, BleState>, address: String) -> Resu
     let svcs: Vec<BtService> = target.services().iter().cloned().collect();
     let addr = target.address().to_string();
     // 新连接不继承上一台设备的残留通知
-    state.notify_buf.lock().unwrap().clear();
-    *state.services.lock().unwrap() = svcs;
-    *state.connected_addr.lock().unwrap() = Some(addr);
-    *state.connected.lock().unwrap() = Some(target);
-    *state.last_peripheral.lock().unwrap() = None;   // 已成为当前连接，槽位清空
+    state.notify_buf.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    *state.services.lock().unwrap_or_else(|e| e.into_inner()) = svcs;
+    *state.connected_addr.lock().unwrap_or_else(|e| e.into_inner()) = Some(addr);
+    *state.connected.lock().unwrap_or_else(|e| e.into_inner()) = Some(target);
+    *state.last_peripheral.lock().unwrap_or_else(|e| e.into_inner()) = None;   // 已成为当前连接，槽位清空
     Ok(())
 }
 
 #[tauri::command]
 async fn ble_disconnect(state: tauri::State<'_, BleState>) -> Result<(), String> {
-    let p = state.connected.lock().unwrap().take();
+    let p = state.connected.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(p) = p {
         let _ = p.disconnect().await;
         // 保留对象：btleplug 已把它从适配器表里删掉，留着才能立刻重连（不必等重新广播）
-        *state.last_peripheral.lock().unwrap() = Some(p);
+        *state.last_peripheral.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
     }
-    state.services.lock().unwrap().clear();
-    *state.connected_addr.lock().unwrap() = None;
+    state.services.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    *state.connected_addr.lock().unwrap_or_else(|e| e.into_inner()) = None;
     // 订阅随连接一起失效：清掉残留通知并复位通知循环标志，
     // 否则重连后「再次订阅」不会起新循环（前端也会一直显示启用状态）
-    state.notify_buf.lock().unwrap().clear();
+    state.notify_buf.lock().unwrap_or_else(|e| e.into_inner()).clear();
     state.notify_spawned.store(false, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
@@ -4548,12 +4573,12 @@ async fn ble_disconnect(state: tauri::State<'_, BleState>) -> Result<(), String>
 /// 前端切换页面回来时据此恢复连接态，避免「后端仍连着却显示成未连接」。
 #[tauri::command]
 async fn ble_get_connection(state: tauri::State<'_, BleState>) -> Result<Option<String>, String> {
-    let addr = match state.connected_addr.lock().unwrap().clone() {
+    let addr = match state.connected_addr.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         Some(a) => a,
         None => return Ok(None),
     };
     // 先把外设克隆出来再 await，避免把 std Mutex 的 guard 跨 await 持有
-    let periph = state.connected.lock().unwrap().clone();
+    let periph = state.connected.lock().unwrap_or_else(|e| e.into_inner()).clone();
     match periph {
         Some(p) => match p.is_connected().await {
             Ok(true) => Ok(Some(addr)),
@@ -4563,17 +4588,17 @@ async fn ble_get_connection(state: tauri::State<'_, BleState>) -> Result<Option<
                 dbg_log(&format!("ble_get_connection: {addr} is_connected=false -> 清理连接状态"));
                 // 注意：锁守卫必须在 await 之前释放（MutexGuard 非 Send，
                 // 若在 if let 的条件里直接 take，守卫会跨过 .await 导致 future 不 Send）
-                let dropped = state.connected.lock().unwrap().take();
+                let dropped = state.connected.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(p) = dropped {
                     // 顺手 disconnect：它会清掉 GATT 服务缓存。
                     // 只把对象存起来的话，重连后缓存里还是已关闭的旧对象，
                     // 写入/订阅会报「该对象已经关闭」。
                     let _ = p.disconnect().await;
-                    *state.last_peripheral.lock().unwrap() = Some(p);   // 保留以便快速重连
+                    *state.last_peripheral.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);   // 保留以便快速重连
                 }
-                state.services.lock().unwrap().clear();
-                *state.connected_addr.lock().unwrap() = None;
-                state.notify_buf.lock().unwrap().clear();
+                state.services.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                *state.connected_addr.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                state.notify_buf.lock().unwrap_or_else(|e| e.into_inner()).clear();
                 state.notify_spawned.store(false, std::sync::atomic::Ordering::Relaxed);
                 Ok(None)
             }
@@ -4624,7 +4649,7 @@ struct BleRssiInfo {
 /// 因此这里做一次「短扫描脉冲」后再读缓存值。
 #[tauri::command]
 async fn ble_refresh_rssi(state: tauri::State<'_, BleState>) -> Result<BleRssiInfo, String> {
-    let periph = match state.connected.lock().unwrap().clone() {
+    let periph = match state.connected.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         Some(p) => p,
         None => return Ok(BleRssiInfo { rssi: None, connected: false }),
     };
@@ -4632,18 +4657,18 @@ async fn ble_refresh_rssi(state: tauri::State<'_, BleState>) -> Result<BleRssiIn
     if !periph.is_connected().await.unwrap_or(true) {
         #[cfg(debug_assertions)]
         dbg_log("ble_refresh_rssi: 链路已断（设备侧断开）-> 清理连接状态");
-        let dropped = state.connected.lock().unwrap().take();
+        let dropped = state.connected.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(p) = dropped {
             let _ = p.disconnect().await;   // 顺带清 GATT 缓存
-            *state.last_peripheral.lock().unwrap() = Some(p);   // 保留以便快速重连
+            *state.last_peripheral.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);   // 保留以便快速重连
         }
-        state.services.lock().unwrap().clear();
-        *state.connected_addr.lock().unwrap() = None;
-        state.notify_buf.lock().unwrap().clear();
+        state.services.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        *state.connected_addr.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        state.notify_buf.lock().unwrap_or_else(|e| e.into_inner()).clear();
         state.notify_spawned.store(false, std::sync::atomic::Ordering::Relaxed);
         return Ok(BleRssiInfo { rssi: None, connected: false });
     }
-    let adapter = match state.adapter.lock().unwrap().clone() {
+    let adapter = match state.adapter.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         Some(a) => a,
         None => return Ok(BleRssiInfo { rssi: None, connected: true }),
     };
@@ -4665,15 +4690,15 @@ async fn ble_refresh_rssi(state: tauri::State<'_, BleState>) -> Result<BleRssiIn
 
 #[tauri::command]
 async fn ble_get_services(state: tauri::State<'_, BleState>) -> Result<Vec<serde_json::Value>, String> {
-    let svcs = state.services.lock().unwrap();
+    let svcs = state.services.lock().unwrap_or_else(|e| e.into_inner());
     Ok(svcs.iter().map(ble_service_json).collect())
 }
 
 #[tauri::command]
 async fn ble_read(state: tauri::State<'_, BleState>, char_uuid: String) -> Result<Vec<u8>, String> {
-    let p = state.connected.lock().unwrap().clone().ok_or("未连接")?;
+    let p = state.connected.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("未连接")?;
     let c = {
-        let svcs = state.services.lock().unwrap();
+        let svcs = state.services.lock().unwrap_or_else(|e| e.into_inner());
         ble_find_char(&svcs, &char_uuid).ok_or("未找到特征")?
     };
     p.read(&c).await.map_err(|e| format!("read: {e}"))
@@ -4681,9 +4706,9 @@ async fn ble_read(state: tauri::State<'_, BleState>, char_uuid: String) -> Resul
 
 #[tauri::command]
 async fn ble_write(state: tauri::State<'_, BleState>, char_uuid: String, data: Vec<u8>, write_type: Option<String>) -> Result<(), String> {
-    let p = state.connected.lock().unwrap().clone().ok_or("未连接")?;
+    let p = state.connected.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("未连接")?;
     let c = {
-        let svcs = state.services.lock().unwrap();
+        let svcs = state.services.lock().unwrap_or_else(|e| e.into_inner());
         ble_find_char(&svcs, &char_uuid).ok_or("未找到特征")?
     };
     let wt = if write_type.as_deref() == Some("without_response") { WriteType::WithoutResponse } else { WriteType::WithResponse };
@@ -4692,9 +4717,9 @@ async fn ble_write(state: tauri::State<'_, BleState>, char_uuid: String, data: V
 
 #[tauri::command]
 async fn ble_subscribe(state: tauri::State<'_, BleState>, char_uuid: String) -> Result<(), String> {
-    let p = state.connected.lock().unwrap().clone().ok_or("未连接")?;
+    let p = state.connected.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("未连接")?;
     let c = {
-        let svcs = state.services.lock().unwrap();
+        let svcs = state.services.lock().unwrap_or_else(|e| e.into_inner());
         ble_find_char(&svcs, &char_uuid).ok_or("未找到特征")?
     };
     p.subscribe(&c).await.map_err(|e| format!("subscribe: {e}"))?;
@@ -4712,9 +4737,9 @@ async fn ble_subscribe(state: tauri::State<'_, BleState>, char_uuid: String) -> 
 
 #[tauri::command]
 async fn ble_unsubscribe(state: tauri::State<'_, BleState>, char_uuid: String) -> Result<(), String> {
-    let p = state.connected.lock().unwrap().clone().ok_or("未连接")?;
+    let p = state.connected.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("未连接")?;
     let c = {
-        let svcs = state.services.lock().unwrap();
+        let svcs = state.services.lock().unwrap_or_else(|e| e.into_inner());
         ble_find_char(&svcs, &char_uuid).ok_or("未找到特征")?
     };
     p.unsubscribe(&c).await.map_err(|e| format!("unsubscribe: {e}"))
@@ -4722,7 +4747,7 @@ async fn ble_unsubscribe(state: tauri::State<'_, BleState>, char_uuid: String) -
 
 #[tauri::command]
 async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec<serde_json::Value>, String> {
-    let mut b = state.notify_buf.lock().unwrap();
+    let mut b = state.notify_buf.lock().unwrap_or_else(|e| e.into_inner());
     Ok(b.drain(..).collect())
 }
 
