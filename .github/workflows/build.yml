@@ -17,6 +17,38 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Verify version consistency
+        shell: pwsh
+        run: |
+          # 版本号分布在多处（运行时取 Cargo.toml，安装包取 tauri.conf.json），
+          # 任一处漏改就会出现「装着 0.3.6 却提示 0.3.7」这类更新异常。
+          # 这里只做校验，不改动发布行为。
+          function Get-Ver($path, $pattern) {
+            $m = Select-String -Path $path -Pattern $pattern | Select-Object -First 1
+            if (-not $m) { throw "无法从 $path 解析版本号" }
+            return $m.Matches[0].Groups[1].Value
+          }
+          $cargo = Get-Ver 'src-tauri/Cargo.toml'      '^version = "([^"]+)"'
+          $conf  = Get-Ver 'src-tauri/tauri.conf.json' '"version": "([^"]+)"'
+          $iss   = Get-Ver 'installer.iss'             'MyAppVersion "([^"]+)"'
+          $pkg   = (Get-Content -Path 'package.json' -Raw | ConvertFrom-Json).version
+          # Cargo.lock 需要跨行匹配，单独用 regex（Select-String 是按行的）
+          $lockRaw = Get-Content -Path 'src-tauri/Cargo.lock' -Raw
+          $lock = [regex]::Match($lockRaw, 'name = "seahi-serial"\r?\nversion = "([^"]+)"').Groups[1].Value
+          if (-not $lock) { throw '无法从 src-tauri/Cargo.lock 解析 seahi-serial 版本号' }
+          Write-Host "cargo=$cargo conf=$conf iss=$iss pkg=$pkg lock=$lock"
+          foreach ($v in @($conf, $iss, $pkg, $lock)) {
+            if ($v -ne $cargo) { throw "版本号不一致：Cargo.toml=$cargo 但 conf/iss/pkg/lock 中存在 $v" }
+          }
+          # tag 构建时：tag 必须与版本号一致（手动触发是分支名，跳过该检查）
+          if ('${{ github.ref }}'.StartsWith('refs/tags/')) {
+            $tag = '${{ github.ref_name }}'
+            if ($tag -ne "v$cargo") { throw "tag=$tag 与版本号 v$cargo 不一致" }
+            Write-Host "tag 校验通过：$tag"
+          } else {
+            Write-Host "非 tag 触发（${{ github.ref }}），跳过 tag 校验"
+          }
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
