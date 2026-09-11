@@ -6854,7 +6854,15 @@ function bleCharAction(el, key) {
         }).catch(function(e) { console.warn('[BLE] 订阅失败:', e); showToast('订阅失败: ' + e, 'error'); });
     } else if (prop === 'read') {
         invoke('ble_read', { charUuid: charUuid }).then(function(data) {
-            logBle('[读取] ' + charUuid + ': ' + bleBytesToHex(data));
+            // 标明来源服务（反查服务树）；可读文本时同样按「文本 + 灰色十六进制」显示
+            var svc = bleFindSvcOfChar(_bleServices, charUuid);
+            var label = '[读取] ' + (svc ? bleSvcLabel(svc) + ' · ' : '') + '0x' + shortUuid(charUuid) + ': ';
+            var arr = Array.from(data || []);
+            if (arr.length && bleCanShowAsText(arr)) {
+                logBleDim(label + bleFmtBytes(arr) + ' · ', bleBytesToHex(arr));
+            } else {
+                logBle(label + bleBytesToHex(arr));
+            }
         }).catch(function(e) { console.warn('[BLE] 读取失败:', e); showToast('读取失败: ' + e, 'error'); });
     } else if (prop === 'write') {
         // 点写入图标 → 弹出写入窗口（不再写死演示值 0x01）
@@ -6875,9 +6883,10 @@ function logBle(text) {
     if (_bleLog.length > _bleLogMax) _bleLog.splice(0, _bleLog.length - _bleLogMax);
     renderBleLog();
 }
-// 末尾灰显的日志：把 dim 部分用 .ble-log-dim 包裹（内容仍完整保存在 text 里）
+// 末尾灰显的日志：dim 会**追加**在 text 之后（保证 dim 一定是整条 text 的后缀 ——
+// 渲染时靠这个不变式切分；调用方只需传"前半段"和"后半段"，不必自己拼）。
 function logBleDim(text, dim) {
-    _bleLog.push({ text: text, dim: dim });
+    _bleLog.push({ text: (text || '') + (dim || ''), dim: dim || '' });
     if (_bleLog.length > _bleLogMax) _bleLog.splice(0, _bleLog.length - _bleLogMax);
     renderBleLog();
 }
@@ -6937,6 +6946,25 @@ function bleFmtHex(hexStr) {
     try { arr = Array.from(hexToBytes(hexStr)); } catch (e) { return hexStr; }
     return bleFmtBytes(arr);
 }
+// 服务来源标签：短 UUID + 已知服务名（如 "0x180A Device Information"）；拿不到时给 "?"
+function bleSvcLabel(svcUuid) {
+    var su = shortUuid(svcUuid || '');
+    if (!su) return '?';
+    var nm = BLE_SVC_NAMES[su];
+    return '0x' + su + (nm ? ' ' + nm : '');
+}
+// 从已发现的服务树里反查某特征所属的服务（用于只拿到特征 UUID 的日志，如 [读取]）。
+// 取 services 作参数而不是直接读全局，便于无头断言。
+function bleFindSvcOfChar(services, charUuid) {
+    var list = services || [];
+    for (var i = 0; i < list.length; i++) {
+        var chars = list[i].characteristics || [];
+        for (var j = 0; j < chars.length; j++) {
+            if (chars[j].uuid === charUuid) return list[i].uuid || '';
+        }
+    }
+    return '';
+}
 function startBleNotifyPoll() {
     if (_bleNotifyTimer) return;
     _bleNotifyTimer = setInterval(function() {
@@ -6945,7 +6973,9 @@ function startBleNotifyPoll() {
                 var hex = it.value_hex || '';
                 var bytes = null;
                 try { bytes = Array.from(hexToBytes(hex)); } catch (e) { bytes = null; }
-                var label = '[通知] ' + it.uuid + ': ';
+                // 标明来源：服务（短 UUID + 已知名）· 特征。后端通知里带了 service_uuid。
+                var from = bleSvcLabel(it.service_uuid) + ' · 0x' + shortUuid(it.uuid || '');
+                var label = '[通知] ' + from + ': ';
                 if (bytes && bytes.length && bleCanShowAsText(bytes)) {
                     // 文本可读：文本在前，十六进制灰显跟在后面（用户要求 A）
                     logBleDim(label + bleFmtBytes(bytes) + ' · ', hex);

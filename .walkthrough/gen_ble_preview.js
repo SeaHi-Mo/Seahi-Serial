@@ -343,7 +343,7 @@ console.log('preview ->', out);
   const logEl = { textContent: '', innerHTML: '', scrollTop: 0, scrollHeight: 10 };
   sb3.document = { getElementById: (id) => (id === 'ble-log' ? logEl : null) };
   vm.createContext(sb3);
-  vm.runInContext(['logBle', 'bleLogToHtml', 'escapeHtml', 'renderBleLog', 'clearBleLog'].map(extractFunction).join('\n'), sb3);
+  vm.runInContext(['logBle', 'logBleDim', 'bleLogToHtml', 'escapeHtml', 'renderBleLog', 'clearBleLog'].map(extractFunction).join('\n'), sb3);
   sb3.logBle('[连接中] X');
   sb3.logBle('[连接成功] X · 服务 5 · 特征 8');
   check(sb3._bleLog.length === 2, 'logBle 追加日志', String(sb3._bleLog.length));
@@ -351,6 +351,15 @@ console.log('preview ->', out);
   sb3.clearBleLog();
   check(sb3._bleLog.length === 0 && logEl.textContent === '暂无日志',
     'clearBleLog 清空并显示占位', logEl.textContent);
+  // 本次 bug 回归：notify 的调法是 logBleDim(前缀+文本+' · ', hex)，也就是 dim 只作为"后半段"传入。
+  // 早期实现假定 dim 已经是 text 的后缀 → text.length-dim.length 变负 → 前缀被整段吞掉，只剩灰色 hex。
+  sb3.logBleDim('[通知] 0x180A Device Information · 0x2A19: 你叫什么名字\\r\\n · ', 'E4 BD A0');
+  check(logEl.innerHTML.indexOf('[通知] 0x180A Device Information') === 0,
+    'logBleDim：前半段不会被吞掉（回归：只剩 hex 的那个 bug）', logEl.innerHTML);
+  check(logEl.innerHTML.indexOf('<span class="ble-log-dim">E4 BD A0</span>') > 0,
+    'logBleDim：后半段灰显', logEl.innerHTML);
+  check(sb3._bleLog[0].text === '[通知] 0x180A Device Information · 0x2A19: 你叫什么名字\\r\\n · E4 BD A0',
+    'logBleDim 保证 dim 一定是整条 text 的后缀（复制出来的文本是完整的）', sb3._bleLog[0].text);
   const srcHasClear = /clearBleLog\(\); closeBleWriteModal\(\); \}/.test(html)
     && /clearBleLog\(\);\s*\/\/ 断开即清空/.test(html);
   check(srcHasClear, '切设备与断开两处都接上了 clearBleLog');
@@ -847,8 +856,8 @@ console.log('preview ->', out);
     '文本可读时：文本 + 灰色十六进制（用 logBleDim 追加灰显段）');
   check(/\.ble-log-dim \{ color:var\(--text-d\); \}/.test(html), '灰色段有对应样式 .ble-log-dim');
   check(/logBle\(label \+ hex\);/.test(html), '二进制/解析失败时仍直接显示十六进制');
-  check(/function logBleDim\(text, dim\)/.test(html) && /_bleLog\.push\(\{ text: text, dim: dim \}\)/.test(html),
-    'logBleDim 以结构化条目入缓冲（{text, dim}）');
+  check(/function logBleDim\(text, dim\)/.test(html) && /_bleLog\.push\(\{ text: \(text \|\| ''\) \+ \(dim \|\| ''\), dim: dim \|\| '' \}\)/.test(html),
+    'logBleDim 以结构化条目入缓冲，并把 dim 追加成 text 的后缀');
   // 日志渲染改成 innerHTML → 必须全部转义（设备数据是注入面）
   check(/log\.innerHTML = bleLogToHtml\(_bleLog, escapeHtml\) \+ '\\n';/.test(html),
     '日志渲染经 bleLogToHtml + escapeHtml（内容全部转义后才插入）');
@@ -887,6 +896,29 @@ console.log('preview ->', out);
   check(/if \(!bleErrNeedsPairing\(e\)\) \{\s*fail\(e\);\s*return;\s*\}/.test(html),
     '连接失败先判定是否需要配对，不需要则直接失败（不发起配对、不打乱链路）');
   check(/配对仪式会占用设备\/打断链路/.test(html), '该约束的理由已写在代码注释里');
+
+  // ---- 10) 通知/读取日志标明来源服务（用户反馈：看不到是哪个服务收到的）----
+  check(/var from = bleSvcLabel\(it\.service_uuid\) \+ ' · 0x' \+ shortUuid\(it\.uuid \|\| ''\);/.test(html),
+    '通知日志带来源服务（用后端给的 service_uuid）');
+  check(/'\[读取\] ' \+ \(svc \? bleSvcLabel\(svc\) \+ ' · ' : ''\)/.test(html),
+    '读取日志也标明来源服务（反查服务树）');
+  const sbSvc = { console };
+  vm.createContext(sbSvc);
+  vm.runInContext([extractObject('BLE_SVC_NAMES'), extractFunction('shortUuid'),
+                   extractFunction('bleSvcLabel'), extractFunction('bleFindSvcOfChar')].join('\n'), sbSvc);
+  check(sbSvc.bleSvcLabel('0000180a-0000-1000-8000-00805f9b34fb') === '0x180A Device Information',
+    '已知服务 → 短 UUID + 名称', sbSvc.bleSvcLabel('0000180a-0000-1000-8000-00805f9b34fb'));
+  check(sbSvc.bleSvcLabel('00010203-0405-0607-0809-0a0b0c0d1912') === '0x00010203-0405-0607-0809-0A0B0C0D1912',
+    '自定义服务 → 只给短 UUID', sbSvc.bleSvcLabel('00010203-0405-0607-0809-0a0b0c0d1912'));
+  check(sbSvc.bleSvcLabel('') === '?' && sbSvc.bleSvcLabel(undefined) === '?', '拿不到服务 → 显示 ?');
+  const svcTree = [
+    { uuid: 'A-SVC', characteristics: [{ uuid: 'A1' }, { uuid: 'A2' }] },
+    { uuid: 'B-SVC', characteristics: [{ uuid: 'B1' }] },
+  ];
+  check(sbSvc.bleFindSvcOfChar(svcTree, 'B1') === 'B-SVC', '反查到特征所属服务');
+  check(sbSvc.bleFindSvcOfChar(svcTree, 'NOPE') === '', '找不到时返回空串');
+  check(sbSvc.bleFindSvcOfChar(null, 'A1') === '' && sbSvc.bleFindSvcOfChar([{ uuid: 'S' }], 'A1') === '',
+    '服务树为空/缺 characteristics 时不抛错');
   const sbFmt = { console, TextDecoder };
   vm.createContext(sbFmt);
   vm.runInContext([
