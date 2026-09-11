@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>BLE 面板 — 渲染预览</title>
+<style>
+:root {
+    --bg: #1c1e22;
+    --editor-bg: #1c1e22;
+    --toolbar-bg: #22252a;
+    --input-bg: #2e3138;
+    --border: #2e3138;
+    --border-h: #3a3e46;
+    --text: #b8bcc4;
+    --text-b: #dce0e8;
+    --text-d: #6b7280;
+    --link: #6a9fd8;
+    --btn-p: #4a7ab5;
+    --btn-ph: #5888c0;
+    --btn-pa: #3c6aa5;
+    --split-line: #4a7ab5;
+    --surface-1: #262930;
+    --surface-2: #22252a;
+    --surface-3: #1c1e22;
+    --text-soft: #8b919a;
+    --text-muted: #5a6070;
+    --text-placeholder: #454b56;
+    --accent-focus: #4a7ab5;
+    --accent-green: #5a9e6e;
+    --accent-red: #c45c5c;
+    --accent-orange: #c08040;
+    --accent-contrast: #2a4878;
+    --send-bubble-bg: #1e3050;
+    --send-bubble-text: #dce0e8;
+    --mapped-bg: rgba(106,149,184,0.06);
+    --mapped-border: rgba(106,149,184,0.2);
+    --wsl-dist-border: rgba(106,149,184,0.3);
+    --wsl-dist-bg: rgba(106,149,184,0.08);
+    --wsl-dist-stop-bg: rgba(192,128,64,0.1);
+    --wsl-dist-start-bg: rgba(74,122,181,0.1);
+    --font-ui: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    --font-mono: "Cascadia Code", "JetBrains Mono", "Fira Code", "Consolas", monospace;
+}
+
+.ble-body { flex:1; display:flex; min-height:0; }
+.ble-left { display:flex; flex-direction:column; width:320px; min-width:240px; max-width:380px; border-right:1px solid var(--border); background:var(--editor-bg); }
+.ble-left-head { display:flex; align-items:center; gap:10px; padding:8px 12px; border-bottom:1px solid var(--border); background:var(--toolbar-bg); flex-shrink:0; min-height:44px; }
+.ble-left-title { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--text-b); white-space:nowrap; min-width:0; }
+.ble-left-title svg { color:var(--link); }
+.ble-devList { flex:1; min-height:0; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px; }
+.ble-right { flex:1; min-width:0; display:flex; flex-direction:column; }
+.ble-dev-card { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; border:1px solid var(--border); background:var(--input-bg); cursor:pointer; transition: background .15s, border-color .15s, color .15s; }
+.ble-dev-card:hover { border-color:var(--border-h); }
+.ble-dev-card.active { border-color:var(--accent-focus); background:var(--accent-focus); }
+.ble-dev-card.active .ble-dev-name { color:#fff; }
+.ble-dev-card.active .ble-dev-sub { color:rgba(255,255,255,.85); }
+.ble-dev-main { flex:1; min-width:0; }
+.ble-dev-name { font-size:13px; font-weight:500; color:var(--text); display:flex; align-items:baseline; min-width:0; }
+.ble-dev-text { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ble-dev-tag { flex-shrink:0; margin-left:3px; font-size:12px; font-weight:400; color:var(--text-d); }
+.ble-dev-card.active .ble-dev-tag { color:rgba(255,255,255,.75); }
+.ble-dev-conn { flex-shrink:0; margin-left:5px; font-size:12px; font-weight:500; color:var(--accent-green); }
+.ble-dev-card.active .ble-dev-conn { color:rgba(255,255,255,.9); }
+.ble-dev-icon { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; opacity:.75; }
+.ble-dev-icon svg { height:22px; width:auto; display:block; }
+.ble-dev-card.active .ble-dev-icon { color:#fff; opacity:.95; }
+.ble-dev-sub { font-size:11px; color:var(--text-d); font-family:var(--font-mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; }
+.ble-dev-rssi { font-size:11px; font-family:var(--font-mono); flex-shrink:0; }
+.ble-dev-rssi-bar { width:34px; height:5px; border-radius:3px; background:var(--border); overflow:hidden; flex-shrink:0; }
+.ble-dev-rssi-bar > span { display:block; height:100%; border-radius:3px; }
+.ble-empty { margin:auto; text-align:center; color:var(--text-d); font-size:13px; line-height:2; }
+.ble-empty b { color:var(--text-b); }
+.ble-err { margin:auto; text-align:center; color:var(--accent-red); font-size:13px; background:rgba(196,92,92,.12); border:1px solid var(--accent-red); padding:10px 14px; border-radius:8px; }
+.ble-filter-row { display:flex; align-items:center; padding:0 12px 6px; flex-shrink:0; background:var(--toolbar-bg); border-bottom:1px solid var(--border); }
+.ble-filter-toggle { display:inline-flex; align-items:center; gap:4px; padding:3px 6px; border-radius:4px; cursor:pointer; user-select:none; font-size:11px; color:var(--text-d); border:1px solid transparent; flex-shrink:0; }
+.ble-filter-toggle:hover { color:var(--text-b); background:var(--input-bg); }
+.ble-filter-toggle.expanded { color:var(--accent-focus); }
+.ble-filter-toggle .ble-svc-caret { font-size:9px; width:9px; flex-shrink:0; transition: transform .15s; }
+.ble-filter-toggle.expanded .ble-svc-caret { transform:rotate(90deg); }
+.ble-filter-count { color:var(--text-d); font-size:11px; font-family:var(--font-mono); }
+.ble-filter-body { padding:8px 12px; border-bottom:1px solid var(--border); background:var(--editor-bg); flex-shrink:0; }
+.ble-filter-input { width:100%; box-sizing:border-box; height:28px; padding:0 8px; border:1px solid var(--border); border-radius:5px; background:var(--input-bg); color:var(--text); font-size:12px; outline:none; }
+.ble-filter-input:focus { border-color:var(--accent-focus); }
+.ble-filter-hint { font-size:10px; color:var(--text-d); margin-top:4px; }
+.ble-detail { flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; }
+.ble-detail-empty { margin:auto; color:var(--text-d); font-size:13px; }
+.ble-detail-head { display:flex; align-items:center; gap:14px; padding:8px 16px; border-bottom:1px solid var(--border); flex-shrink:0; min-height:44px; }
+.ble-detail-name { font-size:15px; font-weight:600; color:var(--text-b); }
+.ble-detail-meta { font-size:12px; color:var(--text-d); font-family:var(--font-mono); }
+.ble-connect-btn { margin-left:auto; }
+.ble-connect-btn.connected { background:var(--accent-focus); border-color:var(--accent-focus); color:#fff; }
+.ble-detail-sec { padding:14px 18px; border-bottom:1px solid var(--border); overflow-y:auto; }
+.ble-sec-title { font-size:11px; font-weight:600; color:var(--text-d); margin-bottom:10px; text-transform:uppercase; letter-spacing:.04em; }
+.ble-svc { display:flex; align-items:center; gap:8px; padding:8px 10px; border-radius:6px; border:1px solid var(--border); margin-bottom:6px; background:var(--input-bg); cursor:pointer; transition: border-color .15s; }
+.ble-svc:hover { border-color:var(--border-h); }
+.ble-svc.expanded { border-color:var(--accent-focus); }
+.ble-svc-caret { font-size:10px; color:var(--text-d); width:12px; flex-shrink:0; transition: transform .15s; }
+.ble-svc.expanded .ble-svc-caret { transform:rotate(90deg); }
+.ble-svc-attr { font-size:9px; font-weight:700; color:var(--text-d); border:1px solid var(--border); border-radius:4px; padding:0 4px; flex-shrink:0; line-height:14px; letter-spacing:.02em; text-align:center; min-width:18px; }
+.ble-svc-uuid { font-family:var(--font-mono); font-size:12px; color:var(--text); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ble-svc-name { font-size:11px; color:var(--text-d); margin-left:6px; flex-shrink:0; }
+.ble-svc-tag { font-size:10px; color:var(--text-d); border:1px solid var(--border); padding:0 6px; border-radius:4px; margin-left:auto; flex-shrink:0; }
+.ble-charGroup { padding:4px 0 8px 22px; display:flex; flex-direction:column; gap:4px; }
+.ble-char { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:6px; background:var(--editor-bg); border:1px solid var(--border); }
+.ble-char-uuid { font-family:var(--font-mono); font-size:12px; color:var(--text); }
+.ble-char-name { font-size:11px; color:var(--text-d); margin-left:6px; flex-shrink:0; }
+.ble-char-actions { display:flex; align-items:center; gap:6px; flex-shrink:0; margin-left:auto; }
+.ble-ch-action { display:inline-flex; align-items:center; justify-content:center; color:var(--text-d); cursor:not-allowed; transition: color .15s; }
+.ble-ch-action svg { width:18px; height:18px; }
+.ble-ch-action.ready { cursor:pointer; }
+.ble-ch-action.ready:hover { color:var(--link); }
+.ble-ch-action.on { color:var(--accent-focus); cursor:pointer; }
+.ble-ch-action.on:hover { color:var(--link); }
+.ble-char-tag { font-size:10px; color:var(--text-d); margin-left:auto; flex-shrink:0; }
+.ble-char-descs { display:flex; flex-wrap:wrap; gap:5px; padding:0 10px 2px 18px; }
+.ble-desc { display:inline-flex; align-items:baseline; gap:4px; font-family:var(--font-mono);
+            font-size:10px; color:var(--text-d); background:var(--input-bg);
+            border:1px solid var(--border); border-radius:4px; padding:1px 6px; white-space:nowrap; }
+.ble-desc em { font-style:normal; opacity:.75; }
+.ble-desc:hover { color:var(--text); }
+.ble-adv { display:flex; flex-direction:column; gap:6px; }
+.ble-adv-sec { padding-bottom:10px; }
+.ble-adv-toggle { display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none; }
+.ble-adv-toggle .ble-svc-caret { font-size:10px; color:var(--text-d); width:12px; flex-shrink:0; transition: transform .15s; }
+.ble-adv-toggle.expanded .ble-svc-caret { transform:rotate(90deg); }
+.ble-adv-count { margin-left:auto; color:var(--text-d); font-size:11px; font-family:var(--font-mono); flex-shrink:0; }
+.ble-adv-body { margin-top:8px; }
+.ble-adv-raw { font-family:var(--font-mono); font-size:11px; line-height:1.6; color:var(--text); background:var(--editor-bg); border:1px solid var(--border); border-radius:6px; padding:8px 10px; display:flex; flex-wrap:wrap; align-items:flex-end; gap:4px 6px; }
+.ble-adv-seg { display:flex; flex-direction:column; align-items:center; }
+.ble-adv-seg-label { font-style:normal; color:var(--text-d); font-size:10px; margin-bottom:3px; }
+.ble-adv-seg-hex { white-space:nowrap; }
+.ble-adv-sep { align-self:flex-end; color:var(--text-d); opacity:.5; padding-bottom:2px; }
+.ble-adv-brief { margin-top:8px; display:grid; grid-template-columns:repeat(2, max-content minmax(0,1fr)); gap:6px 20px; align-items:baseline; }
+.ble-adv-row { display:flex; gap:10px; align-items:baseline; font-size:12px; }
+.ble-adv-k { color:var(--text-d); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:0 0 auto; width:118px; }
+.ble-adv-v { color:var(--text); font-family:var(--font-mono); overflow-wrap:anywhere; word-break:normal; flex:1; min-width:0; }
+.ble-adv-empty { color:var(--text-d); font-size:12px; }
+.ble-log-sec { flex:1; min-height:0; display:flex; flex-direction:column; }
+.ble-log-title { display:flex; align-items:baseline; }
+.ble-log-clear { margin-left:auto; font-size:11px; font-weight:400; color:var(--text-d); cursor:pointer; letter-spacing:0; text-transform:none; }
+.ble-log-clear:hover { color:var(--accent-focus); }
+.ble-log { flex:1; min-height:0; overflow-y:auto; font-family:var(--font-mono); font-size:12px; line-height:1.7; color:var(--text); background:var(--editor-bg); border:1px solid var(--border); border-radius:6px; padding:10px; white-space:pre-wrap; word-break:break-all; }
+.ble-modal-mask { position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,.45);
+                  display:none; align-items:center; justify-content:center; }
+.ble-modal-mask.show { display:flex; }
+.ble-modal { width:490px; max-width:calc(100vw - 40px); background:var(--editor-bg);
+             border:1px solid var(--border); border-radius:10px; overflow:hidden;
+             box-shadow:0 12px 32px rgba(0,0,0,.45); }
+.ble-modal-head { display:flex; align-items:center; gap:10px; padding:11px 14px;
+                  background:var(--toolbar-bg); border-bottom:1px solid var(--border); }
+.ble-modal-title { font-size:13px; font-weight:600; color:var(--text); flex-shrink:0; }
+.ble-modal-sub { flex:1; min-width:0; text-align:right; font-family:var(--font-mono); font-size:11px;
+                 color:var(--text-d); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ble-modal-close { flex-shrink:0; width:22px; height:22px; border-radius:5px; cursor:pointer;
+                   display:inline-flex; align-items:center; justify-content:center;
+                   color:var(--text-d); font-size:13px; }
+.ble-modal-close:hover { background:var(--input-bg); color:var(--text); }
+.ble-modal-body { padding:14px; }
+.ble-modal-label { display:block; font-size:11px; color:var(--text-d); margin-bottom:6px; }
+.ble-modal-row { display:flex; align-items:center; gap:8px; }
+.ble-modal-inp { flex:1; min-width:0; height:30px; box-sizing:border-box; padding:0 10px;
+                 background:var(--input-bg); border:1px solid var(--border); border-radius:6px;
+                 color:var(--text); font-family:var(--font-mono); font-size:13px; outline:none;
+                 transition:border-color .15s; }
+.ble-modal-inp:focus { border-color:var(--accent-focus); }
+.ble-modal-hint { margin-top:8px; font-size:11px; color:var(--text-d); }
+.ble-modal-foot { display:flex; justify-content:flex-end; gap:8px; padding:0 14px 14px; }
+.ble-modal-btn { height:28px; padding:0 16px; border-radius:6px; cursor:pointer; font-size:12px;
+                 background:var(--input-bg); border:1px solid var(--border); color:var(--text); }
+.ble-modal-btn:hover { border-color:var(--border-h); }
+.ble-modal-btn.primary { background:var(--accent-focus); border-color:transparent; color:#fff; }
+.ble-modal-btn.primary:hover { filter:brightness(1.08); }
+.ble-log::-webkit-scrollbar { width:12px; }
+.ble-log::-webkit-scrollbar-track { background:transparent; }
+.ble-log::-webkit-scrollbar-thumb { background:rgba(128,134,146,.42); border:3px solid transparent; background-clip:content-box; border-radius:6px; }
+.ble-log::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
+body { background: var(--bg, #1c1e22); padding: 28px; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+.note { color: var(--text-d, #8b949e); font-size: 12px; margin: 0 0 14px; }
+h3 { color: var(--text, #c9d1d9); font-size: 14px; margin: 22px 0 6px; }
+.wrap { width: 430px; }
+.detail { width: 620px; border: 1px solid var(--border, #30363d); border-radius: 10px; padding: 10px; }
+#ble-devList { height: auto; display: flex; flex-direction: column; gap: 8px;
+               border: 1px solid var(--border, #30363d); border-radius: 10px; padding: 10px; }
+</style>
+</head>
+<body>
+<h3>① BLE 设备列表 — 设备类型图标</h3>
+<p class="note">使用 index.html 中真实的 BLE_DEV_ICONS / BLE_DEV_TYPE_META / renderBleDeviceList 渲染，非手工绘制。第 1 行为选中态。</p>
+<div class="wrap"><div class="ble-devList" id="ble-devList"></div></div>
+
+<h3>② 广播内容 — 分段原始字节 + 解析摘要</h3>
+<p class="note">使用真实 renderBleAdv 渲染；样本取自实际抓到的报文（服务数据 UUID 0xFDEE、厂商数据 0x0100）。</p>
+<div class="detail"><div class="ble-detail-sec ble-adv-sec">
+  <div class="ble-sec-title ble-adv-toggle"><span class="ble-svc-caret">&#9654;</span>广播内容 <span class="ble-adv-count">52 B</span></div>
+  <div class="ble-adv-body" id="ble-adv-body"></div>
+</div></div>
+
+<script>
+var BLE_DEV_ICONS = {
+    ble:     '<svg viewBox="210.11 104.13 604.79 815.74" fill="currentColor" preserveAspectRatio="xMidYMid meet"><path d="M792.576 348.672c9.728 46.592 14.336 100.864 14.336 163.328 0 61.952-4.608 116.736-14.336 163.328s-22.528 84.992-38.912 114.688c-16.384 29.696-37.376 54.272-62.464 72.704s-52.224 31.232-80.896 38.4c-28.672 7.168-61.44 10.752-97.792 10.752-36.352 0-69.12-3.584-97.792-10.752-28.672-7.168-55.808-19.968-80.896-38.4s-46.08-42.496-62.464-72.704c-16.384-29.696-29.696-68.096-38.912-114.688-9.728-46.592-14.336-100.864-14.336-163.328 0-61.952 4.608-116.736 14.336-163.328s22.528-84.992 38.912-114.688c15.36-29.696 36.352-53.76 61.44-72.192 25.6-18.432 52.736-31.744 81.408-38.912 28.672-7.168 61.44-10.752 97.792-10.752 36.352 0 69.12 3.584 97.792 10.752 28.672 7.168 55.808 19.968 80.896 38.4s46.08 42.496 62.464 72.704 30.208 68.096 39.424 114.688z m-306.688 506.88l206.848-207.36L556.544 512l136.704-136.704-207.36-207.36v272.896L372.224 327.168l-41.472 41.472L473.6 512 330.752 655.36l41.472 41.472 113.664-113.664v272.384z m58.368-546.304l66.56 66.56-66.048 66.048-0.512-132.608z m0.512 272.896l66.048 66.048-66.56 66.56 0.512-132.608z"/></svg>',
+    apple:   '<svg viewBox="37.38 -10.26 901.78 1046.96" fill="currentColor" preserveAspectRatio="xMidYMid meet"><path d="M791.488 544.095c-1.28-129.695 105.76-191.871 110.528-194.975-60.16-88.032-153.856-100.064-187.232-101.472-79.744-8.064-155.584 46.944-196.064 46.944-40.352 0-102.816-45.76-168.96-44.544-86.912 1.28-167.072 50.528-211.808 128.384-90.304 156.703-23.136 388.831 64.896 515.935 43.008 62.208 94.304 132.064 161.632 129.568 64.832-2.592 89.376-41.952 167.744-41.952s100.416 41.952 169.056 40.672c69.76-1.312 113.984-63.392 156.704-125.792 49.376-72.16 69.728-142.048 70.912-145.632-1.536-0.704-136.064-52.224-137.408-207.136zM662.56 163.52C698.304 120.16 722.432 60 715.84 0c-51.488 2.112-113.888 34.304-150.816 77.536-33.152 38.368-62.144 99.616-54.368 158.432 57.472 4.48 116.128-29.216 151.904-72.448z"/></svg>',
+    ibeacon: '<svg viewBox="104.44 104.44 933.36 933.39" fill="currentColor" preserveAspectRatio="xMidYMid meet"><path d="M687.870362 574.278394c0-63.114537-50.477431-113.591968-113.591968-113.591968s-113.591968 50.477431-113.591968 113.591968 50.477431 113.591968 113.591968 113.591968c56.795984 6.318553 113.591968-44.158878 113.591968-113.591968z m302.900083-176.706506c-31.557269-82.034699-94.671806-157.750846-170.387953-201.94522C744.666346 145.149237 656.313093 113.591968 567.959841 113.591968c-63.114537 0-119.910521 12.637106-176.706506 31.557269-82.034699 31.557269-151.46779 94.671806-201.945221 170.387952C145.149237 391.253335 113.591968 479.606588 113.591968 574.278394c0 50.477431 6.318553 100.954862 25.238716 151.46779 44.158878 145.149237 164.069399 252.422652 302.900082 296.617027 18.920162 6.318553 37.875822-6.318553 44.158878-25.238716 6.318553-25.238715-6.318553-37.875822-25.238716-44.158877-82.034699-25.238715-151.46779-75.716146-195.626667-138.830684-25.238715-31.557269-44.158878-69.433091-56.795984-107.273415s-25.238715-82.034699-25.238716-126.229074c0-50.477431 12.637106-100.954862 31.557269-151.46779 31.557269-69.433091 75.716146-126.229075 138.830683-170.387953 63.114537-37.875822 132.51213-63.114537 214.54683-63.114537 50.477431 0 100.954862 12.637106 151.46779 31.557269 69.433091 31.557269 126.229075 82.034699 170.387952 138.830683 37.875822 63.114537 63.114537 138.830684 63.114538 214.54683 0 44.158878-6.318553 88.353253-25.238716 126.229075-37.875822 113.591968-132.51213 208.263774-252.422651 246.104098-18.920162 6.318553-31.557269 31.557269-25.238716 44.158878 6.318553 18.920162 31.557269 31.557269 44.158878 25.238715a528.806109 528.806109 0 0 0 239.821043-164.069399c31.557269-37.875822 50.477431-82.034699 69.43309-126.229074s25.238715-100.954862 25.238715-151.46779c0-69.433091-12.637106-126.229075-37.875821-183.025059z m-296.58153 435.447711c44.158878-25.238715 88.353253-56.795984 113.591968-100.954862 31.557269-44.158878 44.158878-100.954862 44.158878-157.750846 0-37.875822-6.318553-75.716146-25.238715-107.273415-25.238715-50.477431-56.795984-94.671806-100.954862-126.229074s-100.954862-44.158878-157.750846-44.158878c-37.875822 0-75.716146 6.318553-107.273415 25.238716-50.477431 25.238715-94.671806 56.795984-119.910521 100.954861-31.557269 44.158878-44.158878 100.954862-44.158878 164.069399 0 56.795984 18.920162 107.273415 44.158878 157.750846s69.433091 82.034699 113.591968 100.954862c18.920162 6.318553 31.557269 0 44.158878-18.920162 6.318553-18.920162 0-37.875822-18.920163-44.158878-31.557269-18.920162-69.433091-44.158878-88.353252-82.034699-25.238715-31.557269-31.557269-75.716146-31.557269-113.591969 0-31.557269 6.318553-56.795984 18.920162-88.353252 18.920162-37.875822 37.875822-75.716146 75.716147-100.954862 31.557269-25.238715 75.716146-31.557269 119.910521-31.557269 31.557269 0 56.795984 6.318553 82.034699 18.920163 37.875822 18.920162 69.433091 44.158878 94.671806 82.034699 25.238715 31.557269 31.557269 75.716146 31.557269 119.910521s-12.637106 88.353253-31.557269 113.591969c-25.238715 31.557269-50.477431 63.114537-88.353252 82.034699-18.920162 6.318553-25.238715 31.557269-18.920163 44.158878 6.318553 6.318553 31.557269 18.920162 50.477431 6.318553z"/></svg>',
+    pc:      '<svg viewBox="56.97 66.18 860.92 874.23" fill="currentColor" preserveAspectRatio="xMidYMid meet"><path d="M454.656 863.232l-1.024-343.04 455.68 2.048 0 409.6zM453.632 143.36l455.68-68.608 0 378.88-455.68 0 0-310.272zM65.536 519.168l325.632 1.024 0 336.896-325.632-52.224 0-285.696zM65.536 453.632l0-251.904 325.632-52.224 0 304.128-325.632 0z"/></svg>',
+    mesh:    '<svg viewBox="121.66 113.37 773.68 784.96" fill="currentColor" preserveAspectRatio="xMidYMid meet"><path d="M847.39 603.78V399a50.38 50.38 0 0 0 32-63.18l-0.22-0.6a50.41 50.41 0 0 0-80-22.82L647.91 191.74a50.43 50.43 0 0 0-35.74-69.55l-0.59-0.12a51.08 51.08 0 0 0-9.88-1 50.41 50.41 0 0 0-50.3 47.62l-198.15 45.25a50.26 50.26 0 0 0-55.64-25.1l-0.5 0.13a50.5 50.5 0 0 0-32.76 25.34l-0.37-0.08 0.3 0.24a50.34 50.34 0 0 0 11.92 61.88l-87 180.6a50.21 50.21 0 0 0-55.2 28.48l-0.58-0.14 0.47 0.38a50 50 0 0 0 0 41.63l0.11 0.24A50.22 50.22 0 0 0 189.23 556l87.7 182.12a50.41 50.41 0 1 0 77 61.06l197.41 45.06A50.29 50.29 0 0 0 611 889.73l1.15-0.22A50.43 50.43 0 0 0 648.23 821l159.3-127a50.43 50.43 0 1 0 39.86-90.15z m-401-325.64L412.66 305l-57.88-46.17c0.22-0.48 0.46-0.94 0.67-1.43zM340 738.11c-0.24-0.19-0.48-0.35-0.72-0.53L370 673.91l25.28 20.16z m39.62-84.29l39.06-81.13 44.55 10.17L483.06 624l-70.4 56.15z m-60.77-168.47l87.78-20 19.83 41.16-19.83 41.17-87.78-20z m-21.74 37.3l-66.9-15.27v-0.9-0.9l66.9-15.26z m44.61-246.43l53.51 42.68L370 339.06l-29.68-61.64c0.44-0.42 0.92-0.79 1.4-1.2z m70.94 56.58l70.4 56.14-19.82 41.17-44.55 10.16-39.07-81.13z m368.42 21.74c0.07 1 0.15 2 0.28 3L712 373.32l-18.69-38.81z m-59.39 265l14-29.13 54.79 43.7c-0.14 0.35-0.25 0.71-0.38 1.06z m81.31-3.3l-57.56-45.9 18.69-38.81L804.29 615c-0.46 0.42-0.9 0.83-1.29 1.24z m-75-59.81l-62.64-49.95 62.64-50 24 50z m-115.83-92.34v-45.68l87.78-20 18.34 38.07-70.4 56.14z m18.28 42.39l-18.28 14.59V491.9z m-40-59.72l-22.8-18.19 22.8-5.2z m0 27.8v63.84l-49.91 39.8-62.26-14.2-27.7-57.52 27.7-57.48 62.24-14.21z m0 91.64v23.39l-22.8-5.2z m21.74-17.33l35.72-28.49 70.4 56.14L700 614.59l-87.78-20z m177.46-169.34l-53.93 43-14-29.13 67.07-15.31c0.27 0.48 0.55 0.97 0.86 1.44z m-44.26 63.1l60.31-48.1 0.18 0.11-41.8 86.79z m-55.11-64.34l-78.11 17.82V316l54.05 12.34z m-78.11-84.59v-72.82c0.69-0.15 1.37-0.36 2.05-0.53l39.94 82.93z m-21.74-73v68.07l-31.53-7.2 29.56-61.38c0.66 0.15 1.31 0.33 1.97 0.48z m0 90.36v90.05l-44.54 10.16-35.72-28.49 39.06-81.12z m-71.64 106.4l-28.45 6.49 10.15-21.08z m-67.61 37.72l-12.66 26.29-10.15-21.08z m-12.66 76.38l12.65 26.28-22.8-5.2z m51.82 57.52l28.44 6.49-18.29 14.58z m55.55 12.68l44.54 10.16v90l-41.2 9.41-39.06-81.13z m44.54 122.5V791c-0.84 0.19-1.68 0.41-2.5 0.64l-29-60.26z m21.74 66.65v-71.64l42-9.59-39.42 81.86c-0.87-0.23-1.75-0.47-2.58-0.66z m0-93.91v-80.15l78.11 17.83-24.06 50zM712 639.64l74.93 17.1v0.34l-93.63 21.37z m111.44-34.94l-47.3-98.22 49.51-102.81v200.46c-0.74 0.18-1.48 0.36-2.21 0.57zM784.34 333l-103.08-23.53-47.62-98.9c0.49-0.4 1-0.85 1.43-1.28l150.77 120.24c-0.54 1.14-1.05 2.29-1.5 3.47zM568 209c0.41 0.37 0.81 0.77 1.24 1.13l-32 66.5-42-9.58z m-40.5 87.66l-34.76 72.19-62.65-50 43.35-34.57z m-208.65-9.24c0.64-0.13 1.25-0.31 1.89-0.46l31.78 66-33.67 26.85zM362.2 373l34.8 72.23-78.11 17.83v-55.45z m-65.09 95l-72 16.43c-0.25-0.5-0.47-1-0.73-1.52l72.7-58z m-72 60.5l72 16.42V588l-72.71-58c0.27-0.46 0.49-1 0.74-1.48z m93.71 21.38L397 567.73l-34.8 72.19-43.35-34.57zM352.52 660l-32.88 68.28c-0.27-0.06-0.52-0.15-0.79-0.2v-94.93z m1.11 95l59-47.08 33.67 26.85-92.3 21.12c-0.1-0.28-0.23-0.56-0.37-0.84z m76.47-61l62.64-50 34.76 72.3-54.06 12.34z m107.07 42.31L568.75 802c-0.53 0.47-1 0.95-1.57 1.43l-72-57.42zM634 801.58l47.24-98.09 111.28-25.39-156.79 125c-0.56-0.49-1.12-1.02-1.73-1.52z m-79.13-611.37c0.14 0.35 0.25 0.71 0.4 1.06l-87.2 69.54L359.23 236c0-0.37 0-0.73-0.05-1.1z m-259.45 96.33c0.56 0.15 1.12 0.3 1.69 0.43v110.18l-86.8 69.22c-0.36-0.28-0.72-0.55-1.1-0.82z m-86.21 260.87c0.37-0.26 0.74-0.54 1.1-0.82l86.8 69.23v112.53l-0.68 0.17z m149.7 229.66l109.16-24.92 86.77 69.19c-0.18 0.43-0.32 0.87-0.48 1.3L358.89 778v-0.58c0-0.2 0.02-0.22 0.02-0.35z"/></svg>'
+};
+var BLE_DEV_TYPE_META = {
+    ble:     { title: '标准 BLE 设备' },
+    apple:   { title: 'Apple 设备（iPhone / iPad / Mac）' },
+    ibeacon: { title: 'iBeacon 信标（Apple 厂商数据 02 15 结构）', tag: 'iBeacon' },
+    pc:      { title: '个人电脑' },
+    mesh:    { title: 'BLE Mesh 设备', tag: 'Mesh' }
+};
+function escapeHtml(s) { var r = ''; for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i); if (c === 38) r += '&amp;'; else if (c === 60) r += '&lt;'; else if (c === 62) r += '&gt;'; else if (c === 34) r += '&quot;'; else if (c === 39) r += '&#39;'; else r += s[i]; } return r; }
+function bleRssiColor(rssi, isActive) {
+    if (isActive) return '#fff';
+    return rssi >= -55 ? 'var(--accent-green)' : (rssi >= -75 ? 'var(--accent-orange)' : 'var(--accent-red)');
+}
+
+function renderBleDeviceList() {
+    var list = document.getElementById('ble-devList');
+    if (!list) return;
+    list.innerHTML = '';
+    var shown = _bleDevices.slice();
+    if (_bleFilterText) {
+        shown = shown.filter(function(d) {
+            var n = (d.name || '').toLowerCase();
+            var a = (d.address || '').toLowerCase();
+            return n.indexOf(_bleFilterText) >= 0 || a.indexOf(_bleFilterText) >= 0;
+        });
+    }
+    // 按信号强度 RSSI 从强到弱排序（越大越强，如 -31 > -78）
+    shown.sort(function(a, b) { return (b.rssi || -999) - (a.rssi || -999); });
+    var countEl = document.getElementById('ble-filterCount');
+    if (countEl) countEl.textContent = _bleFilterText ? ('匹配 ' + shown.length + '/' + _bleDevices.length) : '';
+    if (!_bleDevices.length) {
+        list.innerHTML = '<div class="ble-empty"><b>未发现蓝牙设备</b><br><span>点击「开始扫描」搜索周边 BLE 设备</span></div>';
+        return;
+    }
+    if (!shown.length) {
+        list.innerHTML = '<div class="ble-empty">无匹配设备</div>';
+        return;
+    }
+    shown.forEach(function(dev) {
+        var isActive = (dev.address === _bleSelected);
+        var card = document.createElement('div');
+        card.className = 'ble-dev-card' + (isActive ? ' active' : '') + (dev.connected ? ' connected' : '');
+        card.setAttribute('data-addr', dev.address);   // 供 RSSI 定点刷新定位卡片
+        // RSSI 颜色与信号条强度（选中态用白色，避免蓝底上彩色不友好）
+        // 已连接但不再广播的设备没有 RSSI（null）：显示「—」，不能显示成 null dBm / 满格信号条
+        var hasRssi = (typeof dev.rssi === 'number');
+        var rssiColor = hasRssi ? bleRssiColor(dev.rssi, isActive) : 'var(--text-d)';
+        var pct = hasRssi ? Math.max(0, Math.min(100, Math.round((dev.rssi + 100) / 90 * 100))) : 0;
+        // 设备类型图标 + 名称后缀提示（由后端依据广播特征判定：apple / ibeacon / pc / mesh / ble）
+        var dtKey = BLE_DEV_ICONS[dev.deviceType] ? dev.deviceType : 'ble';
+        var dtIcon = BLE_DEV_ICONS[dtKey];
+        var dtMeta = BLE_DEV_TYPE_META[dtKey];
+        var dtTitle = dtMeta.title;
+        // 灰色后缀：仅 iBeacon / Mesh 这类「需要显式点明」的类型带 tag
+        var dtTag = dtMeta.tag ? '<span class="ble-dev-tag">(' + dtMeta.tag + ')</span>' : '';
+        // 已连接提示：用文字而非改图标颜色，避免与设备类型混淆
+        var connTag = dev.connected ? '<span class="ble-dev-conn" title="BLE 已连接">已连接</span>' : '';
+        card.innerHTML =
+            '<span class="ble-dev-icon" title="' + dtTitle + '">' + dtIcon + '</span>' +
+            '<div class="ble-dev-main">' +
+                '<div class="ble-dev-name">' +
+                    '<span class="ble-dev-text">' + escapeHtml(dev.name || '未知设备') + '</span>' + dtTag + connTag +
+                '</div>' +
+                '<div class="ble-dev-sub">' + dev.address + '</div>' +
+            '</div>' +
+            '<div class="ble-dev-rssi-bar"><span style="width:' + pct + '%;background:' + rssiColor + '"></span></div>' +
+            '<div class="ble-dev-rssi" style="color:' + rssiColor + '">' + (hasRssi ? dev.rssi + ' dBm' : '—') + '</div>';
+        card.addEventListener('click', function() {
+            // 切换设备即清空日志与写入窗口：它们只属于「当前设备本次会话」
+            if (dev.address !== _bleSelected) { clearBleLog(); closeBleWriteModal(); }
+            _bleSelected = dev.address;
+            renderBleDeviceList();
+            renderBleDetail();
+        });
+        list.appendChild(card);
+    });
+}
+
+function shortUuid(u) {
+    if (!u) return '';
+    var s = String(u).toUpperCase();
+    var m16 = /^0000([0-9A-F]{4})-0000-1000-8000-00805F9B34FB$/.exec(s);
+    if (m16) return m16[1];
+    var m32 = /^([0-9A-F]{8})-0000-1000-8000-00805F9B34FB$/.exec(s);
+    if (m32) return m32[1];
+    return s;
+}
+
+function advRow(k, v) {
+    return '<span class="ble-adv-k" title="' + escapeHtml(k) + '">' + escapeHtml(k) + '</span>' +
+           '<span class="ble-adv-v">' + escapeHtml(v) + '</span>';
+}
+
+function hexToLe(hexStr) {
+    var parts = hexStr.trim().split(/\s+/).filter(function(b){ return b !== ''; });
+    var bytes = parts.map(function(b){ return parseInt(b, 16); });
+    if (!bytes.length || bytes.some(function(b){ return isNaN(b); })) return '0x' + parts.join('');
+    var v = 0, mul = 1;
+    for (var i = 0; i < bytes.length; i++) { v += bytes[i] * mul; mul *= 256; }
+    return '0x' + v.toString(16).toUpperCase().padStart(bytes.length * 2, '0');
+}
+
+function bleDataVal(hexStr) {
+    var bytes = hexStr.trim().split(/\s+/);
+    if (bytes.length <= 4) return hexToLe(hexStr);
+    return '0x' + bytes.join('');
+}
+
+function parseBleAdv(hexStr) {
+    var bytes = hexStr.trim().split(/\s+/);
+    var segs = [];
+    var i = 0;
+    while (i < bytes.length) {
+        var len = parseInt(bytes[i], 16);
+        if (isNaN(len) || len <= 0 || i + 1 + len > bytes.length) break;
+        var type = parseInt(bytes[i + 1], 16);
+        segs.push({ label: advTypeLabel(type), hex: bytes.slice(i, i + 1 + len).join(' ') });
+        i += 1 + len;
+    }
+    return segs;
+}
+
+function advTypeLabel(t) {
+    switch (t) {
+        case 0x01: return 'Flags';
+        case 0x02: return '服务UUID(16bit·不完整)';
+        case 0x03: return '服务UUID(16bit)';
+        case 0x04: return '服务UUID(32bit·不完整)';
+        case 0x05: return '服务UUID(32bit)';
+        case 0x06: return '服务UUID(128bit·不完整)';
+        case 0x07: return '服务UUID(128bit)';
+        case 0x08: return '广播名(简)';
+        case 0x09: return '广播名';
+        case 0x0A: return '发射功率';
+        case 0x0D: return '设备类别';
+        case 0x0E: return '配对Hash C-192';
+        case 0x0F: return '配对Randomizer R-192';
+        case 0x10: return 'Device ID';
+        case 0x11: return 'SM TK Value';
+        case 0x12: return 'SM OOB Flags';
+        case 0x14: return '服务请求UUID(16bit)';
+        case 0x15: return '服务请求UUID(32bit)';
+        case 0x16: return '服务数据(16bit)';
+        case 0x17: return 'Public Target Address';
+        case 0x18: return 'Random Target Address';
+        case 0x19: return '外观';
+        case 0x1A: return '广播间隔';
+        case 0x1B: return 'LE 设备地址';
+        case 0x1C: return 'LE Role';
+        case 0x1D: return '配对Hash C-256';
+        case 0x1E: return '配对Randomizer R-256';
+        case 0x1F: return '服务请求UUID(128bit)';
+        case 0x20: return '服务数据(32bit)';
+        case 0x21: return '服务数据(128bit)';
+        case 0x22: return 'LE SC Confirmation';
+        case 0x23: return 'LE SC Random';
+        case 0x24: return 'URI';
+        case 0x25: return '室内定位';
+        case 0x26: return '传输发现数据';
+        case 0x27: return 'LE 支持特性';
+        case 0x28: return '信道图更新';
+        case 0x29: return 'PB-ADV';
+        case 0x2A: return 'Mesh Message';
+        case 0x2B: return 'Mesh Beacon';
+        case 0x2C: return 'BIGInfo';
+        case 0x2D: return 'Broadcast_Code';
+        case 0x2E: return 'Resolvable Set ID';
+        case 0x2F: return '广播间隔(16bit UUID)';
+        case 0x30: return '广播间隔(32bit UUID)';
+        case 0x31: return '广播间隔(128bit UUID)';
+        case 0x32: return '广播名(加密)';
+        case 0x33: return '加密广播数据';
+        case 0x34: return 'PA 响应时序';
+        case 0x3D: return '3D 信息';
+        case 0xFF: return '厂商数据';
+        default: return '0x' + ('0' + t.toString(16)).slice(-2).toUpperCase();
+    }
+}
+
+function renderBleAdv(dev) {
+    if (!dev.adv) return '<div class="ble-adv-empty">' + (dev.connected ? '已连接：设备已停止广播，无广播数据' : '无广播数据') + '</div>';
+    var a = dev.adv;
+    var html = '';
+    if (a.raw) {
+        var segHtml = parseBleAdv(a.raw).map(function(s) {
+            return '<span class="ble-adv-seg"><em class="ble-adv-seg-label">' + s.label + '</em><span class="ble-adv-seg-hex">' + s.hex.replace(/ /g,'') + '</span></span>';
+        }).join('<span class="ble-adv-sep">|</span>');
+        if (segHtml) html += '<div class="ble-adv-raw">' + segHtml + '</div>';
+    }
+    var brief = [];
+    if (a.adName) brief.push(advRow('广播名', a.adName));
+    if (a.svcs && a.svcs.length) brief.push(advRow('广播服务', a.svcs.map(function(s){ return '0x' + shortUuid(s); }).join(' | ')));
+    if (a.appearance != null) brief.push(advRow('外观', '0x' + a.appearance.toString(16).toUpperCase()));
+    if (a.txPower != null) brief.push(advRow('发射功率', a.txPower + ' dBm'));
+    if (a.manufacturerData && a.manufacturerData.length)
+        brief.push(a.manufacturerData.map(function(m){ return advRow('厂商数据(0x' + m.id.toString(16).toUpperCase() + ')', bleDataVal(m.hex)); }).join(''));
+    if (a.serviceData && a.serviceData.length)
+        brief.push(a.serviceData.map(function(s){ return advRow('服务数据(0x' + shortUuid(s.uuid) + ')', bleDataVal(s.hex)); }).join(''));
+    if (brief.length) html += '<div class="ble-adv-brief">' + brief.join('') + '</div>';
+    return html;
+}
+
+_bleDevices = [
+  { address: 'A4:C1:38:A5:1A:B7', name: 'iPhone 15 Pro',      rssi: -48, connected: true,  deviceType: 'apple' },
+  { address: 'B0:BE:76:11:22:33', name: 'iBeacon 入口信标',    rssi: -55, connected: false, deviceType: 'ibeacon' },
+  { address: '00:1A:7D:DA:71:13', name: 'DESKTOP-SS49V6F',    rssi: -62, connected: false, deviceType: 'pc' },
+  { address: 'C8:47:8C:00:11:22', name: 'Mesh Light',          rssi: -71, connected: false, deviceType: 'mesh' },
+  { address: 'E7:2A:4C:9F:00:01', name: '标准 BLE 外设',        rssi: -83, connected: false, deviceType: 'ble' },
+  { address: 'FF:FF:FF:FF:FF:01', name: '未知类型设备',         rssi: -90, connected: false }
+];
+_bleSelected = 'A4:C1:38:A5:1A:B7';
+renderBleDeviceList();
+var SAMPLE_ADV = {"adName":"EDIFIER BLE","txPower":0,"appearance":null,"manufacturerData":[{"id":256,"hex":"00 01 85 00 03 16 ED B1 F1 00 00 00 EB 5A 51 A9 FE 01 10 00 00 00"}],"serviceData":[{"uuid":"0000fdee-0000-1000-8000-00805f9b34fb","hex":"00 10 00 01 21 A6 D5 87 A4 24 02 5A 41 41 4F 03 02"}],"svcs":["0000fe3c-0000-1000-8000-00805f9b34fb"],"raw":"02 01 16 17 FF 00 01 85 00 03 16 ED B1 F1 00 00 00 EB 5A 51 A9 FE 01 10 00 00 00 14 16 EE FD 00 10 00 01 21 A6 D5 87 A4 24 02 5A 41 41 4F 03 02 03 03 3C FE"};
+document.getElementById('ble-adv-body').innerHTML = renderBleAdv({ adv: SAMPLE_ADV });
+</script>
+</body>
+</html>
