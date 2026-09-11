@@ -498,6 +498,21 @@ console.log('preview ->', out);
   check(!/蓝牙界面不可用/.test(html), '蓝牙页不再禁用「打开额外监视器」按钮');
   check(/var _bleExtraMon = null;/.test(html), '_bleExtraMon 已声明');
 
+  // ---- 5k) 写入弹窗精简（用户要求：删 UUID 副标题 / Value 标签 / 独立提示行）----
+  check(!/bleWriteChar/.test(html), '弹窗不再显示特征 UUID 副标题');
+  check(!/bleWriteHint/.test(html) && !/ble-modal-hint/.test(html), '弹窗不再有独立提示行');
+  check(!/ble-modal-label/.test(html), '弹窗不再有 Value 标签');
+  check(!/ble-modal-sub/.test(html), '已清掉随之变成孤儿的 .ble-modal-sub 样式');
+  check(/id="bleWriteModeWrap"/.test(html), 'HEX/文本（写响应/无响应）选择器保留');
+  check(/标题区分特征 \/ 描述符/.test(html), '标题按目标区分特征/描述符（UUID 副标题删除后的信息补偿）');
+  check(/id="bleWriteTitle">写入特征值</.test(html), '标题默认「写入特征值」');
+  check(/bleWriteTitle'\)[\s\S]{0,120}'写入描述符值'/.test(html), '描述符写入时标题变「写入描述符值」');
+  check(/inp0\.placeholder = \(kind === 'desc' && shortUuid\(uuid\) === '2902'\)/.test(html),
+    'placeholder 按目标动态设置（CCCD 给取值提示）');
+  check(/支持 \\\\r \\\\n \\\\t 转义，HEX 形如 01 A0 FF/.test(html),
+    '转义/HEX 提示已并入 placeholder');
+  check(/CCCD：0100 开启通知，0200 开启指示，0000 关闭/.test(html), 'CCCD 的取值提示也在 placeholder 里');
+
   // ---- 5j) 内嵌监视器的宽度拖拽（用户反馈「向左拖动失效」：原来根本没做拖拽）----
   check(/id="ble-monResize"/.test(html) && /title="拖动调节宽度"/.test(html), '监视器区有宽度拖拽手柄');
   check(/\.ble-mon-resize \{ width:5px; cursor:col-resize;/.test(html),

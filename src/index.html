@@ -1173,21 +1173,17 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-modal-head { display:flex; align-items:center; gap:10px; padding:11px 14px;
                   background:var(--toolbar-bg); border-bottom:1px solid var(--border); }
 .ble-modal-title { font-size:13px; font-weight:600; color:var(--text); flex-shrink:0; }
-.ble-modal-sub { flex:1; min-width:0; text-align:right; font-family:var(--font-mono); font-size:11px;
-                 color:var(--text-d); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ble-modal-close { flex-shrink:0; width:22px; height:22px; border-radius:5px; cursor:pointer;
                    display:inline-flex; align-items:center; justify-content:center;
                    color:var(--text-d); font-size:13px; }
 .ble-modal-close:hover { background:var(--input-bg); color:var(--text); }
 .ble-modal-body { padding:14px; }
-.ble-modal-label { display:block; font-size:11px; color:var(--text-d); margin-bottom:6px; }
 .ble-modal-row { display:flex; align-items:center; gap:8px; }
 .ble-modal-inp { flex:1; min-width:0; height:30px; box-sizing:border-box; padding:0 10px;
                  background:var(--input-bg); border:1px solid var(--border); border-radius:6px;
                  color:var(--text); font-family:var(--font-mono); font-size:13px; outline:none;
                  transition:border-color .15s; }
 .ble-modal-inp:focus { border-color:var(--accent-focus); }
-.ble-modal-hint { margin-top:8px; font-size:11px; color:var(--text-d); }
 .ble-modal-foot { display:flex; justify-content:flex-end; gap:8px; padding:0 14px 14px; }
 .ble-modal-btn { height:28px; padding:0 16px; border-radius:6px; cursor:pointer; font-size:12px;
                  background:var(--input-bg); border:1px solid var(--border); color:var(--text); }
@@ -2066,14 +2062,12 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 <div class="ble-modal-mask" id="bleWriteModal" onclick="closeBleWriteModal()">
     <div class="ble-modal" onclick="event.stopPropagation()">
         <div class="ble-modal-head">
-            <span class="ble-modal-title">写入特征值</span>
-            <span class="ble-modal-sub" id="bleWriteChar"></span>
+            <span class="ble-modal-title" id="bleWriteTitle">写入特征值</span>
             <span class="ble-modal-close" onclick="closeBleWriteModal()" title="关闭">&#10005;</span>
         </div>
         <div class="ble-modal-body">
-            <span class="ble-modal-label">Value</span>
             <div class="ble-modal-row">
-                <input class="ble-modal-inp" id="bleWriteValue" placeholder="输入要写入的值，回车发送" autocomplete="off" spellcheck="false">
+                <input class="ble-modal-inp" id="bleWriteValue" placeholder="要写入的值，回车发送；支持 \r \n \t 转义，HEX 形如 01 A0 FF" autocomplete="off" spellcheck="false">
                 <div class="send-as" id="bleWriteModeWrap" onclick="toggleBleWriteMode()">
                     <span class="send-as-text" id="bleWriteModeText">写响应</span>
                     <span class="send-as-arrow">&#9660;</span>
@@ -2091,7 +2085,6 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
                     </div>
                 </div>
             </div>
-            <div class="ble-modal-hint" id="bleWriteHint">文本按 UTF-8 编码，支持 \r \n \t 转义；HEX 形如 01 A0 FF；写响应会等外设回执</div>
         </div>
         <div class="ble-modal-foot">
             <button class="ble-modal-btn" onclick="closeBleWriteModal()">关闭</button>
@@ -6824,19 +6817,21 @@ function openBleWriteModal(uuid, name, modes, target) {
     var kind = target.kind === 'desc' ? 'desc' : 'char';
     _bleWriteTarget = { uuid: uuid, name: name || '', modes: modes, mode: modes[0],
                         kind: kind, charUuid: target.charUuid || '' };
-    var sub = document.getElementById('bleWriteChar');
-    if (sub) sub.textContent = (kind === 'desc' ? '描述符 · ' : '') + '0x' + shortUuid(uuid) + (name ? ' · ' + name : '');
+    // 标题区分特征 / 描述符（原先靠副标题里的 UUID 区分，现按需求去掉副标题）
+    var ttl = document.getElementById('bleWriteTitle');
+    if (ttl) ttl.textContent = (kind === 'desc') ? '写入描述符值' : '写入特征值';
+    // 提示并入输入框 placeholder（原先有独立提示行，按需求去掉，弹窗更简洁）
+    var inp0 = document.getElementById('bleWriteValue');
+    if (inp0) {
+        inp0.placeholder = (kind === 'desc' && shortUuid(uuid) === '2902')
+            ? '要写入的值，回车发送；CCCD：0100 开启通知，0200 开启指示，0000 关闭'
+            : '要写入的值，回车发送；支持 \\r \\n \\t 转义，HEX 形如 01 A0 FF';
+    }
     // 写入方式：两种都支持时才显示选择器，只有一种时隐藏（避免多一个没用的控件）
     // （描述符写入按规范用带响应写，调用方只传一种模式，因此这里自然隐藏）
     var wrap = document.getElementById('bleWriteModeWrap');
     if (wrap) wrap.style.display = (modes.length > 1) ? '' : 'none';
     setBleWriteMode(modes[0]);
-    var hint = document.getElementById('bleWriteHint');
-    if (hint) {
-        hint.textContent = (kind === 'desc' && shortUuid(uuid) === '2902')
-            ? 'CCCD 常见取值：01 00 开启通知、02 00 开启指示、00 00 全部关闭（HEX 模式输入 0100）'
-            : '文本按 UTF-8 编码，支持 \\r \\n \\t 转义；HEX 形如 01 A0 FF；写响应会等外设回执';
-    }
     var mask = document.getElementById('bleWriteModal');
     if (mask) mask.classList.add('show');
     var inp = document.getElementById('bleWriteValue');
