@@ -3001,6 +3001,149 @@ fn dirs_config_path() -> Option<std::path::PathBuf> {
     }
 }
 
+// ===== 窗口大小与位置记忆 =====
+// 在退出时把主窗口的几何信息写入 %APPDATA%\seahi-serial\window.json，
+// 下次启动时据此恢复窗口大小与位置（含最大化状态）。
+// 注意：最大化时只翻转 maximized 标志并保留最近一次“非最大化”时的普通几何，
+// 以免把最大化后的工作区尺寸误存为普通尺寸，导致还原时窗口异常。
+
+/// 持久化的窗口状态（单位：物理像素）
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct SavedWindowState {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    maximized: bool,
+}
+
+impl Default for SavedWindowState {
+    fn default() -> Self {
+        // 与 tauri.conf.json 中 main 窗口的默认几何保持一致
+        SavedWindowState { x: 0, y: 0, width: 1047, height: 794, maximized: false }
+    }
+}
+
+fn window_state_file() -> Option<std::path::PathBuf> {
+    dirs_config_path().map(|d| d.join("window.json"))
+}
+
+fn load_window_state() -> Option<SavedWindowState> {
+    let f = window_state_file()?;
+    std::fs::read_to_string(f).ok().and_then(|s| serde_json::from_str(&s).ok())
+}
+
+fn save_window_state(s: &SavedWindowState) {
+    if let Some(f) = window_state_file() {
+        if let Some(dir) = f.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(s) {
+            let _ = std::fs::write(f, json);
+        }
+    }
+}
+
+/// 捕获当前窗口几何并持久化。核心约定：窗口处于最大化时只更新标志、保留
+/// 已存的普通几何；处于最小化/隐藏等异常态时不改写普通几何（此时系统会给
+/// 出 (-32000,-32000) 之类的哨兵坐标，写入会污染记录）。
+fn persist_window_geometry(window: &tauri::Window) {
+    if window.label() != "main" {
+        return;
+    }
+    let maximized = window.is_maximized().unwrap_or(false);
+    let minimized = window.is_minimized().unwrap_or(false);
+    let mut state = load_window_state().unwrap_or_default();
+    if maximized {
+        state.maximized = true;
+    } else {
+        state.maximized = false;
+        if !minimized {
+            // 位置必须用“外框”坐标(outer_position)：恢复时 set_position 设置的正是外框左上角，
+            // 若这里保存“客户区”坐标(inner_position)，无边框窗口因外框比客户区外扩一圈 margin，
+            // 每次恢复都会把窗口再向右/下推 margin，反复开关便持续漂移。
+            // 尺寸仍取内尺寸(inner_size)，因为 set_size 设置的是客户区(内容)尺寸，二者一致。
+            if let (Ok(pos), Ok(size)) = (window.outer_position(), window.inner_size()) {
+                state.x = pos.x;
+                state.y = pos.y;
+                state.width = size.width;
+                state.height = size.height;
+            }
+        }
+    }
+    save_window_state(&state);
+}
+
+/// Moved / Resized 自动保存的去抖计时（只在窗口 label=main 时使用）
+static WINDOW_SAVE_DEBOUNCE: std::sync::OnceLock<std::sync::Mutex<Option<std::time::Instant>>> =
+    std::sync::OnceLock::new();
+
+/// 事件触发的自动保存：force 用于 CloseRequested 强制写盘；否则按 ~400ms 去抖，
+/// 避免拖动/缩放窗口时高频写文件。
+fn window_auto_save(window: &tauri::Window, force: bool) {
+    if window.label() != "main" {
+        return;
+    }
+    // 启动时窗口先隐藏用于恢复几何，这段时间会触发 Moved/Resized，但那是程序自己摆放的
+    // 瞬时态，写盘会污染记录（甚至存下 2068×2060 这类异常尺寸）。因此非强制的自动保存
+    // 仅在窗口已可见(用户实际交互/显示后)才执行；CloseRequested(force)不受此限制。
+    if !force && !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let lock = WINDOW_SAVE_DEBOUNCE.get_or_init(|| std::sync::Mutex::new(None));
+    if !force {
+        let last = lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(prev) = *last {
+            if prev.elapsed() < std::time::Duration::from_millis(400) {
+                return;
+            }
+        }
+    }
+    persist_window_geometry(window);
+    if let Ok(mut last) = lock.lock() {
+        *last = Some(std::time::Instant::now());
+    }
+}
+
+/// 恢复窗口几何：仅在启动时调用一次。位置需保证落在某块显示器可见区域内，
+/// 避免用户拔掉外接显示器后窗口被“放”到不可见的虚拟屏上。
+fn apply_window_state(window: &tauri::WebviewWindow) {
+    let Some(state) = load_window_state() else { return };
+    let width = state.width.max(1047);
+    let height = state.height.max(650);
+    if state.maximized {
+        let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height }));
+        let _ = window.maximize();
+        return;
+    }
+    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height }));
+    // 仅当窗口矩形能与至少一块显示器重叠到可操作尺寸时才恢复位置，否则保持默认居中。
+    if rect_on_screen(window.app_handle(), state.x, state.y, width, height) {
+        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+            x: state.x,
+            y: state.y,
+        }));
+    }
+}
+
+/// 判断 (x,y,w,h)（物理像素）是否能与任一块显示器产生足够大的可见重叠。
+fn rect_on_screen(app: &tauri::AppHandle, x: i32, y: i32, w: u32, h: u32) -> bool {
+    let Ok(monitors) = app.available_monitors() else { return false };
+    for m in monitors {
+        let p = m.position();
+        let s = m.size();
+        let (mx, my) = (p.x, p.y);
+        let (mw, mh) = (s.width as i32, s.height as i32);
+        let ow = (x + w as i32).min(mx + mw) - x.max(mx);
+        let oh = (y + h as i32).min(my + mh) - y.max(my);
+        // 至少露出标题栏高度 + 一定宽度才算“可见”，否则视为在屏外
+        if ow >= 60 && oh >= 40 {
+            return true;
+        }
+    }
+    false
+}
+
 /// 保存日志内容到文件
 #[tauri::command]
 fn save_log(content: String, path: String) -> Result<(), String> {
@@ -3824,6 +3967,18 @@ fn set_window_size(window: tauri::Window, width: u32, height: u32) -> Result<(),
     let h = height.max(650);
     window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: w, height: h }))
         .map_err(|e| format!("设置窗口大小失败: {}", e))
+}
+
+/// 前端页面就绪后调用：把启动时隐藏的主窗口在“最终几何位置”一次性显示出来。
+/// 这样窗口第一次出现就落在上次退出时的位置，避免“先居中/先显示默认尺寸、再移动”的二次跳变。
+#[tauri::command]
+fn reveal_main_window(app: tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        if !win.is_visible().unwrap_or(true) {
+            let _ = win.show();
+        }
+        let _ = win.set_focus();
+    }
 }
 
 /// 用系统默认浏览器打开 URL
@@ -5007,6 +5162,7 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec
             install_update,
             get_window_size,
             set_window_size,
+            reveal_main_window,
             open_wsl_serial,
             close_wsl_serial,
             read_wsl_serial,
@@ -5055,67 +5211,92 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec
             test_error_report,
         ])
         .setup(|app| {
+            // 恢复上次窗口大小与位置（须在窗口创建后、仍可取到 monitors 前完成，
+            // 且要在设最小尺寸之后，避免恢复值小于最小尺寸）。
+            // 主窗口在 tauri.conf.json 中设为 visible:false（避免先居中/默认尺寸闪现），
+            // 几何恢复后由前端页面就绪时调用 reveal_main_window 一次性显示。
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_min_size(Some(tauri::LogicalSize::new(1047.0, 650.0)));
+                apply_window_state(&win);
+                // 兜底：若前端迟迟未(或未能)主动显示，超时后强制显示，避免窗口一直隐藏
+                let reveal_app = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(4000));
+                    if let Some(w) = reveal_app.get_webview_window("main") {
+                        if !w.is_visible().unwrap_or(true) {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                });
+            }
             #[cfg(windows)]
             {
                 start_device_watcher(app.handle().clone());
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.set_min_size(Some(tauri::LogicalSize::new(1047.0, 650.0)));
-                }
             }
             start_wsl_watcher(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                dbg_log("CloseRequested: cleaning up resources");
-                // 通知前端保存配置
-                let _ = window.emit("save-before-exit", ());
-                std::thread::sleep(std::time::Duration::from_millis(200));
-
-                // 停止后台线程
-                DEVICE_WATCHER_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
-                WSL_WATCHER_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
-
-                // 关闭所有串口
-                if let Some(state) = window.try_state::<PortState>() {
-                    let mut map = state.readers.write().unwrap_or_else(|e| e.into_inner());
-                    for (_, reader) in map.drain() {
-                        drop(reader);
-                    }
+            match event {
+                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                    // 拖动/缩放时去抖持久化窗口几何（含最大化标志切换）
+                    window_auto_save(window, false);
                 }
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    // 退出前强制保存最终窗口几何
+                    window_auto_save(window, true);
+                    dbg_log("CloseRequested: cleaning up resources");
+                    // 通知前端保存配置
+                    let _ = window.emit("save-before-exit", ());
+                    std::thread::sleep(std::time::Duration::from_millis(200));
 
-                // 关闭所有 WSL 串口会话并杀掉子进程
-                if let Some(state) = window.try_state::<WslSerialState>() {
-                    let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
-                    for (_, session) in sessions.drain() {
-                        let _ = { use std::io::Write; if let Ok(mut w) = session.writer.lock() { let _ = w.write_all(b"{\"cmd\":\"close\"}\n"); let _ = w.flush(); } };
-                        kill_wsl_session(&session);
+                    // 停止后台线程
+                    DEVICE_WATCHER_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+                    WSL_WATCHER_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+
+                    // 关闭所有串口
+                    if let Some(state) = window.try_state::<PortState>() {
+                        let mut map = state.readers.write().unwrap_or_else(|e| e.into_inner());
+                        for (_, reader) in map.drain() {
+                            drop(reader);
+                        }
                     }
-                }
 
-                // 杀掉 WSL shell 进程
-                {
-                    let mut shell = WSL_SHELL.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(s) = shell.take() {
-                        let mut c = s.child.lock().unwrap_or_else(|e| e.into_inner());
-                        let _ = c.kill();
-                        let _ = c.wait();
+                    // 关闭所有 WSL 串口会话并杀掉子进程
+                    if let Some(state) = window.try_state::<WslSerialState>() {
+                        let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+                        for (_, session) in sessions.drain() {
+                            let _ = { use std::io::Write; if let Ok(mut w) = session.writer.lock() { let _ = w.write_all(b"{\"cmd\":\"close\"}\n"); let _ = w.flush(); } };
+                            kill_wsl_session(&session);
+                        }
                     }
-                }
 
-                // 断开 BLE：主动 disconnect，让外设侧立刻感知断开，
-                // 否则对端要等监督超时才释放链路（表现为「App 关了但设备仍显示已连接」）
-                if let Some(state) = window.try_state::<BleState>() {
-                    let periph = state.connected.lock().unwrap_or_else(|e| e.into_inner()).take();
-                    if let Some(p) = periph {
-                        let _ = tauri::async_runtime::block_on(async { p.disconnect().await });
-                        dbg_log("CloseRequested: BLE disconnected");
+                    // 杀掉 WSL shell 进程
+                    {
+                        let mut shell = WSL_SHELL.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(s) = shell.take() {
+                            let mut c = s.child.lock().unwrap_or_else(|e| e.into_inner());
+                            let _ = c.kill();
+                            let _ = c.wait();
+                        }
                     }
-                    state.services.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                    *state.connected_addr.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                }
 
-                dbg_log("CloseRequested: cleanup done");
+                    // 断开 BLE：主动 disconnect，让外设侧立刻感知断开，
+                    // 否则对端要等监督超时才释放链路（表现为「App 关了但设备仍显示已连接」）
+                    if let Some(state) = window.try_state::<BleState>() {
+                        let periph = state.connected.lock().unwrap_or_else(|e| e.into_inner()).take();
+                        if let Some(p) = periph {
+                            let _ = tauri::async_runtime::block_on(async { p.disconnect().await });
+                            dbg_log("CloseRequested: BLE disconnected");
+                        }
+                        state.services.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                        *state.connected_addr.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    }
+
+                    dbg_log("CloseRequested: cleanup done");
+                }
+                _ => {}
             }
         })
         .run(tauri::generate_context!())

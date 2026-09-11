@@ -5674,12 +5674,8 @@ async function loadAndApplyConfig() {
             _wslAutoMap = migrated;
             updateAutoMapPolling();
         }
-        // 恢复窗口大小
-        if (cfg.windowWidth && cfg.windowHeight) {
-            invoke('set_window_size', { width: cfg.windowWidth, height: cfg.windowHeight }).catch(function(e) {
-                console.warn('恢复窗口大小失败:', e);
-            });
-        }
+        // 注：窗口大小与位置改由 Rust 端在启动时统一恢复（window.json，含最大化状态），
+        // 不再在这里用 set_window_size 二次设置，以免窗口显示后再次跳变尺寸。
         // 恢复蓝牙页状态（纯内存变量先就位；内嵌监视器等蓝牙页 DOM 建立后再开，见 openBle）
         if (cfg.ble) restoreBleState(cfg.ble);
         // 恢复主监视器配置
@@ -8878,6 +8874,10 @@ async function autoMapCheck() {
 function winMinimize() { try { window.__TAURI__.window.getCurrentWindow().minimize(); } catch (err) { console.warn('minimize failed:', err); } }
 function winToggleMaximize() { try { window.__TAURI__.window.getCurrentWindow().toggleMaximize(); } catch (err) { console.warn('toggleMaximize failed:', err); } }
 function winClose() { try { window.__TAURI__.window.getCurrentWindow().close(); } catch (err) { console.warn('close failed:', err); } }
+// 主窗口在启动时是隐藏的，页面布局完成后调用此函数在最终几何位置一次性显示，避免二次跳变。
+function revealMainWindow() {
+    invoke('reveal_main_window').catch(function(err) { console.warn('显示主窗口失败:', err); });
+}
 
 /* ===== 标题栏拖动 ===== */
 document.addEventListener('DOMContentLoaded', function() {
@@ -8966,6 +8966,10 @@ document.addEventListener('DOMContentLoaded', function() {
         // 加载并恢复用户上次的配置
         loadAndApplyConfig();
 
+        // 页面 DOM/样式已就绪（主面板已同步创建完成，尚未发生绘制），
+        // 此刻把隐藏的主窗口一次性显示在恢复后的最终几何位置，避免“先显示再移动/缩放”的二次跳变。
+        revealMainWindow();
+
         // 延迟检查更新，避免与端口加载竞争网络和 CPU 资源
         setTimeout(checkForUpdate, 2000);
         // 每 10 分钟轮询一次更新，运行中也能发现新版本
@@ -9052,6 +9056,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     } catch (err) {
         console.error('初始化失败:', err);
+        revealMainWindow(); // 出错也要让隐藏的窗口显示出来，以便用户看到提示
         if (document.getElementById('pane-main')) {
             // 主面板已创建，仅部分功能失败：提示但不遮屏
             try { showToast('部分功能初始化失败: ' + err, 'error'); } catch (_) {}
