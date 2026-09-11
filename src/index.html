@@ -3765,8 +3765,10 @@ function toggleBleMonitor() {
         return;
     }
     var mid = 'ble-mon';
-    // 复用通用监视器窗口（自带完整工具条、发送栏、快捷指令），建好后搬到蓝牙页右侧
-    createMonitorPane(mid, '监视器 · 蓝牙日志', true);
+    // 复用通用监视器窗口（自带完整工具条、发送栏、快捷指令），建好后搬到蓝牙页右侧。
+    // closable=false：不生成薄标题栏上的 ✕ —— 该窗口由顶栏「打开额外监视器」开关控制开/关，
+    // 再来一个 ✕ 是多余的（与 WSL 主监视器一致，它也没有自带关闭按钮）。
+    createMonitorPane(mid, '监视器 · 蓝牙日志', false);
     var pane = document.getElementById('pane-' + mid);
     if (pane) {
         pane.style.flex = '1';

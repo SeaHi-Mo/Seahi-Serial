@@ -499,6 +499,9 @@ console.log('preview ->', out);
   check(/顶栏「打开额外监视器」在蓝牙页是开关[\s\S]{0,80}updateBleMonBtn\(\);/.test(html),
     '进入蓝牙页时同步按钮状态');
   check(/addBtn\.classList\.remove\('active'\);/.test(html), '离开页面时清掉按钮高亮');
+  check(/createMonitorPane\(mid, '监视器 · 蓝牙日志', false\);/.test(html),
+    '内嵌监视器以 closable=false 创建 → 不再生成多余的 ✕（由顶栏开关负责关闭）');
+  check(/closable=false：不生成薄标题栏上的 ✕/.test(html), '该决定已在代码里写明理由');
   check(/copyMonitorConfig\('main', mid, \{ skipPort: true \}\)/.test(html),
     '内嵌监视器继承主监视器设置但跳过端口（避免抢同一个串口）');
   check(/if \(opts && opts\.skipPort\) \{ delete cfg\.port; \}/.test(html), 'copyMonitorConfig 支持 skipPort');
