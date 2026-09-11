@@ -445,6 +445,13 @@ console.log('preview ->', out);
     '描述符操作图标有明确的 CSS 尺寸（否则 SVG 不显示）');
   check(/\.ble-ch-action svg \{ width:18px; height:18px; \}/.test(html),
     '特征行操作图标仍有尺寸（对照，防误删）');
+  // 名称列对齐：UUID 必须是固定列宽，否则长 UUID 行的名称会往右跑
+  check(/\.ble-svc-uuid \{[^}]*flex:0 0 auto; width:38ch;/.test(html),
+    '服务 UUID 固定列宽 38ch → 服务名从同一 x 开始');
+  check(/\.ble-char-uuid \{[^}]*flex:0 0 auto; width:38ch;/.test(html),
+    '特征 UUID 同样固定列宽 → 特征名对齐');
+  check(/\.ble-svc-name \{[^}]*white-space:nowrap/.test(html),
+    '服务名不换行（避免长名称挤成两行破坏对齐）');
 
   // ---- 5e-3) 服务行右侧标签：识别到类型不标，识别不到统一 Custom Service ----
   const sb9 = { console };
