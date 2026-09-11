@@ -376,7 +376,7 @@ console.log('preview ->', out);
   vm.createContext(sb5);
   vm.runInContext([
     extractObject('BLE_PROP_META'), extractObject('BLE_ICONS'), extractObject('BLE_CHAR_NAMES'),
-    extractObject('BLE_DESC_NAMES'),
+    extractObject('BLE_DESC_META'),
     extractFunction('shortUuid'), extractFunction('renderCharRow'), extractFunction('renderCharDescriptors'),
   ].join('\n'), sb5);
   vm.createContext(sb5);
@@ -409,6 +409,36 @@ console.log('preview ->', out);
   const noDesc = sb5.renderCharRow({ uuid: 'AAAA', name: 'X', props: ['read'] });
   check(noDesc.indexOf('ble-char-descs') < 0, '无描述符时不渲染描述符行（不占位）');
   check(/if \(!descs\.length\) return ''/.test(html), '描述符为空时提前返回（避免空行）');
+
+  // ---- 5e-2b) 描述符可点击读写：操作图标 + 取值人性化 ----
+  check((descHtml.match(/class="ble-desc-act"/g) || []).length === 3,
+    '描述符操作图标数：0x2902 读+写、0x2901 读 = 3', String((descHtml.match(/class="ble-desc-act"/g) || []).length));
+  check(/bleDescAction\(event,'00010203-0405-0607-0809-0a0b0c0d2b12','00002902-0000-1000-8000-00805f9b34fb','read'\)/.test(descHtml),
+    '0x2902 的读取图标带正确参数（特征 UUID + 描述符 UUID）');
+  check(/bleDescAction\(event,'00010203-0405-0607-0809-0a0b0c0d2b12','00002902-0000-1000-8000-00805f9b34fb','write'\)/.test(descHtml),
+    '0x2902 有写入图标（CCCD 可写）');
+  check(descHtml.indexOf("'write'") > 0 && (descHtml.match(/'write'/g) || []).length === 1,
+    '0x2901 只读：没有写入图标');
+  const sbDesc = { console, TextDecoder };
+  vm.createContext(sbDesc);
+  vm.runInContext([extractFunction('shortUuid'), extractFunction('bleBytesToHex'), extractFunction('formatDescValue')].join('\n'), sbDesc);
+  check(sbDesc.formatDescValue('00002901-0000-1000-8000-00805f9b34fb', [66, 97, 116]) === '0x426174（"Bat"）',
+    '0x2901 取值按 UTF-8 文本展示', sbDesc.formatDescValue('00002901-0000-1000-8000-00805f9b34fb', [66, 97, 116]));
+  check(sbDesc.formatDescValue('00002902-0000-1000-8000-00805f9b34fb', [1, 0]).indexOf('通知已启用') > 0,
+    '0x2902 = 0x0100 → 通知已启用', sbDesc.formatDescValue('00002902-0000-1000-8000-00805f9b34fb', [1, 0]));
+  check(sbDesc.formatDescValue('00002902-0000-1000-8000-00805f9b34fb', [0, 0]).indexOf('均已关闭') > 0,
+    '0x2902 = 0x0000 → 通知与指示均已关闭');
+  check(sbDesc.formatDescValue('00002902-0000-1000-8000-00805f9b34fb', [2, 0]).indexOf('指示已启用') > 0,
+    '0x2902 = 0x0200 → 指示已启用');
+  check(sbDesc.formatDescValue('0000abcd-0000-1000-8000-00805f9b34fb', [0xde, 0xad]) === '0xDEAD',
+    '未知描述符只显示原始 hex', sbDesc.formatDescValue('0000abcd-0000-1000-8000-00805f9b34fb', [0xde, 0xad]));
+  check(sbDesc.formatDescValue('00002901-0000-1000-8000-00805f9b34fb', []) === '0x',
+    '空值不抛错（退化为 0x）');
+  check(!/BLE_DESC_NAMES/.test(html), '旧的 BLE_DESC_NAMES 已完全被 BLE_DESC_META 取代');
+  check(/invoke\('ble_write_descriptor', \{ charUuid: _bleWriteTarget\.charUuid,/.test(html),
+    '描述符写入走 ble_write_descriptor（不误用 ble_write）');
+  check(/\.ble-dev-conn \{ flex-shrink:0; margin-left:10px;/.test(html),
+    '「已连接」与设备名的间距已加大到 10px');
 
   // ---- 5e-3) 服务行右侧标签：识别到类型不标，识别不到统一 Custom Service ----
   const sb9 = { console };

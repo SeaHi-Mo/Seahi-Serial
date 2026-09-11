@@ -1055,7 +1055,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-dev-tag { flex-shrink:0; margin-left:3px; font-size:12px; font-weight:400; color:var(--text-d); }
 .ble-dev-card.active .ble-dev-tag { color:rgba(255,255,255,.75); }
 /* 连接状态提示：设备名后的绿色「已连接」文字（用文字而非改图标颜色，避免与设备类型混淆） */
-.ble-dev-conn { flex-shrink:0; margin-left:5px; font-size:12px; font-weight:500; color:var(--accent-green); }
+.ble-dev-conn { flex-shrink:0; margin-left:10px; font-size:12px; font-weight:500; color:var(--accent-green); }
 .ble-dev-card.active .ble-dev-conn { color:rgba(255,255,255,.9); }
 /* 类型图标：垂直居中于「名称+地址」两行块（块高 31px），视觉高度取 22px 更协调；
    四类图标统一高度（viewBox 已按各自内容裁紧）→ 视觉尺寸一致 */
@@ -2071,7 +2071,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
                     </div>
                 </div>
             </div>
-            <div class="ble-modal-hint">文本按 UTF-8 编码，支持 \r \n \t 转义；HEX 形如 01 A0 FF；写响应会等外设回执</div>
+            <div class="ble-modal-hint" id="bleWriteHint">文本按 UTF-8 编码，支持 \r \n \t 转义；HEX 形如 01 A0 FF；写响应会等外设回执</div>
         </div>
         <div class="ble-modal-foot">
             <button class="ble-modal-btn" onclick="closeBleWriteModal()">关闭</button>
@@ -6413,16 +6413,27 @@ var BLE_SVC_NAMES = {
     'FE59':'Nordic DFU','6E400001-B5A3-F393-E0A9-E50E24DCCA9E':'Nordic UART'
 };
 
-// GATT 描述符名（Bluetooth SIG 分配号 0x2900~0x290E）。
-// 描述符挂在特征下面，移动端常见的 0x2902(CCCD)/0x2901(User Description) 就是它们 ——
-// 后端 ble_char_json 一直在返回，但前端此前既不传递也不渲染，导致界面上完全看不到。
-var BLE_DESC_NAMES = {
-    '2900':'Extended Properties', '2901':'User Description', '2902':'CCCD（通知/指示配置）',
-    '2903':'SCCD（广播配置）', '2904':'Presentation Format', '2905':'Aggregate Format',
-    '2906':'Valid Range', '2907':'External Report Reference', '2908':'Report Reference',
-    '2909':'Number of Digitals', '290A':'Value Trigger Setting',
-    '290B':'ES Configuration', '290C':'ES Measurement', '290D':'ES Trigger Setting',
-    '290E':'Time Trigger Setting'
+// GATT 描述符：名称 + 可执行的操作。
+// 权限按规范固定（btleplug 不暴露描述符属性，只能按 UUID 推断）：
+//   0x2901 User Description 只读；0x2902 CCCD / 0x2903 SCCD 可读可写；
+//   0x2900/0x2904/0x2905/0x2906~0x2909 只读；0x290A~0x290E 可读可写。
+// **未知描述符（厂商自定义）按只读处理** —— 宁可少一个写入按钮，也不要误写设备。
+var BLE_DESC_META = {
+    '2900':{ name:'Extended Properties', ops:['read'] },
+    '2901':{ name:'User Description',    ops:['read'] },
+    '2902':{ name:'CCCD（通知/指示配置）', ops:['read','write'] },
+    '2903':{ name:'SCCD（广播配置）',     ops:['read','write'] },
+    '2904':{ name:'Presentation Format', ops:['read'] },
+    '2905':{ name:'Aggregate Format',    ops:['read'] },
+    '2906':{ name:'Valid Range',         ops:['read'] },
+    '2907':{ name:'External Report Reference', ops:['read'] },
+    '2908':{ name:'Report Reference',    ops:['read'] },
+    '2909':{ name:'Number of Digitals',  ops:['read'] },
+    '290A':{ name:'Value Trigger Setting', ops:['read','write'] },
+    '290B':{ name:'ES Configuration',    ops:['read','write'] },
+    '290C':{ name:'ES Measurement',      ops:['read'] },
+    '290D':{ name:'ES Trigger Setting',  ops:['read','write'] },
+    '290E':{ name:'Time Trigger Setting',ops:['read','write'] }
 };
 
 // 128 位 UUID → 短格式（仅当命中 Bluetooth SIG 基础 UUID 时），返回大写十六进制串。
@@ -6542,16 +6553,66 @@ function renderCharRow(ch) {
 }
 
 // 特征描述符行（0x2902 CCCD、0x2901 User Description 等）
-// 放在特征行下方、同属 .ble-charGroup（flex column），无描述符时返回空串不占位
+// 放在特征行下方、同属 .ble-charGroup（flex column），无描述符时返回空串不占位。
+// 每个描述符按 BLE_DESC_META 渲染可执行的操作图标（读取 / 写入）—— 与特征一样可点击。
 function renderCharDescriptors(ch) {
     var descs = ch.descriptors || [];
     if (!descs.length) return '';
     return '<div class="ble-char-descs">' + descs.map(function(d) {
         var su = shortUuid(d.uuid);
-        var nm = BLE_DESC_NAMES[su] || '';
+        var meta = BLE_DESC_META[su] || { name: '', ops: ['read'] };
+        var acts = (meta.ops || []).map(function(op) {
+            var m = BLE_PROP_META[op];
+            if (!m) return '';
+            return '<span class="ble-desc-act" title="' + m.title + '" ' +
+                   'onclick="bleDescAction(event,\'' + ch.uuid + '\',\'' + d.uuid + '\',\'' + op + '\')">' +
+                   BLE_ICONS[m.icon] + '</span>';
+        }).join('');
         return '<span class="ble-desc" title="' + d.uuid + '">0x' + su +
-               (nm ? '<em>' + nm + '</em>' : '') + '</span>';
+               (meta.name ? '<em>' + meta.name + '</em>' : '') + acts + '</span>';
     }).join('') + '</div>';
+}
+
+// 描述符操作：读取（0x2901 文字、0x2902 通知开关状态…）或写入（0x2902 手动开关通知）
+function bleDescAction(ev, charUuid, descUuid, op) {
+    if (ev && ev.stopPropagation) ev.stopPropagation();
+    var dev = getSelectedBleDev();
+    if (!dev || !dev.connected) { showToast('请先连接设备', 'error'); return; }
+    var su = shortUuid(descUuid);
+    var meta = BLE_DESC_META[su] || { name: '' };
+    if (op === 'write') {
+        // 描述符按规范用带响应写：只传一种模式 → 弹窗里不显示「写响应/无响应」选择器
+        openBleWriteModal(descUuid, meta.name || '', ['write'], { kind: 'desc', charUuid: charUuid });
+        return;
+    }
+    invoke('ble_read_descriptor', { charUuid: charUuid, descUuid: descUuid }).then(function(bytes) {
+        logBle('[读取描述符] 0x' + su + ' = ' + formatDescValue(descUuid, bytes));
+    }).catch(function(e) {
+        logBle('[读取描述符失败] 0x' + su + ' · ' + e);
+        showToast('读取描述符失败: ' + e, 'error');
+    });
+}
+
+// 描述符取值的人性化显示（纯函数，便于无头断言）
+//   0x2901 User Description → UTF-8 文本；0x2902/0x2903 → 通知/指示开关状态；其余 → 原始 hex
+function formatDescValue(uuid, bytes) {
+    var su = shortUuid(uuid);
+    var arr = bytes || [];
+    var hex = '0x' + bleBytesToHex(arr).replace(/ /g, '');
+    if (su === '2902' || su === '2903') {
+        var v = (arr.length >= 2) ? (arr[0] | (arr[1] << 8)) : -1;
+        var meaning = v === 0 ? '通知与指示均已关闭' : v === 1 ? '通知已启用' : v === 2 ? '指示已启用' : '未知取值';
+        return hex + '（' + meaning + '）';
+    }
+    if (su === '2901') {
+        var s = '';
+        try {
+            s = new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(arr));
+        } catch (e) { s = ''; }
+        s = s.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+        return hex + (s ? '（"' + s + '"）' : '');
+    }
+    return hex;
 }
 
 function bleCharAction(el, key) {
@@ -6620,15 +6681,27 @@ function startBleNotifyPoll() {
 // 点特征行的「写入」图标 → 弹出该窗口；以前是直接写死 0x01 演示值
 var _bleWriteTarget = null;   // { uuid, name, prop }
 
-function openBleWriteModal(uuid, name, modes) {
+// target 可选：{ kind:'desc', charUuid } 表示目标是特征下的描述符（如 0x2902 CCCD），
+// 默认 { kind:'char' } 即普通特征写入。
+function openBleWriteModal(uuid, name, modes, target) {
     modes = (modes && modes.length) ? modes : ['write'];
-    _bleWriteTarget = { uuid: uuid, name: name || '', modes: modes, mode: modes[0] };
+    target = target || {};
+    var kind = target.kind === 'desc' ? 'desc' : 'char';
+    _bleWriteTarget = { uuid: uuid, name: name || '', modes: modes, mode: modes[0],
+                        kind: kind, charUuid: target.charUuid || '' };
     var sub = document.getElementById('bleWriteChar');
-    if (sub) sub.textContent = '0x' + shortUuid(uuid) + (name ? ' · ' + name : '');
+    if (sub) sub.textContent = (kind === 'desc' ? '描述符 · ' : '') + '0x' + shortUuid(uuid) + (name ? ' · ' + name : '');
     // 写入方式：两种都支持时才显示选择器，只有一种时隐藏（避免多一个没用的控件）
+    // （描述符写入按规范用带响应写，调用方只传一种模式，因此这里自然隐藏）
     var wrap = document.getElementById('bleWriteModeWrap');
     if (wrap) wrap.style.display = (modes.length > 1) ? '' : 'none';
     setBleWriteMode(modes[0]);
+    var hint = document.getElementById('bleWriteHint');
+    if (hint) {
+        hint.textContent = (kind === 'desc' && shortUuid(uuid) === '2902')
+            ? 'CCCD 常见取值：01 00 开启通知、02 00 开启指示、00 00 全部关闭（HEX 模式输入 0100）'
+            : '文本按 UTF-8 编码，支持 \\r \\n \\t 转义；HEX 形如 01 A0 FF；写响应会等外设回执';
+    }
     var mask = document.getElementById('bleWriteModal');
     if (mask) mask.classList.add('show');
     var inp = document.getElementById('bleWriteValue');
@@ -6711,18 +6784,28 @@ function sendBleWrite() {
     // 写入方式由弹窗里的选择决定（特征同时支持两种时可选，否则用其唯一支持的那种）
     var writeType = (_bleWriteTarget.mode === 'write_without_response') ? 'without_response' : 'with_response';
     var hex = bleBytesToHex(bytes).replace(/ /g, '');
+    var isDesc = _bleWriteTarget.kind === 'desc';
+    var onOk = function() {
+        logBle('[发送成功] 0x' + hex + ' · ' + bytes.length + ' 字节');
+        showToast('发送成功：0x' + hex, 'success');
+        if (inp) { inp.value = ''; inp.focus(); }   // 发完一条即清空
+    };
+    var onFail = function(e) {
+        logBle('[发送失败] ' + e);
+        showToast('发送失败: ' + e, 'error');       // 失败保留输入内容，便于修正重发
+    };
+    if (isDesc) {
+        logBle('[发送] 描述符 0x' + shortUuid(_bleWriteTarget.uuid) + ' ← 0x' + hex +
+               '（' + (hexMode ? 'HEX' : '文本') + '）');
+        invoke('ble_write_descriptor', { charUuid: _bleWriteTarget.charUuid,
+                                         descUuid: _bleWriteTarget.uuid, data: bytes })
+            .then(onOk).catch(onFail);
+        return;
+    }
     logBle('[发送] 0x' + shortUuid(_bleWriteTarget.uuid) + ' ← 0x' + hex +
            '（' + (hexMode ? 'HEX' : '文本') + ' · ' + (writeType === 'without_response' ? '无响应' : '写响应') + '）');
     invoke('ble_write', { charUuid: _bleWriteTarget.uuid, data: bytes, writeType: writeType })
-        .then(function() {
-            logBle('[发送成功] 0x' + hex + ' · ' + bytes.length + ' 字节');
-            showToast('发送成功：0x' + hex, 'success');
-            if (inp) { inp.value = ''; inp.focus(); }   // 发完一条即清空
-        })
-        .catch(function(e) {
-            logBle('[发送失败] ' + e);
-            showToast('发送失败: ' + e, 'error');       // 失败保留输入内容，便于修正重发
-        });
+        .then(onOk).catch(onFail);
 }
 
 function stopBleNotifyPoll() {

@@ -4248,7 +4248,7 @@ fn main() {
 
 /* ===== 蓝牙(BLE) 调试 - 后端（btleplug） ===== */
 use btleplug::api::{Central, Peripheral as PeripheralTrait, ScanFilter, CharPropFlags, WriteType, Manager as ManagerTrait};
-use btleplug::api::{Service as BtService, Characteristic as BtChar, PeripheralProperties};
+use btleplug::api::{Service as BtService, Characteristic as BtChar, PeripheralProperties, Descriptor as BtDescriptor};
 use btleplug::api::bleuuid::BleUuid;
 use btleplug::platform::{Adapter as BtAdapter, Manager as BleManager, Peripheral as BtPeripheral};
 
@@ -4417,6 +4417,20 @@ fn ble_find_char(services: &[BtService], uuid: &str) -> Option<BtChar> {
     for s in services {
         if let Some(c) = s.characteristics.iter().find(|c| c.uuid.to_string() == uuid) {
             return Some(c.clone());
+        }
+    }
+    None
+}
+/// 在已发现的服务树里按 (特征 UUID, 描述符 UUID) 定位描述符。
+/// 描述符挂在特征下面（如 0x2902 CCCD、0x2901 User Description），
+/// 与特征一样需要拿到对象主体才能发起读/写。
+fn ble_find_descriptor(services: &[BtService], char_uuid: &str, desc_uuid: &str) -> Option<BtDescriptor> {
+    for s in services {
+        for c in &s.characteristics {
+            if c.uuid.to_string() != char_uuid { continue; }
+            if let Some(d) = c.descriptors.iter().find(|d| d.uuid.to_string() == desc_uuid) {
+                return Some(d.clone());
+            }
         }
     }
     None
@@ -4715,6 +4729,28 @@ async fn ble_write(state: tauri::State<'_, BleState>, char_uuid: String, data: V
     p.write(&c, &data, wt).await.map_err(|e| format!("write: {e}"))
 }
 
+/// 读取描述符（0x2901 User Description、0x2902 CCCD 当前值等）
+#[tauri::command]
+async fn ble_read_descriptor(state: tauri::State<'_, BleState>, char_uuid: String, desc_uuid: String) -> Result<Vec<u8>, String> {
+    let p = state.connected.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("未连接")?;
+    let d = {
+        let svcs = state.services.lock().unwrap_or_else(|e| e.into_inner());
+        ble_find_descriptor(&svcs, &char_uuid, &desc_uuid).ok_or("未找到描述符")?
+    };
+    p.read_descriptor(&d).await.map_err(|e| format!("read_descriptor: {e}"))
+}
+
+/// 写描述符（典型用法：往 0x2902 CCCD 写 0x0001/0x0002 手动开关通知/指示）
+#[tauri::command]
+async fn ble_write_descriptor(state: tauri::State<'_, BleState>, char_uuid: String, desc_uuid: String, data: Vec<u8>) -> Result<(), String> {
+    let p = state.connected.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("未连接")?;
+    let d = {
+        let svcs = state.services.lock().unwrap_or_else(|e| e.into_inner());
+        ble_find_descriptor(&svcs, &char_uuid, &desc_uuid).ok_or("未找到描述符")?
+    };
+    p.write_descriptor(&d, &data).await.map_err(|e| format!("write_descriptor: {e}"))
+}
+
 #[tauri::command]
 async fn ble_subscribe(state: tauri::State<'_, BleState>, char_uuid: String) -> Result<(), String> {
     let p = state.connected.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("未连接")?;
@@ -4846,7 +4882,9 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec
             ble_get_services,
             ble_read,
             ble_write,
-            ble_subscribe,
+            ble_read_descriptor,
+        ble_write_descriptor,
+        ble_subscribe,
             ble_unsubscribe,
             ble_poll_notifications,
             #[cfg(debug_assertions)]
