@@ -28,7 +28,23 @@ wrangler d1 create seahi-errors
 wrangler d1 execute seahi-errors --file=./schema.sql
 ```
 
-### 5. 部署 Worker
+### 5. 配置鉴权密钥（必需）
+
+Worker 部署在公网，**没有"仅本机"退路**：未配置 `ERROR_API_KEY` 时 `/report` 一律返回 401，
+应用侧的上报会全部失败。
+
+```bash
+# 生成一个随机串
+node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+
+# 写入 Worker 的加密环境变量（不要写进 wrangler.toml / [vars]，会随仓库泄露）
+wrangler secret put ERROR_API_KEY
+# 粘贴上面生成的随机串
+```
+
+客户端（Rust 端）需通过**同名环境变量** `ERROR_API_KEY` 带上同一个值 —— 见 `server/INSTALL.md`。
+
+### 6. 部署 Worker
 
 ```bash
 wrangler deploy
@@ -39,7 +55,7 @@ wrangler deploy
 https://seahi-error-server.your-subdomain.workers.dev
 ```
 
-### 6. 配置自定义域名（可选）
+### 7. 配置自定义域名（可选）
 
 1. 登录 Cloudflare Dashboard
 2. 进入 Workers & Pages
@@ -173,8 +189,13 @@ async function handleReport(request, env, corsHeaders) {
 
 ```toml
 [vars]
-API_KEY = "your-secret-key"
+# ⚠️ 不要在这里放密钥：wrangler.toml 会进版本库。
+# 鉴权密钥请用 `wrangler secret put ERROR_API_KEY`（加密存储，不进仓库）。
+ENVIRONMENT = "production"
 ```
+
+> 代码读取的是 `env.ERROR_API_KEY`（与 node 版同名）。历史文档里写的 `[vars] API_KEY = "..."`
+> 既不生效也会泄露密钥，已更正。
 
 ### 2. 限制上报频率
 

@@ -33,17 +33,38 @@ npm run dev
 
 ### 环境变量
 
-在构建 Tauri 应用前设置：
+**服务端**（`error-server.js` / Cloudflare Worker）：
+
+```bash
+# 上报接口鉴权 Key（必需，公网部署尤其重要）
+# 生成：node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+set ERROR_API_KEY=<随机串>
+
+# 每 IP 每分钟请求上限（仅 node 版，可选，默认 60）
+set RATE_LIMIT_PER_MIN=60
+```
+
+> **行为说明（fail-safe）**：
+> - 设置了 `ERROR_API_KEY` → 所有接口必须带 `X-API-Key` 且匹配，否则 401；
+> - **未设置** → node 版只接受来自本机（127.0.0.1/::1）的请求，远程一律 401；
+>   Cloudflare Worker 版则直接 401（公网没有"仅本机"退路）。
+>
+> 也就是说：**忘配 key 不会裸奔**，但公网部署会因此收不到上报 —— 请务必配置。
+
+**客户端**（构建 Tauri 应用前设置）：
 
 ```bash
 # Windows (CMD)
 set ERROR_SERVER_URL=http://localhost:3000
+set ERROR_API_KEY=<与服务端相同的随机串>
 
 # Windows (PowerShell)
 $env:ERROR_SERVER_URL="http://localhost:3000"
+$env:ERROR_API_KEY="<与服务端相同的随机串>"
 
 # Linux/Mac
 export ERROR_SERVER_URL=http://localhost:3000
+export ERROR_API_KEY=<与服务端相同的随机串>
 ```
 
 ### 构建应用
@@ -224,10 +245,17 @@ docker logs -f error-server
 
 ## 安全建议
 
-1. **限制访问**：在生产环境中，限制只允许应用服务器访问
-2. **启用 HTTPS**：使用 Nginx 反向代理并启用 HTTPS
-3. **数据清理**：定期清理旧数据，避免数据库过大
-4. **备份策略**：定期备份数据库文件
+1. **必须设置 `ERROR_API_KEY`**：接口已内置鉴权（见「环境变量」），未设置时 node 版只允许本机访问、
+   Worker 版直接拒绝。公网部署前请确认已配置，否则收不到任何上报。
+2. **查询接口也要保护**：`GET /api/errors`、`/api/stats`、`/` 会暴露错误上下文（含本地路径、堆栈），
+   生产环境建议再加一层反代 Basic Auth 或仅内网开放。
+3. **限制访问**：在生产环境中，限制只允许应用服务器访问
+4. **启用 HTTPS**：使用 Nginx 反向代理并启用 HTTPS
+5. **数据清理**：定期清理旧数据，避免数据库过大
+6. **备份策略**：定期备份数据库文件
+
+> 已内置：`/report` 与查询接口共用鉴权；每 IP 令牌桶限速（默认 60/分钟，返回 429）；
+> `app_version/os/error/stack/context` 分别截断为 64/128/8K/32K/16K 字节，防超长字段灌库。
 
 ## 性能优化
 
