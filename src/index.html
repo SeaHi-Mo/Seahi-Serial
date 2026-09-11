@@ -1112,6 +1112,13 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-ch-action.on { color:var(--accent-focus); cursor:pointer; }
 .ble-ch-action.on:hover { color:var(--link); }
 .ble-char-tag { font-size:10px; color:var(--text-d); margin-left:auto; flex-shrink:0; }
+/* 特征描述符行（0x2902 CCCD 等）：比特征行更淡、缩进一格，胶囊展示 */
+.ble-char-descs { display:flex; flex-wrap:wrap; gap:5px; padding:0 10px 2px 18px; }
+.ble-desc { display:inline-flex; align-items:baseline; gap:4px; font-family:var(--font-mono);
+            font-size:10px; color:var(--text-d); background:var(--input-bg);
+            border:1px solid var(--border); border-radius:4px; padding:1px 6px; white-space:nowrap; }
+.ble-desc em { font-style:normal; opacity:.75; }
+.ble-desc:hover { color:var(--text); }
 .ble-adv { display:flex; flex-direction:column; gap:6px; }
 .ble-adv-sec { padding-bottom:10px; }
 .ble-adv-toggle { display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none; }
@@ -6376,6 +6383,18 @@ var BLE_CONNECT_TIMEOUT_MS = 15000;
 var _bleScanStopTimer = null;  // 扫描 5 秒自动停止定时器
 var BLE_CHAR_NAMES = { '2A00':'Device Name','2A01':'Appearance','2A05':'Service Changed','2A19':'Battery Level','2A37':'Heart Rate Measurement','2A29':'Manufacturer Name' };
 
+// GATT 描述符名（Bluetooth SIG 分配号 0x2900~0x290E）。
+// 描述符挂在特征下面，移动端常见的 0x2902(CCCD)/0x2901(User Description) 就是它们 ——
+// 后端 ble_char_json 一直在返回，但前端此前既不传递也不渲染，导致界面上完全看不到。
+var BLE_DESC_NAMES = {
+    '2900':'Extended Properties', '2901':'User Description', '2902':'CCCD（通知/指示配置）',
+    '2903':'SCCD（广播配置）', '2904':'Presentation Format', '2905':'Aggregate Format',
+    '2906':'Valid Range', '2907':'External Report Reference', '2908':'Report Reference',
+    '2909':'Number of Digitals', '290A':'Value Trigger Setting',
+    '290B':'ES Configuration', '290C':'ES Measurement', '290D':'ES Trigger Setting',
+    '290E':'Time Trigger Setting'
+};
+
 // 128 位 UUID → 短格式（仅当命中 Bluetooth SIG 基础 UUID 时），返回大写十六进制串。
 // 例：'0000fe3c-0000-1000-8000-00805f9b34fb' → 'FE3C'；自定义 128 位 UUID 原样返回。
 // 注意：只用于显示；data-uuid 与 invoke 参数必须继续使用原始完整 UUID。
@@ -6472,7 +6491,21 @@ function renderCharRow(ch) {
                 '<span class="ble-char-uuid" title="' + ch.uuid + '">0x' + shortUuid(ch.uuid) + '</span>' +
                 '<span class="ble-char-name">' + ch.name + '</span>' +
                 '<span class="ble-char-actions">' + actions + '</span>' +
-            '</div>';
+            '</div>' +
+            renderCharDescriptors(ch);
+}
+
+// 特征描述符行（0x2902 CCCD、0x2901 User Description 等）
+// 放在特征行下方、同属 .ble-charGroup（flex column），无描述符时返回空串不占位
+function renderCharDescriptors(ch) {
+    var descs = ch.descriptors || [];
+    if (!descs.length) return '';
+    return '<div class="ble-char-descs">' + descs.map(function(d) {
+        var su = shortUuid(d.uuid);
+        var nm = BLE_DESC_NAMES[su] || '';
+        return '<span class="ble-desc" title="' + d.uuid + '">0x' + su +
+               (nm ? '<em>' + nm + '</em>' : '') + '</span>';
+    }).join('') + '</div>';
 }
 
 function bleCharAction(el, key) {
@@ -7213,7 +7246,8 @@ function toggleBleService(el) {
     }
     if (svc && svc.characteristics && svc.characteristics.length) {
         groupHtml.innerHTML = svc.characteristics.map(function(c) {
-            return renderCharRow({ uuid: c.uuid, name: BLE_CHAR_NAMES[shortUuid(c.uuid)] || '', props: c.properties || [] });
+            return renderCharRow({ uuid: c.uuid, name: BLE_CHAR_NAMES[shortUuid(c.uuid)] || '',
+                                   props: c.properties || [], descriptors: c.descriptors || [] });
         }).join('');
     } else {
         groupHtml.innerHTML = '<div class="ble-char-empty">连接设备后查看特征</div>';
