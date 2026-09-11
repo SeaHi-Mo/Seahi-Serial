@@ -479,6 +479,25 @@ console.log('preview ->', out);
   check(/if \(isViewingConnectedDevice\(dev, _bleConnAddr\)\) \{/.test(html),
     '展开服务取特征时同样做了守卫（不会把别人的特征挂过来）');
 
+  // ---- 5i) 蓝牙页内嵌串口监视器（最多一个）----
+  check(/id="ble-monitorArea"/.test(html), '蓝牙页里有内嵌监视器区 #ble-monitorArea');
+  check(/\.ble-monArea \{ display:none;/.test(html) && /\.ble-monArea\.active \{ display:flex; \}/.test(html),
+    '监视器区默认隐藏、active 时才显示（不挤压详情面板）');
+  check(/if \(blePane && blePane\.style\.display !== 'none' && blePane\._initialized\) \{\s*addBleMonitor\(\);/.test(html),
+    'addMonitor 增加了蓝牙页分支 → 路由到 addBleMonitor');
+  check(/function addBleMonitor\(\)/.test(html), 'addBleMonitor 已实现');
+  check(/if \(_bleExtraMon && monitors\[_bleExtraMon\]\) \{[\s\S]{0,260}蓝牙页最多只能打开一个监视器/.test(html),
+    '上限 1：已有则提示「蓝牙页最多只能打开一个监视器」并返回');
+  check(/copyMonitorConfig\('main', mid, \{ skipPort: true \}\)/.test(html),
+    '内嵌监视器继承主监视器设置但跳过端口（避免抢同一个串口）');
+  check(/if \(opts && opts\.skipPort\) \{ delete cfg\.port; \}/.test(html), 'copyMonitorConfig 支持 skipPort');
+  check(/monitors\[mid\]\.bleEmbedded = true/.test(html), '内嵌监视器打了 bleEmbedded 标记');
+  check(/if \(mid === _bleExtraMon\) \{[\s\S]{0,240}bleArea\.classList\.remove\('active'\)/.test(html),
+    'closeMonitor 收尾时清 _bleExtraMon 并收起监视器区（关闭后可再开）');
+  check(/if \(m && m\.bleEmbedded\) return;/.test(html), 'collectConfig 不把内嵌监视器写进配置（不持久化）');
+  check(!/蓝牙界面不可用/.test(html), '蓝牙页不再禁用「打开额外监视器」按钮');
+  check(/var _bleExtraMon = null;/.test(html), '_bleExtraMon 已声明');
+
   // ---- 5e-3) 服务行右侧标签：识别到类型不标，识别不到统一 Custom Service ----
   const sb9 = { console };
   vm.createContext(sb9);
