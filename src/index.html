@@ -1044,10 +1044,14 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-devList { flex:1; min-height:0; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px; }
 .ble-right { flex:1; min-width:0; display:flex; flex-direction:column; }
 /* 蓝牙页内嵌的串口监视器区（第三列，用于监控蓝牙设备的串口日志）：
-   未打开时完全隐藏，不挤压详情面板；打开时占右侧固定宽度。 */
-.ble-monArea { display:none; flex:0 0 380px; min-width:280px; max-width:46%;
-               border-left:2px solid var(--split-line); overflow:hidden; }
+   未打开时完全隐藏，不挤压详情面板；打开时占右侧固定宽度（可拖动左边的手柄调宽）。 */
+.ble-monArea { display:none; flex:0 0 380px; min-width:280px; max-width:46%; overflow:hidden; }
 .ble-monArea.active { display:flex; }
+/* 宽度拖拽手柄：与 WSL 页的 .wsl-mon-resize 同风格，方向改为左右（col-resize）。
+   背景用主题变量 --border，各主题自动适配。 */
+.ble-mon-resize { width:5px; cursor:col-resize; background:var(--border);
+                  flex-shrink:0; position:relative; z-index:10; }
+.ble-mon-resize:hover, .ble-mon-resize.dragging { background:var(--split-line); }
 .ble-dev-card { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; border:1px solid var(--border); background:var(--input-bg); cursor:pointer; transition: background .15s, border-color .15s, color .15s; }
 .ble-dev-card:hover { border-color:var(--border-h); }
 .ble-dev-card.active { border-color:var(--accent-focus); background:var(--accent-focus); }
@@ -3663,6 +3667,47 @@ function addMonitor() {
         }
     }).catch(function() {});
     scheduleConfigSave();
+}
+
+// 拖拽后的宽度（纯函数，便于无头断言）：
+// 监视器在最右侧 → 向左拖（curX < startX）变宽；夹取到 [280, 视口 46%]
+function clampBleMonWidth(startW, startX, curX, viewportW) {
+    var w = startW + (startX - curX);
+    var max = Math.max(280, Math.round((viewportW || 0) * 0.46));
+    return Math.max(280, Math.min(max, Math.round(w)));
+}
+
+// 蓝牙页内嵌监视器的宽度拖拽：照 WSL 页 initWslMonResize 的做法，方向改为左右。
+// 松手后把宽度转成 flex-basis，窗口缩小时仍受 max-width 约束自动收窄。
+function initBleMonResize() {
+    var handle = document.getElementById('ble-monResize');
+    var area = document.getElementById('ble-monitorArea');
+    if (!handle || !area || handle._bound) return;
+    handle._bound = true;
+    var startX = 0, startW = 0;
+    function onMouseMove(e) {
+        var w = clampBleMonWidth(startW, startX, e.clientX, window.innerWidth);
+        area.style.flex = 'none';
+        area.style.width = w + 'px';
+    }
+    function onMouseUp() {
+        handle.classList.remove('dragging');
+        var finalW = area.offsetWidth;
+        area.style.width = '';
+        area.style.flex = '0 0 ' + finalW + 'px';
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+        document.body.style.cursor = '';
+    }
+    handle.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+        startX = e.clientX;
+        startW = area.offsetWidth;
+        handle.classList.add('dragging');
+        document.body.style.cursor = 'col-resize';
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    });
 }
 
 // 蓝牙页内嵌监视器：在蓝牙页右侧开一个**串口**监视器，用来抓蓝牙设备的串口日志。
@@ -7011,10 +7056,15 @@ function openBle() {
                 '<div class="ble-right">' +
                     '<div class="ble-detail" id="ble-detail"></div>' +
                 '</div>' +
-                // 内嵌串口监视器区：由 addBleMonitor() 动态放入一个监视器窗口（最多一个）
-                '<div class="ble-monArea" id="ble-monitorArea"></div>' +
+                // 内嵌串口监视器区：由 addBleMonitor() 动态放入一个监视器窗口（最多一个），
+                // 左侧 5px 手柄可拖动调宽（见 initBleMonResize）
+                '<div class="ble-monArea" id="ble-monitorArea">' +
+                    '<div class="ble-mon-resize" id="ble-monResize" title="拖动调节宽度"></div>' +
+                '</div>' +
             '</div>';
         blePane._initialized = true;
+        // 监视器区（含宽度拖拽手柄）已就位：绑一次拖拽
+        initBleMonResize();
     }
     // 蓝牙页也可以打开额外监视器（会作为串口监视器嵌入右侧，见 addBleMonitor），
     // 因此这里不再禁用按钮；按钮的可用性由 addMonitor() 按当前页面路由

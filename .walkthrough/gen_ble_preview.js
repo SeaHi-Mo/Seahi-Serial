@@ -498,6 +498,32 @@ console.log('preview ->', out);
   check(!/蓝牙界面不可用/.test(html), '蓝牙页不再禁用「打开额外监视器」按钮');
   check(/var _bleExtraMon = null;/.test(html), '_bleExtraMon 已声明');
 
+  // ---- 5j) 内嵌监视器的宽度拖拽（用户反馈「向左拖动失效」：原来根本没做拖拽）----
+  check(/id="ble-monResize"/.test(html) && /title="拖动调节宽度"/.test(html), '监视器区有宽度拖拽手柄');
+  check(/\.ble-mon-resize \{ width:5px; cursor:col-resize;/.test(html),
+    '手柄是 5px 宽的 col-resize 手柄（与 WSL 页 .wsl-mon-resize 同风格）');
+  check(/\.ble-mon-resize:hover, \.ble-mon-resize\.dragging \{ background:var\(--split-line\); \}/.test(html),
+    '悬停/拖拽时手柄高亮为主题分割线色');
+  check(/function initBleMonResize\(\)/.test(html) && /initBleMonResize\(\);/.test(html),
+    'initBleMonResize 已实现并在蓝牙页初始化时绑定');
+  check(/document\.removeEventListener\('mousemove', onMouseMove\)/.test(html),
+    '松手时移除 document 级监听（不泄漏）');
+  check(/area\.style\.flex = '0 0 ' \+ finalW \+ 'px';/.test(html),
+    '松手后宽度转 flex-basis（窗口缩小时仍能自动收窄）');
+  const sb11 = { console };
+  vm.createContext(sb11);
+  vm.runInContext(extractFunction('clampBleMonWidth'), sb11);
+  check(sb11.clampBleMonWidth(380, 1000, 900, 1367) === 480, '向左拖 100px → 变宽 100px',
+    String(sb11.clampBleMonWidth(380, 1000, 900, 1367)));
+  check(sb11.clampBleMonWidth(380, 1000, 1300, 1367) === 280, '向右拖过头 → 收窄到下限 280',
+    String(sb11.clampBleMonWidth(380, 1000, 1300, 1367)));
+  check(sb11.clampBleMonWidth(380, 1000, 0, 1367) === Math.round(1367 * 0.46),
+    '向左拖过头 → 卡在上限 46% 视口', String(sb11.clampBleMonWidth(380, 1000, 0, 1367)));
+  check(sb11.clampBleMonWidth(380, 1000, 900, 0) === 280, '视口宽度为 0 时不炸：夹到下限 280',
+    String(sb11.clampBleMonWidth(380, 1000, 900, 0)));
+  check(sb11.clampBleMonWidth(280, 1000, 1000, 1367) === 280, '已经在下限时向右拖不再变窄');
+  check(sb11.clampBleMonWidth(380, 1000, 1000, 1367) === 380, '原地不拖保持原宽');
+
   // ---- 5e-3) 服务行右侧标签：识别到类型不标，识别不到统一 Custom Service ----
   const sb9 = { console };
   vm.createContext(sb9);
