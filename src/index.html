@@ -7778,8 +7778,21 @@ function bleOnConnected(address, label) {
     });
 }
 
-// 连接失败后的补救：设备可能「需要配对」才允许建立 GATT 连接 ——
-// 发起一次 WinRT 配对（会弹窗让用户确认配对码），成功后再重试一次连接。
+// 这个连接错误是否"值得尝试配对"（纯函数，便于无头断言）。
+// 只认认证/加密不足这一类 —— 配对仪式会占用设备并打断链路，
+// 绝不能因为一次普通失败（超时、Not connected、设备不在范围）就去配对。
+function bleErrNeedsPairing(err) {
+    var s = String(err || '').toLowerCase();
+    return s.indexOf('insufficient_authentication') >= 0
+        || s.indexOf('insufficient_encryption') >= 0
+        || s.indexOf('0x80650005') >= 0        // E_BLUETOOTH_ATT_INSUFFICIENT_AUTHENTICATION
+        || s.indexOf('0x8065000c') >= 0        // E_BLUETOOTH_ATT_INSUFFICIENT_ENCRYPTION
+        || s.indexOf('not paired') >= 0
+        || s.indexOf('未配对') >= 0;
+}
+
+// 连接失败后的补救：设备确实"需要配对"时才发起 WinRT 配对，
+// 成功后再重试一次连接（见 bleErrNeedsPairing 的判定）。
 // 最终仍失败时 reject，错误串里带上原始连接错误，便于定位到底是配对问题还是别的原因。
 function tryBlePairThenReconnect(address, label, origErr) {
     logBle('[连接失败] ' + label + ' · ' + origErr + ' · 该设备可能需要配对，发起配对…');
@@ -7812,14 +7825,21 @@ function toggleBleConnect() {
         invokeTimeout('ble_connect', { address: address }, BLE_CONNECT_TIMEOUT_MS).then(function() {
             bleOnConnected(address, label);
         }).catch(function(e) {
-            // 连接失败有可能是「设备需要配对」：发起一次配对，成功后自动重连一次。
-            // 配对成功但重连仍失败、或用户取消配对 → 走最终失败处理（报原始/新错误）。
-            tryBlePairThenReconnect(address, label, e).catch(function(e2) {
+            // 只有错误确实是「认证/加密不足」时才值得尝试配对。
+            // 早期版本对所有连接失败都发起配对 —— 而配对仪式会占用设备/打断链路，
+            // 把普通失败（如 connect: Not connected）的正常重连也搅了（用户反馈）。
+            var fail = function(e2) {
                 _bleConnecting = false;
                 logBle('[连接失败] ' + label + ' (' + address + ') · ' + e2);
                 console.warn('[BLE] 连接失败:', e2);
                 showToast('连接失败: ' + e2, 'error');
-            });
+            };
+            if (!bleErrNeedsPairing(e)) {
+                fail(e);
+                return;
+            }
+            // 疑似需要配对：发起配对，成功后再重连一次
+            tryBlePairThenReconnect(address, label, e).catch(fail);
         });
     } else {
         invoke('ble_disconnect').then(function() {

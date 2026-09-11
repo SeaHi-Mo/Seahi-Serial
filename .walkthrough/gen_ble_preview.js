@@ -836,8 +836,8 @@ console.log('preview ->', out);
     '用户取消配对时保留原始连接错误（不会只剩一句"配对失败"）');
   check(/\.catch\(function\(pe\) \{\s*throw \('配对失败: ' \+ pe \+ ' · 原连接错误: ' \+ origErr\);/.test(html),
     '配对本身失败时同样带上原始连接错误');
-  check(/tryBlePairThenReconnect\(address, label, e\)\.catch\(function\(e2\)/.test(html),
-    '连接的 catch 分支接入配对重试，最终仍失败才报错');
+  check(/tryBlePairThenReconnect\(address, label, e\)\.catch\(fail\);/.test(html),
+    '确认需要配对时，catch 分支接入配对重试，最终仍失败才报错');
   const onConnCount = (html.match(/bleOnConnected\(address, label\)/g) || []).length;
   check(onConnCount >= 3, '成功路径复用同一个 bleOnConnected（含配对后重连）', String(onConnCount));
 
@@ -866,6 +866,27 @@ console.log('preview ->', out);
     '日志内容里的 HTML 被转义（设备数据不能当 HTML 插入）', inj);
   check(sbLog.bleLogToHtml([], esc) === '' && sbLog.bleLogToHtml(null, esc) === '', '空缓冲安全返回');
   check(sbLog.bleLogToHtml(['旧格式字符串'], esc) === '旧格式字符串', '兼容历史字符串条目');
+
+  // ---- 9) 配对只在"确实需要配对"时才发起（用户反馈：普通失败也去配对，干扰了连接）----
+  const sbPairErr = { console };
+  vm.createContext(sbPairErr);
+  vm.runInContext(extractFunction('bleErrNeedsPairing'), sbPairErr);
+  const needs = function(s) { return sbPairErr.bleErrNeedsPairing(s); };
+  // 截图里的真实失败信息：普通连接失败，绝不能触发配对
+  check(needs('connect: Not connected') === false, '「connect: Not connected」不触发配对（本次回归）');
+  check(needs('connect: 连到系统上的设备没有发挥作用') === false, '设备异常类错误不触发配对');
+  check(needs('连接超时') === false && needs('未找到该蓝牙设备') === false, '超时/未找到都不触发配对');
+  check(needs('') === false && needs(undefined) === false && needs(null) === false,
+    '空错误不触发配对（不抛错）');
+  check(needs('E_BLUETOOTH_ATT_INSUFFICIENT_AUTHENTICATION') === true, '认证不足 → 触发配对');
+  check(needs('insufficient_encryption') === true, '加密不足 → 触发配对');
+  check(needs('0x80650005') === true && needs('0x8065000C') === true, 'HRESULT 形式也能识别');
+  check(needs('device not paired') === true, 'not paired 文案能识别');
+  check(needs('设备未配对') === true, '中文未配对能识别');
+  // 接线：catch 里必须先判定，普通失败直接走失败处理
+  check(/if \(!bleErrNeedsPairing\(e\)\) \{\s*fail\(e\);\s*return;\s*\}/.test(html),
+    '连接失败先判定是否需要配对，不需要则直接失败（不发起配对、不打乱链路）');
+  check(/配对仪式会占用设备\/打断链路/.test(html), '该约束的理由已写在代码注释里');
   const sbFmt = { console, TextDecoder };
   vm.createContext(sbFmt);
   vm.runInContext([
