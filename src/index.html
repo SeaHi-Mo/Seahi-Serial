@@ -3747,10 +3747,14 @@ function initBleMonResize() {
 // 因此"最多一个"是天然成立的 —— 不存在开第二个的路径。
 var _bleExtraMon = null;   // 内嵌监视器的 mid（'ble-mon'），未打开时为 null
 
-// 顶栏按钮状态跟随开关：打开时高亮 + 标题改为"关闭…"，关闭时还原
+// 顶栏按钮状态跟随开关：打开时高亮 + 标题改为"关闭…"，关闭时还原。
+// **同时把它重置为可用**：ADB / WSL 页会禁用该按钮，若从那些页面直接切到蓝牙页
+// （不经过它们的 close 逻辑），禁用态会残留 → 蓝牙页点不动（用户反馈的问题2）。
 function updateBleMonBtn() {
     var btn = document.getElementById('addMonitorBtn');
     if (!btn) return;
+    btn.style.opacity = '';
+    btn.style.pointerEvents = '';
     var open = !!(_bleExtraMon && monitors[_bleExtraMon]);
     btn.classList.toggle('active', open);
     btn.title = open ? '关闭右侧串口监视器' : '打开右侧串口监视器';
@@ -5771,11 +5775,12 @@ function openWslMapping() {
     }
     var text = document.getElementById('wslToggleText');
     if (text) text.textContent = '返回到串口调试器';
-    // 进入 WSL 模式时，根据 WSL 运行状态设置按钮状态
+    // 进入 WSL 模式时，根据 WSL 运行状态设置按钮状态（并清掉蓝牙页可能留下的高亮）
     var addBtn = document.getElementById('addMonitorBtn');
     if (addBtn) {
         addBtn.style.opacity = _wslRunning ? '' : '0.4';
         addBtn.style.pointerEvents = _wslRunning ? '' : 'none';
+        addBtn.classList.remove('active');
     }
 
 
@@ -7704,9 +7709,14 @@ function openAdb() {
     // ADB 面板打开期间自动刷新设备列表（每 5s；ADB 设备不在 COM 口 device-changed 通知范围内，靠此轮询）
     if (_adbDevTimer) clearInterval(_adbDevTimer);
     _adbDevTimer = setInterval(refreshAdbDevices, 5000);
-    // ADB 界面隐藏了主监视器区，禁用「打开额外监视器」
+    // ADB 界面隐藏了主监视器区，禁用「打开额外监视器」（同时清掉蓝牙页可能留下的高亮）
     var addBtn = document.getElementById('addMonitorBtn');
-    if (addBtn) { addBtn.style.opacity = '0.4'; addBtn.style.pointerEvents = 'none'; addBtn.title = 'ADB 界面不可用'; }
+    if (addBtn) {
+        addBtn.style.opacity = '0.4';
+        addBtn.style.pointerEvents = 'none';
+        addBtn.title = 'ADB 界面不可用';
+        addBtn.classList.remove('active');
+    }
 }
 
 function closeAdb() {

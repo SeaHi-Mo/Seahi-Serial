@@ -502,6 +502,14 @@ console.log('preview ->', out);
   check(/createMonitorPane\(mid, '监视器 · 蓝牙日志', false\);/.test(html),
     '内嵌监视器以 closable=false 创建 → 不再生成多余的 ✕（由顶栏开关负责关闭）');
   check(/closable=false：不生成薄标题栏上的 ✕/.test(html), '该决定已在代码里写明理由');
+  // 问题2：ADB/WSL 页禁用该按钮后，直接切到蓝牙页会残留禁用态（按钮点不动）
+  check(/function updateBleMonBtn\(\) \{[\s\S]{0,200}btn\.style\.opacity = '';[\s\S]{0,80}btn\.style\.pointerEvents = '';/.test(html),
+    '进入蓝牙页时把按钮重置为可用（清掉别页残留的禁用态）');
+  check(/禁用态会残留 → 蓝牙页点不动（用户反馈的问题2）/.test(html), '修复理由已写在代码里');
+  check(/addBtn\.style\.opacity = '0.4';[\s\S]{0,120}addBtn\.classList\.remove\('active'\);/.test(html),
+    'ADB 页禁用时同时清掉蓝牙页可能留下的高亮');
+  check(/addBtn\.style\.opacity = _wslRunning \? '' : '0\.4';[\s\S]{0,120}addBtn\.classList\.remove\('active'\);/.test(html),
+    'WSL 页同样清掉高亮');
   check(/copyMonitorConfig\('main', mid, \{ skipPort: true \}\)/.test(html),
     '内嵌监视器继承主监视器设置但跳过端口（避免抢同一个串口）');
   check(/if \(opts && opts\.skipPort\) \{ delete cfg\.port; \}/.test(html), 'copyMonitorConfig 支持 skipPort');
