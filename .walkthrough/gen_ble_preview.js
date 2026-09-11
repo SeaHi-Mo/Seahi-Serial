@@ -545,7 +545,20 @@ console.log('preview ->', out);
   check(/id="bleWriteLineEnd"/.test(html), '弹窗里有行尾下拉 #bleWriteLineEnd');
   check(html.indexOf('id="bleWriteAsText"') < html.indexOf('id="bleWriteLineEnd"'),
     '「行尾」位于「文本」格式设置下方（DOM 顺序）');
-  check(/<span class="ble-write-le-label">行尾<\/span>/.test(html), '行尾控件带「行尾」标签（同串口监视器）');
+  check(/<span class="ble-write-label">行尾<\/span>/.test(html), '行尾控件带「行尾」标签（同串口监视器）');
+  // 三行统一：每行「标签 + 下拉」，标签同款同宽、下拉同款同宽
+  check(/<span class="ble-write-label">方式<\/span>/.test(html)
+     && /<span class="ble-write-label">格式<\/span>/.test(html)
+     && /<span class="ble-write-label">行尾<\/span>/.test(html),
+    '方式/格式/行尾 三行都有标签（外观统一）');
+  check((html.match(/class="ble-write-row"/g) || []).length === 3, '三行结构一致（.ble-write-row）',
+    String((html.match(/class="ble-write-row"/g) || []).length));
+  check(/\.ble-write-label \{[^}]*width:22px; text-align:right;/.test(html), '标签定宽右对齐 → 三个下拉左边缘对齐');
+  check(/\.ble-write-opts \.send-as,\s*\.ble-write-opts \.sel \{ width:68px;[^}]*background:var\(--input-bg\);/.test(html),
+    '弹窗内 .send-as 与 .sel 用同款盒子与同宽（原先一个是透明无边框、一个是盒子）');
+  check(!/ble-write-le-label/.test(html), '旧的 .ble-write-le 结构已清理');
+  check(/var wrap = document\.getElementById\('bleWriteModeRow'\);[\s\S]{0,90}modes\.length > 1/.test(html),
+    '单写入方式时隐藏整行（含标签），不留孤立标签');
   const mLe = html.slice(html.indexOf('id="bleWriteLineEnd"'), html.indexOf('id="bleWriteLineEnd"') + 1000);
   check(['crlf', 'lf', 'cr', 'none'].every((v) => mLe.indexOf('data-val="' + v + '"') > 0),
     '行尾取值与串口监视器一致：CRLF / LF / CR / 无');
