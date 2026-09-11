@@ -3671,10 +3671,10 @@ function stopReading(mid) {
 
 /* ===== 额外监视器 ===== */
 function addMonitor() {
-    // 上下文感知：蓝牙页面下创建「嵌入右侧的串口监视器」（最多一个）
+    // 上下文感知：蓝牙页面下「打开额外监视器」是开关 —— 打开/关闭右侧嵌入的串口监视器
     var blePane = document.getElementById('ble-pane');
     if (blePane && blePane.style.display !== 'none' && blePane._initialized) {
-        addBleMonitor();
+        toggleBleMonitor();
         return;
     }
     // 上下文感知：WSL 页面下创建 WSL 监视器
@@ -3743,20 +3743,25 @@ function initBleMonResize() {
 }
 
 // 蓝牙页内嵌监视器：在蓝牙页右侧开一个**串口**监视器，用来抓蓝牙设备的串口日志。
-// 约束（用户要求）：蓝牙页最多一个 —— 已有则提示并高亮，不重复创建。
+// 顶栏「打开额外监视器」在蓝牙页是**开关**语义：点一次打开，再点一次关闭（与窗口右上 ✕ 等效）。
+// 因此"最多一个"是天然成立的 —— 不存在开第二个的路径。
 var _bleExtraMon = null;   // 内嵌监视器的 mid（'ble-mon'），未打开时为 null
 
-function addBleMonitor() {
+// 顶栏按钮状态跟随开关：打开时高亮 + 标题改为"关闭…"，关闭时还原
+function updateBleMonBtn() {
+    var btn = document.getElementById('addMonitorBtn');
+    if (!btn) return;
+    var open = !!(_bleExtraMon && monitors[_bleExtraMon]);
+    btn.classList.toggle('active', open);
+    btn.title = open ? '关闭右侧串口监视器' : '打开右侧串口监视器';
+}
+
+function toggleBleMonitor() {
     var area = document.getElementById('ble-monitorArea');
     if (!area) return;
-    // 上限 1：已有则只提示 + 高亮已有窗口，让用户知道"不是没反应"
+    // 已打开 → 再点即关闭：走与窗口右上 ✕ 完全相同的释放路径（含串口释放）
     if (_bleExtraMon && monitors[_bleExtraMon]) {
-        showToast('蓝牙页最多只能打开一个监视器', 'info');
-        var exist = document.getElementById('pane-' + _bleExtraMon);
-        if (exist) {
-            exist.style.outline = '1px solid var(--accent-focus)';
-            setTimeout(function() { exist.style.outline = ''; }, 900);
-        }
+        closeMonitor(_bleExtraMon);
         return;
     }
     var mid = 'ble-mon';
@@ -3773,6 +3778,7 @@ function addBleMonitor() {
     copyMonitorConfig('main', mid, { skipPort: true });
     if (monitors[mid]) monitors[mid].bleEmbedded = true;
     _bleExtraMon = mid;
+    updateBleMonBtn();
     logBle('[监视器] 已在蓝牙页右侧打开串口监视器（端口需自行选择，可用来抓蓝牙设备的串口日志）');
     scheduleConfigSave();
 }
@@ -3849,6 +3855,7 @@ function closeMonitor(mid) {
             _bleExtraMon = null;
             var bleArea = document.getElementById('ble-monitorArea');
             if (bleArea) bleArea.classList.remove('active');
+            updateBleMonBtn();   // 顶栏按钮回到「打开右侧串口监视器」
         }
         renderWslDeviceList('main'); // 及时刷新 WSL 设备状态点
         scheduleConfigSave();
@@ -7093,6 +7100,8 @@ function openBle() {
     if (btn) { btn.setAttribute('title', '返回到串口调试器'); btn.setAttribute('onclick', 'closeBle()'); btn.classList.add('active'); }
     var text = document.getElementById('bleToggleText');
     if (text) text.textContent = '返回到串口调试器';
+    // 顶栏「打开额外监视器」在蓝牙页是开关：进入页面时同步按钮状态与标题
+    updateBleMonBtn();
     // 首次填充面板内容
     var blePane = document.getElementById('ble-pane');
     if (!blePane._initialized) {
@@ -7116,7 +7125,7 @@ function openBle() {
                 '<div class="ble-right">' +
                     '<div class="ble-detail" id="ble-detail"></div>' +
                 '</div>' +
-                // 内嵌串口监视器区：由 addBleMonitor() 动态放入一个监视器窗口（最多一个），
+                // 内嵌串口监视器区：由 toggleBleMonitor() 动态放入一个监视器窗口（开关语义，最多一个），
                 // 左侧 5px 手柄可拖动调宽（见 initBleMonResize）
                 '<div class="ble-monArea" id="ble-monitorArea">' +
                     '<div class="ble-mon-resize" id="ble-monResize" title="拖动调节宽度"></div>' +
@@ -7126,7 +7135,7 @@ function openBle() {
         // 监视器区（含宽度拖拽手柄）已就位：绑一次拖拽
         initBleMonResize();
     }
-    // 蓝牙页也可以打开额外监视器（会作为串口监视器嵌入右侧，见 addBleMonitor），
+    // 蓝牙页的「打开额外监视器」是开关（开/关右侧嵌入的串口监视器，见 toggleBleMonitor），
     // 因此这里不再禁用按钮；按钮的可用性由 addMonitor() 按当前页面路由
     // 进入面板即刷新设备列表；先检测蓝牙兼容性（无适配器/蓝牙栈不可用 → 红字提示）
     invoke('ble_get_adapters').then(function(list) {
@@ -7185,7 +7194,7 @@ function closeBle() {
     document.getElementById('ble-pane').style.display = 'none';
     document.getElementById('paneContainer').style.display = 'flex';
     var addBtn = document.getElementById('addMonitorBtn');
-    if (addBtn) { addBtn.style.opacity = ''; addBtn.style.pointerEvents = ''; addBtn.title = '打开额外监视器'; }
+    if (addBtn) { addBtn.style.opacity = ''; addBtn.style.pointerEvents = ''; addBtn.title = '打开额外监视器'; addBtn.classList.remove('active'); }
     var btn = document.getElementById('bleToggleBtn');
     if (btn) { btn.setAttribute('title', '蓝牙调试'); btn.setAttribute('onclick', 'openBle()'); btn.classList.remove('active'); }
     var text = document.getElementById('bleToggleText');
@@ -7708,7 +7717,7 @@ function closeAdb() {
     if (_adbDevTimer) { clearInterval(_adbDevTimer); _adbDevTimer = null; }
     // 返回主界面：恢复「打开额外监视器」
     var addBtn = document.getElementById('addMonitorBtn');
-    if (addBtn) { addBtn.style.opacity = ''; addBtn.style.pointerEvents = ''; addBtn.title = '打开额外监视器'; }
+    if (addBtn) { addBtn.style.opacity = ''; addBtn.style.pointerEvents = ''; addBtn.title = '打开额外监视器'; addBtn.classList.remove('active'); }
     // 恢复顶部栏按钮
     var btn = document.getElementById('adbToggleBtn');
     if (btn) {

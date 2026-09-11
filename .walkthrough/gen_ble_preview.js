@@ -483,11 +483,22 @@ console.log('preview ->', out);
   check(/id="ble-monitorArea"/.test(html), '蓝牙页里有内嵌监视器区 #ble-monitorArea');
   check(/\.ble-monArea \{ display:none;/.test(html) && /\.ble-monArea\.active \{ display:flex; \}/.test(html),
     '监视器区默认隐藏、active 时才显示（不挤压详情面板）');
-  check(/if \(blePane && blePane\.style\.display !== 'none' && blePane\._initialized\) \{\s*addBleMonitor\(\);/.test(html),
-    'addMonitor 增加了蓝牙页分支 → 路由到 addBleMonitor');
-  check(/function addBleMonitor\(\)/.test(html), 'addBleMonitor 已实现');
-  check(/if \(_bleExtraMon && monitors\[_bleExtraMon\]\) \{[\s\S]{0,260}蓝牙页最多只能打开一个监视器/.test(html),
-    '上限 1：已有则提示「蓝牙页最多只能打开一个监视器」并返回');
+  check(/if \(blePane && blePane\.style\.display !== 'none' && blePane\._initialized\) \{\s*toggleBleMonitor\(\);/.test(html),
+    'addMonitor 在蓝牙页路由到 toggleBleMonitor（开关语义）');
+  check(/function toggleBleMonitor\(\)/.test(html), 'toggleBleMonitor 已实现');
+  check(/if \(_bleExtraMon && monitors\[_bleExtraMon\]\) \{\s*closeMonitor\(_bleExtraMon\);\s*return;/.test(html),
+    '已打开时再点即关闭（走与窗口 ✕ 相同的释放路径）');
+  check(!/蓝牙页最多只能打开一个监视器/.test(html),
+    '不再需要"最多一个"的提示：开关语义下不存在开第二个的路径');
+  check(/function updateBleMonBtn\(\)/.test(html)
+     && /btn\.classList\.toggle\('active', open\);/.test(html)
+     && /btn\.title = open \? '关闭右侧串口监视器' : '打开右侧串口监视器';/.test(html),
+    '顶栏按钮状态跟随开关（高亮 + 标题在"打开/关闭右侧串口监视器"间切换）');
+  check(/if \(mid === _bleExtraMon\) \{[\s\S]{0,240}updateBleMonBtn\(\)/.test(html),
+    '关闭后按钮状态复位');
+  check(/顶栏「打开额外监视器」在蓝牙页是开关[\s\S]{0,80}updateBleMonBtn\(\);/.test(html),
+    '进入蓝牙页时同步按钮状态');
+  check(/addBtn\.classList\.remove\('active'\);/.test(html), '离开页面时清掉按钮高亮');
   check(/copyMonitorConfig\('main', mid, \{ skipPort: true \}\)/.test(html),
     '内嵌监视器继承主监视器设置但跳过端口（避免抢同一个串口）');
   check(/if \(opts && opts\.skipPort\) \{ delete cfg\.port; \}/.test(html), 'copyMonitorConfig 支持 skipPort');
