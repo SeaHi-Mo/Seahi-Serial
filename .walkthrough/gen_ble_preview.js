@@ -512,16 +512,34 @@ console.log('preview ->', out);
   check(/支持 \\\\r \\\\n \\\\t 转义，HEX 形如 01 A0 FF/.test(html),
     '转义/HEX 提示已并入 placeholder');
   check(/CCCD：0100 开启通知，0200 开启指示，0000 关闭/.test(html), 'CCCD 的取值提示也在 placeholder 里');
-  // 输入框由单行 input 改为多行 textarea：默认更高，且可拖动调整高度（原生 resize:vertical）
+  // 输入框由单行 input 改为多行 textarea：默认更高（可调大小的是弹窗本身，见下）
   check(/<textarea class="ble-modal-inp" id="bleWriteValue" rows="3"/.test(html),
     '写入输入框是 textarea 且默认 3 行（比原单行 input 高）');
-  check(/\.ble-modal-inp \{[^}]*min-height:64px;[^}]*resize:vertical;/.test(html),
-    '输入框可拖动调整高度（resize:vertical）并有最小高度');
-  check(/\.ble-modal-inp \{[^}]*max-height:52vh;/.test(html), '输入框有最大高度（不会撑破弹窗）');
-  check(/\.ble-modal-row \{ display:flex; align-items:flex-start;/.test(html),
-    '输入框变高后，写响应/文本选择器顶部对齐（不再垂直居中）');
+  check(/\.ble-modal-inp \{[^}]*min-height:64px;/.test(html), '输入框有最小高度');
+  check(/\.ble-modal-inp \{[^}]*resize:none;/.test(html),
+    '输入框自身不可拖动调整（用户要的是整个弹窗可调，不是输入框）');
+  check(!/resize:vertical/.test(html), '已移除输入框的 resize:vertical');
   check(/if \(e\.key === 'Enter' && !e\.shiftKey\) \{ e\.preventDefault\(\); sendBleWrite\(\); \}/.test(html),
     'Enter 仍发送；Shift+Enter 交给 textarea 插入换行（多行值可用）');
+
+  // ---- 5l) 整个发送弹窗可拖动调整大小 + 去掉多余 ✕ ----
+  check(/\.ble-modal \{[^}]*resize:both;/.test(html), '弹窗本体可拖动调整大小（原生 resize:both）');
+  check(/\.ble-modal \{[^}]*overflow:hidden;/.test(html), 'resize 需 overflow 非 visible，弹窗已满足');
+  check(/\.ble-modal \{[^}]*min-width:320px; min-height:180px;/.test(html), '弹窗有最小尺寸（拖不没）');
+  check(/\.ble-modal \{[^}]*max-height:calc\(100vh - 40px\)/.test(html), '弹窗有最大高度（不超出屏幕）');
+  check(/\.ble-modal-body \{ padding:14px; flex:1; min-height:0; display:flex; \}/.test(html),
+    '内容随窗口伸缩：body 吃掉剩余高度');
+  check(/\.ble-modal-row \{ display:flex; align-items:stretch; gap:8px; flex:1; min-height:0; \}/.test(html),
+    '行也拉伸，输入框填满可用空间');
+  check(/\.ble-modal-row \.send-as \{ align-self:flex-start; \}/.test(html),
+    '写响应/文本选择器顶部对齐（不随高度拉伸）');
+  check(/\.ble-modal-grip \{ position:absolute; right:2px; bottom:2px;/.test(html) && /pointer-events:none/.test(html),
+    '右下角有手柄提示且不拦截拖动（pointer-events:none，事件交给原生 resize）');
+  check(!/ble-modal-close/.test(html), '多余的 ✕ 关闭按钮已删除（底部已有「关闭」）');
+  check(/bleWriteMaskPress\(event\)[\s\S]{0,80}bleWriteMaskClick\(event\)/.test(html),
+    '遮罩改为按下点判定：拖弹窗时松手落到遮罩上不会误关');
+  check(/if \(pressedOnMask && e\.target && e\.target\.id === 'bleWriteModal'\) closeBleWriteModal\(\);/.test(html),
+    '只有「按下点就在遮罩上」才关闭弹窗');
 
   // ---- 5j) 内嵌监视器的宽度拖拽（用户反馈「向左拖动失效」：原来根本没做拖拽）----
   check(/id="ble-monResize"/.test(html) && /title="拖动调节宽度"/.test(html), '监视器区有宽度拖拽手柄');

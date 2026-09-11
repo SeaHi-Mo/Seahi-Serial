@@ -1167,22 +1167,28 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-modal-mask { position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,.45);
                   display:none; align-items:center; justify-content:center; }
 .ble-modal-mask.show { display:flex; }
-.ble-modal { width:490px; max-width:calc(100vw - 40px); background:var(--editor-bg);
+.ble-modal { position:relative; display:flex; flex-direction:column;
+             width:490px; min-width:320px; min-height:180px; max-width:calc(100vw - 40px); max-height:calc(100vh - 40px);
+             background:var(--editor-bg);
              border:1px solid var(--border); border-radius:10px; overflow:hidden;
-             box-shadow:0 12px 32px rgba(0,0,0,.45); }
+             box-shadow:0 12px 32px rgba(0,0,0,.45);
+             /* 整个弹窗可拖动调整大小（原生能力；需 overflow 非 visible，上面已满足）。
+                拖过的尺寸会作为内联样式留在元素上，同一次运行内再次打开仍保持。 */
+             resize:both; }
+/* 右下角手柄提示：真正的拖动由原生 resize 处理，这里只是让"可拖动"看得见 */
+.ble-modal-grip { position:absolute; right:2px; bottom:2px; font-size:11px; line-height:1;
+                  color:var(--text-d); opacity:.6; pointer-events:none; user-select:none; }
 .ble-modal-head { display:flex; align-items:center; gap:10px; padding:11px 14px;
                   background:var(--toolbar-bg); border-bottom:1px solid var(--border); }
 .ble-modal-title { font-size:13px; font-weight:600; color:var(--text); flex-shrink:0; }
-.ble-modal-close { flex-shrink:0; width:22px; height:22px; border-radius:5px; cursor:pointer;
-                   display:inline-flex; align-items:center; justify-content:center;
-                   color:var(--text-d); font-size:13px; }
-.ble-modal-close:hover { background:var(--input-bg); color:var(--text); }
-.ble-modal-body { padding:14px; }
-.ble-modal-row { display:flex; align-items:flex-start; gap:8px; }
-.ble-modal-inp { flex:1; min-width:0; min-height:64px; max-height:52vh; box-sizing:border-box;
+/* 弹窗内容随窗口尺寸伸缩：body 吃掉剩余高度、行内元素拉伸、输入框填满 */
+.ble-modal-body { padding:14px; flex:1; min-height:0; display:flex; }
+.ble-modal-row { display:flex; align-items:stretch; gap:8px; flex:1; min-height:0; }
+.ble-modal-row .send-as { align-self:flex-start; }
+.ble-modal-inp { flex:1; min-width:0; min-height:64px; box-sizing:border-box;
                  padding:7px 10px; background:var(--input-bg); border:1px solid var(--border); border-radius:6px;
                  color:var(--text); font-family:var(--font-mono); font-size:13px; outline:none;
-                 line-height:1.45; resize:vertical; overflow:auto;
+                 line-height:1.45; resize:none; overflow:auto;
                  transition:border-color .15s; }
 .ble-modal-inp:focus { border-color:var(--accent-focus); }
 .ble-modal-foot { display:flex; justify-content:flex-end; gap:8px; padding:0 14px 14px; }
@@ -2060,11 +2066,10 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 <div class="pane-container" id="ble-pane" style="display:none;"></div>
 
 <!-- BLE 写入（发送）弹窗：点特征行的「写入」图标弹出 -->
-<div class="ble-modal-mask" id="bleWriteModal" onclick="closeBleWriteModal()">
+<div class="ble-modal-mask" id="bleWriteModal" onmousedown="bleWriteMaskPress(event)" onclick="bleWriteMaskClick(event)">
     <div class="ble-modal" onclick="event.stopPropagation()">
         <div class="ble-modal-head">
             <span class="ble-modal-title" id="bleWriteTitle">写入特征值</span>
-            <span class="ble-modal-close" onclick="closeBleWriteModal()" title="关闭">&#10005;</span>
         </div>
         <div class="ble-modal-body">
             <div class="ble-modal-row">
@@ -2091,6 +2096,8 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
             <button class="ble-modal-btn" onclick="closeBleWriteModal()">关闭</button>
             <button class="ble-modal-btn primary" id="bleWriteSendBtn" onclick="sendBleWrite()">发送</button>
         </div>
+        <!-- 右下角拖拽提示：拖动由 .ble-modal 的原生 resize:both 处理，本元素只是让位置可见 -->
+        <div class="ble-modal-grip" aria-hidden="true">&#9698;</div>
     </div>
 </div>
 
@@ -6870,6 +6877,19 @@ function closeBleWriteModal() {
     var mask = document.getElementById('bleWriteModal');
     if (mask) mask.classList.remove('show');
     _bleWriteTarget = null;
+}
+// 只在「按下点就在遮罩上」时关闭弹窗。
+// 原因：拖弹窗右下角调整大小时，若向左上（变小）拖，松手会落在遮罩上 ——
+// 此时 click 的 target 会变成遮罩（按下与松手目标不同时，click 落在共同祖先），
+// 不做这个判断就会「一拖就关」。参见 .ble-modal 的 resize:both。
+var _bleWritePressOnMask = false;
+function bleWriteMaskPress(e) {
+    _bleWritePressOnMask = !!(e.target && e.target.id === 'bleWriteModal');
+}
+function bleWriteMaskClick(e) {
+    var pressedOnMask = _bleWritePressOnMask;
+    _bleWritePressOnMask = false;
+    if (pressedOnMask && e.target && e.target.id === 'bleWriteModal') closeBleWriteModal();
 }
 // 弹窗打开时按 Esc 关闭（焦点不一定在输入框上，所以监听文档级）
 document.addEventListener('keydown', function(e) {
