@@ -32,6 +32,11 @@ regex = "1"
 sentry = { version = "0.34", optional = true }
 chrono = "0.4"
 btleplug = "0.13"
+# BLE 配对走 WinRT（btleplug 不提供配对接口）。版本与 features 对齐 vendor/btleplug，
+# 避免再编译一份 windows crate。仅用到枚举/配对相关命名空间。
+windows = { version = "0.62", features = ["Devices_Enumeration", "Devices_Bluetooth", "Foundation", "Foundation_Collections"] }
+# windows 0.62 起 WinRT 异步类型（IAsyncOperation）在独立 crate 里
+windows-future = "0.3"
 uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
 

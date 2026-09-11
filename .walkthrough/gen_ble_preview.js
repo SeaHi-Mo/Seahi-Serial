@@ -498,8 +498,7 @@ console.log('preview ->', out);
     '关闭后按钮状态复位');
   check(/顶栏「打开额外监视器」在蓝牙页是开关[\s\S]{0,80}updateBleMonBtn\(\);/.test(html),
     '进入蓝牙页时同步按钮状态');
-  check(/addBtn\.classList\.remove\('active'\);/.test(html), '离开页面时清掉按钮高亮');
-  check(/createMonitorPane\(mid, '监视器 · 蓝牙日志', false\);/.test(html),
+  check(/addBtn\.classList\.remove\('active'\);/.test(html), '离开页面时清掉按钮高亮');  check(/createMonitorPane\(mid, '监视器 · 蓝牙日志', false\);/.test(html),
     '内嵌监视器以 closable=false 创建 → 不再生成多余的 ✕（由顶栏开关负责关闭）');
   check(/closable=false：不生成薄标题栏上的 ✕/.test(html), '该决定已在代码里写明理由');
   // 问题2：ADB/WSL 页禁用该按钮后，直接切到蓝牙页会残留禁用态（按钮点不动）
@@ -767,6 +766,71 @@ console.log('preview ->', out);
   const colored = sb8.parseAnsi('a\u001b[31mred\u001b[0m');
   check(colored.indexOf('red') > 0 && colored.indexOf('\u001b') < 0,
     'parseAnsi 对完整序列仍正常解析为 span（不含裸 ESC）', JSON.stringify(colored.slice(0, 40)));
+
+  // ---- 7) BLE 配对（WinRT）：后端命令 + 前端弹窗与连接编排 ----
+  // 后端：两个命令必须注册、状态必须 manage、事件名必须与前端一致
+  check(/async fn ble_pair\(app: tauri::AppHandle, address: String\)/.test(mainRs), '后端有 ble_pair 命令');
+  check(/fn ble_pair_respond\(state: tauri::State<'_, BlePairState>, accept: bool, pin: Option<String>\)/.test(mainRs),
+    '后端有 ble_pair_respond 命令（接收前端答复）');
+  check(/^\s*ble_pair,\s*$/m.test(mainRs) && /^\s*ble_pair_respond,\s*$/m.test(mainRs),
+    '两个命令已注册进 generate_handler!（漏注册会静默不可用）');
+  check(/\.manage\(BlePairState \{ responder: Mutex::new\(None\) \}\)/.test(mainRs), 'BlePairState 已 manage');
+  check(/app\.emit\("ble-pair-request"/.test(mainRs), '后端通过 ble-pair-request 事件询问前端');
+  check(/rx\.recv_timeout\(std::time::Duration::from_secs\(60\)\)/.test(mainRs),
+    '后端等用户确认有 60 秒超时（超时按取消处理，不会永久挂住）');
+  check(/args\.GetDeferral\(\)\?/.test(mainRs) && /deferral\.Complete\(\)\?/.test(mainRs),
+    'WinRT 配对请求里有 deferral（等用户答复期间不让系统提前收走请求）');
+  check(/args\.AcceptWithPin\(&HSTRING::from\(user_pin\.as_str\(\)\)\)/.test(mainRs)
+     && /args\.Accept\(\)/.test(mainRs),
+    '按配对类型分别用 AcceptWithPin / Accept');
+  check(/DevicePairingKinds::ConfirmOnly[\s\S]{0,120}DevicePairingKinds::DisplayPin[\s\S]{0,120}DevicePairingKinds::ProvidePin[\s\S]{0,120}DevicePairingKinds::ConfirmPinMatch/.test(mainRs),
+    '四种配对类型都申请（确认/显示配对码/输入配对码/比对配对码）');
+  check(/fn bt_addr_to_u64\(/.test(mainRs) && /bt_addr_to_u64_parses_mac/.test(mainRs),
+    '地址解析有实现且有单测（cargo test 覆盖）');
+
+  // 前端：弹窗结构
+  check(/id="blePairModal"/.test(html), '前端有配对弹窗 #blePairModal');
+  check(/id="blePairPin"/.test(html) && /id="blePairInput"/.test(html) && /id="blePairDev"/.test(html),
+    '弹窗含配对码大字区 / PIN 输入框 / 设备信息区');
+  check(/onclick="submitBlePair\(false\)"/.test(html) && /onclick="submitBlePair\(true\)"/.test(html),
+    '弹窗有取消与确认两个按钮');
+  check(/60 秒内未确认将自动取消/.test(html), '弹窗提示超时（与后端 60 秒对齐）');
+  check(/\.ble-pair-modal \{ width:380px; min-width:320px; resize:none; \}/.test(html),
+    '配对弹窗固定尺寸（不继承写入弹窗的 resize:both）');
+
+  // 前端：纯函数文案映射（四种配对类型）
+  const sbPair = { console };
+  vm.createContext(sbPair);
+  vm.runInContext(extractFunction('blePairPrompt'), sbPair);
+  check(sbPair.blePairPrompt('display').indexOf('在蓝牙设备上输入') > 0, 'display：提示到设备上输入配对码');
+  check(sbPair.blePairPrompt('match').indexOf('核对') > 0, 'match：提示核对两端配对码');
+  check(sbPair.blePairPrompt('provide').indexOf('输入设备上显示的配对码') > 0, 'provide：提示输入设备显示的配对码');
+  check(sbPair.blePairPrompt('confirm').indexOf('确认') > 0, 'confirm：提示在设备上确认');
+  check(sbPair.blePairPrompt(undefined) === sbPair.blePairPrompt('confirm'), '未知类型按 confirm 处理（不抛错）');
+
+  // 前端：事件监听与答复回传
+  check(/listen\('ble-pair-request', function\(ev\) \{\s*showBlePairDialog\(ev && ev\.payload\);/.test(html),
+    '前端监听 ble-pair-request 并弹出配对窗');
+  check(/invoke\('ble_pair_respond', \{ accept: !!accept, pin: pin \}\)/.test(html),
+    '确认/取消把 accept + pin 回传后端');
+  check(/var showPin = \(p\.kind === 'display' \|\| p\.kind === 'match'\) && !!p\.pin;/.test(html),
+    'display/match 显示配对码大字');
+  check(/inp\.style\.display = \(p\.kind === 'provide'\) \? '' : 'none';/.test(html),
+    'provide 才显示 PIN 输入框');
+
+  // 前端：连接编排（失败 → 配对 → 重试一次，成功路径复用）
+  check(/function tryBlePairThenReconnect\(address, label, origErr\)/.test(html), '有"配对后重连"流程');
+  check(/invokeTimeout\('ble_pair', \{ address: address \}, BLE_PAIR_TIMEOUT_MS\)/.test(html),
+    '按 75 秒超时发起配对（后端 60 秒 + 余量）');
+  check(/var BLE_PAIR_TIMEOUT_MS = 75000;/.test(html), '配对超时常量已定义');
+  check(/if \(!paired\) throw \('配对未完成（被取消或失败）· 原连接错误: ' \+ origErr\);/.test(html),
+    '用户取消配对时保留原始连接错误（不会只剩一句"配对失败"）');
+  check(/\.catch\(function\(pe\) \{\s*throw \('配对失败: ' \+ pe \+ ' · 原连接错误: ' \+ origErr\);/.test(html),
+    '配对本身失败时同样带上原始连接错误');
+  check(/tryBlePairThenReconnect\(address, label, e\)\.catch\(function\(e2\)/.test(html),
+    '连接的 catch 分支接入配对重试，最终仍失败才报错');
+  const onConnCount = (html.match(/bleOnConnected\(address, label\)/g) || []).length;
+  check(onConnCount >= 3, '成功路径复用同一个 bleOnConnected（含配对后重连）', String(onConnCount));
 
   console.log(`\n结果: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

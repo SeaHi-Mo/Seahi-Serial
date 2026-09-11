@@ -1184,6 +1184,16 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 /* 弹窗内容随窗口尺寸伸缩：body 吃掉剩余高度、行内元素拉伸、输入框填满 */
 .ble-modal-body { padding:14px; flex:1; min-height:0; display:flex; }
 .ble-modal-row { display:flex; align-items:stretch; gap:8px; flex:1; min-height:0; }
+/* 配对弹窗：显示/输入配对码，等用户确认。
+   注意不要复用写入弹窗的 resize:both（那是给输入区的），确认框要固定尺寸。 */
+.ble-pair-modal { width:380px; min-width:320px; resize:none; }
+.ble-pair-dev { font-family:var(--font-mono); font-size:12px; color:var(--text-d); margin-bottom:8px; }
+.ble-pair-text { font-size:13px; color:var(--text); line-height:1.6; }
+.ble-pair-pin { font-family:var(--font-mono); font-size:22px; letter-spacing:3px; color:var(--accent-focus);
+                text-align:center; margin:10px 0 4px; }
+.ble-pair-input { display:block; width:100%; margin-top:8px; box-sizing:border-box; }
+.ble-pair-hint { font-size:11px; color:var(--text-d); margin-top:8px; }
+
 .ble-modal-row .ble-write-opts { align-self:flex-start; }
 /* 弹窗右侧选项列：每行「标签 + 下拉」，三行外观与宽度统一（下拉外观对齐串口监视器的 .sel） */
 .ble-write-opts { display:flex; flex-direction:column; gap:6px; flex-shrink:0; }
@@ -2129,6 +2139,29 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
         </div>
         <!-- 右下角拖拽提示：拖动由 .ble-modal 的原生 resize:both 处理，本元素只是让位置可见 -->
         <div class="ble-modal-grip" aria-hidden="true">&#9698;</div>
+    </div>
+</div>
+
+<!-- BLE 配对弹窗：连接需要配对的设备时，由后端 ble-pair-request 事件驱动显示 -->
+<div class="ble-modal-mask" id="blePairModal">
+    <div class="ble-modal ble-pair-modal">
+        <div class="ble-modal-head">
+            <span class="ble-modal-title">蓝牙配对</span>
+        </div>
+        <div class="ble-modal-body">
+            <div class="ble-pair-dev" id="blePairDev"></div>
+            <div class="ble-pair-text" id="blePairText"></div>
+            <!-- display / match 两种配对类型：把配对码大字显示出来 -->
+            <div class="ble-pair-pin" id="blePairPin" style="display:none;"></div>
+            <!-- provide 类型：需要用户输入设备上显示的配对码 -->
+            <input class="ble-modal-inp ble-pair-input" id="blePairInput" style="display:none;"
+                   placeholder="输入设备上显示的配对码" autocomplete="off" spellcheck="false">
+            <div class="ble-pair-hint">60 秒内未确认将自动取消</div>
+        </div>
+        <div class="ble-modal-foot">
+            <button class="ble-modal-btn" onclick="submitBlePair(false)">取消</button>
+            <button class="ble-modal-btn primary" id="blePairOk" onclick="submitBlePair(true)">确认</button>
+        </div>
     </div>
 </div>
 
@@ -6538,6 +6571,8 @@ var BLE_RSSI_INTERVAL = 3000;  // RSSI 刷新间隔（ms）：后端每次会做
 // 连接显式超时（ms）：WinRT 的 connect 在设备无响应时可能长时间不返回，
 // 靠这个超时给出明确失败提示，而不是让界面一直停在「连接中」
 var BLE_CONNECT_TIMEOUT_MS = 15000;
+// 配对超时（ms）：后端等用户确认配对码的上限是 60 秒，前端给它留出余量
+var BLE_PAIR_TIMEOUT_MS = 75000;
 var _bleScanStopTimer = null;  // 扫描 5 秒自动停止定时器
 var BLE_CHAR_NAMES = { '2A00':'Device Name','2A01':'Appearance','2A05':'Service Changed','2A19':'Battery Level','2A37':'Heart Rate Measurement','2A29':'Manufacturer Name' };
 
@@ -6936,6 +6971,57 @@ function bleWriteMaskClick(e) {
     var pressedOnMask = _bleWritePressOnMask;
     _bleWritePressOnMask = false;
     if (pressedOnMask && e.target && e.target.id === 'bleWriteModal') closeBleWriteModal();
+}
+
+/* ===== BLE 配对弹窗 =====
+   后端 ble_pair 需要用户确认时会发 ble-pair-request 事件（payload: {address, kind, pin}），
+   这里把配对码显示出来并等用户点确认/取消，再用 ble_pair_respond 把答复回传后端。
+   kind 语义（对应 WinRT DevicePairingKinds）：
+     confirm = 设备要求确认配对
+     display = 设备把配对码交给我们，需由用户在设备上输入
+     match   = 两端显示同一配对码，请用户比对
+     provide = 需要用户在应用里输入设备上显示的配对码 */
+function blePairPrompt(kind) {
+    // 纯函数：按配对类型给出提示文案（便于无头断言）
+    if (kind === 'display') return '设备配对码如下，请在蓝牙设备上输入并确认：';
+    if (kind === 'match') return '请核对设备上显示的配对码是否与下面一致，一致则点「确认」：';
+    if (kind === 'provide') return '请在下方输入设备上显示的配对码，然后点「确认」：';
+    return '设备要求配对，请在蓝牙设备上确认这次配对请求：';
+}
+
+function showBlePairDialog(p) {
+    p = p || {};
+    var dev = document.getElementById('blePairDev');
+    if (dev) {
+        var nm = (_bleConnInfo && _bleConnInfo.name) ? (' · ' + _bleConnInfo.name) : '';
+        dev.textContent = (p.address || '') + nm;
+    }
+    var txt = document.getElementById('blePairText');
+    if (txt) txt.textContent = blePairPrompt(p.kind);
+    var showPin = (p.kind === 'display' || p.kind === 'match') && !!p.pin;
+    var pinEl = document.getElementById('blePairPin');
+    if (pinEl) { pinEl.style.display = showPin ? '' : 'none'; pinEl.textContent = showPin ? p.pin : ''; }
+    var inp = document.getElementById('blePairInput');
+    if (inp) {
+        inp.style.display = (p.kind === 'provide') ? '' : 'none';
+        inp.value = '';
+        if (p.kind === 'provide') setTimeout(function() { inp.focus(); }, 30);
+    }
+    var mask = document.getElementById('blePairModal');
+    if (mask) mask.classList.add('show');
+    logBle('[配对] ' + blePairPrompt(p.kind) + (p.pin ? ' ' + p.pin : ''));
+}
+
+// 用户点了确认/取消：把答复回传后端（后端在等这个答复，最多 60 秒）
+function submitBlePair(accept) {
+    var inp = document.getElementById('blePairInput');
+    var pin = inp ? inp.value.trim() : '';
+    var mask = document.getElementById('blePairModal');
+    if (mask) mask.classList.remove('show');
+    logBle(accept ? '[配对] 已确认' : '[配对] 已取消');
+    invoke('ble_pair_respond', { accept: !!accept, pin: pin }).catch(function(e) {
+        logBle('[配对] 回传答复失败: ' + e);
+    });
 }
 // 弹窗打开时按 Esc 关闭（焦点不一定在输入框上，所以监听文档级）
 document.addEventListener('keydown', function(e) {
@@ -7589,6 +7675,58 @@ function toggleBleService(el) {
     if (uuid) _bleOpenSvcs[uuid] = true;
 }
 
+// 连接成功后的界面状态复位与数据加载。
+// 从 toggleBleConnect 的内联代码里抽出来，好让「配对成功后自动重连」复用同一条成功路径。
+function bleOnConnected(address, label) {
+    _bleConnecting = false;
+    // 连接期间列表可能整体刷新过 → 按地址在当前列表里重新定位，
+    // 否则会写到一个已不在列表中的孤儿对象上
+    var cur = null;
+    _bleDevices.forEach(function(d) { if (d.address === address) cur = d; });
+    if (cur) cur.connected = true;
+    // 同一时刻只可能连一台：把其它设备的标记清掉，
+    // 否则换连另一台时旧设备会一直显示「已连接」（后端只承认最后一台）
+    _bleDevices.forEach(function(d) { if (d.address !== address) d.connected = false; });
+    _bleConnAddr = address;
+    // 记住它的展示信息：连上后它可能就不再广播了，列表里会查不到
+    _bleConnInfo = { address: address, name: label, rssi: (cur ? cur.rssi : null),
+                     addressType: (cur ? cur.addressType : ''), deviceType: (cur ? cur.deviceType : 'ble') };
+    _bleSubs = {};   // 新连接从零开始，不继承上一轮的订阅显示
+    return invoke('ble_get_services').then(function(svcs) {
+        _bleServices = svcs || [];
+        var chars = 0;
+        _bleServices.forEach(function(s) { chars += (s.characteristics || []).length; });
+        logBle('[连接成功] ' + label + ' (' + address + ') · 服务 ' + _bleServices.length + ' · 特征 ' + chars);
+        renderBleDetail();
+        renderBleDeviceList();   // 让列表立刻出现「已连接」提示
+        startBleNotifyPoll();
+        startBleRssiPoll();   // 连接期间周期刷新信号强度
+    }).catch(function(e) {
+        logBle('[服务获取失败] ' + e);
+        showToast('获取服务失败: ' + e, 'error');
+    });
+}
+
+// 连接失败后的补救：设备可能「需要配对」才允许建立 GATT 连接 ——
+// 发起一次 WinRT 配对（会弹窗让用户确认配对码），成功后再重试一次连接。
+// 最终仍失败时 reject，错误串里带上原始连接错误，便于定位到底是配对问题还是别的原因。
+function tryBlePairThenReconnect(address, label, origErr) {
+    logBle('[连接失败] ' + label + ' · ' + origErr + ' · 该设备可能需要配对，发起配对…');
+    return invokeTimeout('ble_pair', { address: address }, BLE_PAIR_TIMEOUT_MS)
+        .catch(function(pe) {
+            throw ('配对失败: ' + pe + ' · 原连接错误: ' + origErr);
+        })
+        .then(function(paired) {
+            if (!paired) throw ('配对未完成（被取消或失败）· 原连接错误: ' + origErr);
+            logBle('[配对] 完成，重试连接…');
+            return invokeTimeout('ble_connect', { address: address }, BLE_CONNECT_TIMEOUT_MS);
+        })
+        .then(function() {
+            bleOnConnected(address, label);
+            return true;
+        });
+}
+
 function toggleBleConnect() {
     // 连接进行中门闩：连点会对同一设备重复 connect（后端会换掉底层设备对象）
     if (_bleConnecting) { showToast('正在连接，请稍候…', 'info'); return; }
@@ -7601,38 +7739,16 @@ function toggleBleConnect() {
         _bleConnecting = true;
         // 显式超时（TODO#3）+ 门闩：避免无限等待与重复连接
         invokeTimeout('ble_connect', { address: address }, BLE_CONNECT_TIMEOUT_MS).then(function() {
-            _bleConnecting = false;
-            // 连接期间列表可能整体刷新过 → 按地址在当前列表里重新定位，
-            // 否则会写到一个已不在列表中的孤儿对象上
-            var cur = null;
-            _bleDevices.forEach(function(d) { if (d.address === address) cur = d; });
-            if (cur) cur.connected = true;
-            // 同一时刻只可能连一台：把其它设备的标记清掉，
-            // 否则换连另一台时旧设备会一直显示「已连接」（后端只承认最后一台）
-            _bleDevices.forEach(function(d) { if (d.address !== address) d.connected = false; });
-            _bleConnAddr = address;
-            // 记住它的展示信息：连上后它可能就不再广播了，列表里会查不到
-            _bleConnInfo = { address: address, name: label, rssi: (cur ? cur.rssi : null),
-                             addressType: (cur ? cur.addressType : ''), deviceType: (cur ? cur.deviceType : 'ble') };
-            _bleSubs = {};   // 新连接从零开始，不继承上一轮的订阅显示
-            return invoke('ble_get_services').then(function(svcs) {
-                _bleServices = svcs || [];
-                var chars = 0;
-                _bleServices.forEach(function(s) { chars += (s.characteristics || []).length; });
-                logBle('[连接成功] ' + label + ' (' + address + ') · 服务 ' + _bleServices.length + ' · 特征 ' + chars);
-                renderBleDetail();
-                renderBleDeviceList();   // 让列表立刻出现「已连接」提示
-                startBleNotifyPoll();
-                startBleRssiPoll();   // 连接期间周期刷新信号强度
-            }).catch(function(e) {
-                logBle('[服务获取失败] ' + e);
-                showToast('获取服务失败: ' + e, 'error');
-            });
+            bleOnConnected(address, label);
         }).catch(function(e) {
-            _bleConnecting = false;
-            logBle('[连接失败] ' + label + ' (' + address + ') · ' + e);
-            console.warn('[BLE] 连接失败:', e);
-            showToast('连接失败: ' + e, 'error');
+            // 连接失败有可能是「设备需要配对」：发起一次配对，成功后自动重连一次。
+            // 配对成功但重连仍失败、或用户取消配对 → 走最终失败处理（报原始/新错误）。
+            tryBlePairThenReconnect(address, label, e).catch(function(e2) {
+                _bleConnecting = false;
+                logBle('[连接失败] ' + label + ' (' + address + ') · ' + e2);
+                console.warn('[BLE] 连接失败:', e2);
+                showToast('连接失败: ' + e2, 'error');
+            });
         });
     } else {
         invoke('ble_disconnect').then(function() {
@@ -8610,6 +8726,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // 监听设备变更事件，自动刷新端口列表（防抖 150ms）
         if (window.__TAURI__ && window.__TAURI__.event) {
+            // 配对请求：后端 ble_pair 需要用户确认配对码时发这个事件（payload: {address, kind, pin}）
+            window.__TAURI__.event.listen('ble-pair-request', function(ev) {
+                showBlePairDialog(ev && ev.payload);
+            });
             var _deviceChangeTimer = null;
             window.__TAURI__.event.listen('device-changed', function() {
                 console.log('[device-changed] event received at', Date.now());

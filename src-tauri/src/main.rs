@@ -3488,6 +3488,21 @@ mod util_tests {
         assert!(!super::is_valid_busid(""));             // 空
         assert!(!super::is_valid_busid("1-1-1"));        // 三段
     }
+
+    #[test]
+    fn bt_addr_to_u64_parses_mac() {
+        // 冒号分隔（本应用显示与前端回传的形式）
+        assert_eq!(super::bt_addr_to_u64("A4:C1:38:11:14:2B"), Some(0xA4C13811142B));
+        // 小写、无分隔符也应接受（大小写与分隔符都不影响）
+        assert_eq!(super::bt_addr_to_u64("a4c13811142b"), Some(0xA4C13811142B));
+        assert_eq!(super::bt_addr_to_u64("a4:c1:38:11:14:2b"), Some(0xA4C13811142B));
+        // 非法输入：位数不对 / 空 / 非十六进制混入导致位数不足
+        assert_eq!(super::bt_addr_to_u64("A4:C1:38:11:14"), None);   // 少一段
+        assert_eq!(super::bt_addr_to_u64(""), None);
+        assert_eq!(super::bt_addr_to_u64("ZZ:ZZ:ZZ:ZZ:ZZ:ZZ"), None);
+        // 不能溢出：48 位地址须落在 u64 内且高位在前
+        assert!(super::bt_addr_to_u64("FF:FF:FF:FF:FF:FF").unwrap() < u64::MAX);
+    }
 }
 
 /// 解析版本号字符串，返回 (major, minor, patch) 元组
@@ -4219,6 +4234,15 @@ fn is_ibeacon_payload(d: &[u8]) -> bool {
     d.len() >= 23 && d[0] == 0x02 && d[1] == 0x15
 }
 
+/// 蓝牙地址字符串 → WinRT 配对接口需要的 u64（高位在前）：
+/// "A4:C1:38:11:14:2B" → 0xA4C13811142B
+/// 置于 crate 根（不在 main 内部）以便单元测试直接覆盖
+fn bt_addr_to_u64(s: &str) -> Option<u64> {
+    let hex: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if hex.len() != 12 { return None; }
+    u64::from_str_radix(&hex, 16).ok()
+}
+
 fn main() {
     // 初始化错误上报通道
     init_error_reporter();
@@ -4503,6 +4527,120 @@ async fn ble_get_devices(state: tauri::State<'_, BleState>) -> Result<Vec<serde_
         }
     }
     Ok(out)
+}
+
+/* ===== BLE 配对（WinRT；btleplug 不提供配对接口） =====
+   背景：btleplug 的 WinRT 后端只做 BluetoothLEDevice + GattSession，完全不碰配对。
+   于是遇到「需要输配对码 / 需要确认」的设备时，连接只会失败并抛出底层 HRESULT，
+   用户看不到任何提示。这里补上：由应用主动发起 WinRT 自定义配对，
+   把配对码通过 Tauri 事件交给前端弹窗，等用户确认后再继续连接。 */
+
+/// 前端对配对请求的答复通道（同一时刻只允许一个配对在途）
+struct BlePairState {
+    responder: Mutex<Option<crossbeam_channel::Sender<(bool, String)>>>,
+}
+
+/// 把配对请求推给前端并等待答复；60 秒无响应视为取消。
+/// kind：confirm=请在设备上确认 / display=把配对码显示给用户 / match=两端比对同一配对码
+///       / provide=需要用户在应用里输入设备上显示的配对码
+fn ble_ask_pair_confirm(app: &tauri::AppHandle, address: &str, kind: &str, pin: &str) -> Option<(bool, String)> {
+    let state = app.state::<BlePairState>();
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    *state.responder.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+    let _ = app.emit("ble-pair-request", json!({ "address": address, "kind": kind, "pin": pin }));
+    rx.recv_timeout(std::time::Duration::from_secs(60)).ok()
+}
+
+/// 前端回传配对答复（确认/取消，provide 时带用户输入的配对码）
+#[tauri::command]
+fn ble_pair_respond(state: tauri::State<'_, BlePairState>, accept: bool, pin: Option<String>) -> Result<(), String> {
+    let tx = state.responder.lock().unwrap_or_else(|e| e.into_inner()).take()
+        .ok_or("当前没有待处理的配对请求")?;
+    tx.send((accept, pin.unwrap_or_default())).map_err(|e| format!("回传配对答复失败: {e}"))
+}
+
+/// 发起 WinRT 配对（**全程同步阻塞**：WinRT 对象不是 Send，必须留在同一个线程上，
+/// 所以这里用 windows-future 的阻塞 get()，由 ble_pair 丢到阻塞线程池执行）
+fn ble_pair_inner(app: &tauri::AppHandle, address: &str, u64_addr: u64) -> Result<bool, String> {
+    use windows::core::HSTRING;
+    use windows::Devices::Bluetooth::BluetoothLEDevice;
+    use windows::Devices::Enumeration::{
+        DeviceInformation, DeviceInformationCustomPairing, DevicePairingKinds,
+        DevicePairingRequestedEventArgs, DevicePairingResultStatus,
+    };
+    use windows::Foundation::TypedEventHandler;
+
+    let selector = BluetoothLEDevice::GetDeviceSelectorFromBluetoothAddress(u64_addr)
+        .map_err(|e| format!("构造设备选择器失败: {e}"))?;
+    // windows-future 0.3 只提供 .await（无阻塞 get），这里在阻塞线程上用 futures 执行器驱动它。
+    // 注意：IAsyncOperation 实现的是 IntoFuture（不是 Future），所以必须先放进 async 块里 await，
+    // 不能直接把它喂给 block_on。该执行器不要求 Send，正好容纳 WinRT 的 !Send 对象。
+    let found = {
+        let op = DeviceInformation::FindAllAsyncAqsFilter(&selector)
+            .map_err(|e| format!("枚举设备失败: {e}"))?;
+        futures::executor::block_on(async { op.await }).map_err(|e| format!("枚举设备失败: {e}"))?
+    };
+    // DeviceInformationCollection 是 IVectorView：按索引取第一个（空集合时 GetAt 报错，正好给提示）
+    let dev = found.GetAt(0).map_err(|_| "未找到该蓝牙设备（请确认设备在范围内）".to_string())?;
+    let pairing = dev.Pairing().map_err(|e| format!("读取配对状态失败: {e}"))?;
+    if pairing.IsPaired().unwrap_or(false) {
+        dbg_log(&format!("ble_pair: {address} 已配对，无需重新配对"));
+        return Ok(true);
+    }
+    let custom = pairing.Custom()
+        .map_err(|_| "该设备不支持自定义配对（无法在应用内确认配对码）".to_string())?;
+
+    let app2 = app.clone();
+    let addr2 = address.to_string();
+    let handler = TypedEventHandler::<DeviceInformationCustomPairing, DevicePairingRequestedEventArgs>::new(
+        move |_, args| {
+            let args = match args.as_ref() { Some(a) => a, None => return Ok(()) };
+            let deferral = args.GetDeferral()?;
+            let kind = args.PairingKind()?;
+            let shown_pin = args.Pin().map(|h| h.to_string()).unwrap_or_default();
+            let kind_str = if kind == DevicePairingKinds::DisplayPin { "display" }
+                else if kind == DevicePairingKinds::ProvidePin || kind == DevicePairingKinds::ProvidePasswordCredential { "provide" }
+                else if kind == DevicePairingKinds::ConfirmPinMatch { "match" }
+                else { "confirm" };
+            dbg_log(&format!("ble_pair: 收到配对请求 kind={kind_str} pin_len={}", shown_pin.len()));
+            match ble_ask_pair_confirm(&app2, &addr2, kind_str, &shown_pin) {
+                Some((true, user_pin)) => {
+                    let r = if kind == DevicePairingKinds::ProvidePin
+                             || kind == DevicePairingKinds::ProvidePasswordCredential {
+                        args.AcceptWithPin(&HSTRING::from(user_pin.as_str()))
+                    } else {
+                        args.Accept()
+                    };
+                    if let Err(e) = r { dbg_log(&format!("ble_pair: 接受配对失败 {e}")); }
+                }
+                Some((false, _)) => dbg_log("ble_pair: 用户取消配对"),
+                None => dbg_log("ble_pair: 等待用户确认超时，按取消处理"),
+            }
+            deferral.Complete()?;
+            Ok(())
+        },
+    );
+    custom.PairingRequested(&handler).map_err(|e| format!("注册配对事件失败: {e}"))?;
+    let kinds = DevicePairingKinds::ConfirmOnly
+        | DevicePairingKinds::DisplayPin
+        | DevicePairingKinds::ProvidePin
+        | DevicePairingKinds::ConfirmPinMatch;
+    let result = {
+        let op = custom.PairAsync(kinds).map_err(|e| format!("发起配对失败: {e}"))?;
+        futures::executor::block_on(async { op.await }).map_err(|e| format!("配对过程出错: {e}"))?
+    };
+    let status = result.Status().map_err(|e| format!("读取配对结果失败: {e}"))?;
+    dbg_log(&format!("ble_pair: {address} 配对结果 {status:?}"));
+    Ok(status == DevicePairingResultStatus::Paired)
+}
+
+/// 发起配对：已配对直接返回 true；需要用户确认时经 ble-pair-request 事件询问前端
+#[tauri::command]
+async fn ble_pair(app: tauri::AppHandle, address: String) -> Result<bool, String> {
+    let u64_addr = bt_addr_to_u64(&address).ok_or("蓝牙地址格式不正确")?;
+    tauri::async_runtime::spawn_blocking(move || ble_pair_inner(&app, &address, u64_addr))
+        .await
+        .map_err(|e| format!("配对任务失败: {e}"))?
 }
 
 #[tauri::command]
@@ -4815,6 +4953,7 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec
             notify_buf: std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new())),
             notify_spawned: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
+        .manage(BlePairState { responder: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![
             list_ports,
             list_wsl_devices,
@@ -4876,6 +5015,8 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec
             ble_stop_scan,
             ble_get_devices,
             ble_connect,
+        ble_pair,
+        ble_pair_respond,
             ble_disconnect,
             ble_get_connection,
             ble_refresh_rssi,
