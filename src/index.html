@@ -3595,14 +3595,56 @@ async function checkWorkflowMatches(mid, rawBytes) {
     }
 }
 
+/* ===== 读取轮询频率：可见时实时、隐藏时降频 =====
+   串口/WSL 监视器的读循环默认 25ms（40 次/秒/每个监视器）。隐藏着的监视器（切到别的页、
+   或蓝牙页那个内嵌监视器在后台跑）没必要保持这个频率 —— 照 ADB 面板的现成做法降频，
+   避免一直空耗 IPC 与 CPU。**降频不丢数据**：读线程照旧往缓冲里攒，只是一次多取一些。 */
+var MON_READ_MS_VISIBLE = 25;    // 可见：实时
+var MON_READ_MS_HIDDEN = 500;    // 隐藏：降 20 倍（500ms 的数据量远小于后端 256KB 缓冲上限）
+
+// 该监视器挂在哪个页面容器里（纯映射，便于无头断言）
+function monitorHostId(mid) {
+    if (mid === 'ble-mon') return 'ble-pane';                    // 蓝牙页内嵌监视器
+    if (String(mid).indexOf('wsl') === 0) return 'wsl-pane';     // 'wsl' 与 'wsl-xN'
+    return 'paneContainer';                                      // main / extra-N
+}
+// 该监视器当前是否可见（窗口最小化/被切走也算不可见）
+function monitorVisible(mid, doc) {
+    doc = doc || document;
+    if (doc.hidden) return false;
+    var el = doc.getElementById(monitorHostId(mid));
+    return !!(el && el.style.display !== 'none');
+}
+// 该监视器当前应使用的轮询间隔（ms）
+function monitorPollMs(mid, doc) {
+    return monitorVisible(mid, doc) ? MON_READ_MS_VISIBLE : MON_READ_MS_HIDDEN;
+}
+// 页面切换/窗口显隐后重设各监视器的读取频率；只动正在读取的，频率没变就不重建定时器
+function refreshMonitorPollRates() {
+    Object.keys(monitors).forEach(function(mid) {
+        var m = monitors[mid];
+        if (!m || !m.readTimer) return;
+        var ms = monitorPollMs(mid);
+        if (m._pollMs === ms) return;
+        if (m.isWsl) startWslReading(mid); else startReading(mid);   // 内部会先 stop 再按新频率起
+    });
+}
+
 function startReading(mid) {
     stopReading(mid);
+    monitors[mid]._pollMs = monitorPollMs(mid);   // 记下本次频率，页面切换时据此判断是否需要重建
     var reading = false;
     monitors[mid].readTimer = setInterval(async function() {
         if (reading || !monitors[mid] || !monitors[mid].isConnected) { if (!monitors[mid] || !monitors[mid].isConnected) stopReading(mid); return; }
         reading = true;
         try {
-            var data = await invokeTimeout('read_data', { monitorId: mid }, 3000);
+            var res = await invokeTimeout('read_data', { monitorId: mid }, 3000);
+            // 后端接收缓冲超限时会丢弃最旧数据并回报字节数 → 明确提示一行，
+            // 否则用户会以为"日志就是这些"，看不出中间被丢过
+            if (res && res.dropped > 0) {
+                appendOutput(mid, 'sys', '[缓冲] 读取不及时，已丢弃 ' + res.dropped + ' 字节（设备发得太快，或面板长时间隐藏）');
+            }
+            var data = (res && res.bytes) ? res.bytes : res;   // 兼容旧的纯数组返回
             if (data && data.length > 0) {
                 // 渲染异常只记录日志，避免误触发断开/重连逻辑导致界面异常（#13）
                 try {
@@ -3663,7 +3705,7 @@ function startReading(mid) {
         } finally {
             reading = false;
         }
-    }, 25);
+    }, monitors[mid]._pollMs || MON_READ_MS_VISIBLE);
 }
 
 async function reconnectPort(mid, portName, attempt) {
@@ -5828,6 +5870,7 @@ function openWslMapping() {
     // 隐藏监视器，显示 WSL 面板
     document.getElementById('paneContainer').style.display = 'none';
     document.getElementById('wsl-pane').style.display = 'flex';
+    refreshMonitorPollRates();   // 页面切换 → 按可见性重设读取频率（隐藏的监视器降频）
     document.getElementById('adb-pane').style.display = 'none';
     document.getElementById('ble-pane').style.display = 'none';
     var aBtn = document.getElementById('adbToggleBtn');
@@ -6213,6 +6256,7 @@ function toggleWslRTS(level, wmid) {
 // WSL 串口数据读取轮询
 function startWslReading(mid) {
     stopReading(mid);
+    monitors[mid]._pollMs = monitorPollMs(mid);   // 同上：WSL 读循环也用同一套可见性频率
     var reading = false;
     monitors[mid].readTimer = setInterval(async function() {
         if (reading || !monitors[mid] || !monitors[mid].isConnected) { if (!monitors[mid] || !monitors[mid].isConnected) stopReading(mid); return; }
@@ -6265,7 +6309,7 @@ function startWslReading(mid) {
         } finally {
             reading = false;
         }
-    }, 25);
+    }, monitors[mid]._pollMs || MON_READ_MS_VISIBLE);
 }
 
 async function reconnectWslPort(mid, portName, attempt) {
@@ -6583,6 +6627,7 @@ function restoreMonitorPane() {
     // 切换面板显示
     document.getElementById('wsl-pane').style.display = 'none';
     document.getElementById('paneContainer').style.display = 'flex';
+    refreshMonitorPollRates();   // 页面切换 → 按可见性重设读取频率（隐藏的监视器降频）
     // 恢复顶部栏按钮：返回后，悬停提示「WSL 端口映射」
     var btn = document.getElementById('wslToggleBtn');
     if (btn) {
@@ -7326,6 +7371,7 @@ function openBle() {
     document.getElementById('wsl-pane').style.display = 'none';
     document.getElementById('adb-pane').style.display = 'none';
     document.getElementById('ble-pane').style.display = 'flex';
+    refreshMonitorPollRates();   // 页面切换 → 按可见性重设读取频率（隐藏的监视器降频）
     // 收起其它面板按钮的 active 态
     var wBtn = document.getElementById('wslToggleBtn');
     if (wBtn) { wBtn.setAttribute('title', 'WSL 端口映射'); wBtn.setAttribute('onclick', 'openWslMapping()'); wBtn.classList.remove('active'); }
@@ -7447,6 +7493,7 @@ function closeBle() {
     console.log('[BLE] 返回监视器页面');
     document.getElementById('ble-pane').style.display = 'none';
     document.getElementById('paneContainer').style.display = 'flex';
+    refreshMonitorPollRates();   // 页面切换 → 按可见性重设读取频率（隐藏的监视器降频）
     var addBtn = document.getElementById('addMonitorBtn');
     if (addBtn) { addBtn.style.opacity = ''; addBtn.style.pointerEvents = ''; addBtn.title = '打开额外监视器'; addBtn.classList.remove('active'); }
     var btn = document.getElementById('bleToggleBtn');
@@ -7976,6 +8023,7 @@ function openAdb() {
     document.getElementById('paneContainer').style.display = 'none';
     document.getElementById('wsl-pane').style.display = 'none';
     document.getElementById('adb-pane').style.display = 'flex';
+    refreshMonitorPollRates();   // 页面切换 → 按可见性重设读取频率（隐藏的监视器降频）
     document.getElementById('ble-pane').style.display = 'none';
     var wBtn = document.getElementById('wslToggleBtn');
     if (wBtn) {
@@ -8037,6 +8085,7 @@ function closeAdb() {
     console.log('[ADB] 返回监视器页面');
     document.getElementById('adb-pane').style.display = 'none';
     document.getElementById('paneContainer').style.display = 'flex';
+    refreshMonitorPollRates();   // 页面切换 → 按可见性重设读取频率（隐藏的监视器降频）
     // 面板隐藏：ADB 会话降频轮询，避免离开后仍高频率空转后端
     setAllAdbPollRate(2000);
     // 离开 ADB 面板：停止设备列表自动刷新
@@ -8928,6 +8977,8 @@ document.addEventListener('DOMContentLoaded', function() {
             window.__TAURI__.event.listen('ble-pair-request', function(ev) {
                 showBlePairDialog(ev && ev.payload);
             });
+            // 窗口最小化/切走也算"不可见"：回来时把读取频率调回实时
+            document.addEventListener('visibilitychange', function() { refreshMonitorPollRates(); });
             var _deviceChangeTimer = null;
             window.__TAURI__.event.listen('device-changed', function() {
                 console.log('[device-changed] event received at', Date.now());

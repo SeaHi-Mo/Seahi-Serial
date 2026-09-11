@@ -342,6 +342,8 @@ static WSL_TERMINAL_PID: Mutex<Option<u32>> = Mutex::new(None);
 struct PortReader {
     buffer: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// 因接收缓冲超上限而被丢弃的字节数（累计；前端每次 read_data 取走并清零）
+    dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
     read_handle: Option<std::thread::JoinHandle<()>>,
     wf_handle: Option<std::thread::JoinHandle<()>>,
     act_handle: Option<std::thread::JoinHandle<()>>,
@@ -359,6 +361,7 @@ impl PortReader {
     fn new(port: Box<dyn SerialPort>, regex_cache: std::sync::Arc<RegexCache>) -> Self {
         let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::with_capacity(8192)));
         let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let disconnected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let disconnect_reported = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -368,6 +371,7 @@ impl PortReader {
         let match_tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let buf_clone = buffer.clone();
         let evt_clone = events.clone();
+        let dropped_clone = dropped.clone();
         let stop_clone = stop.clone();
         let disconnected_clone = disconnected.clone();
         let port_arc = std::sync::Arc::new(std::sync::Mutex::new(port));
@@ -398,9 +402,16 @@ impl PortReader {
                     Ok(n) if n > 0 => {
                         if let Ok(mut buf) = buf_clone.lock() {
                             buf.extend_from_slice(&tmp[..n]);
+                            // 上限保护：监视器隐藏、或前端读取不及时时，设备持续吐数据不会把内存吃满。
+                            // 超限丢弃最旧数据并记账 —— 前端下次 read_data 会看到 dropped 增量并提示一行，
+                            // 否则用户会以为"日志就是这些"，看不出中间被丢过。
                             if buf.len() > 262144 {
                                 let drain = buf.len() - 131072;
                                 buf.drain(..drain);
+                                let prev = dropped_clone.fetch_add(drain as u64, std::sync::atomic::Ordering::Relaxed);
+                                if prev == 0 {
+                                    dbg_log(&format!("serial reader: 接收缓冲超限，开始丢弃最旧数据（本次 {} 字节）", drain));
+                                }
                             }
                         }
                         let _ = tx_clone.try_send(tmp[..n].to_vec()).is_ok();
@@ -439,7 +450,7 @@ impl PortReader {
         });
 
         PortReader {
-            buffer, events, read_handle: Some(read_handle), wf_handle: Some(wf_handle),
+            buffer, events, dropped, read_handle: Some(read_handle), wf_handle: Some(wf_handle),
             act_handle: Some(act_handle), stop, disconnected, disconnect_reported,
             port: port_arc, rules, log_dir, line_ending,
         }
@@ -515,6 +526,11 @@ impl PortReader {
         if let Ok(mut buf) = self.buffer.lock() {
             std::mem::take(&mut *buf)
         } else { vec![] }
+    }
+
+    /// 取走并清零「因缓冲超限被丢弃的字节数」：前端每次读数据时会拿到这个增量并提示用户
+    fn take_dropped(&self) -> u64 {
+        self.dropped.swap(0, std::sync::atomic::Ordering::Relaxed)
     }
 
     fn read_events(&self) -> Vec<String> {
@@ -1209,8 +1225,15 @@ fn close_port(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<
 }
 
 /// 从缓冲区读取数据（毫秒级，不阻塞）
+/// read_data 的返回：字节 + 本次「因缓冲超限被丢弃」的字节数（正常恒为 0）
+#[derive(serde::Serialize)]
+struct ReadDataResult {
+    bytes: Vec<u8>,
+    dropped: u64,
+}
+
 #[tauri::command]
-fn read_data(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<Vec<u8>, String> {
+fn read_data(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<ReadDataResult, String> {
     let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
     if let Some(reader) = map.get(&monitor_id) {
         if reader.disconnected.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1220,7 +1243,7 @@ fn read_data(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<V
             }
             return Err("设备已断开连接".into());
         }
-        Ok(reader.read_all())
+        Ok(ReadDataResult { bytes: reader.read_all(), dropped: reader.take_dropped() })
     } else {
         // 未连接是前端高频轮询的常态（用户关闭连接后仍 poll），不触发错误上报，避免风暴
         Err("未连接串口".into())

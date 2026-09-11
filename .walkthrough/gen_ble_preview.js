@@ -981,6 +981,55 @@ console.log('preview ->', out);
   });
   const svcSave = (html.match(/scheduleConfigSave\(\);   \/\/ 展开状态随用户配置保留/g) || []).length;
   check(svcSave >= 2, '服务展开/收起两条路径都会保存', String(svcSave));
+
+  // ---- 12) 读取轮询：可见时实时、隐藏时降频（A）+ 缓冲超限丢弃要提示（B）----
+  const sbPoll = { console };
+  vm.createContext(sbPoll);
+  const msVis = parseInt((html.match(/var MON_READ_MS_VISIBLE = (\d+);/) || [])[1], 10);
+  const msHid = parseInt((html.match(/var MON_READ_MS_HIDDEN = (\d+);/) || [])[1], 10);
+  vm.runInContext([
+    'var MON_READ_MS_VISIBLE = ' + msVis + ';',
+    'var MON_READ_MS_HIDDEN = ' + msHid + ';',
+    extractFunction('monitorHostId'), extractFunction('monitorVisible'), extractFunction('monitorPollMs'),
+  ].join('\n'), sbPoll);
+  check(sbPoll.monitorHostId('ble-mon') === 'ble-pane', '蓝牙页内嵌监视器 → ble-pane');
+  check(sbPoll.monitorHostId('wsl') === 'wsl-pane' && sbPoll.monitorHostId('wsl-x2') === 'wsl-pane',
+    'WSL 监视器（含额外）→ wsl-pane');
+  check(sbPoll.monitorHostId('main') === 'paneContainer' && sbPoll.monitorHostId('extra-3') === 'paneContainer',
+    '串口监视器（含额外）→ paneContainer');
+  const mkDoc = function(hidden, disp) {
+    return { hidden: hidden, getElementById: function() { return disp === null ? null : { style: { display: disp } }; } };
+  };
+  check(sbPoll.monitorVisible('main', mkDoc(false, 'flex')) === true, '页面可见 → true');
+  check(sbPoll.monitorVisible('main', mkDoc(false, 'none')) === false, '所在页面 display:none → false');
+  check(sbPoll.monitorVisible('main', mkDoc(true, 'flex')) === false, '窗口最小化/切走（document.hidden）→ false');
+  check(sbPoll.monitorVisible('main', mkDoc(false, null)) === false, '容器不存在时不抛错、按不可见处理');
+  check(sbPoll.monitorPollMs('main', mkDoc(false, 'flex')) === msVis
+     && sbPoll.monitorPollMs('main', mkDoc(false, 'none')) === msHid,
+    '可见用实时频率 / 隐藏用降频频率', msVis + ' / ' + msHid);
+  check(msVis === 25 && msHid === 500, '两个频率常量已定义且符合预期（25 / 500）', msVis + ' / ' + msHid);
+  const pollUse = (html.match(/\}, monitors\[mid\]\._pollMs \|\| MON_READ_MS_VISIBLE\);/g) || []).length;
+  check(pollUse === 2, '串口与 WSL 两个读循环都按 _pollMs 起定时器', String(pollUse));
+  const pollSet = (html.match(/monitors\[mid\]\._pollMs = monitorPollMs\(mid\);/g) || []).length;
+  check(pollSet === 2, '两个启动函数都记录本次频率', String(pollSet));
+  check(/if \(m\.isWsl\) startWslReading\(mid\); else startReading\(mid\);/.test(html),
+    '重设频率时按 WSL/串口分别调对应启动函数');
+  const pollHook = (html.match(/refreshMonitorPollRates\(\);   \/\/ 页面切换/g) || []).length;
+  check(pollHook === 6, '6 个页面切换点都重设频率（进入/离开 WSL、蓝牙、ADB）', String(pollHook));
+  check(/document\.addEventListener\('visibilitychange', function\(\) \{ refreshMonitorPollRates\(\); \}\);/.test(html),
+    '窗口最小化/恢复时也重设');
+  // B：缓冲超限丢弃要记账并提示
+  check(/dropped: std::sync::Arc<std::sync::atomic::AtomicU64>/.test(mainRs), '后端有丢弃计数');
+  check(/let prev = dropped_clone\.fetch_add\(drain as u64/.test(mainRs), '缓冲裁剪时累计丢弃字节');
+  check(/fn take_dropped\(&self\) -> u64 \{[\s\S]{0,120}swap\(0,/.test(mainRs), 'take_dropped 取走并清零');
+  check(/struct ReadDataResult \{[\s\S]{0,80}bytes: Vec<u8>,[\s\S]{0,40}dropped: u64,/.test(mainRs),
+    'read_data 返回字节 + 丢弃数');
+  check(/Ok\(ReadDataResult \{ bytes: reader\.read_all\(\), dropped: reader\.take_dropped\(\) \}\)/.test(mainRs),
+    'read_data 组装两者返回');
+  check(/if \(res && res\.dropped > 0\) \{[\s\S]{0,200}已丢弃 /.test(html),
+    '前端在丢弃时输出一行提示（不再让用户误以为日志就这些）');
+  check(/var data = \(res && res\.bytes\) \? res\.bytes : res;/.test(html),
+    '前端兼容新的对象返回与旧的纯数组返回');
   const sbFmt = { console, TextDecoder };
   vm.createContext(sbFmt);
   vm.runInContext([
