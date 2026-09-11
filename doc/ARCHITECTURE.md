@@ -560,14 +560,13 @@ WSL 串口通过 Python bridge 脚本实现：
 | Rust | stable (dtolnay) |
 | 缓存 | swatinem/rust-cache |
 | 构建 | tauri-apps/tauri-action@v0 |
-| 产物 | Draft Release |
+| 产物 | 正式 Release（latest，非草稿） |
 
 **发布流程**:
-1. 同步更新版本号（`Cargo.toml`、`tauri.conf.json`、`installer.iss`）
+1. 同步更新版本号（`Cargo.toml`、`tauri.conf.json`、`installer.iss`、`package.json`、`Cargo.lock` 共 5 处 —— CI 会校验一致性）
 2. 提交并推送到 main 分支
 3. 创建并推送版本标签：`git tag v0.x.x && git push origin v0.x.x`
-4. GitHub Actions 自动构建并创建 Draft Release
-5. 在 Releases 页面手动发布
+4. GitHub Actions 自动构建并**直接发布正式 Release（latest）**，无需人工发布
 
 ---
 

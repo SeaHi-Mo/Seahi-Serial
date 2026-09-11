@@ -50,10 +50,12 @@ serial-debugger-tauri/
 
 ### 4.1 版本号同步（发版前必须检查）
 
-版本号必须**同时更新 3 个文件**：
+版本号必须**同时更新 5 处**（CI 会校验一致性，不一致直接构建失败）：
 1. `src-tauri/Cargo.toml` → `version`
 2. `src-tauri/tauri.conf.json` → `version`
 3. `installer.iss` → `MyAppVersion`
+4. `package.json` → `version`（曾漂移到 0.3.0）
+5. `src-tauri/Cargo.lock` → `seahi-serial` 条目的 `version`
 
 遗漏任何一处都会导致构建产物版本不一致。
 
@@ -216,11 +218,10 @@ WSL 功能通过 Python bridge 脚本实现串口转发：
 
 ## 8. 版本发布清单
 
-1. 同步更新 3 处版本号（Cargo.toml、tauri.conf.json、installer.iss）
+1. 同步更新 **5 处**版本号（`Cargo.toml`、`tauri.conf.json`、`installer.iss`、`package.json`、`Cargo.lock` 中 seahi-serial 条目 —— CI 会校验一致性）
 2. 提交代码
 3. `git tag v0.x.x && git push origin v0.x.x`
-4. GitHub Actions 自动构建 Draft Release
-5. 手动发布 Release
+4. GitHub Actions 自动构建，并**直接发布为正式 Release（latest）**（`releaseDraft/prerelease/draft` 均为 false，无需手动发布）
 
 ---
 

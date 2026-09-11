@@ -13,14 +13,16 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/busid 白名单）
 ```
 
-无 lint 与类型检查；后端有少量单测（`main.rs` 末尾 `#[cfg(test)]`，9 条），前端无自动化测试。
-另有开发期辅助脚本在 `.walkthrough/`（未纳入版本库）：`gen_ble_preview.js` 是前端无头断言集（75 条）。
+无 lint 与类型检查；后端有少量单测（`main.rs` 末尾 `#[cfg(test)]`，10 条）。
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 300+ 条，随代码演进增补）：直接从
+`src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言，改前端后应先跑
+`node .walkthrough/gen_ble_preview.js`。`.walkthrough/` 已纳入版本库（仅忽略 `__pycache__`）。
 
 ## 项目结构
 
 - `src/index.html` — 整个前端（单文件，约 8500 行，含 12 套主题变量；串口 / WSL / ADB / 蓝牙 四个面板）
 - `src-tauri/src/main.rs` — 整个 Rust 后端（约 4850 行，72 个 `#[tauri::command]`）：串口枚举（SetupAPI）、多串口连接/断开、DTR/RTS 切换、收发数据、WSL 端口映射、USB 设备管理、ADB 会话、**BLE 调试（btleplug，相关代码全在 `fn main()` 内）**
-- `src-tauri/Cargo.toml` — Rust 依赖（serialport 3.3, rfd 0.15, winapi 0.3, windows-sys 0.59, reqwest 0.12, base64 0.22, btleplug 0.13）
+- `src-tauri/Cargo.toml` — Rust 依赖（serialport 3.3, rfd 0.15, winapi 0.3, windows-sys 0.59, **windows 0.62 + windows-future 0.3（BLE 配对用 WinRT）**, reqwest 0.12, base64 0.22, btleplug 0.13）
 - `src-tauri/vendor/btleplug/` — **btleplug 的 vendored fork**（`[patch.crates-io]` 指向此处），共 4 处本地补丁；**升级依赖时必须按 `vendor/btleplug/VENDOR.md` 重新打**
 - `src-tauri/tauri.conf.json` — Tauri 窗口配置，CSP 设为 `null`；**不要擅自设 CSP**：Tauri 会注入 nonce，按规范 `'unsafe-inline'` 即失效，本应用的内联样式与 172 处内联 onclick 会全被拦（界面掉样式）。要设 CSP 必须先做「内联外置」重构
 - `src-tauri/capabilities/default.json` — 窗口/Webview 的 ACL 权限（仅 `core:*`，无 shell/fs/http 插件权限）
@@ -38,8 +40,9 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/
 4. `package.json` → `version`（曾漂移成 0.3.0，已修正）
 5. `src-tauri/Cargo.lock` → `seahi-serial` 条目的 `version`
 
-> CI（`.github/workflows/build.yml`）目前**不校验**版本一致性 —— 建议加一条断言：
-> tag `vX.Y.Z` 与上述各处一致，否则构建失败。详见 `doc/CODE_REVIEW_FULL_2026-09.md` M25。
+> CI 已在构建前**自动校验版本一致性**（`.github/workflows/build.yml` 的 `Verify version consistency` 步骤）：
+> 上述 5 处必须完全一致；tag 触发时还要求 tag == `v{版本号}`，否则构建直接失败。
+> 详见 `doc/CODE_REVIEW_FULL_2026-09.md` M25（状态：✅ 已修，v0.4.0 落地）。
 
 ## 关键约定
 
@@ -54,7 +57,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/
 
 ## CI/CD
 
-GitHub Actions 工作流位于 `.github/workflows/build.yml`：推送 `v*` tag 触发 Windows 构建并生成 Draft Release，也支持手动触发。
+GitHub Actions 工作流位于 `.github/workflows/build.yml`：推送 `v*` tag 触发 Windows 构建并**直接发布正式 Release（latest）**（`releaseDraft: false` + `prerelease: false`，安装包由 `softprops/action-gh-release` 以 `draft: false` 上传，**无需人工发布**），也支持手动触发。
 
 ## 错误上报系统
 

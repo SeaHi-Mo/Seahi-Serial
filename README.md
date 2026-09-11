@@ -99,15 +99,18 @@ serial-debugger-tauri/
 - **触发方式**：推送 `v*` 格式的 tag 时自动触发，也支持手动触发
 - **运行环境**：`windows-latest`
 - **缓存优化**：Rust 编译缓存，加速后续构建
-- **自动发布**：构建完成后自动创建 Draft Release，附带 exe 安装包
+- **自动发布**：构建完成后**直接发布正式 Release（latest）**，附带 MSI 与 exe 安装包
+- **版本校验**：构建前先校验 tag 与 5 处版本号一致（不一致即失败，防止发出"版本号对不上"的包）
 
 ### 如何使用
 
 ```bash
-# 1. 修改版本号（同步更新以下 3 个文件）
+# 1. 修改版本号（5 处必须一致，CI 会校验）
 #    - src-tauri/Cargo.toml      中的 version
 #    - src-tauri/tauri.conf.json 中的 version
 #    - installer.iss              中的 MyAppVersion
+#    - package.json               中的 version
+#    - src-tauri/Cargo.lock       中 seahi-serial 条目的 version
 
 # 2. 提交并推送代码
 git add -A
@@ -118,8 +121,8 @@ git push origin main
 git tag v0.x.x
 git push origin v0.x.x
 
-# 4. GitHub Actions 自动开始构建
-#    构建完成后会生成一个 Draft Release，进入 Releases 页面手动发布即可
+# 4. GitHub Actions 自动开始构建，完成后**直接发布为正式 Release（latest）**
+#    无需手动操作（releaseDraft/prerelease/draft 均为 false）
 ```
 
 ### 手动触发构建

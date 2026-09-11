@@ -179,8 +179,8 @@ git push origin main
 git tag v0.x.x
 git push origin v0.x.x
 
-# 4. GitHub Actions 自动构建 Draft Release
-# 5. 到 GitHub Releases 页面手动发布
+# 4. GitHub Actions 自动构建并直接发布正式 Release（latest）
+#    无需手动发布（releaseDraft/prerelease/draft 均为 false）
 ```
 
 ---
