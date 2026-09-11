@@ -852,10 +852,10 @@ console.log('preview ->', out);
 
   // ---- 8) 通知/接收数据默认按文本显示（用户反馈：文本 payload 被显示成十六进制）----
   // 文本 case：文本在前、十六进制灰显跟在后面（用户选 A）：走 logBleDim + .ble-log-dim
-  check(/logBleDim\(label \+ bleFmtBytes\(bytes\) \+ ' · ', hex\);/.test(html),
+  check(/logBleDim\(label \+ '  ' \+ bleFmtBytes\(bytes\) \+ ' · ', hex\);/.test(html),
     '文本可读时：文本 + 灰色十六进制（用 logBleDim 追加灰显段）');
   check(/\.ble-log-dim \{ color:var\(--text-d\); \}/.test(html), '灰色段有对应样式 .ble-log-dim');
-  check(/logBle\(label \+ hex\);/.test(html), '二进制/解析失败时仍直接显示十六进制');
+  check(/logBle\(label \+ '  ' \+ hex\);/.test(html), '二进制/解析失败时仍直接显示十六进制');
   check(/function logBleDim\(text, dim\)/.test(html) && /_bleLog\.push\(\{ text: \(text \|\| ''\) \+ \(dim \|\| ''\), dim: dim \|\| '' \}\)/.test(html),
     'logBleDim 以结构化条目入缓冲，并把 dim 追加成 text 的后缀');
   // 日志渲染改成 innerHTML → 必须全部转义（设备数据是注入面）
@@ -919,6 +919,68 @@ console.log('preview ->', out);
   check(sbSvc.bleFindSvcOfChar(svcTree, 'NOPE') === '', '找不到时返回空串');
   check(sbSvc.bleFindSvcOfChar(null, 'A1') === '' && sbSvc.bleFindSvcOfChar([{ uuid: 'S' }], 'A1') === '',
     '服务树为空/缺 characteristics 时不抛错');
+
+  // ---- 11) 扫描中提示 + 通知换行 + 蓝牙页状态按用户配置文件保留 ----
+  // 扫描态占位：扫描中与未扫描要分开
+  check(/_bleScanning\s*\n?\s*\? '<div class="ble-empty scanning"><b>正在扫描…<\/b>/.test(html),
+    '空列表在扫描时提示「正在扫描…」');
+  check(/list\.innerHTML = _bleScanning[\s\S]{0,200}未发现蓝牙设备/.test(html),
+    '未扫描时仍提示「未发现蓝牙设备 / 点击开始扫描」');
+  check(/if \(!_bleDevices\.length\) renderBleDeviceList\(\);   \/\/ 空列表时立刻显示「正在扫描…」/.test(html),
+    '开始扫描时立即刷新占位（不等第一次轮询回调）');
+  check(/if \(!_bleDevices\.length\) renderBleDeviceList\(\);   \/\/ 空列表时把「正在扫描…」换回未发现提示/.test(html),
+    '停止扫描（含 5 秒自动停止）时刷新占位');
+  check(/\.ble-empty\.scanning b \{ color:var\(--accent-focus\); \}/.test(html), '扫描中提示有高亮样式');
+
+  // 通知换行：来源单独一行，payload 另起一行
+  check(/var label = '\[通知\] ' \+ from \+ ':\\n';/.test(html),
+    '通知日志在冒号后换行（来源单独一行）');
+  check(/logBleDim\(label \+ '  ' \+ bleFmtBytes\(bytes\) \+ ' · ', hex\);/.test(html),
+    '换行后 payload 缩进两格，十六进制仍灰显跟在文本后');
+  check(/logBle\(label \+ '  ' \+ hex\);/.test(html), '二进制 case 同样换行缩进');
+
+  // 状态保留：纯数据采集函数 + 恢复 + 消费
+  const sbBle = { console };
+  vm.createContext(sbBle);
+  vm.runInContext(extractFunction('collectBleState'), sbBle);
+  const norm = sbBle.collectBleState({ monitor: 1, monitorWidth: 0, openSvcs: ['A'], filterText: 'x' });
+  check(norm.monitor === true && norm.monitorWidth === 380 && norm.advOpen === false
+     && norm.filterOpen === false && norm.selected === '' && norm.monitorCfg === null,
+    'collectBleState 归一化并补默认值（宽度 0 → 380，缺省字段给安全值）', JSON.stringify(norm));
+  check(Array.isArray(norm.openSvcs) && norm.openSvcs[0] === 'A' && norm.filterText === 'x',
+    'collectBleState 保留展开服务与过滤词');
+  check(JSON.stringify(sbBle.collectBleState()) === JSON.stringify(sbBle.collectBleState({})),
+    'collectBleState 空参不抛错');
+  check(/cfg\.ble = collectBleState\(\{/.test(html) && /monitor: !!\(_bleExtraMon && monitors\[_bleExtraMon\]\)/.test(html),
+    '保存时写入 cfg.ble（含监视器是否打开）');
+  check(/monitorCfg: \(_bleExtraMon && monitors\[_bleExtraMon\]\) \? collectConfigForMonitor\(_bleExtraMon\) : null/.test(html),
+    '内嵌监视器的端口/波特率等单独存进 monitorCfg');
+  check(/if \(m && m\.bleEmbedded\) return;/.test(html),
+    'monitors 里仍排除 bleEmbedded（避免被当成普通 extra-N 恢复）');
+  check(/if \(cfg\.ble\) restoreBleState\(cfg\.ble\);/.test(html), '启动时恢复蓝牙页状态');
+  check(/function restoreBleState\(b\) \{[\s\S]{0,400}_bleRestoreMon = b\.monitor \? \{ width: _bleMonWidth, cfg: b\.monitorCfg \|\| null \} : null;/.test(html),
+    'restoreBleState 记录监视器意图（DOM 懒加载，不能在此直接开）');
+  check(/if \(_bleRestoreMon\) \{[\s\S]{0,420}toggleBleMonitor\(\);[\s\S]{0,200}applyMonitorConfig\('ble-mon', want\.cfg\);/.test(html),
+    '蓝牙页 DOM 就绪后消费：打开监视器并套用它的设置');
+  check(/if \(area && want\.width\) area\.style\.flex = '0 0 ' \+ want\.width \+ 'px';/.test(html),
+    '恢复内嵌监视器宽度');
+  check(/_bleMonWidth = finalW;[\s\S]{0,400}scheduleConfigSave\(\);/.test(html),
+    '拖动结束后记录宽度并保存');
+  check(/if \(filterInp\) filterInp\.value = _bleFilterText \|\| '';/.test(html)
+     && /if \(filterBody\) filterBody\.style\.display = _bleFilterOpen \? '' : 'none';/.test(html),
+    '恢复过滤框内容与展开态（DOM 就绪后）');
+  // 各处状态变更都要触发保存，否则只在退出时写盘
+  const saveSites = [
+    [/toggleBleFilter\(el\) \{[\s\S]{0,260}scheduleConfigSave\(\)/, '过滤区展开态'],
+    [/function applyBleFilter\(\)[\s\S]{0,220}scheduleConfigSave\(\)/, '过滤关键字'],
+    [/function toggleBleAdv\(el\)[\s\S]{0,300}scheduleConfigSave\(\)/, '广播内容展开态'],
+    [/_bleSelected = dev\.address;\s*\n\s*scheduleConfigSave\(\)/, '选中设备'],
+  ];
+  saveSites.forEach(function(pair) {
+    check(pair[0].test(html), '状态变更即保存：' + pair[1]);
+  });
+  const svcSave = (html.match(/scheduleConfigSave\(\);   \/\/ 展开状态随用户配置保留/g) || []).length;
+  check(svcSave >= 2, '服务展开/收起两条路径都会保存', String(svcSave));
   const sbFmt = { console, TextDecoder };
   vm.createContext(sbFmt);
   vm.runInContext([

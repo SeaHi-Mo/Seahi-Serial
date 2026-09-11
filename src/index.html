@@ -1165,6 +1165,8 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-log { flex:1; min-height:0; overflow-y:auto; font-family:var(--font-mono); font-size:12px; line-height:1.7; color:var(--text); background:var(--editor-bg); border:1px solid var(--border); border-radius:6px; padding:10px; white-space:pre-wrap; word-break:break-all; }
 /* 日志里灰显的部分（如「文本后面附的十六进制」） */
 .ble-log-dim { color:var(--text-d); }
+/* 设备列表空态；扫描中给一个呼吸效果，明确"正在扫描" */
+.ble-empty.scanning b { color:var(--accent-focus); }
 /* BLE 写入（发送）弹窗：与 onboarding 遮罩同款层次，配色取自主题变量 */
 .ble-modal-mask { position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,.45);
                   display:none; align-items:center; justify-content:center; }
@@ -3762,9 +3764,11 @@ function initBleMonResize() {
         var finalW = area.offsetWidth;
         area.style.width = '';
         area.style.flex = '0 0 ' + finalW + 'px';
+        _bleMonWidth = finalW;            // 宽度随用户配置保留（下次进入/重启沿用）
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
         document.body.style.cursor = '';
+        scheduleConfigSave();
     }
     handle.addEventListener('mousedown', function(e) {
         e.preventDefault();
@@ -3781,6 +3785,37 @@ function initBleMonResize() {
 // 顶栏「打开额外监视器」在蓝牙页是**开关**语义：点一次打开，再点一次关闭（与窗口右上 ✕ 等效）。
 // 因此"最多一个"是天然成立的 —— 不存在开第二个的路径。
 var _bleExtraMon = null;   // 内嵌监视器的 mid（'ble-mon'），未打开时为 null
+var _bleMonWidth = 380;    // 内嵌监视器宽度（拖动时更新，随用户配置文件保留）
+var _bleRestoreMon = null; // 启动时从配置读到的监视器状态；蓝牙页 DOM 建立后消费（见 openBle）
+
+// 采集蓝牙页状态（纯数据函数，便于随配置持久化与无头断言）
+function collectBleState(s) {
+    s = s || {};
+    return {
+        monitor: !!s.monitor,
+        monitorWidth: s.monitorWidth || 380,
+        monitorCfg: s.monitorCfg || null,
+        openSvcs: s.openSvcs || [],
+        advOpen: !!s.advOpen,
+        filterText: s.filterText || '',
+        filterOpen: !!s.filterOpen,
+        selected: s.selected || '',
+    };
+}
+
+// 恢复蓝牙页状态。内嵌监视器**不能**在这里直接开：蓝牙页 DOM 是懒加载的（首次进入才建），
+// 所以先记进 _bleRestoreMon，等 openBle 把 DOM 建好后再消费。
+function restoreBleState(b) {
+    if (!b) return;
+    _bleSelected = b.selected || null;
+    _bleOpenSvcs = {};
+    (b.openSvcs || []).forEach(function(u) { if (u) _bleOpenSvcs[u] = true; });
+    _bleAdvOpen = !!b.advOpen;
+    _bleFilterText = b.filterText || '';
+    _bleFilterOpen = !!b.filterOpen;
+    _bleMonWidth = b.monitorWidth || 380;
+    _bleRestoreMon = b.monitor ? { width: _bleMonWidth, cfg: b.monitorCfg || null } : null;
+}
 
 // 顶栏按钮状态跟随开关：打开时高亮 + 标题改为"关闭…"，关闭时还原。
 // **同时把它重置为可用**：ADB / WSL 页会禁用该按钮，若从那些页面直接切到蓝牙页
@@ -5149,6 +5184,19 @@ function collectConfig() {
         cfg.windowWidth = _cachedWindowSize[0];
         cfg.windowHeight = _cachedWindowSize[1];
     }
+    // 蓝牙页状态：随用户配置文件保留（恢复见 restoreBleState / openBle 里的消费）。
+    // monitors['ble-mon'] 本身仍被下面排除（避免走 extra-N 的恢复路径），
+    // 它的监视器设置单独放在 cfg.ble.monitorCfg 里一起存。
+    cfg.ble = collectBleState({
+        monitor: !!(_bleExtraMon && monitors[_bleExtraMon]),
+        monitorWidth: _bleMonWidth,
+        monitorCfg: (_bleExtraMon && monitors[_bleExtraMon]) ? collectConfigForMonitor(_bleExtraMon) : null,
+        openSvcs: Object.keys(_bleOpenSvcs).filter(function(k) { return _bleOpenSvcs[k]; }),
+        advOpen: _bleAdvOpen,
+        filterText: _bleFilterText,
+        filterOpen: _bleFilterOpen,
+        selected: _bleSelected || '',
+    });
     Object.keys(monitors).forEach(function(mid) {
         var m = monitors[mid];
         // 蓝牙页内嵌监视器是临时助手（不持久化；恢复逻辑也只按 extra-N 重建）
@@ -5590,6 +5638,8 @@ async function loadAndApplyConfig() {
                 console.warn('恢复窗口大小失败:', e);
             });
         }
+        // 恢复蓝牙页状态（纯内存变量先就位；内嵌监视器等蓝牙页 DOM 建立后再开，见 openBle）
+        if (cfg.ble) restoreBleState(cfg.ble);
         // 恢复主监视器配置
         if (cfg.monitors && cfg.monitors['main']) {
             applyMonitorConfig('main', cfg.monitors['main']);
@@ -6975,12 +7025,12 @@ function startBleNotifyPoll() {
                 try { bytes = Array.from(hexToBytes(hex)); } catch (e) { bytes = null; }
                 // 标明来源：服务（短 UUID + 已知名）· 特征。后端通知里带了 service_uuid。
                 var from = bleSvcLabel(it.service_uuid) + ' · 0x' + shortUuid(it.uuid || '');
-                var label = '[通知] ' + from + ': ';
+                var label = '[通知] ' + from + ':\n';
                 if (bytes && bytes.length && bleCanShowAsText(bytes)) {
-                    // 文本可读：文本在前，十六进制灰显跟在后面（用户要求 A）
-                    logBleDim(label + bleFmtBytes(bytes) + ' · ', hex);
+                    // 文本可读：来源单独一行，payload 另起一行；十六进制灰显跟在文本后面（用户要求 A）
+                    logBleDim(label + '  ' + bleFmtBytes(bytes) + ' · ', hex);
                 } else {
-                    logBle(label + hex);
+                    logBle(label + '  ' + hex);
                 }
             });
         }).catch(function() {});
@@ -7321,6 +7371,22 @@ function openBle() {
         // 监视器区（含宽度拖拽手柄）已就位：绑一次拖拽
         initBleMonResize();
     }
+    // 从用户配置恢复的蓝牙页状态：DOM 就绪后再应用（过滤框内容、上次打开的内嵌监视器）
+    var filterInp = document.getElementById('bleFilterText');
+    if (filterInp) filterInp.value = _bleFilterText || '';
+    var filterBody = document.getElementById('ble-filterBody');
+    if (filterBody) filterBody.style.display = _bleFilterOpen ? '' : 'none';
+    if (_bleRestoreMon) {
+        var want = _bleRestoreMon;
+        _bleRestoreMon = null;                       // 只消费一次
+        if (!_bleExtraMon) {
+            toggleBleMonitor();                      // 打开内嵌监视器
+            if (want.cfg) applyMonitorConfig('ble-mon', want.cfg);   // 再套用它的端口/波特率等设置
+        }
+        var area = document.getElementById('ble-monitorArea');
+        if (area && want.width) area.style.flex = '0 0 ' + want.width + 'px';
+        _bleMonWidth = want.width || _bleMonWidth;
+    }
     // 蓝牙页的「打开额外监视器」是开关（开/关右侧嵌入的串口监视器，见 toggleBleMonitor），
     // 因此这里不再禁用按钮；按钮的可用性由 addMonitor() 按当前页面路由
     // 进入面板即刷新设备列表；先检测蓝牙兼容性（无适配器/蓝牙栈不可用 → 红字提示）
@@ -7368,11 +7434,13 @@ function toggleBleFilter(el) {
     var body = document.getElementById('ble-filterBody');
     if (body) body.style.display = _bleFilterOpen ? 'block' : 'none';
     if (el) el.classList.toggle('expanded', _bleFilterOpen);
+    scheduleConfigSave();   // 展开态随用户配置保留
 }
 function applyBleFilter() {
     var inp = document.getElementById('bleFilterText');
     _bleFilterText = (inp && inp.value) ? inp.value.trim().toLowerCase() : '';
     renderBleDeviceList();
+    scheduleConfigSave();   // 过滤关键字随用户配置保留
 }
 
 function closeBle() {
@@ -7392,6 +7460,7 @@ function toggleBleScan() {
     var btn = document.getElementById('bleScanBtn');
     if (_bleScanning) {
         if (btn) btn.textContent = '停止扫描';
+        if (!_bleDevices.length) renderBleDeviceList();   // 空列表时立刻显示「正在扫描…」
         invoke('ble_start_scan').then(function() {
             refreshBleDevices();
             if (_bleDevTimer) clearInterval(_bleDevTimer);
@@ -7410,6 +7479,7 @@ function stopBleScan() {
     if (_bleScanStopTimer) { clearTimeout(_bleScanStopTimer); _bleScanStopTimer = null; }
     invoke('ble_stop_scan').catch(function(e) { console.warn('[BLE] 停止扫描失败:', e); });
     if (_bleDevTimer) { clearInterval(_bleDevTimer); _bleDevTimer = null; }
+    if (!_bleDevices.length) renderBleDeviceList();   // 空列表时把「正在扫描…」换回未发现提示
 }
 // 扫描开始后 5 秒自动停止（除非期间已手动停止）
 function enableBleScanAutoStop() {
@@ -7501,7 +7571,10 @@ function renderBleDeviceList() {
     var countEl = document.getElementById('ble-filterCount');
     if (countEl) countEl.textContent = _bleFilterText ? ('匹配 ' + shown.length + '/' + _bleDevices.length) : '';
     if (!_bleDevices.length) {
-        list.innerHTML = '<div class="ble-empty"><b>未发现蓝牙设备</b><br><span>点击「开始扫描」搜索周边 BLE 设备</span></div>';
+        // 扫描中与未扫描要分开提示，否则"开始扫描后一片'未发现设备'"会让人以为扫描没生效
+        list.innerHTML = _bleScanning
+            ? '<div class="ble-empty scanning"><b>正在扫描…</b><br><span>正在搜索周边 BLE 设备</span></div>'
+            : '<div class="ble-empty"><b>未发现蓝牙设备</b><br><span>点击「开始扫描」搜索周边 BLE 设备</span></div>';
         return;
     }
     if (!shown.length) {
@@ -7541,6 +7614,7 @@ function renderBleDeviceList() {
             // 切换设备即清空日志与写入窗口：它们只属于「当前设备本次会话」
             if (dev.address !== _bleSelected) { clearBleLog(); closeBleWriteModal(); }
             _bleSelected = dev.address;
+            scheduleConfigSave();   // 选中的设备地址随用户配置保留
             renderBleDeviceList();
             renderBleDetail();
         });
@@ -7724,6 +7798,7 @@ function toggleBleAdv(el) {
     body.style.display = show ? 'none' : 'block';
     el.classList.toggle('expanded', !show);
     _bleAdvOpen = !show;
+    scheduleConfigSave();   // 展开态随用户配置保留
 }
 
 // 展开/收起某个服务下的特征（骨架示例特征）
@@ -7734,6 +7809,7 @@ function toggleBleService(el) {
         group.remove();
         el.classList.remove('expanded');
         if (uuid) delete _bleOpenSvcs[uuid];
+        scheduleConfigSave();   // 展开状态随用户配置保留
         return;
     }
     // 收起其它已展开的服务
@@ -7774,6 +7850,7 @@ function toggleBleService(el) {
     el.after(groupHtml);
     el.classList.add('expanded');
     if (uuid) _bleOpenSvcs[uuid] = true;
+    scheduleConfigSave();   // 展开状态随用户配置保留
 }
 
 // 连接成功后的界面状态复位与数据加载。
