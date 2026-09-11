@@ -7654,10 +7654,11 @@ function toggleBleService(el) {
     var groupHtml = document.createElement('div');
     groupHtml.className = 'ble-charGroup';
     // 从连接后的服务树取特征；**仅当查看的就是已连接设备**才允许，
-    // 否则会把已连接设备的特征挂到未连接设备名下（用户反馈的 bug）；未连接则提示
+    // 否则会把已连接设备的特征挂到未连接设备名下（用户反馈的 bug）
     var dev = getSelectedBleDev();
+    var viewingConnected = isViewingConnectedDevice(dev, _bleConnAddr);
     var svc = null;
-    if (isViewingConnectedDevice(dev, _bleConnAddr)) {
+    if (viewingConnected) {
         for (var i = 0; i < _bleServices.length; i++) {
             if (_bleServices[i].uuid === uuid) { svc = _bleServices[i]; break; }
         }
@@ -7668,7 +7669,14 @@ function toggleBleService(el) {
                                    props: c.properties || [], descriptors: c.descriptors || [] });
         }).join('');
     } else {
-        groupHtml.innerHTML = '<div class="ble-char-empty">连接设备后查看特征</div>';
+        // 三种情况文案要分开，否则「已连接却提示去连接设备」会误导排查方向：
+        //   1) 没连（或看的不是已连接设备）→ 让用户先连
+        //   2) 连着，但该服务不在设备实际发现的服务里（多半只出现在广播里）→ 说明来源
+        //   3) 连着、服务也找到了，但它下面确实没有特征 → 如实说明
+        var hint = !viewingConnected ? '连接设备后查看特征'
+                 : (!svc ? '该服务只出现在广播里，设备上未发现它'
+                         : '该服务下没有特征（设备可能未启用）');
+        groupHtml.innerHTML = '<div class="ble-char-empty">' + hint + '</div>';
     }
     el.after(groupHtml);
     el.classList.add('expanded');

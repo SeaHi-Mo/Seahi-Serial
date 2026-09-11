@@ -476,8 +476,18 @@ console.log('preview ->', out);
      && sb10.isViewingConnectedDevice(otherDev, 'AA:BB:CC:DD:EE:01') === false
      && sb10.isViewingConnectedDevice(null, 'AA:BB:CC:DD:EE:01') === false,
     'isViewingConnectedDevice 判定正确（含空设备）');
-  check(/if \(isViewingConnectedDevice\(dev, _bleConnAddr\)\) \{/.test(html),
+  check(/var viewingConnected = isViewingConnectedDevice\(dev, _bleConnAddr\);[\s\S]{0,120}if \(viewingConnected\) \{/.test(html),
     '展开服务取特征时同样做了守卫（不会把别人的特征挂过来）');
+  // 空状态文案必须区分「没连」「只是广播里有」「连着但该服务确实没特征」——
+  // 原先三种情况共用「连接设备后查看特征」，已连接时提示去连接设备会误导排查（用户反馈）
+  check(/var hint = !viewingConnected \? '连接设备后查看特征'/.test(html),
+    '空状态：未连接 → 提示先连接');
+  check(/: \(!svc \? '该服务只出现在广播里，设备上未发现它'/.test(html),
+    '空状态：连着但服务不在设备实际服务里 → 说明只出现在广播');
+  check(/: '该服务下没有特征（设备可能未启用）'\);/.test(html),
+    '空状态：连着且服务存在但无特征 → 如实说明');
+  check(!/'<div class="ble-char-empty">连接设备后查看特征<\/div>'\s*;/.test(html),
+    '不再把三种情况写成同一句误导文案');
 
   // ---- 5i) 蓝牙页内嵌串口监视器（最多一个）----
   check(/id="ble-monitorArea"/.test(html), '蓝牙页里有内嵌监视器区 #ble-monitorArea');
@@ -556,8 +566,7 @@ console.log('preview ->', out);
     '右侧选项列顶部对齐（不随输入框高度拉伸）');
   check(/\.ble-modal-grip \{ position:absolute; right:2px; bottom:2px;/.test(html) && /pointer-events:none/.test(html),
     '右下角有手柄提示且不拦截拖动（pointer-events:none，事件交给原生 resize）');
-  check(!/ble-modal-close/.test(html), '多余的 ✕ 关闭按钮已删除（底部已有「关闭」）');
-  check(/bleWriteMaskPress\(event\)[\s\S]{0,80}bleWriteMaskClick\(event\)/.test(html),
+  check(!/ble-modal-close/.test(html), '多余的 ✕ 关闭按钮已删除（底部已有「关闭」）');  check(/bleWriteMaskPress\(event\)[\s\S]{0,80}bleWriteMaskClick\(event\)/.test(html),
     '遮罩改为按下点判定：拖弹窗时松手落到遮罩上不会误关');
   check(/if \(pressedOnMask && e\.target && e\.target\.id === 'bleWriteModal'\) closeBleWriteModal\(\);/.test(html),
     '只有「按下点就在遮罩上」才关闭弹窗');
