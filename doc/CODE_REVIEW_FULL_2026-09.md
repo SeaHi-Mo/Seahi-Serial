@@ -139,7 +139,7 @@ worker 版仅"配置了 key 才校验"（`wrangler.toml` 未配 → 默认放行
 | M22 | 安装默认改**系统级** PATH（HKLM） | `installer.iss:57/262-291` | ⏳ |
 | M23 | CI action 未固定 SHA、`choco`/ADB/`.isl` 下载未校验、构建与发布共享可写 token | `build.yml` | ⏳ |
 | M24 | `workflow_dispatch` 用分支名当 tag 建 Release | `build.yml:56-57/91` | ⏳ |
-| M25 | 版本号**四处**人工同步、CI 零校验；`package.json` 已漂移到 0.3.0；运行时版本源(Cargo) ≠ 打包版本源(tauri.conf) | 4 文件 + `build.yml` | ⏳（见 TODO#8） |
+| M25 | 版本号**四处**人工同步、CI 零校验；`package.json` 已漂移到 0.3.0；运行时版本源(Cargo) ≠ 打包版本源(tauri.conf) | 4 文件 + `build.yml` | ✅ 已修（v0.4.0 对齐 5 处，并加 CI 版本一致性断言 + tag 规则） |
 | M26 | 自动更新无签名（仅同源 sha256）、`%TEMP%` 落点可被同用户替换 | `main.rs:3487-3692` | ⏳ |
 | M27 | Sentry→Issue：签名验证可选、`!==` 非时间安全比较、正文原样拼进 Issue Markdown | `server/sentry-webhook.js` | ⏳ |
 
