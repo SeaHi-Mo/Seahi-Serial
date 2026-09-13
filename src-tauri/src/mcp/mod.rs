@@ -734,6 +734,35 @@ pub fn mcp_reset_token(app: tauri::AppHandle, state: tauri::State<'_, McpState>)
     core.status_json()
 }
 
+/// 前端回执 → 桥内部统一结构。
+///
+/// ⚠️ **每一个字段都必须原样带上**，尤其是 `notFound` / `invalidParams`：`bridge::unwrap_ui_result`
+/// 靠它们把"控件路径不存在 / 参数取值非法"判成协议级 `-32602`（区分于"工具跑了但没成功"的 `-32006`）。
+///
+/// 2026-09 真机一致性检查发现：这条链路中间断了一节 —— 前端 ack 时只带了
+/// `ok/value/error/disabledReason`，`notFound` 被丢掉，于是 `-32602` 那条映射
+/// **在真机上从未生效**，所有"路径不存在"都退化成 `-32006`（AI 会误以为"没有界面"而去重试）。
+/// 两端各自的单测都是绿的（前端断言 `mcpHandleUiCmd` 回了 notFound，后端断言
+/// `unwrap_ui_result` 认 notFound）—— 所以这里额外用 `ui_ack_reply_shape_is_complete`
+/// 把**两端接起来**测一次，别再让中间这段没人管。
+fn ui_ack_payload(
+    ok: bool,
+    value: Option<Value>,
+    error: Option<String>,
+    not_found: Option<bool>,
+    invalid_params: Option<bool>,
+    disabled_reason: Option<String>,
+) -> Value {
+    json!({
+        "ok": ok,
+        "value": value,
+        "error": error,
+        "notFound": not_found.unwrap_or(false),
+        "invalidParams": invalid_params.unwrap_or(false),
+        "disabledReason": disabled_reason,
+    })
+}
+
 /// 前端对 `mcp-ui-cmd` 的回执。返回是否命中一个在等的调用
 /// （false = 已超时被回收，前端可以安全忽略）。
 #[tauri::command]
@@ -743,16 +772,13 @@ pub fn mcp_ui_ack(
     ok: bool,
     value: Option<Value>,
     error: Option<String>,
+    not_found: Option<bool>,
+    invalid_params: Option<bool>,
     disabled_reason: Option<String>,
 ) -> bool {
     state.core().bridge.ack(
         cmd_id,
-        json!({
-            "ok": ok,
-            "value": value,
-            "error": error,
-            "disabledReason": disabled_reason,
-        }),
+        ui_ack_payload(ok, value, error, not_found, invalid_params, disabled_reason),
     )
 }
 
@@ -1385,5 +1411,77 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             core.shutdown.store(true, Ordering::Relaxed);
         });
+    }
+
+    /// 把"前端回执 → 桥解析"这**一整条链**接起来测。
+    ///
+    /// 起因（2026-09 真机检查）：前端断言 `mcpHandleUiCmd` 会回 `notFound`、后端断言
+    /// `unwrap_ui_result` 认 `notFound`，两条都绿，但中间的 `mcp_ui_ack` 没带这个字段 ——
+    /// 真机上所有"路径/取值不存在"都变成了 `-32006`。所以这里从 ack 的入参形态一路测到错误码。
+    #[test]
+    fn ui_ack_reply_shape_is_complete() {
+        // ① 路径不存在：ack 必须把 notFound 带过去 → 桥必须判成协议级 -32602
+        let not_found = ui_ack_payload(
+            false,
+            None,
+            Some("未找到控件: no.such.control".to_string()),
+            Some(true),
+            None,
+            None,
+        );
+        assert_eq!(
+            not_found["notFound"],
+            json!(true),
+            "ack 丢了 notFound，-32602 的映射就是死代码: {}",
+            not_found
+        );
+        let e = bridge::unwrap_ui_result(not_found).unwrap_err();
+        assert_eq!(
+            e.code,
+            protocol::E_INVALID_PARAMS,
+            "控件路径不存在必须是协议级 -32602（请求本身有问题）"
+        );
+        assert!(e.message.contains("未找到控件"));
+
+        // ①b 参数**取值**非法（串口语义层）：同样是协议级 -32602 —— 也要走完整条链
+        let bad_value = ui_ack_payload(
+            false,
+            None,
+            Some("可选值只有: COM1".to_string()),
+            None,
+            Some(true),
+            None,
+        );
+        assert_eq!(
+            bad_value["invalidParams"],
+            json!(true),
+            "ack 丢了 invalidParams，串口的取值错误会退化成 -32006: {}",
+            bad_value
+        );
+        let e1b = bridge::unwrap_ui_result(bad_value).unwrap_err();
+        assert_eq!(e1b.code, protocol::E_INVALID_PARAMS);
+        assert!(e1b.message.contains("可选值只有"));
+
+        // ② 控件被禁用（确实跑了但没成功）：不能带 notFound → -32006 + isError
+        let disabled = ui_ack_payload(
+            false,
+            None,
+            Some("控件当前不可用".to_string()),
+            None,
+            None,
+            Some("串口未连接".to_string()),
+        );
+        assert_eq!(disabled["notFound"], json!(false));
+        assert_eq!(disabled["invalidParams"], json!(false));
+        let e2 = bridge::unwrap_ui_result(disabled).unwrap_err();
+        assert_eq!(e2.code, protocol::E_DEVICE_NOT_READY);
+        assert!(e2.message.contains("串口未连接"), "原因要带给 AI: {}", e2.message);
+
+        // ③ 成功：value 原样透出，两个标记都归一成 false（不是 null）
+        let ok = ui_ack_payload(true, Some(json!({ "a": 1 })), None, None, None, None);
+        assert_eq!(ok["value"]["a"], json!(1));
+        assert_eq!(ok["notFound"], json!(false));
+        assert_eq!(ok["invalidParams"], json!(false));
+        assert_eq!(bridge::unwrap_ui_result(ok).unwrap()["a"], json!(1));
     }
 }

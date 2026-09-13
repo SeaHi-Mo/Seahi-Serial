@@ -145,8 +145,11 @@ impl UiBridge {
 /// 前端的 `{ ok, value, error }` → 工具的 Result。
 ///
 /// 错误码刻意分开：
-/// - `notFound`（控件路径不存在）→ `E_INVALID_PARAMS`：**请求**有问题，走协议级错误
-/// - 其它失败（控件被禁用、值非法…）→ `E_DEVICE_NOT_READY`：工具确实跑了但没成功，走 `isError`
+/// - `notFound` / `invalidParams`（控件路径不存在、**参数取值非法**）→ `E_INVALID_PARAMS`：
+///   **请求**有问题，走协议级错误，调用方需要"改参数重试"。这两条规则与 `log_tail` 对未知通道
+///   （也是 `-32602`）是同一条。
+/// - 其它失败（控件被禁用、前置状态没满足、值被控件拒绝…）→ `E_DEVICE_NOT_READY`：
+///   工具确实跑了但没成功，走 `isError`（调用方该做的是"先做前置操作"，不是改参数）。
 pub fn unwrap_ui_result(v: Value) -> Result<Value, RpcError> {
     let ok = v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false);
     if ok {
@@ -157,10 +160,11 @@ pub fn unwrap_ui_result(v: Value) -> Result<Value, RpcError> {
         .and_then(|e| e.as_str())
         .unwrap_or("前端执行失败")
         .to_string();
-    let not_found = v.get("notFound").and_then(|b| b.as_bool()).unwrap_or(false);
+    let flag = |k: &str| v.get(k).and_then(|b| b.as_bool()).unwrap_or(false);
+    let bad_request = flag("notFound") || flag("invalidParams");
     let disabled = v.get("disabledReason").and_then(|d| d.as_str());
     Err(RpcError::new(
-        if not_found {
+        if bad_request {
             super::protocol::E_INVALID_PARAMS
         } else {
             super::protocol::E_DEVICE_NOT_READY
@@ -348,6 +352,15 @@ mod tests {
         .unwrap_err();
         assert_eq!(e2.code, super::super::protocol::E_DEVICE_NOT_READY);
         assert!(e2.message.contains("串口未连接"), "要把不可用原因带给 AI: {}", e2.message);
+
+        // 参数**取值**非法（串口语义层用 invalidParams 标记，例如端口名不在下拉里）
+        // → 和"路径不存在"同一条规则：请求有问题 → 协议级 -32602
+        let e4 = unwrap_ui_result(json!({
+            "ok": false, "invalidParams": true, "error": "可选值只有: COM1 / COM3"
+        }))
+        .unwrap_err();
+        assert_eq!(e4.code, super::super::protocol::E_INVALID_PARAMS, "{}", e4.message);
+        assert!(e4.message.contains("可选值只有"));
 
         // 连 error 字段都没有时也要给出可读消息，不能是空串
         let e3 = unwrap_ui_result(json!({"ok": false})).unwrap_err();

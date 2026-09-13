@@ -2346,17 +2346,30 @@ console.log('preview ->', out);
   check(setRes.value.results[0].ok === true && setRes.value.results[0].value === 'COM3',
     'ui_set 返回写后的真实值', JSON.stringify(setRes.value.results[0]));
 
+  // 单目标失败 = **整次调用失败**：只给一个 path 却回 ok:true，调用方会以为点成功了
   const disSet = sbReg.mcpHandleUiCmd('set', { path: 'serial.misc.btnX', value: 'x' });
-  check(disSet.value.results[0].ok === false && disSet.value.results[0].disabledReason,
-    '操作被禁用的控件要明确失败并给出原因，而不是假装成功',
-    JSON.stringify(disSet.value.results[0]));
+  check(disSet.ok === false && !!disSet.disabledReason,
+    '单目标操作被禁用 → 整次调用失败并给出原因（而不是顶层 ok:true）',
+    JSON.stringify(disSet));
+
+  const singleNf = sbReg.mcpHandleUiCmd('click', { path: 'no.such.control' });
+  check(singleNf.ok === false && singleNf.notFound === true,
+    '单目标点了不存在的控件 → ok:false + notFound（→ 协议级 -32602，而不是 -32006）',
+    JSON.stringify(singleNf));
 
   const batch = sbReg.mcpHandleUiCmd('set', { items: [
     { path: 'serial.conn.baudRate', value: 57600 },
     { path: 'no.such.control', value: 1 },
   ] });
-  check(batch.value.results.length === 2 && batch.value.results[0].ok === true && batch.value.results[1].ok === false,
-    '批量设置：逐条返回成败（一条失败不影响其它）', JSON.stringify(batch.value.results));
+  check(batch.ok === true && batch.value.results.length === 2 && batch.value.results[0].ok === true && batch.value.results[1].ok === false,
+    '多目标才是批量语义：调用本身成功、逐条返回成败（一条失败不影响其它）', JSON.stringify(batch.value.results));
+
+  // 回执管道：两端各自的单测都绿过，中间这段没人管 —— 于是 notFound 在真机上一次都没传到后端
+  // （2026-09 独立一致性检查发现：所有"路径/取值不存在"都退化成了 -32006）。
+  check(/notFound: !!\(res && res\.notFound\)/.test(html) && /invalidParams: !!\(res && res\.invalidParams\)/.test(html),
+    'mcp_ui_ack 回执必须回传 notFound / invalidParams（丢了它们，-32602 那条映射就是死代码）');
+  check(/fn ui_ack_payload\(/.test(mcpSrc) && /"notFound": not_found/.test(mcpSrc) && /"invalidParams": invalid_params/.test(mcpSrc),
+    '后端 ack 侧确实有这两个字段，且与前端字段名一致');
 
   check(sbReg.mcpHandleUiCmd('bogus', {}).ok === false, '未知 ui 操作明确失败');
 
@@ -2871,6 +2884,26 @@ console.log('preview ->', out);
     check(!badField.ok && /不认识的字段/.test(badField.error) && /autoScroll/.test(badField.error),
       '未知字段要列出可用字段名', badField.error);
 
+    // 整批是逐项校验的：前面的项可能已经改掉了，只说"失败"会让 AI 以为界面没变
+    const partial = sbSer.mcpSerialOp({ action: 'apply', items: [
+      { name: 'port', value: 'COM3' },
+      { name: 'port', value: 'COM99' },
+    ] });
+    check(!partial.ok && /可选值只有/.test(partial.error) && /已经生效/.test(partial.error),
+      '部分成功要在错误里点名"已生效"的字段（否则 AI 会重复下发或错判当前状态）',
+      partial.error);
+
+    // 错误码分流（决定了 AI 下一步该做什么）：
+    //   参数取值非法 → invalidParams → 协议级 -32602 → "改参数重试"
+    //   界面结构不对/前置状态没满足 → 不带标记 → isError + -32006 → "先做前置操作/检查界面"
+    check(badPort.invalidParams === true && badBaud.invalidParams === true && badField.invalidParams === true,
+      '取值非法（端口不在下拉里/波特率越界/字段名不认识）带 invalidParams → -32602',
+      JSON.stringify([badPort.invalidParams, badBaud.invalidParams, badField.invalidParams]));
+    const noBtn = sbSer.mcpSerialOp({ action: 'click', name: 'nope' });
+    check(!noBtn.ok && !noBtn.invalidParams && /找不到按钮/.test(noBtn.error),
+      '"界面里找不到控件"不是参数问题 → 不带标记（否则会误导 AI 去改参数，而它该做的是检查界面）',
+      JSON.stringify(noBtn));
+
     els['main-btnScroll']._clicks = 0;
     sbSer.mcpSerialOp({ action: 'apply', items: [{ name: 'autoScroll', value: true }] });
     check(els['main-btnScroll']._clicks === 0, '开关本来就是 on → 不重复点击（幂等）');
@@ -2881,6 +2914,9 @@ console.log('preview ->', out);
     check(!dis.ok && /不可点/.test(dis.error), '按钮 disabled 时拒绝点击（和用户一样点不动）', dis.error);
 
     const sendOff = sbSer.mcpSerialOp({ action: 'send', data: 'AT' });
+    check(!sendOff.ok && !sendOff.invalidParams,
+      '"还没开监控"是前置状态问题 → 不带 invalidParams（-32006，并提示先 serial_open）',
+      JSON.stringify(sendOff));
     check(!sendOff.ok && /还没打开监控/.test(sendOff.error), '未开监控时拒绝发数据', sendOff.error);
 
     monitorMap.main.isConnected = true;

@@ -13,7 +13,7 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/从机属性/busid 白名单/MCP 协议与日志中心）
 ```
 
-无 lint 与类型检查；后端有单测（`main.rs` 里的 `#[cfg(test)]` 模块，150 条 + 4 条 `#[ignore]`
+无 lint 与类型检查；后端有单测（`main.rs` 里的 `#[cfg(test)]` 模块，151 条 + 4 条 `#[ignore]`
 真机/诊断）。BLE 从机相关的三条（需蓝牙硬件）：
 
 ```bash
@@ -25,7 +25,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_builds -- --ignored -
 cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
 ```
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 951 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 958 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，62 条）：直接从
 `src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，也有把渲染函数丢进假 DOM
 跑行为断言），改前端后应先跑
@@ -42,7 +42,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
 3. 后端连接有 **10 秒显式超时**（`BLE_CONNECT_TIMEOUT_MS`，比前端的 15s 略短），超时会主动
    `disconnect` —— 为的是不让"前端放弃了、后端稍后才连上"造成长期状态错位。
 
-## MCP 的八条关键约定（别改回去）
+## MCP 的九条关键约定（别改回去）
 
 1. **MCP 服务器必须在应用进程内**：它要拿 `AppHandle` 才能访问托管状态、还要 `emit` 驱动 WebView 的 DOM。
    外部独立进程（含"做成 npm 包"）两样都做不到 —— 详见 `doc/MCP_DESIGN.md` §3.4。
@@ -69,6 +69,12 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
    ① **同类错误 5 分钟内只报一次**（`DEDUP_WINDOW_SECS`）—— 服务端去重是最后一道闸，
    不能让一个每秒重试的客户端把网络和库打爆；② **上报前把 token 打码**（`remember_secret`
    在启动时登记当前令牌）；③ **上报路径自己不阻塞、不 panic**。
+9. **回执那一跳（`mcp_ui_ack`）不许丢字段**：前端的 `notFound` / `invalidParams` 是后端判定
+   `-32602`（"参数/路径有问题 → 改参数重试"）还是 `-32006`（"工具跑了但没成 → 先做前置操作"）
+   的**唯一依据**。丢一个字段 = 一整类错误码变成错的，而且**两端各自的单测都会是绿的**
+   （2026-09 真机检查：`notFound` 就是这么丢的，`unwrap_ui_result` 里那条 `-32602` 分支
+   在真机上从未生效）。加字段时三处必须一起改：前端 ack → `mcp_ui_ack` 入参 → `ui_ack_payload`，
+   并由 `ui_ack_reply_shape_is_complete` 从 ack 入参**一路测到错误码**。
 
 
 

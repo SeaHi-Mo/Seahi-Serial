@@ -5173,6 +5173,17 @@ function mcpHandleUiCmd(op, payload) {
         // 让界面把这次变更落盘（与用户操作走同一条路）
         try { scheduleConfigSave(); } catch (e) { /* ignore */ }
         if (changed.length) mcpNotifyState(changed);
+        // 单目标失败 = **整次调用失败**：只给一个 path 时（ui_click / ui_set{path}）
+        // 顶层还回 ok:true 会让调用方以为点成功了 —— 拿不到任何可用信息。
+        // 多目标才是批量语义：逐项回报结果，调用本身算成功。
+        if (items.length === 1 && results.length === 1 && !results[0].ok) {
+            return {
+                ok: false,
+                notFound: !!results[0].notFound,
+                error: results[0].error,
+                disabledReason: results[0].disabledReason,
+            };
+        }
         return { ok: true, value: { results: results, effects: effects } };
     }
     if (op === 'serial') return mcpSerialOp(payload);
@@ -5298,25 +5309,25 @@ function mcpSerialApply(mid, items) {
             var it = items[i] || {};
             var name = it.name;
             var value = it.value;
-            if (!name) { results.push({ name: name, ok: false, error: '缺少 name' }); continue; }
+            if (!name) { results.push({ name: name, ok: false, invalidParams: true, error: '缺少 name' }); continue; }
 
             if (MCP_SERIAL_FIELDS[name]) {
                 var spec = MCP_SERIAL_FIELDS[name];
                 var el = mcpSerialEl(mid, spec[0]);
-                if (!el) { results.push({ name: name, ok: false, notFound: true, error: '找不到控件 ' + mid + '-' + spec[0] }); continue; }
+                if (!el) { results.push({ name: name, ok: false, error: '找不到控件 ' + mid + '-' + spec[0] }); continue; }
                 var before = mcpReadEl(el, spec[1]);
                 // 下拉：先校验选项真的存在，报错时把可选值列出来（AI 最需要这个）
                 if (spec[1] === 'select') {
                     var opts = mcpSerialOptions(el);
                     if (opts.length && opts.indexOf(String(value)) < 0) {
-                        results.push({ name: name, ok: false, error: '可选值只有: ' + opts.join(' / ') });
+                        results.push({ name: name, ok: false, invalidParams: true, error: '可选值只有: ' + opts.join(' / ') });
                         continue;
                     }
                 }
                 if (name === 'baud') {
                     var b = parseInt(value, 10);
                     if (!(b >= 110 && b <= 4000000)) {
-                        results.push({ name: name, ok: false, error: '波特率必须在 110..4000000 之间' });
+                        results.push({ name: name, ok: false, invalidParams: true, error: '波特率必须在 110..4000000 之间' });
                         continue;
                     }
                 }
@@ -5328,7 +5339,7 @@ function mcpSerialApply(mid, items) {
                 if (ok && String(before) !== String(after)) changed.push(name);
             } else if (MCP_SERIAL_TOGGLES[name]) {
                 var tel = mcpSerialEl(mid, MCP_SERIAL_TOGGLES[name]);
-                if (!tel) { results.push({ name: name, ok: false, notFound: true, error: '找不到开关 ' + mid + '-' + MCP_SERIAL_TOGGLES[name] }); continue; }
+                if (!tel) { results.push({ name: name, ok: false, error: '找不到开关 ' + mid + '-' + MCP_SERIAL_TOGGLES[name] }); continue; }
                 var was = tel.classList.contains('on');
                 var want = !!value;
                 if (was !== want) tel.click();          // 交给它自己的 onclick（toggleIbtn / toggleLineNum / …）
@@ -5336,7 +5347,7 @@ function mcpSerialApply(mid, items) {
                 results.push({ name: name, ok: now === want, from: was, to: now });
                 if (now !== was) changed.push(name);
             } else {
-                results.push({ name: name, ok: false, error: '不认识的字段: ' + name + '（可用：' +
+                results.push({ name: name, ok: false, invalidParams: true, error: '不认识的字段: ' + name + '（可用：' +
                     Object.keys(MCP_SERIAL_FIELDS).concat(Object.keys(MCP_SERIAL_TOGGLES)).join(', ') + '）' });
             }
         }
@@ -5346,7 +5357,18 @@ function mcpSerialApply(mid, items) {
     try { scheduleConfigSave(); } catch (e) { /* ignore */ }
     if (changed.length) mcpNotifyState(changed.map(function (n) { return mid + '.' + n; }));
     var bad = results.filter(function (r) { return !r.ok; });
-    if (bad.length) return { ok: false, error: bad[0].error || ('字段 ' + bad[0].name + ' 设置失败'), detail: results };
+    if (bad.length) {
+        // 已经生效的字段必须点名：整批校验是逐项进行的，前面的项可能已经改掉了，
+        // 只说"失败"会让 AI 以为界面没变（于是重复下发或错判当前状态）。
+        var applied = results.filter(function (r) { return r.ok; }).map(function (r) { return r.name; });
+        var msg = bad[0].error || ('字段 ' + bad[0].name + ' 设置失败');
+        if (applied.length) msg += '（注意：' + applied.join('、') + ' 已经生效，这次是部分成功）';
+        var out = { ok: false, error: msg, detail: results };
+        // 参数**取值**非法（端口不在下拉里、字段名不认识…）要标记出来：
+        // 后端据此回协议级 -32602（"改参数重试"），而不是 isError 的 -32006（"先做前置操作"）。
+        if (bad[0].invalidParams) out.invalidParams = true;
+        return out;
+    }
     return { ok: true, value: { pane: mid, applied: results } };
 }
 
@@ -5364,7 +5386,7 @@ function mcpSerialOp(payload) {
     if (action === 'state') return { ok: true, value: mcpSerialState(mid) };
     if (action === 'apply') {
         var items = payload.items;
-        if (!items || !items.length) return { ok: false, error: '缺少 items（[{name,value}]）' };
+        if (!items || !items.length) return { ok: false, invalidParams: true, error: '缺少 items（[{name,value}]）' };
         return mcpSerialApply(mid, items);
     }
     if (action === 'click') {
@@ -5373,7 +5395,7 @@ function mcpSerialOp(payload) {
         var btn = payload.name === 'start' ? mcpSerialEl(mid, 'btnStart')
                 : payload.name === 'send' ? mcpSerialEl(mid, 'btnSend')
                 : target ? mcpSerialEl(mid, target) : null;
-        if (!btn) return { ok: false, notFound: true, error: '找不到按钮: ' + payload.name };
+        if (!btn) return { ok: false, error: '找不到按钮: ' + payload.name };
         if (btn.disabled) return { ok: false, error: '按钮当前不可点（' + (btn.title || btn.textContent || '') .trim() + '）' };
         btn.click();
         return { ok: true, value: { pane: mid, clicked: payload.name } };
@@ -5390,11 +5412,11 @@ function mcpSerialOp(payload) {
     if (action === 'send') {
         var inp = mcpSerialEl(mid, 'sendInput');
         var sbtn = mcpSerialEl(mid, 'btnSend');
-        if (!inp || !sbtn) return { ok: false, notFound: true, error: '找不到发送框/发送按钮' };
+        if (!inp || !sbtn) return { ok: false, error: '找不到发送框/发送按钮' };
         if (!m.isConnected) return { ok: false, error: '这个分栏还没打开监控（先用 serial_open）' };
         if (sbtn.disabled) return { ok: false, error: '发送按钮当前不可点' };
         var data = payload.data == null ? '' : String(payload.data);
-        if (!data.length) return { ok: false, error: 'data 不能为空' };
+        if (!data.length) return { ok: false, invalidParams: true, error: 'data 不能为空' };
         // 与用户输入等价：改 value + 派发 input，让应用自己的监听更新状态
         inp.value = data;
         try {
@@ -5420,7 +5442,7 @@ function mcpSerialOp(payload) {
         var idx = parseInt(payload.index, 10);
         var list = m.quickCmds || [];
         if (!(idx >= 0 && idx < list.length)) {
-            return { ok: false, error: 'index 越界（0..' + (list.length - 1) + '）' };
+            return { ok: false, invalidParams: true, error: 'index 越界（0..' + (list.length - 1) + '）' };
         }
         if (!list[idx].value) return { ok: false, error: '第 ' + idx + ' 条快速指令还没配内容' };
         if (!m.isConnected) return { ok: false, error: '这个分栏还没打开监控（先用 serial_open）' };
@@ -5430,7 +5452,7 @@ function mcpSerialOp(payload) {
     if (action === 'setSendAs') {
         // 发送模式（文本/HEX）：与用户点那个下拉项等价 —— 点选项 → 它自己的 onclick → setSendAs()
         var mode = String(payload.mode || 'text').toLowerCase();
-        if (mode !== 'text' && mode !== 'hex') return { ok: false, error: 'mode 只能是 text 或 hex' };
+        if (mode !== 'text' && mode !== 'hex') return { ok: false, invalidParams: true, error: 'mode 只能是 text 或 hex' };
         var txtEl = mcpSerialEl(mid, 'sendAsText');
         var cur = txtEl && txtEl.textContent === 'HEX' ? 'hex' : 'text';
         if (cur === mode) return { ok: true, value: { pane: mid, sendAs: mode, note: '本来就是' } };
@@ -5441,12 +5463,12 @@ function mcpSerialOp(payload) {
                 if ((o.getAttribute('data-val') || '') === mode) opt = o;
             });
         }
-        if (!opt) return { ok: false, notFound: true, error: '找不到发送模式选项: ' + mode };
+        if (!opt) return { ok: false, error: '找不到发送模式选项: ' + mode };
         opt.click();
         var after = mcpSerialEl(mid, 'sendAsText');
         return { ok: true, value: { pane: mid, sendAs: after && after.textContent === 'HEX' ? 'hex' : 'text' } };
     }
-    return { ok: false, error: '未知的 serial 操作: ' + action };
+    return { ok: false, invalidParams: true, error: '未知的 serial 操作: ' + action };
 }
 
 /// 界面状态变化通知（回声抑制：AI 自己造成的变更打 origin 标记）
@@ -11593,6 +11615,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     ok: !!(res && res.ok),
                     value: (res && res.value !== undefined) ? res.value : null,
                     error: (res && res.error) || null,
+                    // notFound / invalidParams 必须回传：后端靠它们把"路径或取值不存在"判成
+                    // 协议级 -32602（丢了会一律退化成 -32006"没有界面"，AI 会误解成应用没开界面）
+                    notFound: !!(res && res.notFound),
+                    invalidParams: !!(res && res.invalidParams),
                     disabledReason: (res && res.disabledReason) || null,
                 }).catch(function() {});
             });

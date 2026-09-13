@@ -57,7 +57,7 @@ for (;;) {
 const META = {
   // ===== 串口语义工具（S12）=====
   serial_get_state: ['读', '{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, advOpen, outputLines, outputBytes, historyCount, panes}', '**操作串口前先调它**；省略 pane 默认 main'],
-  serial_select_port: ['写', '{pane, applied:[{name,ok,from,to}]}', '值必须是 serial_list_ports 里的端口名；给错会回列可选值（来自界面下拉的真实选项）'],
+  serial_select_port: ['写', '{pane, applied:[{name,ok,from,to}]}', '值必须是 serial_list_ports 里的端口名；给错 → 协议级 `-32602` 并**回列真实可选值**（来自界面下拉的选项），照着改就行'],
   serial_set_baud: ['写', '同上', '110..4000000；越界报 -32602'],
   serial_set_frame: ['写', '同上', 'dataBits/stopBits/parity 至少给一个；**连接中改帧格式无效**，先 serial_close'],
   serial_set_lines: ['写', '同上', 'dtr/rts 布尔；常用于让目标板复位或进下载模式'],
@@ -75,9 +75,9 @@ const META = {
   ui_list: ['读', '`{total, controls:[{path, kind, panel, group, label, enabled, disabledReason, value?, options?}], nextCursor?}`', '`enabled=false` 时 `disabledReason` 会说明原因（如"串口未连接"）；建议先枚举再操作'],
   ui_describe: ['读', '`{…控件公开字段…, description, inputSchema}`', '等于"这个控件怎么用"的说明书'],
   ui_get: ['读', '`{path, value, enabled, disabledReason}`', ''],
-  ui_set: ['写', '`{results:[{path, ok, notFound?, error?, from?, to?}], effects:[{path, from, to}]}`', '**会真的改界面**；支持批量 `items:[{path,value}]`（整批一次回执）；只允许 setter 类控件'],
+  ui_set: ['写', '`{results:[{path, ok, notFound?, error?, from?, to?}], effects:[{path, from, to}]}`（**单目标失败时不会有这个结构**：整个调用直接失败）', '**会真的改界面**；支持批量 `items:[{path,value}]`（整批一次回执）；只给一个 `path`/`value` 时按**单目标语义**——失败即整次调用失败（路径不存在 → `-32602`；控件被禁用 → `isError`+`-32006`）'],
   ui_get_state: ['读', '当前会话配置快照（与界面「保存配置」同一份真源）', ''],
-  ui_click: ['写', '`{results:[{path, ok, notFound?, error?}], effects:[…]}`', '**会真的点下去**（例如"开始监控"）；用于 setter 够不到的动作'],
+  ui_click: ['写', '`{results:[{path, ok, notFound?, error?}], effects:[…]}`（**单目标失败时不会有这个结构**：整个调用直接失败）', '**会真的点下去**（例如"开始监控"）；用于 setter 够不到的动作；点击不存在/不可用的控件 → `-32602` / `isError`+`-32006`，**不会**假装成功'],
   log_channels: ['读', '`{enabled, channelCount, channels:[{channel, lines, bytes, capBytes, seqFrom, seqTo, dropped, lastTs}], totalBytes, totalCapBytes, maxChannels, lockSkips, channelSkips, reclaims, reclaimedBytes}`', '不确定去哪找日志时先调它'],
   log_tail: ['读', '`{channel, lines:[{seq, ts, level, dir, text, rawBytes}], returned, dropped, seqTo, mayBeIncomplete, truncated}`', '给了 `since_seq` 就是增量拉取；`mayBeIncomplete=true` 表示该通道丢过最旧的行'],
   log_search: ['读', '`{pattern, regex, scanned, hits:[{channel, seq, ts, level, text}], truncated}`', '不给 `channel` 就搜所有通道'],
@@ -180,8 +180,8 @@ md += '> 想按需使用：平时用 `ui_list` / `ui_get` / `ui_set`（按路径
 
 md += '## 6. 错误语义\n\n';
 md += '| 情况 | 表现 |\n|---|---|\n';
-md += '| 参数错误（缺必填 / 类型错 / 不存在的控件路径 / 不存在的日志通道 / 非法正则 / 未知工具名） | JSON-RPC `error.code = -32602`（`E_INVALID_PARAMS`）|\n';
-md += '| 工具执行失败（控件被禁用、写盘失败…） | 正常 `result` + `isError: true`，原因在文本内容里（**不是** JSON-RPC error）|\n';
+md += '| 参数错误（缺必填 / 类型错 / 不存在的控件路径 / **取值不在可选集里**（如端口名给错）/ 不存在的日志通道 / 非法正则 / 未知工具名） | JSON-RPC `error.code = -32602`（`E_INVALID_PARAMS`）|\n';
+md += '| 工具执行失败（控件被禁用、**前置状态没满足**（如没开监控就发数据）、写盘失败…） | 正常 `result` + `isError: true`，原因在文本内容里（**不是** JSON-RPC error）|\n';
 md += '| 没有界面上下文（服务器脱离 GUI 跑，只有开发/测试会遇到） | `isError: true`，文本为 `错误 -32006: MCP 服务器没有界面上下文` |\n';
 md += '| 前端桥超时（界面 5 秒没回执） | `-32004`（`E_UI_TIMEOUT`）|\n';
 md += '| 前端桥在途请求过多 | `-32005`（`E_UI_BUSY`）|\n';
