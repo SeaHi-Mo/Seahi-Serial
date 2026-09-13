@@ -67,10 +67,11 @@ const META = {
   serial_send: ['写', '{pane, sent:true, mode, bytes, data}', '需要该分栏已在监控中；mode=hex 时 data 按十六进制解析；lineEnding 会**留在界面上**（不是临时覆盖）'],
   serial_clear: ['写', '{pane, cleared:true, outputLines}', '**只清界面**，不动磁盘会话日志缓存'],
   serial_get_history: ['读', '{pane, total, items:[…]}', '最近的在前'],
+  serial_get_output: ['读', '{pane, direction, isConnected, channels:{rx,tx}, count, items:[{seq,ts,dir,text,bytes}], truncated, note?}', '**串口监视器的核心：读设备回了什么**。默认收+发按时间归并；数据与 `log_tail` 同一份存储，但**不需要你知道通道名**，且"还没收到数据"返回空列表 + note 而不是报错'],
   serial_quick_cmd: ['读', '{pane, items:[{index,label,value}], usable}', '不带 index 只列；带 index 才执行（→ {pane, ran, label, value}）'],
   app_info: ['读', '`{name, version, profile, os, arch, pid, uptimeSecs}`', ''],
   mcp_status: ['读', '打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`', '**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）'],
-  mcp_limits: ['读', '`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels}`', '用来判断会不会被限流/丢弃'],
+  mcp_limits: ['读', '`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels}`', '用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**'],
   serial_list_ports: ['读', '`{count, ports:[{port_name, friendly_name, product_name}]}`', '不会打开端口'],
   ui_list: ['读', '`{total, controls:[{path, kind, panel, group, label, enabled, disabledReason, value?, options?}], nextCursor?}`', '`enabled=false` 时 `disabledReason` 会说明原因（如"串口未连接"）；建议先枚举再操作'],
   ui_describe: ['读', '`{…控件公开字段…, description, inputSchema}`', '等于"这个控件怎么用"的说明书'],
@@ -91,7 +92,7 @@ const META = {
 };
 
 const GROUPS = [
-  ['串口语义工具（**优先用这些**，比 ui_* 通用桥更准）', ['serial_get_state', 'serial_select_port', 'serial_set_baud', 'serial_set_frame', 'serial_set_lines', 'serial_set_display', 'serial_open', 'serial_close', 'serial_send', 'serial_clear', 'serial_get_history', 'serial_quick_cmd']],
+  ['串口语义工具（**优先用这些**，比 ui_* 通用桥更准）', ['serial_get_state', 'serial_select_port', 'serial_set_baud', 'serial_set_frame', 'serial_set_lines', 'serial_set_display', 'serial_open', 'serial_close', 'serial_send', 'serial_clear', 'serial_get_history', 'serial_get_output', 'serial_quick_cmd']],
   ['应用与服务器', ['app_info', 'mcp_status', 'mcp_limits', 'serial_list_ports']],
   ['界面操作（走合成 DOM 事件，和用户点击同一条路径）', ['ui_list', 'ui_describe', 'ui_get', 'ui_set', 'ui_click', 'ui_get_state']],
   ['日志中心', ['log_channels', 'log_tail', 'log_search', 'log_stats', 'log_clear', 'log_export']],
@@ -194,6 +195,8 @@ md += '| 项 | 值 |\n|---|---|\n';
 md += '| 同时会话数 | 4（客户端断开**立刻**回收，不等空闲超时）|\n';
 md += '| 每会话出站队列 / 心跳 / 空闲回收 / 限流 | 256 条丢最旧 · 15s · 30 分钟 · 60 次/分 |\n';
 md += '| 请求体上限 | 1 MiB |\n';
+md += '| `ui_set` 单次 items | **200**（超了 -32602；这条链路跑在界面主线程上）|\n';
+md += '| `serial_send` 单次字符数 | **64K**（超了 -32602；串口写是排队的）|\n';
 md += '| 工具列表每页 | 50 |\n';
 md += '| `ctl_*` 上限 | 400 |\n';
 md += '| 日志单条 / 每通道 / 总量 / 通道数 | 8 KiB 截断 · 128 KiB~1 MiB · 16 MiB（超了裁最大通道）· 64 个 |\n';
@@ -203,7 +206,8 @@ md += '1. **只监听回环**，`server.host` 只接受 `127.0.0.1`/`::1`/`local
 md += '2. 必须带 token；`/healthz` 是唯一免鉴权端点且只回 `{"ok":true}`；`/status` 需 token 且**不回显 token 与完整 URL**；\n';
 md += '3. **工具不能改 token**（必须在界面点「重置令牌」）；\n';
 md += '4. AI 记录写独立的 `ai-calls.jsonl`，**用户配置 `config.json` 里不会出现任何 AI 痕迹**；\n';
-md += '5. 运行期错误走程序既有的错误上报（LogHub → 本地日志 → Sentry/自建服务），**上报前 token 打码**，同类错误 5 分钟只报一次。\n\n';
+md += '5. 运行期错误走程序既有的错误上报（LogHub → 本地日志 → Sentry/自建服务），**上报前 token 打码**，同类错误 5 分钟只报一次；\n';
+md += '6. **MCP 的运行不得拖慢主程序**：串口收发热路径上只有一次非阻塞的日志旁路（`try_lock`，拿不到锁就丢并计数），上报走独立线程的 channel，SSE 出站是「有界队列 + `try_send`」（生产者绝不阻塞，慢客户端直接断开），界面命令有在途上限（32）与超时（5s），**所有外部输入都有上限**（见上表）。\n\n';
 
 md += '## 8. 手测示例（curl）\n\n';
 md += '```bash\n';

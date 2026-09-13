@@ -13,7 +13,7 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/从机属性/busid 白名单/MCP 协议与日志中心）
 ```
 
-无 lint 与类型检查；后端有单测（`main.rs` 里的 `#[cfg(test)]` 模块，151 条 + 4 条 `#[ignore]`
+无 lint 与类型检查；后端有单测（`main.rs` 里的 `#[cfg(test)]` 模块，153 条 + 4 条 `#[ignore]`
 真机/诊断）。BLE 从机相关的三条（需蓝牙硬件）：
 
 ```bash
@@ -25,7 +25,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_builds -- --ignored -
 cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
 ```
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 958 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 964 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，62 条）：直接从
 `src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，也有把渲染函数丢进假 DOM
 跑行为断言），改前端后应先跑
@@ -42,7 +42,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
 3. 后端连接有 **10 秒显式超时**（`BLE_CONNECT_TIMEOUT_MS`，比前端的 15s 略短），超时会主动
    `disconnect` —— 为的是不让"前端放弃了、后端稍后才连上"造成长期状态错位。
 
-## MCP 的九条关键约定（别改回去）
+## MCP 的十条关键约定（别改回去）
 
 1. **MCP 服务器必须在应用进程内**：它要拿 `AppHandle` 才能访问托管状态、还要 `emit` 驱动 WebView 的 DOM。
    外部独立进程（含"做成 npm 包"）两样都做不到 —— 详见 `doc/MCP_DESIGN.md` §3.4。
@@ -75,6 +75,16 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
    （2026-09 真机检查：`notFound` 就是这么丢的，`unwrap_ui_result` 里那条 `-32602` 分支
    在真机上从未生效）。加字段时三处必须一起改：前端 ack → `mcp_ui_ack` 入参 → `ui_ack_payload`，
    并由 `ui_ack_reply_shape_is_complete` 从 ack 入参**一路测到错误码**。
+10. **MCP 的运行不得影响主程序**（用户明确要求的硬约束，不是"尽量"）。落实到代码是这几条：
+    ① 串口收发热路径上只有一次**非阻塞**日志旁路（`LogHub::push` 用 `try_lock`，拿不到锁就丢一条并计数；
+    全局回收也是 `try_lock` + 单次最多 4 个通道，收不动就等下一条）；② 错误上报走**独立上报线程的
+    channel**（`ERROR_SENDER`），Sentry SDK 自己缓冲；③ SSE 出站是「**有界队列 + `try_send`**」——
+    生产者绝不 `await`、绝不阻塞，慢客户端直接断开；④ 界面命令有在途上限（32）与超时（5s）；
+    ⑤ 工具 panic 由 `catch_unwind` 兜住（见 #2）。
+    ⚠️ **加新工具时先问一句"它的输入有上限吗"**：任何接受外部数组/字符串的参数都必须在
+    `mcp_limits` 里有对应上限，且校验要发生在**碰主程序之前**。`MAX_UI_SET_ITEMS` 就是教训 ——
+    `ui_set` 最终跑在 **WebView 主线程**上，请求体虽有 1 MiB 上限，但一条 item 才 40 多字节，
+    1 MiB 能塞两万多条，等于"AI 一句请求把界面冻住几秒"。
 
 
 
@@ -83,7 +93,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
 - `src/index.html` — 整个前端（单文件，约 10400 行，含 12 套主题变量；串口 / WSL / ADB / 蓝牙 四个面板）
 - `src-tauri/src/mcp/` — **MCP 服务器**（模块级，约 5700 行）：`transport.rs`（hyper + SSE + 会话/鉴权/限流/广播）、`protocol.rs`（JSON-RPC + 工具定义与分派）、`bridge.rs`（前端桥：emit + 回执 + 超时回收）、`registry.rs`（控件注册表 → `ctl_*` 工具）、`loghub.rs`（日志中心）、`calllog.rs`（`ai-calls.jsonl`）、`aiconfig.rs`（`ai-config.json`）、`report.rs`（运行期错误 → 程序既有的错误上报通道）、`mod.rs`（启停/生命周期 + 8 个命令）
 - `npm/seahi-serial-mcp/` — **MCP 客户端配置安装器**（零依赖 CLI + 62 条自测；`npx seahi-serial-mcp install`）
-- `doc/MCP.md` — MCP 使用说明（面向使用者）｜`doc/MCP_TOOLS.md` — **32 个工具的参考手册**（工具名/描述/入参由 `.walkthrough/gen_mcp_tools_doc.js` 从 `protocol.rs` 生成，返回结构是实调抓的）｜`doc/MCP_DESIGN.md` — MCP 设计文档（含每步的实施记录）
+- `doc/MCP.md` — MCP 使用说明（面向使用者）｜`doc/MCP_TOOLS.md` — **33 个工具的参考手册**（工具名/描述/入参由 `.walkthrough/gen_mcp_tools_doc.js` 从 `protocol.rs` 生成，返回结构是实调抓的）｜`doc/MCP_DESIGN.md` — MCP 设计文档（含每步的实施记录）
 - `src-tauri/src/main.rs` — 整个 Rust 后端（约 7400 行，89 个 `#[tauri::command]`）：串口枚举（SetupAPI）、多串口连接/断开、DTR/RTS 切换、收发数据、WSL 端口映射、USB 设备管理、ADB 会话、**BLE 主机（btleplug，代码在 `fn main()` 内）与 BLE 从机（WinRT `GattServiceProvider`，代码在模块级）**
 - `src-tauri/Cargo.toml` — Rust 依赖（serialport 3.3, rfd 0.15, winapi 0.3, windows-sys 0.59, **windows 0.62 + windows-future 0.3（BLE 配对与 BLE 从机用 WinRT）**, **tokio（`time::timeout` + MCP 的 `rt/net/sync/io-util`，刻意不开 `macros`）**, reqwest 0.12, base64 0.22, btleplug 0.13, **hyper 1 + hyper-util + http-body-util + bytes（MCP 的 SSE 服务器；都已由 reqwest 带入依赖树，无新增下载）**）
 - `src-tauri/vendor/btleplug/` — **btleplug 的 vendored fork**（`[patch.crates-io]` 指向此处），共 4 处本地补丁；**升级依赖时必须按 `vendor/btleplug/VENDOR.md` 重新打**

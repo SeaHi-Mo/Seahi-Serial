@@ -201,7 +201,7 @@ pub fn tool_defs() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "data": { "type": "string", "description": "要发送的内容（文本或 HEX 串）" },
+                    "data": { "type": "string", "description": "要发送的内容（文本或 HEX 串）；单次最多 64K 字符，大块数据请分批" },
                     "mode": { "type": "string", "enum": ["text", "hex"], "description": "发送模式，默认沿用界面当前设置" },
                     "lineEnding": { "type": "string", "enum": ["crlf", "lf", "cr", "none"], "description": "临时改行尾（改完会留在界面上）" },
                     "pane": { "type": "string", "description": "分栏名，省略=main" }
@@ -229,6 +229,19 @@ pub fn tool_defs() -> Vec<Value> {
                 "properties": {
                     "limit": { "type": "number", "description": "最多返回多少条，默认 20，上限 200" },
                     "pane": { "type": "string", "description": "分栏名，省略=main" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "serial_get_output",
+            "description": "读该分栏**实际收发的内容**（串口监视器的核心：设备刚才回了什么）。默认收+发都返回，按时间归并；每条带 dir 区分。数据取自日志中心，与 log_tail 是同一份存储；本工具额外的好处是**不需要你知道通道名**，且「还没收到数据」会返回空列表而不是报错。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pane": { "type": "string", "description": "分栏名，省略=main" },
+                    "direction": { "type": "string", "enum": ["rx", "tx", "both"], "description": "只要收(rx)/只要发(tx)/都要(both，默认)" },
+                    "lines": { "type": "number", "description": "最多返回多少行，默认 50，上限 2000" }
                 },
                 "additionalProperties": false
             }
@@ -291,7 +304,7 @@ pub fn tool_defs() -> Vec<Value> {
                     "value": { "description": "新值：文本/数字/布尔；下拉传选项的 data-val" },
                     "items": {
                         "type": "array",
-                        "description": "批量设置：[{path, value}, …]",
+                        "description": "批量设置：[{path, value}, …]（**一次最多 200 个**，这是硬上限：这条链路跑在界面主线程上，超了会报 -32602，请分批）",
                         "items": { "type": "object", "properties": { "path": { "type": "string" }, "value": {} }, "required": ["path"] }
                     }
                 },
@@ -432,6 +445,20 @@ pub fn tool_defs() -> Vec<Value> {
 /// 不做上限的话，一个有多面板 + 多个监视器的界面能轻松生成几百个工具，
 /// 而工具列表是要塞进模型上下文的 —— 上限是保护，不是偷懒。
 pub const MAX_CTL_TOOLS: usize = 400;
+
+/// `ui_set` 一次最多改多少个控件。
+///
+/// **为什么必须有**：前端的 `set` 分支是在 **WebView 主线程**上逐个 `ent.read()/write()` +
+/// 派发 `input`/`change` 的。请求体本身有 1 MiB 上限，但一条 `{"path":…,"value":…}` 才 40 多字节，
+/// 1 MiB 能塞进**两万多个** items —— 那就是"AI 一句请求把界面冻住几秒"。
+/// 上限按"批量操作"的实际需要给（远大于人类会手写的量），超了就报 -32602 让调用方分批。
+pub const MAX_UI_SET_ITEMS: usize = 200;
+
+/// `serial_send` 单次最多发多少**字符**（HEX 模式下两个字符=一个字节）。
+///
+/// **为什么必须有**：串口写是排队的，1 MiB 数据在 115200 波特下要发一分半钟，
+/// 期间写队列一直压着 —— 那是直接干扰用户的串口会话。要发大块数据应当分批。
+pub const MAX_SEND_CHARS: usize = 64 * 1024;
 
 /// 实际暴露的工具列表 = 内置工具 + （可选的）全量控件工具。
 /// `tools/list`、`mcp_status.toolCount`、客户端的配置提示词都用它，保证三处一致。
@@ -603,6 +630,18 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         "serial_close" => serial_set_connected(core, args, false).await,
         "serial_send" => {
             let data = require_str(args, "data")?;
+            // 单次发送量上限：串口写是排队的，一次灌几百 KB 会长时间压住写队列，
+            // 直接干扰用户自己的串口会话（详见 MAX_SEND_CHARS 的注释）。
+            if data.chars().count() > MAX_SEND_CHARS {
+                return Err(RpcError::new(
+                    E_INVALID_PARAMS,
+                    format!(
+                        "单次最多发 {} 个字符（收到 {} 个）。请分批发送。",
+                        MAX_SEND_CHARS,
+                        data.chars().count()
+                    ),
+                ));
+            }
             // mode / lineEnding 给了就先落到界面（与用户在界面上改是同一条路）
             let mut pre: Vec<Value> = Vec::new();
             if let Some(m) = opt_str(args, "mode") {
@@ -636,6 +675,12 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         "serial_get_history" => {
             serial_call(core, "history", args, json!({ "limit": args.get("limit").cloned().unwrap_or(json!(20)) })).await
         }
+        // 读"设备刚才回了什么"。**不新增存储**：读的就是日志中心的 serial:<分栏>:rx|tx
+        // （AGENTS.md #6：同一份内容只在生产端旁路一份，别重复存）。
+        // 为什么还要一个专门工具：`log_tail` 要求调用方先知道通道名，而通道名是拼出来的
+        // （serial:main:rx），没数据流过时通道**还不存在** → log_tail 直接报"没有这个通道"，
+        // 于是 AI 会得出"不支持读串口数据"这种错结论，而事实只是"还没收到数据"。
+        "serial_get_output" => serial_get_output(core, args).await,
         "serial_quick_cmd" => {
             match args.get("index") {
                 Some(i) => serial_call(core, "quickRun", args, json!({ "index": i })).await,
@@ -654,7 +699,21 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         }
         "ui_set" => {
             let payload = match args.get("items") {
-                Some(items) if items.is_array() => json!({ "items": items }),
+                Some(items) if items.is_array() => {
+                    // 上限校验必须在**下发到界面之前**：这条链路最终跑在 WebView 主线程上，
+                    // 放两万条进去就是把界面冻住（详见 MAX_UI_SET_ITEMS 的注释）。
+                    let n = items.as_array().map(|a| a.len()).unwrap_or(0);
+                    if n > MAX_UI_SET_ITEMS {
+                        return Err(RpcError::new(
+                            E_INVALID_PARAMS,
+                            format!(
+                                "items 一次最多 {} 个（收到 {} 个）。请分批调用 —— 这条链路跑在界面主线程上，一次给太多会把界面卡住。",
+                                MAX_UI_SET_ITEMS, n
+                            ),
+                        ));
+                    }
+                    json!({ "items": items })
+                }
                 Some(_) => {
                     return Err(RpcError::new(E_INVALID_PARAMS, "items 必须是数组"));
                 }
@@ -805,12 +864,17 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
 }
 
 /// 硬性上限（单一来源，便于审计；`doc/MCP_DESIGN.md` §4.8）
+///
+/// 这里的每一项都是"**别让 MCP 伤到主程序**"的具体手段：限制外部输入的大小/频率，
+/// 而不是靠"客户端应该守规矩"。新增任何接受外部数组/字符串的工具时，都该在这里有一条。
 pub fn limits_json() -> Value {
     json!({
         "maxSessions": super::MAX_SESSIONS,
         "sessionQueue": super::SESSION_QUEUE,
         "heartbeatSecs": super::HEARTBEAT_SECS,
         "maxBodyBytes": super::MAX_BODY_BYTES,
+        "maxUiSetItems": MAX_UI_SET_ITEMS,
+        "maxSendChars": MAX_SEND_CHARS,
         "toolsPage": super::TOOLS_PAGE,
         "idleTimeoutSecs": super::IDLE_TIMEOUT_SECS,
         "rateLimitPerMin": super::RATE_LIMIT_PER_MIN,
@@ -843,6 +907,105 @@ async fn serial_call(
 /// 批量改字段/开关（前端按"字段表 / 开关表"决定是写值还是切 class）
 async fn serial_apply(core: &Arc<McpCore>, args: &Value, items: Value) -> Result<Value, RpcError> {
     serial_call(core, "apply", args, json!({ "items": items })).await
+}
+
+/// 读某个分栏**实际收发的内容**（串口监视器的核心）。
+///
+/// 两个细节值得留神：
+/// 1. **通道名不在 Rust 侧拼** —— 规则（`serial:` / `wsl:` 前缀、`:rx` / `:tx` 后缀）由前端的
+///    `mcpSerialLogChannels` 定义一处，`bufferPush`（写）与这里（读）共用一份，避免"写进去的名字"
+///    和"读出来的名字"各写一遍然后漂移。所以先问一次 `state` 拿 `logChannels`。
+/// 2. **通道不存在不是错误**：那只是"这个方向还没有数据"。这里返回空列表 + note，
+///    因为对 AI 来说"还没收到数据"和"读不到数据"是完全不同的两件事。
+async fn serial_get_output(core: &Arc<McpCore>, args: &Value) -> Result<Value, RpcError> {
+    let direction = opt_str(args, "direction").unwrap_or_else(|| "both".to_string());
+    if !matches!(direction.as_str(), "rx" | "tx" | "both") {
+        return Err(RpcError::new(
+            E_INVALID_PARAMS,
+            "direction 只能是 rx / tx / both",
+        ));
+    }
+    let want = opt_u64(args, "lines").unwrap_or(50).clamp(1, 2000) as usize;
+
+    // 顺带完成分栏名校验（分栏不存在 → 前端回 notFound → 协议级 -32602）
+    let st = serial_call(core, "state", args, json!({})).await?;
+    let pane = st["pane"].as_str().unwrap_or("main").to_string();
+    let chans = st.get("logChannels").cloned().unwrap_or_else(|| json!({}));
+    let connected = st["isConnected"].as_bool().unwrap_or(false);
+
+    let (per_dir, items, truncated) = collect_serial_output(&chans, &direction, want);
+    let empty_dirs: Vec<&str> = ["rx", "tx"]
+        .into_iter()
+        .filter(|d| direction == "both" || direction == *d)
+        .filter(|d| per_dir.get(*d).map(|v| v["count"].as_u64() == Some(0)).unwrap_or(false))
+        .collect();
+
+    let mut out = json!({
+        "pane": pane,
+        "direction": direction,
+        "isConnected": connected,
+        "channels": per_dir,
+        "count": items.len(),
+        "items": items,
+        "truncated": truncated,
+    });
+    if empty_dirs.len() == 2 {
+        out["note"] = json!("这个分栏还没有收发任何数据。若期望有数据：先用 serial_get_state 看 isConnected，未连接就 serial_open。");
+    } else if empty_dirs.len() == 1 {
+        out["note"] = json!(format!(
+            "{} 方向还没有数据。",
+            if empty_dirs[0] == "rx" { "接收" } else { "发送" }
+        ));
+    }
+    Ok(out)
+}
+
+/// 从日志中心取某个分栏的 rx/tx 内容并按时间归并（纯函数，便于单测）。
+///
+/// 返回 `(每个方向的元信息, 归并后的行, 是否被截断)`。**通道不存在在这里不是错误** —— 那只是
+/// "这个方向还没有数据"（对 AI 来说，这和"读不到数据"是完全不同的两件事）。
+fn collect_serial_output(chans: &Value, direction: &str, want: usize) -> (Value, Vec<Value>, bool) {
+    let hub = super::loghub::hub();
+    let mut per_dir = serde_json::Map::new();
+    let mut picked: Vec<Value> = Vec::new();
+    for dir in ["rx", "tx"] {
+        if direction != "both" && direction != dir {
+            continue;
+        }
+        let Some(name) = chans.get(dir).and_then(|v| v.as_str()) else {
+            continue;
+        };
+        match hub.tail(name, None, want) {
+            Ok(v) => {
+                if let Some(arr) = v["lines"].as_array() {
+                    picked.extend(arr.iter().cloned());
+                }
+                per_dir.insert(
+                    dir.to_string(),
+                    json!({
+                        "channel": name,
+                        "count": v["returned"],
+                        "dropped": v["dropped"],
+                        "mayBeIncomplete": v["mayBeIncomplete"],
+                    }),
+                );
+            }
+            Err(_) => {
+                per_dir.insert(
+                    dir.to_string(),
+                    json!({ "channel": name, "count": 0, "note": "还没有数据" }),
+                );
+            }
+        }
+    }
+    // 两个通道各自有独立 seq，所以只能按时间归并（t 是毫秒时间戳）
+    picked.sort_by_key(|l| l["t"].as_i64().unwrap_or(0));
+    let total = picked.len();
+    let truncated = total > want;
+    if truncated {
+        picked.drain(0..total - want);
+    }
+    (Value::Object(per_dir), picked, truncated)
 }
 
 /// 开/关监控：点按钮 → **轮询确认状态** → 返回真实状态。
@@ -1490,9 +1653,119 @@ mod tests {
         });
     }
 
+    /// 读串口收发内容（`serial_get_output` 的核心逻辑）。
+    /// ① **没数据时不是错误** —— 这是它相对 `log_tail` 的关键差别（`log_tail` 对不存在的
+    /// 通道报 -32602，AI 会误以为"不支持读串口数据"）；② 收/发两通道要**按时间归并**
+    /// （seq 各自独立，不能按通道拼接）；③ direction 过滤；④ 截断留最近的并标记。
     #[test]
-    fn serial_list_ports_tool_runs_without_opening_a_port() {
+    fn serial_output_reads_rx_tx_and_treats_missing_channel_as_empty() {
+        let _g = hub_lock();
+        let hub = crate::mcp::loghub::hub();
+        hub.set_enabled(true);
+        let chans = json!({ "rx": "serial:t1:rx", "tx": "serial:t1:tx" });
+
+        // ① 通道还不存在（一条数据都没流过）→ 空列表，不报错
+        let (per_dir, items, truncated) = collect_serial_output(&chans, "both", 50);
+        assert!(items.is_empty(), "没数据就该是空列表: {}", items.len());
+        assert!(!truncated);
+        assert_eq!(per_dir["rx"]["count"], 0);
+        assert!(
+            per_dir["rx"]["note"].as_str().unwrap().contains("还没有数据"),
+            "要说清是'还没数据'而不是'读不到': {}",
+            per_dir["rx"]
+        );
+
+        // ② 两个方向按时间归并（seq 各自独立，只能靠 ts 排序；push_at 是为了钉住时间戳）
+        hub.push_at("serial:t1:rx", crate::mcp::loghub::LEVEL_INFO, crate::mcp::loghub::DIR_RX, 2000, "OK", 2);
+        hub.push_at("serial:t1:tx", crate::mcp::loghub::LEVEL_INFO, crate::mcp::loghub::DIR_TX, 1000, "AT", 2);
+        hub.push_at("serial:t1:rx", crate::mcp::loghub::LEVEL_INFO, crate::mcp::loghub::DIR_RX, 3000, "OK2", 3);
+        let (per_dir, items, _) = collect_serial_output(&chans, "both", 50);
+        let order: Vec<&str> = items.iter().map(|l| l["text"].as_str().unwrap()).collect();
+        assert_eq!(order, vec!["AT", "OK", "OK2"], "必须按时间归并，不是按通道拼接");
+        let dirs: Vec<&str> = items.iter().map(|l| l["dir"].as_str().unwrap()).collect();
+        assert_eq!(dirs, vec!["tx", "rx", "rx"]);
+        assert_eq!(per_dir["rx"]["count"], 2);
+        assert_eq!(per_dir["tx"]["count"], 1);
+
+        // ③ 只要一个方向
+        let (per_dir, items, _) = collect_serial_output(&chans, "rx", 50);
+        assert_eq!(items.len(), 2);
+        assert!(per_dir.get("tx").is_none(), "只要 rx 时不该返回 tx: {}", per_dir);
+
+        // ④ 截断：留最近的，并明确标记
+        let (_, items, truncated) = collect_serial_output(&chans, "both", 2);
+        assert!(truncated, "3 行只要 2 行必须标记 truncated");
+        let order: Vec<&str> = items.iter().map(|l| l["text"].as_str().unwrap()).collect();
+        assert_eq!(order, vec!["OK", "OK2"], "截断要留**最近**的: {:?}", order);
+
+        hub.clear(Some("serial:t1:rx"));
+        hub.clear(Some("serial:t1:tx"));
+    }
+
+    /// 「MCP 不能影响主程序」这条要求，落到代码上就是**外部输入必须有界**。
+    /// 这里钉住两个曾经无界的入口：① `ui_set.items` 跑在 WebView 主线程上（1 MiB 请求体
+    /// 能塞两万多条 → 界面冻住）；② `serial_send.data` 进的是串口写队列（1 MiB 在 115200
+    /// 波特下要发一分半钟 → 压住用户的串口会话）。
+    #[test]
+    fn unbounded_inputs_are_rejected_before_touching_the_app() {
         block_on(async {
+            let c = core();
+
+            // ① ui_set.items 超上限 → 协议级 -32602（在**下发到界面之前**就被挡住）
+            let many: Vec<Value> = (0..=MAX_UI_SET_ITEMS)
+                .map(|i| json!({ "path": format!("x.y.z{}", i), "value": i }))
+                .collect();
+            let raw = json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "ui_set", "arguments": { "items": many } }
+            })
+            .to_string();
+            let r = call(&c, &raw).await;
+            assert_eq!(r["error"]["code"], E_INVALID_PARAMS, "{}", r);
+            let msg = r["error"]["message"].as_str().unwrap_or("");
+            assert!(msg.contains("分批"), "要告诉 AI 怎么办: {}", msg);
+            assert!(
+                msg.contains(&MAX_UI_SET_ITEMS.to_string()),
+                "要说清上限是多少: {}",
+                msg
+            );
+
+            // 边界：刚好等于上限不该被判成参数错（这里没有 GUI，所以会走 -32006，但**不是** -32602）
+            let ok: Vec<Value> = (0..MAX_UI_SET_ITEMS)
+                .map(|i| json!({ "path": format!("x.y.z{}", i), "value": i }))
+                .collect();
+            let raw = json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": { "name": "ui_set", "arguments": { "items": ok } }
+            })
+            .to_string();
+            let r = call(&c, &raw).await;
+            assert_ne!(r["error"]["code"], E_INVALID_PARAMS, "刚好到上限不该被拒: {}", r);
+
+            // ② serial_send 超量 → 协议级 -32602，且**没有碰过界面的发送框**
+            let big = "A".repeat(MAX_SEND_CHARS + 1);
+            let raw = json!({
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": { "name": "serial_send", "arguments": { "data": big } }
+            })
+            .to_string();
+            let r = call(&c, &raw).await;
+            assert_eq!(r["error"]["code"], E_INVALID_PARAMS, "{}", r);
+            assert!(
+                r["error"]["message"].as_str().unwrap_or("").contains("分批"),
+                "{}",
+                r
+            );
+
+            // 上限本身要能被客户端查到（mcp_limits），否则对方只能靠撞墙发现
+            let lim = limits_json();
+            assert_eq!(lim["maxUiSetItems"], json!(MAX_UI_SET_ITEMS));
+            assert_eq!(lim["maxSendChars"], json!(MAX_SEND_CHARS));
+        });
+    }
+
+    #[test]
+    fn serial_list_ports_tool_runs_without_opening_a_port() {        block_on(async {
             let c = core();
             let r = call(
                 &c,

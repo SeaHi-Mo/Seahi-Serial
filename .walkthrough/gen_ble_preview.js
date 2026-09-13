@@ -1683,6 +1683,8 @@ console.log('preview ->', out);
     logCacheScheduleFlush() {},
     // bufferPush 现在还会回灌日志（S7）；这一段只测紧凑缓冲，给个桩即可
     mcpLogPush() {},
+    // 通道名规则（bufferPush 会用它，实际值无所谓 —— mcpLogPush 是桩）
+    mcpSerialLogChannels() { return { rx: 'serial:x:rx', tx: 'serial:x:tx' }; },
     document: { getElementById() { return null; }, addEventListener() {} },
   };
   vm.createContext(sbM);
@@ -2382,9 +2384,22 @@ console.log('preview ->', out);
   check(/fn log_push_batch\(/.test(mcpSrc) && /mcp::log_push_batch,/.test(mainRs),
     '后端有并注册了 log_push_batch');
   check(/invoke\('log_push_batch'/.test(html), '前端回灌调用后端');
+  // 「MCP 不能影响主程序」落到代码上 = 外部输入必须有界，且校验必须在**碰主程序之前**。
+  // 用 mcpSrc 而不是 mcpProd：protocol.rs 的 cfg(test) 截断点落在**常量声明之后、分派之前**，
+  // 所以"常量 + 分派"跨不过去（这不是要测测试代码，是截断点的限制）。
+  check(/pub const MAX_UI_SET_ITEMS: usize = 200;/.test(mcpSrc)
+    && /n > MAX_UI_SET_ITEMS[\s\S]{0,900}?core\.ui_call\("set", payload\)/.test(mcpSrc),
+    'ui_set.items 有上限，且在**下发到界面之前**就被挡住（那条链路跑在 WebView 主线程上）');
+  check(/pub const MAX_SEND_CHARS: usize = 64 \* 1024;/.test(mcpSrc)
+    && /chars\(\)\.count\(\) > MAX_SEND_CHARS/.test(mcpSrc),
+    'serial_send.data 有上限（串口写队列不能被一次灌满）');
+  check(/maxUiSetItems/.test(mcpSrc) && /maxSendChars/.test(mcpSrc),
+    '两条上限都在 mcp_limits 里对客户端公开（不让人靠撞墙发现）');
   check(/mcpLogPush\(mcpCh/.test(html), 'bufferPush 里接了回灌（所有输出行的唯一漏斗）');
-  check(/\(m\.isWsl \? 'wsl:' : 'serial:'\) \+ mid \+ \(type === 'send' \? ':tx' : ':rx'\)/.test(html),
-    '通道名按 WSL/串口 + 收发方向区分');
+  // 通道名规则**只允许有一处**（mcpSerialLogChannels）：写侧（bufferPush）与读侧
+  // （serial_get_output 拿 mcpSerialState 里的 logChannels）必须用同一套名字。
+  check(/function mcpSerialLogChannels\(mid\)[\s\S]{0,220}?\(m\.isWsl \? 'wsl:' : 'serial:'\) \+ mid/.test(html),
+    '通道名按 WSL/串口 + 收发方向区分，且只在这一处拼');
   check(/'ui:err' : 'ui:sys'/.test(html), '界面系统提示进 ui:sys / ui:err 通道');
   check(/var _mcpLogBatchMax = 200;/.test(html) && /var _mcpLogQueueMax = 2000;/.test(html),
     '回灌有"单批 + 队列"双上限');
@@ -2646,7 +2661,7 @@ console.log('preview ->', out);
                        mcpSrc.indexOf('\n    ]', mcpSrc.indexOf('pub fn tool_defs()')))
         .matchAll(/"name":\s*"([a-z][a-z0-9_]*)"/g)].map((m) => m[1])
     )];
-    check(srcTools.length === 32, '源码里是 32 个内置工具（20 通用 + 12 串口语义）', srcTools.length);
+    check(srcTools.length === 33, '源码里是 33 个内置工具（20 通用 + 13 串口语义）', srcTools.length);
     const missing = srcTools.filter((n) => toolsDoc.indexOf('#### `' + n + '`') < 0);
     check(missing.length === 0, '工具参考文档 doc/MCP_TOOLS.md 列出了全部内置工具', '缺：' + missing.join(','));
     check((toolsDoc.match(/^#### `/gm) || []).length === srcTools.length,
@@ -2745,10 +2760,10 @@ console.log('preview ->', out);
 
   console.log('\n【MCP 串口语义工具（S12：选口 / 波特率 / 开监控 / 发数据…）】');
 
-  // ---- 源码：12 个工具齐全，且"开监控"必须确认状态而不是点完就返回 ----
+  // ---- 源码：13 个工具齐全，且"开监控"必须确认状态而不是点完就返回 ----
   const serialTools = ['serial_get_state', 'serial_select_port', 'serial_set_baud', 'serial_set_frame',
     'serial_set_lines', 'serial_set_display', 'serial_open', 'serial_close', 'serial_send',
-    'serial_clear', 'serial_get_history', 'serial_quick_cmd'];
+    'serial_clear', 'serial_get_history', 'serial_quick_cmd', 'serial_get_output'];
   serialTools.forEach((n) => {
     check(new RegExp('"name": "' + n + '"').test(mcpSrc), '串口语义工具已定义 ' + n);
   });
@@ -2854,6 +2869,7 @@ console.log('preview ->', out);
       extractFunction('mcpSerialPanes'), extractFunction('mcpSerialResolvePane'),
       extractFunction('mcpSerialEl'), extractFunction('mcpSerialOptions'),
       extractFunction('mcpSerialState'), extractFunction('mcpSerialApply'), extractFunction('mcpSerialOp'),
+      extractFunction('mcpSerialLogChannels'),
     ].join('\n'), sbSer);
 
     check(JSON.stringify(sbSer.mcpSerialPanes()) === '["main","extra-1"]',
@@ -2867,6 +2883,14 @@ console.log('preview ->', out);
     check(st.value.isConnected === false && st.value.outputLines === 12 && st.value.historyCount === 2,
       '状态带运行时信息：是否在监控 / 输出行数 / 历史条数');
     check(st.value.autoScroll === true && st.value.lineNum === false, '状态里的开关取自 on class');
+    // 让 AI 知道"收发内容去哪读"：通道名由前端一处定义，serial_get_output 直接读它
+    check(st.value.logChannels && st.value.logChannels.rx === 'serial:main:rx'
+      && st.value.logChannels.tx === 'serial:main:tx',
+      '状态里带出日志通道名（AI 不用猜 serial:<分栏>:rx 怎么拼）',
+      JSON.stringify(st.value.logChannels));
+    check(!/\(m\.isWsl \? 'wsl:' : 'serial:'\) \+ mid \+ \(type === 'send'/.test(html)
+      && /mcpCh = type === 'send' \? chans\.tx : chans\.rx;/.test(html),
+      '通道名规则只有一处定义（bufferPush 与 mcpSerialState 共用 mcpSerialLogChannels，不各写一遍）');
 
     const okPort = sbSer.mcpSerialOp({ action: 'apply', items: [{ name: 'port', value: 'COM3' }] });
     check(okPort.ok && okPort.value && okPort.value.applied[0].ok

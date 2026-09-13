@@ -21,7 +21,7 @@
 
 - 运行时：`tools/list`（分页，每页 50，用 `nextCursor` 翻页）——这是**权威来源**，本页只是它的可读版本。
 - `mcp_limits` / `mcp_status` 里的 `toolCount` / `builtinToolCount` 能看到数量。
-- 内置工具 **32 个**；另有可选的 `ctl_*`（见 §4）。
+- 内置工具 **33 个**；另有可选的 `ctl_*`（见 §4）。
 
 ## 3. 一页速查
 
@@ -38,6 +38,7 @@
 | [`serial_send`](#serial-send) | **写** | 往串口发数据。mode=hex 时 data 按十六进制字节解析（如 "01 03 00 00 00 02"），否则按文本发。lineEnding 可临时覆盖该分栏的行尾设置。需要该分栏已在监控中。 |
 | [`serial_clear`](#serial-clear) | **写** | 清空该分栏的输出区内容（等价于点「清除内容」）。**只清界面显示，不动磁盘上的会话日志缓存文件。** |
 | [`serial_get_history`](#serial-get-history) | 读 | 读该分栏的发送历史（最近的在前）。用来回看刚才发过什么，或复用上一条指令。 |
+| [`serial_get_output`](#serial-get-output) | 读 | 读该分栏**实际收发的内容**（串口监视器的核心：设备刚才回了什么）。默认收+发都返回，按时间归并；每条带 dir 区分。数据取自日志中心，与 log_tail 是同一份存储；本工具额外的好处是**不需要你知道通道名**，且「还没收到数据」会返回空列表而不是报错。 |
 | [`serial_quick_cmd`](#serial-quick-cmd) | 读 | 快速指令（发送栏右侧那个下拉）：不带 index 就**列出全部**（含每条是否已配内容）；给了 index 就**执行**第 index 条。 |
 | [`app_info`](#app-info) | 读 | 本机 SeaHi Serial 应用的基本信息（版本、平台、进程、运行时长）。只读，无副作用。 |
 | [`mcp_status`](#mcp-status) | 读 | MCP 服务器自身状态：是否运行、监听端点、会话数、请求数与限流/丢弃计数。只读。 |
@@ -198,7 +199,7 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `data` | string | **是** | 要发送的内容（文本或 HEX 串） |
+| `data` | string | **是** | 要发送的内容（文本或 HEX 串）；单次最多 64K 字符，大块数据请分批 |
 | `mode` | string | 否 | 枚举：`text` / `hex` 发送模式，默认沿用界面当前设置 |
 | `lineEnding` | string | 否 | 枚举：`crlf` / `lf` / `cr` / `none` 临时改行尾（改完会留在界面上） |
 | `pane` | string | 否 | 分栏名，省略=main |
@@ -229,6 +230,21 @@
 |---|---|---|---|
 | `limit` | number | 否 | 最多返回多少条，默认 20，上限 200 |
 | `pane` | string | 否 | 分栏名，省略=main |
+
+#### `serial_get_output`
+
+- **作用**：读该分栏**实际收发的内容**（串口监视器的核心：设备刚才回了什么）。默认收+发都返回，按时间归并；每条带 dir 区分。数据取自日志中心，与 log_tail 是同一份存储；本工具额外的好处是**不需要你知道通道名**，且「还没收到数据」会返回空列表而不是报错。
+- **读/写**：只读，无副作用
+- **返回**：{pane, direction, isConnected, channels:{rx,tx}, count, items:[{seq,ts,dir,text,bytes}], truncated, note?}
+- **注意**：**串口监视器的核心：读设备回了什么**。默认收+发按时间归并；数据与 `log_tail` 同一份存储，但**不需要你知道通道名**，且"还没收到数据"返回空列表 + note 而不是报错
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `pane` | string | 否 | 分栏名，省略=main |
+| `direction` | string | 否 | 枚举：`rx` / `tx` / `both` 只要收(rx)/只要发(tx)/都要(both，默认) |
+| `lines` | number | 否 | 最多返回多少行，默认 50，上限 2000 |
 
 #### `serial_quick_cmd`
 
@@ -271,8 +287,8 @@
 
 - **作用**：MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。
 - **读/写**：只读，无副作用
-- **返回**：`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels}`
-- **注意**：用来判断会不会被限流/丢弃
+- **返回**：`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels}`
+- **注意**：用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**
 
 **入参**
 
@@ -346,7 +362,7 @@
 |---|---|---|---|
 | `path` | string | 否 |  |
 | `value` | any | 否 | 新值：文本/数字/布尔；下拉传选项的 data-val |
-| `items` | array&lt;object&gt; | 否 | 批量设置：[{path, value}, …] |
+| `items` | array&lt;object&gt; | 否 | 批量设置：[{path, value}, …]（**一次最多 200 个**，这是硬上限：这条链路跑在界面主线程上，超了会报 -32602，请分批） |
 
 #### `ui_click`
 
@@ -545,6 +561,8 @@
 | 同时会话数 | 4（客户端断开**立刻**回收，不等空闲超时）|
 | 每会话出站队列 / 心跳 / 空闲回收 / 限流 | 256 条丢最旧 · 15s · 30 分钟 · 60 次/分 |
 | 请求体上限 | 1 MiB |
+| `ui_set` 单次 items | **200**（超了 -32602；这条链路跑在界面主线程上）|
+| `serial_send` 单次字符数 | **64K**（超了 -32602；串口写是排队的）|
 | 工具列表每页 | 50 |
 | `ctl_*` 上限 | 400 |
 | 日志单条 / 每通道 / 总量 / 通道数 | 8 KiB 截断 · 128 KiB~1 MiB · 16 MiB（超了裁最大通道）· 64 个 |
@@ -556,7 +574,8 @@
 2. 必须带 token；`/healthz` 是唯一免鉴权端点且只回 `{"ok":true}`；`/status` 需 token 且**不回显 token 与完整 URL**；
 3. **工具不能改 token**（必须在界面点「重置令牌」）；
 4. AI 记录写独立的 `ai-calls.jsonl`，**用户配置 `config.json` 里不会出现任何 AI 痕迹**；
-5. 运行期错误走程序既有的错误上报（LogHub → 本地日志 → Sentry/自建服务），**上报前 token 打码**，同类错误 5 分钟只报一次。
+5. 运行期错误走程序既有的错误上报（LogHub → 本地日志 → Sentry/自建服务），**上报前 token 打码**，同类错误 5 分钟只报一次；
+6. **MCP 的运行不得拖慢主程序**：串口收发热路径上只有一次非阻塞的日志旁路（`try_lock`，拿不到锁就丢并计数），上报走独立线程的 channel，SSE 出站是「有界队列 + `try_send`」（生产者绝不阻塞，慢客户端直接断开），界面命令有在途上限（32）与超时（5s），**所有外部输入都有上限**（见上表）。
 
 ## 8. 手测示例（curl）
 

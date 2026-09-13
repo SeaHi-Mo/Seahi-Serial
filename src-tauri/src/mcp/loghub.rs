@@ -317,6 +317,23 @@ impl LogHub {
         self.reclaims.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// 单测专用：写入一条**指定时间戳**的日志。
+    ///
+    /// 生产路径只用 [`Self::push`]（时间戳取 `now()`）。但"按时间归并 rx/tx"这类逻辑
+    /// 在同一毫秒内写入时无法构造确定的顺序，所以给测试留一个能钉住 ts 的接缝。
+    #[cfg(test)]
+    pub fn push_at(&self, name: &str, level: u8, dir: u8, ts_ms: i64, text: &str, raw_bytes: u32) {
+        self.push(name, level, dir, text, raw_bytes);
+        let ch = self.handle(name);
+        {
+            // 注意作用域：guard 必须在 ch 之前析构，否则借用活得比 ch 长（E0597）
+            let mut c = ch.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(last) = c.lines.back_mut() {
+                last.ts_ms = ts_ms;
+            }
+        }
+    }
+
     /// 写一条日志。**绝不阻塞**：拿不到通道锁就丢一条并计数。
     pub fn push(&self, name: &str, level: u8, dir: u8, text: &str, raw_bytes: u32) {
         // 关闭状态：一次原子读就返回（MCP 停用时零成本）

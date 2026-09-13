@@ -5263,6 +5263,15 @@ function mcpSerialOptions(el) {
     return out;
 }
 
+/// 一个分栏的日志通道名（`serial:<分栏>:rx|tx`，WSL 分栏是 `wsl:` 前缀）。
+/// **规则只在这里定义一处**：`bufferPush`（回灌）与 `mcpSerialState`（告诉 AI 去哪读）都用它，
+/// 免得"写进去的名字"和"读出来的名字"各写一遍然后漂移。
+function mcpSerialLogChannels(mid) {
+    var m = monitors[mid] || {};
+    var p = (m.isWsl ? 'wsl:' : 'serial:') + mid;
+    return { rx: p + ':rx', tx: p + ':tx' };
+}
+
 /// 汇总一个分栏的完整状态：持久化配置（复用 collectConfigForMonitor）+ 运行时 + 开关状态
 function mcpSerialState(mid) {
     var m = monitors[mid];
@@ -5297,6 +5306,8 @@ function mcpSerialState(mid) {
         outputBytes: m._textDataLen || 0,
         historyCount: (m.sendHistory || []).length,
         panes: mcpSerialPanes(),
+        // 让 AI 知道"收发内容去哪读"：serial_get_output 直接读它，log_tail 也能按名字增量拉
+        logChannels: mcpSerialLogChannels(mid),
     };
 }
 
@@ -5775,7 +5786,9 @@ function bufferPush(mid, type, ts, text) {
     // 后端拿不到这些（它们在界面这边才成型），所以必须从这里回灌。
     var mcpCh, mcpLevel, mcpDir;
     if (type === 'recv' || type === 'send') {
-        mcpCh = (m.isWsl ? 'wsl:' : 'serial:') + mid + (type === 'send' ? ':tx' : ':rx');
+        // 通道名规则只在 mcpSerialLogChannels 里定义一处（与 serial_get_output 读的是同一套名字）
+        var chans = mcpSerialLogChannels(mid);
+        mcpCh = type === 'send' ? chans.tx : chans.rx;
         mcpLevel = 'info';
         mcpDir = (type === 'send' ? 'tx' : 'rx');
     } else {
