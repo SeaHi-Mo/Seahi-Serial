@@ -43,12 +43,21 @@
 }
 
 .ble-body { flex:1; display:flex; min-height:0; }
-.ble-left { display:flex; flex-direction:column; width:320px; min-width:240px; max-width:380px; border-right:1px solid var(--border); background:var(--editor-bg); }
+.ble-left, .ble-pf-left {
+    flex:0 0 400px; min-width:320px; max-width:46%;
+    display:flex; flex-direction:column;
+    border-right:1px solid var(--border); background:var(--editor-bg);
+}
 .ble-left-head { display:flex; align-items:center; gap:10px; padding:8px 12px; border-bottom:1px solid var(--border); background:var(--toolbar-bg); flex-shrink:0; min-height:44px; }
 .ble-left-title { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--text-b); white-space:nowrap; min-width:0; }
 .ble-left-title svg { color:var(--link); }
 .ble-devList { flex:1; min-height:0; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px; }
 .ble-right { flex:1; min-width:0; display:flex; flex-direction:column; }
+.ble-monArea { display:none; flex:0 0 380px; min-width:280px; max-width:46%; overflow:hidden; }
+.ble-monArea.active { display:flex; }
+.ble-mon-resize { width:5px; cursor:col-resize; background:var(--border);
+                  flex-shrink:0; position:relative; z-index:10; }
+.ble-mon-resize:hover, .ble-mon-resize.dragging { background:var(--split-line); }
 .ble-dev-card { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; border:1px solid var(--border); background:var(--input-bg); cursor:pointer; transition: background .15s, border-color .15s, color .15s; }
 .ble-dev-card:hover { border-color:var(--border-h); }
 .ble-dev-card.active { border-color:var(--accent-focus); background:var(--accent-focus); }
@@ -59,7 +68,7 @@
 .ble-dev-text { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ble-dev-tag { flex-shrink:0; margin-left:3px; font-size:12px; font-weight:400; color:var(--text-d); }
 .ble-dev-card.active .ble-dev-tag { color:rgba(255,255,255,.75); }
-.ble-dev-conn { flex-shrink:0; margin-left:5px; font-size:12px; font-weight:500; color:var(--accent-green); }
+.ble-dev-conn { flex-shrink:0; margin-left:10px; font-size:12px; font-weight:500; color:var(--accent-green); }
 .ble-dev-card.active .ble-dev-conn { color:rgba(255,255,255,.9); }
 .ble-dev-icon { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; opacity:.75; }
 .ble-dev-icon svg { height:22px; width:auto; display:block; }
@@ -82,6 +91,20 @@
 .ble-filter-input { width:100%; box-sizing:border-box; height:28px; padding:0 8px; border:1px solid var(--border); border-radius:5px; background:var(--input-bg); color:var(--text); font-size:12px; outline:none; }
 .ble-filter-input:focus { border-color:var(--accent-focus); }
 .ble-filter-hint { font-size:10px; color:var(--text-d); margin-top:4px; }
+.ble-scan-secs { margin-left:6px; flex-shrink:0; height:28px; box-sizing:border-box; padding:0 4px;
+                 border:1px solid var(--border); border-radius:5px; background:var(--input-bg);
+                 color:var(--text-b); font-size:11px; font-family:inherit; cursor:pointer; outline:none; }
+.ble-scan-secs:focus { border-color:var(--accent-focus); }
+.ble-direct-row { display:flex; align-items:center; gap:6px; padding:0 12px 8px; flex-shrink:0;
+                  background:var(--toolbar-bg); border-bottom:1px solid var(--border); }
+.ble-direct-input { flex:1; min-width:0; height:26px; box-sizing:border-box; padding:0 8px;
+                    border:1px solid var(--border); border-radius:5px; background:var(--input-bg);
+                    color:var(--text); font-size:11px; font-family:var(--font-mono); outline:none; }
+.ble-direct-input:focus { border-color:var(--accent-focus); }
+.ble-direct-btn { flex-shrink:0; height:26px; padding:0 10px; border:1px solid var(--border); border-radius:5px;
+                  background:var(--input-bg); color:var(--text-b); font-size:11px; font-family:inherit; cursor:pointer; }
+.ble-direct-btn:hover { border-color:var(--accent-focus); color:var(--accent-focus); }
+.ble-direct-btn:disabled { opacity:.5; cursor:not-allowed; }
 .ble-detail { flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; }
 .ble-detail-empty { margin:auto; color:var(--text-d); font-size:13px; }
 .ble-detail-head { display:flex; align-items:center; gap:14px; padding:8px 16px; border-bottom:1px solid var(--border); flex-shrink:0; min-height:44px; }
@@ -98,12 +121,11 @@
 .ble-svc.expanded .ble-svc-caret { transform:rotate(90deg); }
 .ble-svc-attr { font-size:9px; font-weight:700; color:var(--text-d); border:1px solid var(--border); border-radius:4px; padding:0 4px; flex-shrink:0; line-height:14px; letter-spacing:.02em; text-align:center; min-width:18px; }
 .ble-svc-uuid { font-family:var(--font-mono); font-size:12px; color:var(--text); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.ble-svc-name { font-size:11px; color:var(--text-d); margin-left:6px; flex-shrink:0; }
-.ble-svc-tag { font-size:10px; color:var(--text-d); border:1px solid var(--border); padding:0 6px; border-radius:4px; margin-left:auto; flex-shrink:0; }
+.ble-svc-type { margin-left:auto; flex-shrink:0; font-size:11px; color:var(--text-d); white-space:nowrap; }
 .ble-charGroup { padding:4px 0 8px 22px; display:flex; flex-direction:column; gap:4px; }
 .ble-char { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:6px; background:var(--editor-bg); border:1px solid var(--border); }
-.ble-char-uuid { font-family:var(--font-mono); font-size:12px; color:var(--text); }
-.ble-char-name { font-size:11px; color:var(--text-d); margin-left:6px; flex-shrink:0; }
+.ble-char-uuid { font-family:var(--font-mono); font-size:12px; color:var(--text); flex:0 0 auto; width:38ch; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ble-char-name { font-size:11px; color:var(--text-d); margin-left:6px; flex-shrink:0; white-space:nowrap; }
 .ble-char-actions { display:flex; align-items:center; gap:6px; flex-shrink:0; margin-left:auto; }
 .ble-ch-action { display:inline-flex; align-items:center; justify-content:center; color:var(--text-d); cursor:not-allowed; transition: color .15s; }
 .ble-ch-action svg { width:18px; height:18px; }
@@ -113,11 +135,15 @@
 .ble-ch-action.on:hover { color:var(--link); }
 .ble-char-tag { font-size:10px; color:var(--text-d); margin-left:auto; flex-shrink:0; }
 .ble-char-descs { display:flex; flex-wrap:wrap; gap:5px; padding:0 10px 2px 18px; }
-.ble-desc { display:inline-flex; align-items:baseline; gap:4px; font-family:var(--font-mono);
+.ble-desc { display:inline-flex; align-items:center; gap:4px; font-family:var(--font-mono);
             font-size:10px; color:var(--text-d); background:var(--input-bg);
             border:1px solid var(--border); border-radius:4px; padding:1px 6px; white-space:nowrap; }
 .ble-desc em { font-style:normal; opacity:.75; }
 .ble-desc:hover { color:var(--text); }
+.ble-desc-act { display:inline-flex; align-items:center; justify-content:center;
+                margin-left:2px; cursor:pointer; color:var(--text-d); }
+.ble-desc-act svg { width:13px; height:13px; display:block; }
+.ble-desc-act:hover { color:var(--link); }
 .ble-adv { display:flex; flex-direction:column; gap:6px; }
 .ble-adv-sec { padding-bottom:10px; }
 .ble-adv-toggle { display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none; }
@@ -140,40 +166,117 @@
 .ble-log-clear { margin-left:auto; font-size:11px; font-weight:400; color:var(--text-d); cursor:pointer; letter-spacing:0; text-transform:none; }
 .ble-log-clear:hover { color:var(--accent-focus); }
 .ble-log { flex:1; min-height:0; overflow-y:auto; font-family:var(--font-mono); font-size:12px; line-height:1.7; color:var(--text); background:var(--editor-bg); border:1px solid var(--border); border-radius:6px; padding:10px; white-space:pre-wrap; word-break:break-all; }
+.ble-log-dim { color:var(--text-d); }
+.ble-empty.scanning b { color:var(--accent-focus); }
+.ble-mode-seg { display:flex; border-bottom:1px solid var(--border); background:var(--toolbar-bg); flex-shrink:0; }
+.ble-mode-btn { flex:1; border:0; background:transparent; color:var(--text-d); font-size:12px; padding:8px 6px; cursor:pointer; font-family:inherit; }
+.ble-mode-btn + .ble-mode-btn { border-left:1px solid var(--border); }
+.ble-mode-btn:hover { color:var(--text-b); background:var(--input-bg); }
+.ble-mode-btn.active { background:var(--accent-focus); color:#fff; }
+.ble-mode-btn.active:hover { background:var(--accent-focus); color:#fff; }
+.ble-pf-left .ble-mode-seg { position:sticky; top:0; z-index:3; }
+.ble-periph { flex:1; display:none; min-height:0; }
+.ble-periph.active { display:flex; }
+.ble-pf-left { overflow-y:auto; }
+.ble-pf-right { flex:1; min-width:0; display:flex; flex-direction:column; padding:12px 16px; gap:8px; overflow:hidden; }
+.ble-pf-sec { padding:12px 14px; border-bottom:1px solid var(--border); }
+.ble-pf-label { font-size:11px; font-weight:600; color:var(--text-d); text-transform:uppercase; letter-spacing:.04em; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
+.ble-pf-label .ble-pf-badge { margin-left:auto; }
+.ble-pf-input, .ble-pf-select { width:100%; box-sizing:border-box; height:28px; padding:0 8px; border:1px solid var(--border); border-radius:5px; background:var(--input-bg); color:var(--text); font-size:12px; font-family:var(--font-mono); outline:none; }
+.ble-pf-select { font-family:inherit; cursor:pointer; }
+.ble-pf-input:focus, .ble-pf-select:focus { border-color:var(--accent-focus); }
+.ble-pf-hint { font-size:10px; color:var(--text-d); margin-top:5px; line-height:1.5; }
+.ble-pf-warnline { font-size:10px; color:var(--accent-orange); margin-top:5px; line-height:1.5; }
+.ble-pf-warnline:empty { display:none; }
+.ble-pf-row { display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
+.ble-pf-check { display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--text-b); cursor:pointer; user-select:none; }
+.ble-pf-char { border:1px solid var(--border); border-radius:6px; background:var(--input-bg); padding:8px; margin-bottom:8px; }
+.ble-pf-char-head { display:flex; align-items:center; gap:8px; }
+.ble-pf-char-head .ble-pf-input { flex:1; min-width:0; }
+.ble-pf-del { flex-shrink:0; border:0; background:transparent; color:var(--text-d); cursor:pointer; font-size:14px; line-height:1; padding:3px 5px; border-radius:4px; font-family:inherit; }
+.ble-pf-del:hover { color:var(--accent-red); background:rgba(196,92,92,.12); }
+.ble-pf-props { display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; }
+.ble-pf-prop { font-size:11px; padding:2px 8px; border-radius:10px; border:1px solid var(--border); background:var(--editor-bg); color:var(--text-d); cursor:pointer; user-select:none; }
+.ble-pf-prop:hover { color:var(--text-b); }
+.ble-pf-prop.on { background:var(--accent-focus); border-color:var(--accent-focus); color:#fff; }
+.ble-pf-value { margin-top:7px; }
+.ble-pf-btn { border-radius:5px; font-size:13px; padding:7px 16px; cursor:pointer; background:var(--input-bg); color:var(--text-b); border:1px solid var(--border); font-family:inherit; }
+.ble-pf-btn:hover { border-color:var(--border-h); }
+.ble-pf-btn.primary { background:var(--accent-focus); color:#fff; border-color:transparent; }
+.ble-pf-btn.danger { background:var(--accent-red); color:#fff; border-color:transparent; }
+.ble-pf-btn:disabled { opacity:.5; cursor:not-allowed; }
+.ble-pf-badge { font-size:11px; font-family:var(--font-mono); padding:2px 8px; border-radius:10px; border:1px solid var(--border); color:var(--text-d); white-space:nowrap; }
+.ble-pf-badge.on { color:var(--accent-green); border-color:var(--accent-green); }
+.ble-pf-badge.off { color:var(--accent-red); border-color:var(--accent-red); }
+.ble-pf-warn { font-size:11px; color:var(--accent-red); background:rgba(196,92,92,.12); border:1px solid var(--accent-red); border-radius:6px; padding:6px 9px; margin-top:9px; line-height:1.55; }
+.ble-pf-chars { display:flex; flex-direction:column; gap:6px; overflow-y:auto; max-height:44%; flex-shrink:0; }
+.ble-pf-empty { color:var(--text-d); font-size:12px; padding:4px 0; }
+.ble-pf-add { width:100%; margin-top:2px; }
+.ble-pf-pending { display:flex; align-items:center; gap:8px; margin-top:8px; padding:6px 9px;
+                  border:1px solid var(--accent-orange); border-radius:6px; background:rgba(214,140,66,.10); flex-shrink:0; }
+.ble-pf-pending-txt { flex:1; min-width:0; font-size:11px; font-family:var(--font-mono); color:var(--text-b);
+                      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ble-pf-pending .ble-pf-btn { padding:4px 10px; font-size:12px; }
+.ble-pf-sub { color:var(--text-d); font-size:11px; font-family:var(--font-mono); font-weight:400; }
 .ble-modal-mask { position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,.45);
                   display:none; align-items:center; justify-content:center; }
 .ble-modal-mask.show { display:flex; }
-.ble-modal { width:490px; max-width:calc(100vw - 40px); background:var(--editor-bg);
+.ble-modal { position:relative; display:flex; flex-direction:column;
+             width:490px; min-width:320px; min-height:180px; max-width:calc(100vw - 40px); max-height:calc(100vh - 40px);
+             background:var(--editor-bg);
              border:1px solid var(--border); border-radius:10px; overflow:hidden;
-             box-shadow:0 12px 32px rgba(0,0,0,.45); }
+             box-shadow:0 12px 32px rgba(0,0,0,.45);
+             /* 整个弹窗可拖动调整大小（原生能力；需 overflow 非 visible，上面已满足）。
+                拖过的尺寸会作为内联样式留在元素上，同一次运行内再次打开仍保持。 */
+             resize:both; }
+.ble-modal-grip { position:absolute; right:2px; bottom:2px; font-size:11px; line-height:1;
+                  color:var(--text-d); opacity:.6; pointer-events:none; user-select:none; }
 .ble-modal-head { display:flex; align-items:center; gap:10px; padding:11px 14px;
                   background:var(--toolbar-bg); border-bottom:1px solid var(--border); }
 .ble-modal-title { font-size:13px; font-weight:600; color:var(--text); flex-shrink:0; }
-.ble-modal-sub { flex:1; min-width:0; text-align:right; font-family:var(--font-mono); font-size:11px;
-                 color:var(--text-d); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.ble-modal-close { flex-shrink:0; width:22px; height:22px; border-radius:5px; cursor:pointer;
-                   display:inline-flex; align-items:center; justify-content:center;
-                   color:var(--text-d); font-size:13px; }
-.ble-modal-close:hover { background:var(--input-bg); color:var(--text); }
-.ble-modal-body { padding:14px; }
-.ble-modal-label { display:block; font-size:11px; color:var(--text-d); margin-bottom:6px; }
-.ble-modal-row { display:flex; align-items:center; gap:8px; }
-.ble-modal-inp { flex:1; min-width:0; height:30px; box-sizing:border-box; padding:0 10px;
-                 background:var(--input-bg); border:1px solid var(--border); border-radius:6px;
+.ble-modal-body { padding:14px; flex:1; min-height:0; display:flex; }
+.ble-modal-row { display:flex; align-items:stretch; gap:8px; flex:1; min-height:0; }
+.ble-pair-modal { width:380px; min-width:320px; resize:none; }
+.ble-pair-dev { font-family:var(--font-mono); font-size:12px; color:var(--text-d); margin-bottom:8px; }
+.ble-pair-text { font-size:13px; color:var(--text); line-height:1.6; }
+.ble-pair-pin { font-family:var(--font-mono); font-size:22px; letter-spacing:3px; color:var(--accent-focus);
+                text-align:center; margin:10px 0 4px; }
+.ble-pair-input { display:block; width:100%; margin-top:8px; box-sizing:border-box; }
+.ble-pair-hint { font-size:11px; color:var(--text-d); margin-top:8px; }
+.ble-modal-row .ble-write-opts { align-self:flex-start; }
+.ble-write-opts { display:flex; flex-direction:column; gap:6px; flex-shrink:0; }
+.ble-write-row { display:flex; align-items:center; gap:6px; }
+.ble-write-label { font-size:11px; color:var(--text-d); flex-shrink:0; width:22px; text-align:right; }
+.ble-write-opts .send-as,
+.ble-write-opts .sel { width:68px; box-sizing:border-box; justify-content:space-between;
+                       height:24px; padding:0 6px 0 8px;
+                       background:var(--input-bg); border-radius:4px; color:var(--text); }
+.ble-modal-inp { flex:1; min-width:0; min-height:64px; box-sizing:border-box;
+                 padding:7px 10px; background:var(--input-bg); border:1px solid var(--border); border-radius:6px;
                  color:var(--text); font-family:var(--font-mono); font-size:13px; outline:none;
+                 line-height:1.45; resize:none; overflow:auto;
                  transition:border-color .15s; }
 .ble-modal-inp:focus { border-color:var(--accent-focus); }
-.ble-modal-hint { margin-top:8px; font-size:11px; color:var(--text-d); }
 .ble-modal-foot { display:flex; justify-content:flex-end; gap:8px; padding:0 14px 14px; }
 .ble-modal-btn { height:28px; padding:0 16px; border-radius:6px; cursor:pointer; font-size:12px;
                  background:var(--input-bg); border:1px solid var(--border); color:var(--text); }
 .ble-modal-btn:hover { border-color:var(--border-h); }
 .ble-modal-btn.primary { background:var(--accent-focus); border-color:transparent; color:#fff; }
 .ble-modal-btn.primary:hover { filter:brightness(1.08); }
-.ble-log::-webkit-scrollbar { width:12px; }
-.ble-log::-webkit-scrollbar-track { background:transparent; }
-.ble-log::-webkit-scrollbar-thumb { background:rgba(128,134,146,.42); border:3px solid transparent; background-clip:content-box; border-radius:6px; }
-.ble-log::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
+.ble-log::-webkit-scrollbar,
+.ble-pf-left::-webkit-scrollbar,
+.ble-pf-chars::-webkit-scrollbar { width:10px; }
+.ble-log::-webkit-scrollbar-track,
+.ble-pf-left::-webkit-scrollbar-track,
+.ble-pf-chars::-webkit-scrollbar-track { background:transparent; }
+.ble-log::-webkit-scrollbar-thumb,
+.ble-pf-left::-webkit-scrollbar-thumb,
+.ble-pf-chars::-webkit-scrollbar-thumb {
+    background:rgba(128,134,146,.42); border:3px solid transparent; background-clip:content-box; border-radius:6px;
+}
+.ble-log::-webkit-scrollbar-thumb:hover,
+.ble-pf-left::-webkit-scrollbar-thumb:hover,
+.ble-pf-chars::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
 body { background: var(--bg, #1c1e22); padding: 28px; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
 .note { color: var(--text-d, #8b949e); font-size: 12px; margin: 0 0 14px; }
 h3 { color: var(--text, #c9d1d9); font-size: 14px; margin: 22px 0 6px; }
@@ -233,7 +336,12 @@ function renderBleDeviceList() {
     var countEl = document.getElementById('ble-filterCount');
     if (countEl) countEl.textContent = _bleFilterText ? ('匹配 ' + shown.length + '/' + _bleDevices.length) : '';
     if (!_bleDevices.length) {
-        list.innerHTML = '<div class="ble-empty"><b>未发现蓝牙设备</b><br><span>点击「开始扫描」搜索周边 BLE 设备</span></div>';
+        // 扫描中与未扫描要分开提示，否则"开始扫描后一片'未发现设备'"会让人以为扫描没生效
+        // 适配器数量也写出来：多适配器时这是"为什么能搜到更多设备"的答案
+        var adapterNote = _bleAdapterCount > 1 ? ('<br><span>' + _bleAdapterCount + ' 个蓝牙适配器同时在扫</span>') : '';
+        list.innerHTML = _bleScanning
+            ? '<div class="ble-empty scanning"><b>正在扫描…</b><br><span>正在搜索周边 BLE 设备（' + bleScanSecsLabel() + '后自动停止）</span>' + adapterNote + '</div>'
+            : '<div class="ble-empty"><b>未发现蓝牙设备</b><br><span>点击「开始扫描」搜索周边 BLE 设备；设备不广播时可用上方「按 MAC 直连」</span></div>';
         return;
     }
     if (!shown.length) {
@@ -273,6 +381,7 @@ function renderBleDeviceList() {
             // 切换设备即清空日志与写入窗口：它们只属于「当前设备本次会话」
             if (dev.address !== _bleSelected) { clearBleLog(); closeBleWriteModal(); }
             _bleSelected = dev.address;
+            scheduleConfigSave();   // 选中的设备地址随用户配置保留
             renderBleDeviceList();
             renderBleDetail();
         });

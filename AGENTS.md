@@ -10,25 +10,47 @@
 npm install        # 安装前端依赖 (@tauri-apps/cli)
 npm run dev        # 开发模式（热重载）
 npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
-cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/busid 白名单）
+cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/从机属性/busid 白名单）
 ```
 
-无 lint 与类型检查；后端有少量单测（`main.rs` 末尾 `#[cfg(test)]`，10 条）。
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 300+ 条，随代码演进增补）：直接从
-`src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言，改前端后应先跑
+无 lint 与类型检查；后端有单测（`main.rs` 里的 `#[cfg(test)]` 模块，27 条 + 3 条 `#[ignore]`
+真机/诊断）。BLE 从机相关的三条（需蓝牙硬件）：
+
+```bash
+# 环境诊断：一次性打全"广播为什么起不来"的证据（适配器/权限/能力位/真实广播结果）
+cargo test --manifest-path src-tauri/Cargo.toml ble_periph_diagnose -- --ignored --nocapture
+# 已证实：GATT 服务与特征建得出来（任何 Windows 机器都应通过）
+cargo test --manifest-path src-tauri/Cargo.toml ble_periph_builds -- --ignored --nocapture
+# 未达成：真的在对外广播吗（当前失败，见 doc/BLE_PERIPHERAL.md 第 5 节）
+cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
+```
+
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 500+ 条，随代码演进增补）：直接从
+`src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，也有把渲染函数丢进假 DOM
+跑行为断言），改前端后应先跑
 `node .walkthrough/gen_ble_preview.js`。`.walkthrough/` 已纳入版本库（仅忽略 `__pycache__`）。
+
+## BLE 主机方向的三个关键约定（别改回去）
+
+1. **设备不广播就搜不到**：从机一旦被 Windows 配对过、或被别的手机连走，往往就不再广播，
+   于是永远进不了扫描列表。唯一出路是 `ble_connect_direct`（btleplug `add_peripheral`，
+   按 MAC 直连）。改连接逻辑时别把这个入口去掉。
+2. **状态里存的是 `adapters`（列表）而不是单个 adapter**：只留第一个会让"插在第二个适配器上的
+   设备永远搜不到"。`ble_get_devices` / `ble_find_peripheral` / `ble_refresh_rssi` 都必须遍历全部。
+3. 后端连接有 **10 秒显式超时**（`BLE_CONNECT_TIMEOUT_MS`，比前端的 15s 略短），超时会主动
+   `disconnect` —— 为的是不让"前端放弃了、后端稍后才连上"造成长期状态错位。
 
 ## 项目结构
 
-- `src/index.html` — 整个前端（单文件，约 8500 行，含 12 套主题变量；串口 / WSL / ADB / 蓝牙 四个面板）
-- `src-tauri/src/main.rs` — 整个 Rust 后端（约 4850 行，72 个 `#[tauri::command]`）：串口枚举（SetupAPI）、多串口连接/断开、DTR/RTS 切换、收发数据、WSL 端口映射、USB 设备管理、ADB 会话、**BLE 调试（btleplug，相关代码全在 `fn main()` 内）**
-- `src-tauri/Cargo.toml` — Rust 依赖（serialport 3.3, rfd 0.15, winapi 0.3, windows-sys 0.59, **windows 0.62 + windows-future 0.3（BLE 配对用 WinRT）**, reqwest 0.12, base64 0.22, btleplug 0.13）
+- `src/index.html` — 整个前端（单文件，约 10400 行，含 12 套主题变量；串口 / WSL / ADB / 蓝牙 四个面板）
+- `src-tauri/src/main.rs` — 整个 Rust 后端（约 7000 行，85 个 `#[tauri::command]`）：串口枚举（SetupAPI）、多串口连接/断开、DTR/RTS 切换、收发数据、WSL 端口映射、USB 设备管理、ADB 会话、**BLE 主机（btleplug，代码在 `fn main()` 内）与 BLE 从机（WinRT `GattServiceProvider`，代码在模块级）**
+- `src-tauri/Cargo.toml` — Rust 依赖（serialport 3.3, rfd 0.15, winapi 0.3, windows-sys 0.59, **windows 0.62 + windows-future 0.3（BLE 配对与 BLE 从机用 WinRT）**, **tokio（只用于 `time::timeout`：给连接加超时）**, reqwest 0.12, base64 0.22, btleplug 0.13）
 - `src-tauri/vendor/btleplug/` — **btleplug 的 vendored fork**（`[patch.crates-io]` 指向此处），共 4 处本地补丁；**升级依赖时必须按 `vendor/btleplug/VENDOR.md` 重新打**
 - `src-tauri/tauri.conf.json` — Tauri 窗口配置，CSP 设为 `null`；**不要擅自设 CSP**：Tauri 会注入 nonce，按规范 `'unsafe-inline'` 即失效，本应用的内联样式与 172 处内联 onclick 会全被拦（界面掉样式）。要设 CSP 必须先做「内联外置」重构
 - `src-tauri/capabilities/default.json` — 窗口/Webview 的 ACL 权限（仅 `core:*`，无 shell/fs/http 插件权限）
 - `src-tauri/wsl-daemon/` — WSL bridge 脚本（base64 编码嵌入）
 - `installer.iss` — Inno Setup 安装脚本（包含 usbipd-win.msi 打包）
-- `doc/` — 架构、交接、代码评估（`CODE_REVIEW_FULL_2026-09.md`）、BLE 真机验证（`BLE_VERIFICATION.md`）等
+- `doc/` — 架构、交接、代码评估（`CODE_REVIEW_FULL_2026-09.md`）、BLE 真机验证（`BLE_VERIFICATION.md`，主机方向）、**BLE 从机（`BLE_PERIPHERAL.md`）** 等
 - `skills/seahi-serial-dev/SKILL.md` — AI 开发技能指南
 
 ## 版本号同步

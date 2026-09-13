@@ -1037,7 +1037,12 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .adb-dev-card.active { background:var(--accent-focus) !important; color:#fff !important; border-color:var(--accent-focus) !important; }
 /* ===== 蓝牙(BLE) 调试面板 ===== */
 .ble-body { flex:1; display:flex; min-height:0; }
-.ble-left { display:flex; flex-direction:column; width:320px; min-width:240px; max-width:380px; border-right:1px solid var(--border); background:var(--editor-bg); }
+/* 主机 / 从机 两种模式的左栏**宽度必须完全一致**：切换模式时布局不该横向跳动 */
+.ble-left, .ble-pf-left {
+    flex:0 0 400px; min-width:320px; max-width:46%;
+    display:flex; flex-direction:column;
+    border-right:1px solid var(--border); background:var(--editor-bg);
+}
 .ble-left-head { display:flex; align-items:center; gap:10px; padding:8px 12px; border-bottom:1px solid var(--border); background:var(--toolbar-bg); flex-shrink:0; min-height:44px; }
 .ble-left-title { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--text-b); white-space:nowrap; min-width:0; }
 .ble-left-title svg { color:var(--link); }
@@ -1091,6 +1096,22 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-filter-input { width:100%; box-sizing:border-box; height:28px; padding:0 8px; border:1px solid var(--border); border-radius:5px; background:var(--input-bg); color:var(--text); font-size:12px; outline:none; }
 .ble-filter-input:focus { border-color:var(--accent-focus); }
 .ble-filter-hint { font-size:10px; color:var(--text-d); margin-top:4px; }
+/* 扫描时长选择：跟「开始扫描」同一行，窄一点，别把按钮挤走 */
+.ble-scan-secs { margin-left:6px; flex-shrink:0; height:28px; box-sizing:border-box; padding:0 4px;
+                 border:1px solid var(--border); border-radius:5px; background:var(--input-bg);
+                 color:var(--text-b); font-size:11px; font-family:inherit; cursor:pointer; outline:none; }
+.ble-scan-secs:focus { border-color:var(--accent-focus); }
+/* 按 MAC 直连：前缀说明了它是干什么的，所以不需要额外标题行 */
+.ble-direct-row { display:flex; align-items:center; gap:6px; padding:0 12px 8px; flex-shrink:0;
+                  background:var(--toolbar-bg); border-bottom:1px solid var(--border); }
+.ble-direct-input { flex:1; min-width:0; height:26px; box-sizing:border-box; padding:0 8px;
+                    border:1px solid var(--border); border-radius:5px; background:var(--input-bg);
+                    color:var(--text); font-size:11px; font-family:var(--font-mono); outline:none; }
+.ble-direct-input:focus { border-color:var(--accent-focus); }
+.ble-direct-btn { flex-shrink:0; height:26px; padding:0 10px; border:1px solid var(--border); border-radius:5px;
+                  background:var(--input-bg); color:var(--text-b); font-size:11px; font-family:inherit; cursor:pointer; }
+.ble-direct-btn:hover { border-color:var(--accent-focus); color:var(--accent-focus); }
+.ble-direct-btn:disabled { opacity:.5; cursor:not-allowed; }
 .ble-detail { flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; }
 .ble-detail-empty { margin:auto; color:var(--text-d); font-size:13px; }
 .ble-detail-head { display:flex; align-items:center; gap:14px; padding:8px 16px; border-bottom:1px solid var(--border); flex-shrink:0; min-height:44px; }
@@ -1167,6 +1188,65 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-log-dim { color:var(--text-d); }
 /* 设备列表空态；扫描中给一个呼吸效果，明确"正在扫描" */
 .ble-empty.scanning b { color:var(--accent-focus); }
+
+/* ---- BLE 从机（外设）模式 ----
+   主机模式 = 扫描/连接别人的设备；从机模式 = 本机对外广播，等别人来搜。
+   两套 UI 互斥显示，顶部一条模式栏切换。 */
+.ble-mode-seg { display:flex; border-bottom:1px solid var(--border); background:var(--toolbar-bg); flex-shrink:0; }
+.ble-mode-btn { flex:1; border:0; background:transparent; color:var(--text-d); font-size:12px; padding:8px 6px; cursor:pointer; font-family:inherit; }
+.ble-mode-btn + .ble-mode-btn { border-left:1px solid var(--border); }
+.ble-mode-btn:hover { color:var(--text-b); background:var(--input-bg); }
+.ble-mode-btn.active { background:var(--accent-focus); color:#fff; }
+.ble-mode-btn.active:hover { background:var(--accent-focus); color:#fff; }
+/* 从机左栏整体滚动，模式切换必须钉在顶部（否则往下滚就找不到了）。
+   host 侧的 .ble-left 只有设备列表内部滚动，不需要 sticky。 */
+.ble-pf-left .ble-mode-seg { position:sticky; top:0; z-index:3; }
+.ble-periph { flex:1; display:none; min-height:0; }
+.ble-periph.active { display:flex; }
+/* 宽度等几何属性由上面的 .ble-left, .ble-pf-left 共享规则统一给出 */
+.ble-pf-left { overflow-y:auto; }
+.ble-pf-right { flex:1; min-width:0; display:flex; flex-direction:column; padding:12px 16px; gap:8px; overflow:hidden; }
+.ble-pf-sec { padding:12px 14px; border-bottom:1px solid var(--border); }
+.ble-pf-label { font-size:11px; font-weight:600; color:var(--text-d); text-transform:uppercase; letter-spacing:.04em; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
+.ble-pf-label .ble-pf-badge { margin-left:auto; }
+.ble-pf-input, .ble-pf-select { width:100%; box-sizing:border-box; height:28px; padding:0 8px; border:1px solid var(--border); border-radius:5px; background:var(--input-bg); color:var(--text); font-size:12px; font-family:var(--font-mono); outline:none; }
+.ble-pf-select { font-family:inherit; cursor:pointer; }
+.ble-pf-input:focus, .ble-pf-select:focus { border-color:var(--accent-focus); }
+.ble-pf-hint { font-size:10px; color:var(--text-d); margin-top:5px; line-height:1.5; }
+/* 只在"偏长/格式错"时出现的一行告警：正常时元素为空，不占视觉噪音 */
+.ble-pf-warnline { font-size:10px; color:var(--accent-orange); margin-top:5px; line-height:1.5; }
+.ble-pf-warnline:empty { display:none; }
+.ble-pf-row { display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
+.ble-pf-check { display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--text-b); cursor:pointer; user-select:none; }
+.ble-pf-char { border:1px solid var(--border); border-radius:6px; background:var(--input-bg); padding:8px; margin-bottom:8px; }
+.ble-pf-char-head { display:flex; align-items:center; gap:8px; }
+.ble-pf-char-head .ble-pf-input { flex:1; min-width:0; }
+.ble-pf-del { flex-shrink:0; border:0; background:transparent; color:var(--text-d); cursor:pointer; font-size:14px; line-height:1; padding:3px 5px; border-radius:4px; font-family:inherit; }
+.ble-pf-del:hover { color:var(--accent-red); background:rgba(196,92,92,.12); }
+.ble-pf-props { display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; }
+.ble-pf-prop { font-size:11px; padding:2px 8px; border-radius:10px; border:1px solid var(--border); background:var(--editor-bg); color:var(--text-d); cursor:pointer; user-select:none; }
+.ble-pf-prop:hover { color:var(--text-b); }
+.ble-pf-prop.on { background:var(--accent-focus); border-color:var(--accent-focus); color:#fff; }
+.ble-pf-value { margin-top:7px; }
+.ble-pf-btn { border-radius:5px; font-size:13px; padding:7px 16px; cursor:pointer; background:var(--input-bg); color:var(--text-b); border:1px solid var(--border); font-family:inherit; }
+.ble-pf-btn:hover { border-color:var(--border-h); }
+.ble-pf-btn.primary { background:var(--accent-focus); color:#fff; border-color:transparent; }
+.ble-pf-btn.danger { background:var(--accent-red); color:#fff; border-color:transparent; }
+.ble-pf-btn:disabled { opacity:.5; cursor:not-allowed; }
+.ble-pf-badge { font-size:11px; font-family:var(--font-mono); padding:2px 8px; border-radius:10px; border:1px solid var(--border); color:var(--text-d); white-space:nowrap; }
+.ble-pf-badge.on { color:var(--accent-green); border-color:var(--accent-green); }
+.ble-pf-badge.off { color:var(--accent-red); border-color:var(--accent-red); }
+.ble-pf-warn { font-size:11px; color:var(--accent-red); background:rgba(196,92,92,.12); border:1px solid var(--accent-red); border-radius:6px; padding:6px 9px; margin-top:9px; line-height:1.55; }
+.ble-pf-chars { display:flex; flex-direction:column; gap:6px; overflow-y:auto; max-height:44%; flex-shrink:0; }
+.ble-pf-empty { color:var(--text-d); font-size:12px; padding:4px 0; }
+.ble-pf-add { width:100%; margin-top:2px; }
+/* 手动应答：待处理的写请求，一行一个，右对齐两个按钮 */
+.ble-pf-pending { display:flex; align-items:center; gap:8px; margin-top:8px; padding:6px 9px;
+                  border:1px solid var(--accent-orange); border-radius:6px; background:rgba(214,140,66,.10); flex-shrink:0; }
+.ble-pf-pending-txt { flex:1; min-width:0; font-size:11px; font-family:var(--font-mono); color:var(--text-b);
+                      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ble-pf-pending .ble-pf-btn { padding:4px 10px; font-size:12px; }
+.ble-pf-sub { color:var(--text-d); font-size:11px; font-family:var(--font-mono); font-weight:400; }
 /* BLE 写入（发送）弹窗：与 onboarding 遮罩同款层次，配色取自主题变量 */
 .ble-modal-mask { position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,.45);
                   display:none; align-items:center; justify-content:center; }
@@ -1219,13 +1299,23 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-modal-btn:hover { border-color:var(--border-h); }
 .ble-modal-btn.primary { background:var(--accent-focus); border-color:transparent; color:#fff; }
 .ble-modal-btn.primary:hover { filter:brightness(1.08); }
-/* 数据日志滚动条：与串口输出区同风格（细、圆角、半透明），
-   否则会落到 Chromium 默认的白色滚动条，在深色主题下很扎眼。
+/* 从机模式下所有可滚动区统一滚动条：日志、特征状态、左栏配置。
+   不套这套规则就会落到 Chromium 默认的白底宽条，深色主题下非常扎眼。
    用中性灰半透明，浅色/深色主题下都可见，无需逐主题覆盖 */
-.ble-log::-webkit-scrollbar { width:12px; }
-.ble-log::-webkit-scrollbar-track { background:transparent; }
-.ble-log::-webkit-scrollbar-thumb { background:rgba(128,134,146,.42); border:3px solid transparent; background-clip:content-box; border-radius:6px; }
-.ble-log::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
+.ble-log::-webkit-scrollbar,
+.ble-pf-left::-webkit-scrollbar,
+.ble-pf-chars::-webkit-scrollbar { width:10px; }
+.ble-log::-webkit-scrollbar-track,
+.ble-pf-left::-webkit-scrollbar-track,
+.ble-pf-chars::-webkit-scrollbar-track { background:transparent; }
+.ble-log::-webkit-scrollbar-thumb,
+.ble-pf-left::-webkit-scrollbar-thumb,
+.ble-pf-chars::-webkit-scrollbar-thumb {
+    background:rgba(128,134,146,.42); border:3px solid transparent; background-clip:content-box; border-radius:6px;
+}
+.ble-log::-webkit-scrollbar-thumb:hover,
+.ble-pf-left::-webkit-scrollbar-thumb:hover,
+.ble-pf-chars::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
 .app-info { display:inline-flex; align-items:center; gap:6px; margin-right:10px; cursor:default; flex-shrink:0; }
 .app-info-icon { width:22px; height:22px; flex-shrink:0; object-fit:contain; }
 .app-info-name { font-size:12px; font-weight:600; color:var(--text-b); white-space:nowrap; }
@@ -3842,6 +3932,13 @@ function collectBleState(s) {
         filterText: s.filterText || '',
         filterOpen: !!s.filterOpen,
         selected: s.selected || '',
+        // 主机 / 从机模式与从机表单（配置随用户配置文件保留）
+        mode: s.mode === 'periph' ? 'periph' : 'host',
+        periph: s.periph || null,
+        // 扫描自动停止时长（秒），0 = 持续
+        scanSecs: (s.scanSecs === 0 || s.scanSecs) ? s.scanSecs : 15,
+        // 用户保存的多套从机配置
+        periphSaved: Object.prototype.toString.call(s.periphSaved) === '[object Array]' ? s.periphSaved : [],
     };
 }
 
@@ -3857,6 +3954,25 @@ function restoreBleState(b) {
     _bleFilterOpen = !!b.filterOpen;
     _bleMonWidth = b.monitorWidth || 380;
     _bleRestoreMon = b.monitor ? { width: _bleMonWidth, cfg: b.monitorCfg || null } : null;
+    // 从机模式同样是纯数据，DOM 建好后由 openBle → setBleMode 渲染。
+    // 入口关闭时强制主机模式：配置里残留的 "periph" 不能让启动落在隐藏模式里
+    _bleMode = (BLE_PERIPH_MODE_ENABLED && b.mode === 'periph') ? 'periph' : 'host';
+    restoreBlePeriphForm(b.periph);
+    _bleScanSecs = (typeof b.scanSecs === 'number') ? b.scanSecs : 15;
+    restoreBlePeriphSaved(b.periphSaved);
+}
+
+// 恢复用户保存的从机配置。形状不对就整段丢掉 —— 别让一个坏配置把面板弄成空白。
+function restoreBlePeriphSaved(list) {
+    if (Object.prototype.toString.call(list) !== '[object Array]') { _blePeriphSaved = []; return; }
+    var out = [];
+    list.forEach(function(it) {
+        if (!it || typeof it !== 'object') return;
+        if (typeof it.name !== 'string' || !it.name) return;
+        if (!it.form || typeof it.form !== 'object') return;
+        out.push({ name: it.name, form: it.form });
+    });
+    _blePeriphSaved = out;
 }
 
 // 顶栏按钮状态跟随开关：打开时高亮 + 标题改为"关闭…"，关闭时还原。
@@ -5238,6 +5354,10 @@ function collectConfig() {
         filterText: _bleFilterText,
         filterOpen: _bleFilterOpen,
         selected: _bleSelected || '',
+        mode: _bleMode,
+        periph: blePfCollectForm(),
+        scanSecs: _bleScanSecs,
+        periphSaved: _blePeriphSaved,
     });
     Object.keys(monitors).forEach(function(mid) {
         var m = monitors[mid];
@@ -6664,6 +6784,13 @@ var _bleLogMax = 400;      // 日志上限，避免长时间运行无限增长
 var _bleDevTimer = null;   // 扫描期间设备列表刷新定时器
 var _bleNotifyTimer = null;  // 通知轮询定时器
 var _bleRssiTimer = null;    // 已连接设备的 RSSI 刷新定时器
+// 系统里的蓝牙适配器数量（多适配器时后端会把扫描开到每一个上）
+var _bleAdapterCount = 0;
+// 协商后的 ATT MTU（后端 ble_get_mtu）。默认 23 → 有效载荷 20 字节，
+// 写长数据失败时靠它分辨"是 MTU 还是特征的问题"
+var _bleMtu = 0;
+// 扫描自动停止时长（秒），0 = 持续。从 DOM 读，DOM 还没建时用配置里的值。
+var _bleScanSecs = 15;
 var BLE_RSSI_INTERVAL = 3000;  // RSSI 刷新间隔（ms）：后端每次会做一次约 800ms 的短扫描脉冲
 // 连接显式超时（ms）：WinRT 的 connect 在设备无响应时可能长时间不返回，
 // 靠这个超时给出明确失败提示，而不是让界面一直停在「连接中」
@@ -7062,8 +7189,13 @@ function bleFindSvcOfChar(services, charUuid) {
 }
 function startBleNotifyPoll() {
     if (_bleNotifyTimer) return;
+    // 250ms：原来 400ms，高速从机（100Hz 上报）在两次轮询之间就会把缓冲顶满。
+    // 但真正的修法是**丢了多少要记账并告诉用户**（见下面的 dropped），
+    // 否则用户只会以为"设备就没发那么多"。
     _bleNotifyTimer = setInterval(function() {
-        invoke('ble_poll_notifications').then(function(items) {
+        invoke('ble_poll_notifications').then(function(res) {
+            // 兼容新形状 {items, dropped} 与旧的纯数组
+            var items = (res && res.items) ? res.items : res;
             (items || []).forEach(function(it) {
                 var hex = it.value_hex || '';
                 var bytes = null;
@@ -7078,30 +7210,44 @@ function startBleNotifyPoll() {
                     logBle(label + '  ' + hex);
                 }
             });
+            // 后端缓冲溢出丢弃的条数：必须让用户看到，否则"数据少了"会被误判成设备没发
+            if (res && res.dropped > 0) {
+                logBle('[通知] ⚠ 缓冲溢出丢弃了 ' + res.dropped + ' 条（前端轮询跟不上设备上报速度）');
+            }
         }).catch(function() {});
-    }, 400);
+    }, 250);
 }
 // ---- BLE 写入（发送）弹窗 ----
 // 点特征行的「写入」图标 → 弹出该窗口；以前是直接写死 0x01 演示值
 var _bleWriteTarget = null;   // { uuid, name, prop }
 
-// target 可选：{ kind:'desc', charUuid } 表示目标是特征下的描述符（如 0x2902 CCCD），
-// 默认 { kind:'char' } 即普通特征写入。
+// target 可选：{ kind:'desc', charUuid } 表示目标是特征下的描述符（如 0x2902 CCCD）；
+// { kind:'periph_set' } / { kind:'periph_notify' } 是 BLE 从机模式的「设值 / 下发通知」；
+// 默认 { kind:'char' } 即主机模式下的普通特征写入。
 function openBleWriteModal(uuid, name, modes, target) {
     modes = (modes && modes.length) ? modes : ['write'];
     target = target || {};
-    var kind = target.kind === 'desc' ? 'desc' : 'char';
+    var kind = (target.kind === 'desc') ? 'desc'
+             : (target.kind === 'periph_set') ? 'periph_set'
+             : (target.kind === 'periph_notify') ? 'periph_notify'
+             : 'char';
     _bleWriteTarget = { uuid: uuid, name: name || '', modes: modes, mode: modes[0],
                         kind: kind, charUuid: target.charUuid || '' };
-    // 标题区分特征 / 描述符（原先靠副标题里的 UUID 区分，现按需求去掉副标题）
+    // 标题区分四种用途（原先靠副标题里的 UUID 区分，现按需求去掉副标题）
     var ttl = document.getElementById('bleWriteTitle');
-    if (ttl) ttl.textContent = (kind === 'desc') ? '写入描述符值' : '写入特征值';
+    if (ttl) {
+        ttl.textContent = (kind === 'desc') ? '写入描述符值'
+                        : (kind === 'periph_set') ? '设置从机特征可读值'
+                        : (kind === 'periph_notify') ? '向已订阅主机下发通知'
+                        : '写入特征值';
+    }
     // 提示并入输入框 placeholder（原先有独立提示行，按需求去掉，弹窗更简洁）
     var inp0 = document.getElementById('bleWriteValue');
     if (inp0) {
-        inp0.placeholder = (kind === 'desc' && shortUuid(uuid) === '2902')
-            ? '要写入的值，回车发送；CCCD：0100 开启通知，0200 开启指示，0000 关闭'
-            : '要写入的值，回车发送；支持 \\r \\n \\t 转义，HEX 形如 01 A0 FF';
+        if (kind === 'periph_set') inp0.placeholder = '主机下次读取时返回这个值；支持 \\r \\n \\t 转义，HEX 形如 01 A0 FF';
+        else if (kind === 'periph_notify') inp0.placeholder = '下发给已订阅主机的通知内容；HEX 形如 01 A0 FF';
+        else if (kind === 'desc' && shortUuid(uuid) === '2902') inp0.placeholder = '要写入的值，回车发送；CCCD：0100 开启通知，0200 开启指示，0000 关闭';
+        else inp0.placeholder = '要写入的值，回车发送；支持 \\r \\n \\t 转义，HEX 形如 01 A0 FF';
     }
     // 写入方式：两种都支持时才显示选择器，只有一种时隐藏（避免多一个没用的控件）
     // （描述符写入按规范用带响应写，调用方只传一种模式，因此这里自然隐藏）
@@ -7246,28 +7392,54 @@ function bleSendBytes(text, hexMode) {
 function leEscOf(v) {
     return v === 'crlf' ? '\\r\\n' : (v === 'lf' ? '\\n' : (v === 'cr' ? '\\r' : ''));
 }
-function sendBleWrite() {
-    if (!_bleWriteTarget) { showToast('请先点特征行的「写入」图标', 'error'); return; }
-    var dev = getSelectedBleDev();
-    if (!dev || !dev.connected) { showToast('请先连接设备', 'error'); return; }
+// 读出写入弹窗的内容并解析成字节（HEX / 文本 + 行尾）。
+// 主机写入、描述符写入、从机设值 / 下发四种用途共用，避免各写一份解析逻辑。
+// 返回 { bytes, hex, hexMode, leVal, leLog } 或 { error }（error 时调用方负责提示）。
+function bleReadWriteModalInput() {
     var inp = document.getElementById('bleWriteValue');
     var text = inp ? inp.value : '';
-    if (!text) { showToast('请输入要写入的值', 'error'); if (inp) inp.focus(); return; }
-    var hexMode = document.getElementById('bleWriteAsText').textContent === 'HEX';
+    if (!text) return { error: '请输入要写入的值' };
+    var asEl = document.getElementById('bleWriteAsText');
+    var hexMode = !!asEl && asEl.textContent === 'HEX';
     // 行尾：与串口监视器一致 —— 仅文本模式追加（HEX 模式不追加）
     var leEl = document.getElementById('bleWriteLineEnd');
     var leVal = leEl ? (leEl.getAttribute('data-val') || 'crlf') : 'crlf';
     var payload = hexMode ? text : (text + leEscOf(leVal));
     var bytes;
     try { bytes = bleSendBytes(payload, hexMode); }
-    catch (e) { logBle('[格式错误] ' + e); showToast('格式错误: ' + e, 'error'); return; }
-    if (!bytes.length) { showToast('内容为空', 'error'); return; }
+    catch (e) { return { error: '格式错误: ' + e }; }
+    if (!bytes.length) return { error: '内容为空' };
+    return {
+        bytes: bytes,
+        hex: bleBytesToHex(bytes).replace(/ /g, ''),
+        hexMode: hexMode,
+        leVal: leVal,
+        // 日志标明追加的行尾（HEX 模式或选「无」时不显示）
+        leLog: (hexMode || leVal === 'none') ? '' : ' · 行尾 ' + leVal.toUpperCase()
+    };
+}
+
+function sendBleWrite() {
+    if (!_bleWriteTarget) { showToast('请先点特征行的「写入」图标', 'error'); return; }
+    // 从机模式（设值 / 下发通知）与主机写入共用这个弹窗，但校验与命令完全不同
+    if (_bleWriteTarget.kind === 'periph_set' || _bleWriteTarget.kind === 'periph_notify') {
+        sendBlePeriphWrite();
+        return;
+    }
+    var dev = getSelectedBleDev();
+    if (!dev || !dev.connected) { showToast('请先连接设备', 'error'); return; }
+    var r = bleReadWriteModalInput();
+    if (r.error) {
+        showToast(r.error, 'error');
+        var inp0 = document.getElementById('bleWriteValue');
+        if (inp0 && !inp0.value) inp0.focus();
+        return;
+    }
+    var inp = document.getElementById('bleWriteValue');
+    var bytes = r.bytes, hex = r.hex, hexMode = r.hexMode, leLog = r.leLog;
     // 写入方式由弹窗里的选择决定（特征同时支持两种时可选，否则用其唯一支持的那种）
     var writeType = (_bleWriteTarget.mode === 'write_without_response') ? 'without_response' : 'with_response';
-    var hex = bleBytesToHex(bytes).replace(/ /g, '');
     var isDesc = _bleWriteTarget.kind === 'desc';
-    // 日志标明追加的行尾（HEX 模式或选「无」时不显示）
-    var leLog = (hexMode || leVal === 'none') ? '' : ' · 行尾 ' + leVal.toUpperCase();
     var onOk = function() {
         logBle('[发送成功] 0x' + hex + ' · ' + bytes.length + ' 字节');
         showToast('发送成功：0x' + hex, 'success');
@@ -7361,7 +7533,8 @@ function applyLiveRssi(address, rssi) {
     }
     if (isActive && dev) {
         var meta = document.querySelector('#ble-detail .ble-detail-meta');
-        if (meta) meta.textContent = dev.address + ' · ' + (dev.addressType || '—') + ' · ' + rssi + ' dBm';
+        // 走同一个纯函数：否则这里的 RSSI 刷新会把 MTU 那一段刷掉
+        if (meta) meta.textContent = bleDetailMetaText(dev, rssi, _bleMtu);
     }
 }
 
@@ -7389,11 +7562,30 @@ function openBle() {
     if (!blePane._initialized) {
         blePane.style.flexDirection = 'column';
         blePane.innerHTML =
-            '<div class="ble-body">' +
+            // 模式切换（主机 / 从机）放在**左侧分栏顶部**，不是横贯顶部的一条。
+            // 两套 UI 各自带一个（同一时刻只显示一个），状态由 setBleMode 同步。
+            '<div class="ble-body" id="bleBody">' +
                 '<div class="ble-left">' +
+                    bleModeSegHtml() +
                     '<div class="ble-left-head">' +
                         '<div class="ble-left-title"><svg width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M466.125 149.709a45.875 45.875 0 0 1 70.349-39.936l1.638 1.126 250.982 178.483a48.128 48.128 0 0 1 2.253 76.186l-1.843 1.331L593.92 508.723l194.56 137.728a48.026 48.026 0 0 1 1.946 76.493l-1.844 1.434-250.47 178.483a45.773 45.773 0 0 1-71.68-36.762V601.6L287.437 731.238a45.056 45.056 0 0 1-62.157-9.523l-1.331-1.945a48.23 48.23 0 0 1 9.216-64.41l1.843-1.434 198.246-144.179L235.52 369.664a48.026 48.026 0 0 1-13.107-63.693l1.229-2.048a45.056 45.056 0 0 1 61.44-13.517l1.945 1.332 179.2 126.566z m92.16 448.102V773.94l123.801-87.859z m0-358.4V419.84l124.928-90.624z" p-id="13027"></path></svg>蓝牙列表</div>' +
                         '<button class="add-btn icon-btn" id="bleScanBtn" onclick="toggleBleScan()" title="开始/停止扫描" style="background:var(--accent-focus);color:#fff;border:1px solid transparent;width:auto;height:28px;box-sizing:border-box;padding:0 12px;margin-left:auto;gap:0;border-radius:5px;font-size:12px;flex-shrink:0;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;">开始扫描</button>' +
+                        // 扫描时长：低功耗从机广播间隔常在 1~10 秒，5 秒硬编码窗口经常一包都收不到
+                        '<select class="ble-scan-secs" id="bleScanSecs" onchange="onBleScanSecsChange()" title="自动停止扫描的时长">' +
+                            '<option value="5">5 秒</option>' +
+                            '<option value="15" selected>15 秒</option>' +
+                            '<option value="30">30 秒</option>' +
+                            '<option value="60">60 秒</option>' +
+                            '<option value="0">持续</option>' +
+                        '</select>' +
+                    '</div>' +
+                    // 按 MAC 直连：从机被 Windows 配对过 / 被别的手机连走后常常不再广播，
+                    // 于是永远进不了扫描列表 —— 这种情况下只能按地址直接连
+                    '<div class="ble-direct-row">' +
+                        '<input class="ble-direct-input" id="bleDirectAddr" spellcheck="false" autocomplete="off" ' +
+                            'placeholder="按 MAC 直连（如 A4:C1:38:11:14:2B）：设备不广播时用这个" ' +
+                            'onkeydown="if(event.key===\'Enter\'){event.preventDefault();connectBleDirect();}">' +
+                        '<button class="ble-direct-btn" id="bleDirectBtn" onclick="connectBleDirect()" title="不依赖广播，直接按地址连接">直连</button>' +
                     '</div>' +
                     '<div class="ble-filter-row">' +
                         '<span class="ble-filter-toggle" onclick="toggleBleFilter(this)" title="过滤设备"><span class="ble-svc-caret">&#9654;</span>过滤 <span class="ble-filter-count" id="ble-filterCount"></span></span>' +
@@ -7412,14 +7604,95 @@ function openBle() {
                 '<div class="ble-monArea" id="ble-monitorArea">' +
                     '<div class="ble-mon-resize" id="ble-monResize" title="拖动调节宽度"></div>' +
                 '</div>' +
+            '</div>' +
+            // ---- 从机（外设）模式：左列配置，右列状态 + 事件日志 ----
+            '<div class="ble-periph" id="blePeriph">' +
+                '<div class="ble-pf-left">' +
+                    bleModeSegHtml() +
+                    // 广播配置：内置预设 + 从**表格文件**（CSV 或 Markdown 表格）导入/导出。
+                    // 服务结构那种又长又容易抄错的东西，放在表格里维护比在界面上一行行填舒服得多。
+                    '<div class="ble-pf-sec">' +
+                        '<div class="ble-pf-label">广播配置</div>' +
+                        '<select class="ble-pf-select" id="blePfPreset" onchange="blePfApplyPreset(this.value)"></select>' +
+                        '<div class="ble-pf-row">' +
+                            '<button class="ble-pf-btn" id="blePfImportBtn" onclick="blePfImportTable()" title="从 CSV / Markdown 表格文件导入服务与特征">导入表格</button>' +
+                            '<button class="ble-pf-btn" id="blePfExportBtn" onclick="blePfExportTable()" title="把当前服务与特征导出成 CSV 表格（可用 Excel/WPS 编辑）">导出表格</button>' +
+                        '</div>' +
+                    '</div>' +
+                    // 我的配置：把常用的一套（服务 + 特征 + 选项）存下来，不用每次手抄 UUID
+                    '<div class="ble-pf-sec">' +
+                        '<div class="ble-pf-label">我的配置</div>' +
+                        '<div class="ble-pf-row" style="margin-top:0;">' +
+                            '<select class="ble-pf-select" id="blePfSaved" style="flex:1;min-width:0;" onchange="blePfLoadSaved(this.value)"></select>' +
+                            '<button class="ble-pf-btn" onclick="blePfDeleteSaved()" title="删除当前选中的配置">删除</button>' +
+                        '</div>' +
+                        '<div class="ble-pf-row">' +
+                            '<input class="ble-pf-input" id="blePfSavedName" style="flex:1;min-width:0;" spellcheck="false" autocomplete="off" placeholder="配置名，如 温湿度计">' +
+                            '<button class="ble-pf-btn" onclick="blePfSaveAs()" title="把当前这套配置存下来">保存</button>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="ble-pf-sec">' +
+                        '<div class="ble-pf-label">服务 UUID<span class="ble-pf-sub">只能广播一个服务</span></div>' +
+                        '<input class="ble-pf-input" id="blePfService" spellcheck="false" autocomplete="off" ' +
+                            'placeholder="6E400001-B5A3-F393-E0A9-E50E24DCCA9E 或 0xFFE0" ' +
+                            'title="支持短写（如 0xFFE0），保存时自动展开成完整 128 位" ' +
+                            'oninput="blePfSyncService(this.value)">' +
+                    '</div>' +
+                    '<div class="ble-pf-sec">' +
+                        '<div class="ble-pf-label">特征 <span class="ble-pf-sub" id="blePfCharCount"></span></div>' +
+                        '<div id="blePfCharEditor"></div>' +
+                        '<button class="ble-pf-btn ble-pf-add" onclick="blePfAddChar()">+ 添加特征</button>' +
+                    '</div>' +
+                    '<div class="ble-pf-sec">' +
+                        '<div class="ble-pf-label">广播选项</div>' +
+                        '<label class="ble-pf-check"><input type="checkbox" id="blePfDiscoverable" checked>可被发现</label>' +
+                        '<div class="ble-pf-row"><label class="ble-pf-check"><input type="checkbox" id="blePfConnectable" checked>可连接</label></div>' +
+                        '<div class="ble-pf-row"><label class="ble-pf-check" title="勾上后主机的每次写入都会挂起，等你点「接受 / 拒绝（协议错误码）」——调试主机侧错误处理时必需">' +
+                            '<input type="checkbox" id="blePfManualReply">写入需手动应答</label></div>' +
+                        '<div class="ble-pf-row" style="margin-top:8px;">' +
+                            '<label class="ble-pf-check" style="flex-shrink:0;"><input type="checkbox" id="blePfAdvData" onchange="blePfCollectOptions();renderBlePfAdvLen();">广播服务数据(HEX)</label>' +
+                            '<input class="ble-pf-input" id="blePfAdvDataHex" style="flex:1;min-width:80px;" spellcheck="false" autocomplete="off" ' +
+                                'placeholder="01 02" title="传统广播总共 31 字节，填太长会被截断" ' +
+                                'oninput="blePfCollectOptions();renderBlePfAdvLen();">' +
+                        '</div>' +
+                        // 只在"偏长/格式错"时出现一行；正常不占地方
+                        '<div class="ble-pf-warnline" id="blePfAdvLen"></div>' +
+                        '<div class="ble-pf-hint" id="blePfAdapter"></div>' +
+                    '</div>' +
+                    '<div class="ble-pf-sec" style="border-bottom:0;">' +
+                        '<div class="ble-pf-row" style="margin-top:0;">' +
+                            '<button class="ble-pf-btn primary" id="blePfStartBtn" onclick="startBlePeriph()">开始广播</button>' +
+                            '<button class="ble-pf-btn danger" id="blePfStopBtn" onclick="stopBlePeriph()" disabled>停止广播</button>' +
+                            '<span class="ble-pf-badge" id="blePfBadge">未启动</span>' +
+                        '</div>' +
+                        '<div id="blePfWarn"></div>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="ble-pf-right">' +
+                    '<div class="ble-pf-label" style="margin-bottom:0;">特征状态 <span class="ble-pf-sub" id="blePfSvcLabel"></span></div>' +
+                    '<div class="ble-pf-chars" id="blePfChars"></div>' +
+                    // 手动应答模式下，待应答的写请求挂在这里等用户决定
+                    '<div id="blePfPending"></div>' +
+                    '<div class="ble-pf-label" style="margin-bottom:0;">事件日志' +
+                        '<span class="ble-log-clear" onclick="clearBlePeriphLog()" title="清空事件日志">清空</span>' +
+                    '</div>' +
+                    '<div class="ble-log" id="blePfLog">暂无事件。开始广播后，手机的读取 / 写入 / 订阅都会记在这里。</div>' +
+                '</div>' +
             '</div>';
         blePane._initialized = true;
         // 监视器区（含宽度拖拽手柄）已就位：绑一次拖拽
         initBleMonResize();
+        initBlePfForm();
     }
     // 从用户配置恢复的蓝牙页状态：DOM 就绪后再应用（过滤框内容、上次打开的内嵌监视器）
     var filterInp = document.getElementById('bleFilterText');
     if (filterInp) filterInp.value = _bleFilterText || '';
+    var secsSel = document.getElementById('bleScanSecs');
+    if (secsSel) {
+        secsSel.value = String(_bleScanSecs);
+        // 配置里存的值不在选项里（比如手改过配置文件）→ 回落到 15 秒
+        if (secsSel.value !== String(_bleScanSecs)) { _bleScanSecs = 15; secsSel.value = '15'; }
+    }
     var filterBody = document.getElementById('ble-filterBody');
     if (filterBody) filterBody.style.display = _bleFilterOpen ? '' : 'none';
     if (_bleRestoreMon) {
@@ -7433,11 +7706,20 @@ function openBle() {
         if (area && want.width) area.style.flex = '0 0 ' + want.width + 'px';
         _bleMonWidth = want.width || _bleMonWidth;
     }
+    // 从机模式：表单状态先恢复，再按保存的模式切换视图
+    renderBlePfForm();
+    setBleMode(_bleMode);
     // 蓝牙页的「打开额外监视器」是开关（开/关右侧嵌入的串口监视器，见 toggleBleMonitor），
     // 因此这里不再禁用按钮；按钮的可用性由 addMonitor() 按当前页面路由
     // 进入面板即刷新设备列表；先检测蓝牙兼容性（无适配器/蓝牙栈不可用 → 红字提示）
     invoke('ble_get_adapters').then(function(list) {
+        _bleAdapterCount = (list || []).length;
         if (!list || !list.length) { showBleIncompatible('当前电脑蓝牙不兼容'); _bleDevices = []; renderBleDeviceList(); return; }
+        // 多适配器：把数量写进扫描按钮的提示，免得"第二个适配器上的设备搜不到"又被当成玄学
+        if (_bleAdapterCount > 1) {
+            var sb = document.getElementById('bleScanBtn');
+            if (sb) sb.title = '开始/停止扫描（' + _bleAdapterCount + ' 个适配器会同时扫描）';
+        }
         // 切页回来：BLE 连接在后端是持续存在的，先按后端真实状态恢复
         // GATT 服务树与通知轮询，再刷新设备列表（否则会显示成未连接）
         syncBleConnection().then(refreshBleDevices);
@@ -7445,8 +7727,7 @@ function openBle() {
 }
 
 // 同步后端真实连接态：地址 + GATT 服务 + 通知轮询
-function syncBleConnection() {
-    var prevAddr = _bleConnAddr;   // 用于判断「切页期间链路自己断了」
+function syncBleConnection() {    var prevAddr = _bleConnAddr;   // 用于判断「切页期间链路自己断了」
     return invoke('ble_get_connection').catch(function() { return null; }).then(function(addr) {
         _bleConnAddr = addr || null;
         if (!_bleConnAddr) {
@@ -7461,14 +7742,339 @@ function syncBleConnection() {
         _bleSelected = _bleConnAddr;
         return invoke('ble_get_services').then(function(svcs) {
             _bleServices = svcs || [];
+            refreshBleMtu();
             startBleNotifyPoll();
             startBleRssiPoll();
         }).catch(function(e) { console.warn('[BLE] 恢复 GATT 服务失败:', e); });
     });
 }
 
-function showBleIncompatible(msg) {
-    var list = document.getElementById('ble-devList');
+// 扫描时长改动：立即持久化；若正在扫描，按新时长重排自动停止
+function onBleScanSecsChange() {
+    _bleScanSecs = bleScanSecs();
+    scheduleConfigSave();
+    logBle('[扫描] 自动停止时长改为 ' + bleScanSecsLabel());
+    if (_bleScanning) enableBleScanAutoStop();   // 正在扫描：按新时长重排
+}
+
+// MAC 粗校验（6 段冒号分隔）。权威判断在后端（btleplug 的 BDAddr 解析），
+// 这里只是别把明显不是地址的东西发过去。
+function bleMacLooksValid(s) {
+    return /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/.test(String(s == null ? '' : s).trim());
+}
+
+// 按 MAC 直连。用于「设备不广播、扫描列表里永远没有它」这种情况 ——
+// 从机被 Windows 配对过、或被另一台主机连走时最常见，也是"从机搜不到也连不上"的正解。
+function connectBleDirect() {
+    if (_bleConnecting) { showToast('正在连接，请稍候…', 'info'); return; }
+    var inp = document.getElementById('bleDirectAddr');
+    var addr = inp ? String(inp.value || '').trim().toUpperCase() : '';
+    if (!bleMacLooksValid(addr)) {
+        showToast('请输入 6 段 MAC，例如 A4:C1:38:11:14:2B', 'error');
+        if (inp) inp.focus();
+        return;
+    }
+    var btn = document.getElementById('bleDirectBtn');
+    if (btn) btn.disabled = true;
+    _bleConnecting = true;
+    logBle('[直连] ' + addr + '（不依赖广播）');
+    invokeTimeout('ble_connect_direct', { address: addr }, BLE_CONNECT_TIMEOUT_MS).then(function() {
+        _bleConnecting = false;
+        if (btn) btn.disabled = false;
+        return bleOnConnected(addr, '直连设备');
+    }).then(function() {
+        refreshBleDevices();
+        showToast('已连接 ' + addr, 'success');
+    }).catch(function(e) {
+        _bleConnecting = false;
+        if (btn) btn.disabled = false;
+        logBle('[直连失败] ' + e);
+        showToast('直连失败: ' + e, 'error');
+    });
+}
+
+// 读取协商后的 MTU 并刷新详情头。
+// 默认 23 → 有效载荷 20 字节；写长数据失败时靠它分辨"是 MTU 还是特征的问题"。
+function refreshBleMtu() {
+    return invoke('ble_get_mtu').then(function(m) {
+        _bleMtu = (typeof m === 'number') ? m : 0;
+        renderBleDetail();
+    }).catch(function() { _bleMtu = 0; });
+}
+
+// 详情头的元信息（纯函数，便于无头断言）：地址 · 地址类型 · RSSI [· MTU]
+// 抽出来是因为 RSSI 轮询会单独重写这一行，两处不能各写一份（否则 MTU 会被刷掉）
+function bleDetailMetaText(dev, rssi, mtu) {
+    dev = dev || {};
+    var parts = [dev.address || ''];
+    parts.push(dev.addressType || '—');
+    parts.push((typeof rssi === 'number') ? (rssi + ' dBm') : '—');
+    if (dev.connected && mtu > 0) parts.push('MTU ' + mtu + '（载荷 ' + (mtu - 3) + '）');
+    return parts.join(' · ');
+}
+
+// 描述符文本 → [{uuid, value}]。格式：`UUID=值`，多个用 `;` 或换行分隔。
+// 值默认按 HEX 解析；加 `T:` 前缀按 UTF-8 文本（0x2901 用户描述那种场景）。
+// 返回 { descs } 或 { error }。注意 0x2900~0x290F 是标准描述符、由系统自动发布，
+// 手工创建会被 WinRT 拒绝（真机实测），后端也会在本地挡掉。
+function blePeriphParseDescriptors(s) {
+    var out = [];
+    var text = String(s == null ? '' : s).trim();
+    if (!text) return { descs: out };
+    var parts = text.split(/[;\n]/);
+    for (var i = 0; i < parts.length; i++) {
+        var p = parts[i].trim();
+        if (!p) continue;
+        var eq = p.indexOf('=');
+        if (eq <= 0) return { error: '描述符「' + p + '」格式不对：应为 UUID=值' };
+        var uuid = p.slice(0, eq).trim();
+        var raw = p.slice(eq + 1).trim();
+        if (!uuid) return { error: '描述符「' + p + '」缺少 UUID' };
+        var bytes;
+        if (raw.slice(0, 2) === 'T:') {
+            bytes = Array.from(new TextEncoder().encode(raw.slice(2)));
+        } else {
+            var r = blePeriphHexBytes('描述符 ' + uuid, raw);
+            if (r.error) return { error: r.error };
+            bytes = r.bytes;
+        }
+        out.push({ uuid: uuid, value: bytes });
+    }
+    return { descs: out };
+}
+
+// 广播服务数据长度文案（纯函数）。传统广播总共 31 字节，还要放 flags 与服务 UUID。
+// **只是提示**：真正的判定以后端返回的广播状态（StartedWithoutAllAdvertisementData）为准。
+function blePeriphAdvDataWarnText(len) {
+    if (!len) return '';
+    if (len > 24) {
+        return '⚠ ' + len + ' 字节偏长：传统广播总共只有 31 字节（还要放 flags 与服务 UUID），可能被截断';
+    }
+    return len + ' 字节（传统广播总额 31 字节，够用）';
+}
+
+// 广播数据长度的**告警行**：只在"偏长"或"格式错"时出现，正常时清空（不占版面）
+function renderBlePfAdvLen() {
+    var el = document.getElementById('blePfAdvLen');
+    if (!el) return;
+    var on = document.getElementById('blePfAdvData');
+    if (!on || !on.checked) { el.textContent = ''; return; }
+    var hex = document.getElementById('blePfAdvDataHex');
+    var r = blePeriphHexBytes('广播服务数据', hex ? hex.value : '');
+    if (r.error) { el.textContent = '⚠ ' + r.error; return; }
+    var w = blePeriphAdvDataWarnText(r.bytes.length);
+    el.textContent = (w && w.indexOf('偏长') >= 0) ? w : '';
+}
+
+// ---- 手动应答：待处理的写请求 ----
+var _blePfPending = [];   // [{id, uuid, hex}]
+function renderBlePfPending() {
+    var box = document.getElementById('blePfPending');
+    if (!box) return;
+    if (!_blePfPending.length) { box.innerHTML = ''; return; }
+    box.innerHTML = _blePfPending.map(function(p) {
+        return '<div class="ble-pf-pending">' +
+            '<span class="ble-pf-pending-txt">待应答 #' + p.id + ' · 0x' + escapeHtml(shortUuid(p.uuid || '')) +
+                ' ← ' + escapeHtml(p.hex || '') + '</span>' +
+            '<button class="ble-pf-btn" data-reply="' + p.id + '" data-accept="1">接受</button>' +
+            '<button class="ble-pf-btn danger" data-reply="' + p.id + '" data-accept="0" title="按协议错误码 0x80 回复">拒绝</button>' +
+        '</div>';
+    }).join('');
+}
+function respondBlePfWrite(id, accept) {
+    if (isNaN(id)) return;
+    invoke('ble_periph_respond_write', { pendingId: id, accept: !!accept }).then(function() {
+        _blePfPending = _blePfPending.filter(function(x) { return x.id !== id; });
+        renderBlePfPending();
+        refreshBlePeriphStatus();
+    }).catch(function(e) {
+        // 多半是已经超时被后端按协议错误回掉了：把它从列表里摘掉，不留死按钮
+        _blePfPending = _blePfPending.filter(function(x) { return x.id !== id; });
+        renderBlePfPending();
+        showToast('应答失败: ' + e, 'error');
+    });
+}
+function onBlePfPendingClick(e) {
+    var el = e.target && e.target.closest ? e.target.closest('[data-reply]') : null;
+    if (!el) return;
+    respondBlePfWrite(parseInt(el.getAttribute('data-reply'), 10), el.getAttribute('data-accept') === '1');
+}
+
+// ---- 我的配置（多套从机配置保存）----
+var _blePeriphSaved = [];   // [{name, form}]
+function renderBlePfSaved() {
+    var sel = document.getElementById('blePfSaved');
+    if (!sel) return;
+    var cur = sel.value;
+    var html = '<option value="">（未选择）</option>';
+    _blePeriphSaved.forEach(function(it) {
+        html += '<option value="' + escapeHtml(it.name) + '">' + escapeHtml(it.name) + '</option>';
+    });
+    sel.innerHTML = html;
+    var keep = false;
+    _blePeriphSaved.forEach(function(it) { if (it.name === cur) keep = true; });
+    if (keep) sel.value = cur;
+}
+function blePfSaveAs() {
+    var inp = document.getElementById('blePfSavedName');
+    var name = inp ? String(inp.value || '').trim() : '';
+    if (!name) { showToast('请先填个配置名', 'error'); if (inp) inp.focus(); return; }
+    var form = blePfCollectForm();
+    var hit = null;
+    _blePeriphSaved.forEach(function(it) { if (it.name === name) hit = it; });
+    if (hit) hit.form = form; else _blePeriphSaved.push({ name: name, form: form });
+    renderBlePfSaved();
+    var sel = document.getElementById('blePfSaved');
+    if (sel) sel.value = name;
+    scheduleConfigSave();
+    showToast('已保存配置「' + name + '」', 'success');
+}
+function blePfLoadSaved(name) {
+    if (!name) return;
+    var hit = null;
+    _blePeriphSaved.forEach(function(it) { if (it.name === name) hit = it; });
+    if (!hit) return;
+    restoreBlePeriphForm(hit.form);
+    renderBlePfForm();
+    showToast('已载入配置「' + name + '」', 'info');
+}
+function blePfDeleteSaved() {
+    var sel = document.getElementById('blePfSaved');
+    var name = sel ? sel.value : '';
+    if (!name) { showToast('请先选择要删除的配置', 'error'); return; }
+    _blePeriphSaved = _blePeriphSaved.filter(function(it) { return it.name !== name; });
+    renderBlePfSaved();
+    scheduleConfigSave();
+    showToast('已删除配置「' + name + '」', 'info');
+}
+
+// ---- 广播配置的表格文件（CSV / Markdown 表格）----
+// 服务结构又长又容易抄错，放在表格里维护（Excel/WPS/记事本都行）比在界面上一行行填舒服。
+// 表头固定 5 列：服务UUID,特征UUID,属性,初值HEX,描述符
+//   · CSV：逗号分隔
+//   · Markdown 表格：| 分隔，自动跳过 |---|---| 分隔行；单元格内的竖线按规范写 \|
+//   · 属性用 `;` 分隔（`|` 在 Markdown 里是列分隔符，会打架）
+//   · 空行与 # 开头的注释行忽略
+var BLE_PF_TABLE_HEADER = ['服务UUID', '特征UUID', '属性', '初值HEX', '描述符'];
+
+// 拆一行为单元格（纯函数）。返回 null 表示这行该跳过（空行/注释/表头/分隔行）。
+// Markdown 表格里单元格内的竖线按规范写成 `\|`，这里先藏起来再切分，最后还原。
+function blePfTableCells(line) {
+    var t = String(line == null ? '' : line).trim();
+    if (!t) return null;
+    if (t.charAt(0) === '#') return null;
+    var isMd = t.charAt(0) === '|';
+    if (isMd) t = t.replace(/^\|/, '').replace(/\|$/, '');
+    var cells;
+    if (isMd) {
+        var PH = '\u0000';
+        t = t.replace(/\\\|/g, PH);
+        cells = t.split('|').map(function(c) { return c.split(PH).join('|').trim(); });
+    } else {
+        cells = t.split(',').map(function(c) { return c.trim(); });
+    }
+    // Markdown 分隔行：|---|---|
+    if (isMd && cells.every(function(c) { return /^:?-{2,}:?$/.test(c) || c === ''; })) return null;
+    // 表头行（按第一列关键字识别，大小写与中英文都认）
+    var first = (cells[0] || '').toLowerCase();
+    if (first === '服务uuid' || first === 'service' || first === 'serviceuuid') return null;
+    return cells;
+}
+
+// 表格文本 → { service, chars } 或 { error }（纯函数，便于无头断言）
+function blePfParseTable(text) {
+    var lines = String(text == null ? '' : text).split(/\r?\n/);
+    var service = '';
+    var chars = [];
+    for (var i = 0; i < lines.length; i++) {
+        var cells = blePfTableCells(lines[i]);
+        if (!cells) continue;
+        if (cells.length < 2) return { error: '第 ' + (i + 1) + ' 行只有 ' + cells.length + ' 列：至少要「服务UUID,特征UUID」' };
+        var svc = cells[0] || '';
+        var cuuid = cells[1] || '';
+        if (!svc) return { error: '第 ' + (i + 1) + ' 行服务 UUID 为空' };
+        if (!cuuid) return { error: '第 ' + (i + 1) + ' 行特征 UUID 为空' };
+        if (!service) {
+            service = svc;
+        } else if (svc.replace(/^0x/i, '').toLowerCase() !== service.replace(/^0x/i, '').toLowerCase()) {
+            // 平台限制：一个服务提供者只能广播一个服务 UUID，文件里出现两个就必须说清楚
+            return { error: '第 ' + (i + 1) + ' 行出现了另一个服务 UUID（' + svc + '）：本应用一次只能广播一个服务' };
+        }
+        chars.push({
+            uuid: cuuid,
+            // 属性分隔符只认 `;`：`|` 在 Markdown 表格里是列分隔符，拿来当属性分隔会打架
+            props: (cells[2] || '').split(';').map(function(s) { return s.trim(); }).filter(function(s) { return s; }),
+            value: cells[3] || '',
+            desc: cells[4] || ''
+        });
+        if (chars.length > BLE_PERIPH_CHAR_MAX) {
+            return { error: '特征数量超过上限 ' + BLE_PERIPH_CHAR_MAX + ' 个' };
+        }
+    }
+    if (!service || !chars.length) return { error: '没有解析到任何特征行（第一列服务 UUID、第二列特征 UUID）' };
+    return { service: service, chars: chars };
+}
+
+// 当前表单 → 表格文本（CSV）。Excel/WPS 直接打开即可编辑，改完再「导入表格」。
+function blePfBuildTable(form) {
+    form = form || blePfCollectForm();
+    var esc = function(v) {
+        var s = String(v == null ? '' : v);
+        // 含逗号/引号/换行时按 CSV 规范加引号
+        return /[",\n]/.test(s) ? ('"' + s.replace(/"/g, '""') + '"') : s;
+    };
+    var rows = [BLE_PF_TABLE_HEADER.join(',')];
+    (form.chars || []).forEach(function(c) {
+        rows.push([
+            esc(form.service),
+            esc(c.uuid),
+            esc((c.props || []).join(';')),
+            esc(c.value || ''),
+            esc(c.desc || '')
+        ].join(','));
+    });
+    return rows.join('\r\n') + '\r\n';
+}
+
+// 从文件导入：后端负责弹文件框与读文件，前端只解析与应用
+function blePfImportTable() {
+    var btn = document.getElementById('blePfImportBtn');
+    if (btn) btn.disabled = true;
+    invoke('ble_periph_pick_config_file').then(function(res) {
+        if (btn) btn.disabled = false;
+        if (!res) return;                       // 用户取消
+        var r = blePfParseTable(res.text);
+        if (r.error) { showToast('表格解析失败：' + r.error, 'error'); return; }
+        _blePeriphForm.service = r.service;
+        _blePeriphForm.chars = r.chars;
+        _blePeriphForm.presetId = '';           // 来自文件，不再属于任何内置预设
+        renderBlePfForm();
+        scheduleConfigSave();
+        logBle('[从机] 已从表格导入 ' + r.chars.length + ' 个特征：' + (res.path || ''));
+        showToast('已导入 ' + r.chars.length + ' 个特征', 'success');
+    }).catch(function(e) {
+        if (btn) btn.disabled = false;
+        showToast('导入失败: ' + e, 'error');
+    });
+}
+
+// 导出为 CSV 表格（用文件框选路径）
+function blePfExportTable() {
+    var btn = document.getElementById('blePfExportBtn');
+    if (btn) btn.disabled = true;
+    var text = blePfBuildTable();
+    invoke('ble_periph_save_config_file', { text: text }).then(function(path) {
+        if (btn) btn.disabled = false;
+        if (!path) return;                      // 用户取消
+        logBle('[从机] 配置已导出到表格：' + path);
+        showToast('已导出：' + path, 'success');
+    }).catch(function(e) {
+        if (btn) btn.disabled = false;
+        showToast('导出失败: ' + e, 'error');
+    });
+}
+
+function showBleIncompatible(msg) {    var list = document.getElementById('ble-devList');
     if (!list) return;
     // 用 textContent 而非拼 innerHTML：这个函数现在是字面量调用，
     // 但一旦有人传动态文案就会变成注入口（同类问题见 BLE 详情头曾漏转义设备名）
@@ -7500,6 +8106,8 @@ function closeBle() {
     if (btn) { btn.setAttribute('title', '蓝牙调试'); btn.setAttribute('onclick', 'openBle()'); btn.classList.remove('active'); }
     var text = document.getElementById('bleToggleText');
     if (text) text.textContent = '蓝牙调试';
+    // 从机的两个轮询只在蓝牙页有意义；广播本身留在后端继续（与主机连接一样跨页保持）
+    stopBlePeriphPoll();
 }
 
 function toggleBleScan() {
@@ -7508,12 +8116,21 @@ function toggleBleScan() {
     if (_bleScanning) {
         if (btn) btn.textContent = '停止扫描';
         if (!_bleDevices.length) renderBleDeviceList();   // 空列表时立刻显示「正在扫描…」
-        invoke('ble_start_scan').then(function() {
+        invoke('ble_start_scan').then(function(n) {
+            // 多适配器：后端会把扫描开到每一个适配器上，返回值是成功的个数
+            if (typeof n === 'number' && n > 0) _bleAdapterCount = Math.max(_bleAdapterCount, n);
             refreshBleDevices();
             if (_bleDevTimer) clearInterval(_bleDevTimer);
             _bleDevTimer = setInterval(refreshBleDevices, 2000);
-            enableBleScanAutoStop();  // 5 秒后自动停止
-        }).catch(function(e) { console.warn('[BLE] 启动扫描失败:', e); _bleScanning = false; if (btn) btn.textContent = '开始扫描'; if (_bleScanStopTimer) { clearTimeout(_bleScanStopTimer); _bleScanStopTimer = null; } showBleIncompatible('当前电脑蓝牙不兼容'); });
+            enableBleScanAutoStop();
+            renderBleDeviceList();   // 让空态显示"几个适配器在扫"
+        }).catch(function(e) {
+            console.warn('[BLE] 启动扫描失败:', e);
+            _bleScanning = false;
+            if (btn) btn.textContent = '开始扫描';
+            if (_bleScanStopTimer) { clearTimeout(_bleScanStopTimer); _bleScanStopTimer = null; }
+            showBleIncompatible('当前电脑蓝牙不兼容');
+        });
     } else {
         stopBleScan();  // 手动停止
     }
@@ -7528,10 +8145,35 @@ function stopBleScan() {
     if (_bleDevTimer) { clearInterval(_bleDevTimer); _bleDevTimer = null; }
     if (!_bleDevices.length) renderBleDeviceList();   // 空列表时把「正在扫描…」换回未发现提示
 }
-// 扫描开始后 5 秒自动停止（除非期间已手动停止）
+// 扫描时长（秒）。0 = 一直扫到用户手动停。
+// 以前硬编码 5 秒：低功耗从机广播间隔常在 1~2 秒、甚至 5~10 秒，
+// 5 秒窗口经常一包都收不到，而且停得**悄无声息**，用户只会以为"没搜到"。
+var BLE_SCAN_SECS_CHOICES = [5, 15, 30, 60, 0];
+function bleScanSecs() {
+    var el = document.getElementById('bleScanSecs');
+    if (el) {
+        var v = parseInt(el.value, 10);
+        if (!isNaN(v)) return v;
+    }
+    return _bleScanSecs;   // 面板还没建：用配置里恢复出来的值
+}
+function bleScanSecsLabel() {
+    var v = bleScanSecs();
+    return v > 0 ? (v + ' 秒') : '持续';
+}
+// 扫描开始后按所选时长自动停止（除非期间已手动停止）
 function enableBleScanAutoStop() {
-    if (_bleScanStopTimer) clearTimeout(_bleScanStopTimer);
-    _bleScanStopTimer = setTimeout(function() { _bleScanStopTimer = null; stopBleScan(); }, 5000);
+    if (_bleScanStopTimer) { clearTimeout(_bleScanStopTimer); _bleScanStopTimer = null; }
+    var secs = bleScanSecs();
+    if (secs <= 0) return;   // 选「持续」就不自动停
+    _bleScanStopTimer = setTimeout(function() {
+        _bleScanStopTimer = null;
+        if (!_bleScanning) return;
+        stopBleScan();
+        // **不要静默停止**：否则用户看到列表不再更新，会以为是自己没搜到
+        logBle('[扫描] 已按设定时长（' + secs + ' 秒）自动停止；可在左上角把时长改成「持续」');
+        showToast('扫描已自动停止（' + secs + ' 秒）；要长时间搜索请把时长改成「持续」', 'info');
+    }, secs * 1000);
 }
 
 function refreshBleDevices() {
@@ -7619,9 +8261,11 @@ function renderBleDeviceList() {
     if (countEl) countEl.textContent = _bleFilterText ? ('匹配 ' + shown.length + '/' + _bleDevices.length) : '';
     if (!_bleDevices.length) {
         // 扫描中与未扫描要分开提示，否则"开始扫描后一片'未发现设备'"会让人以为扫描没生效
+        // 适配器数量也写出来：多适配器时这是"为什么能搜到更多设备"的答案
+        var adapterNote = _bleAdapterCount > 1 ? ('<br><span>' + _bleAdapterCount + ' 个蓝牙适配器同时在扫</span>') : '';
         list.innerHTML = _bleScanning
-            ? '<div class="ble-empty scanning"><b>正在扫描…</b><br><span>正在搜索周边 BLE 设备</span></div>'
-            : '<div class="ble-empty"><b>未发现蓝牙设备</b><br><span>点击「开始扫描」搜索周边 BLE 设备</span></div>';
+            ? '<div class="ble-empty scanning"><b>正在扫描…</b><br><span>正在搜索周边 BLE 设备（' + bleScanSecsLabel() + '后自动停止）</span>' + adapterNote + '</div>'
+            : '<div class="ble-empty"><b>未发现蓝牙设备</b><br><span>点击「开始扫描」搜索周边 BLE 设备；设备不广播时可用上方「按 MAC 直连」</span></div>';
         return;
     }
     if (!shown.length) {
@@ -7690,7 +8334,7 @@ function renderBleDetail() {
     detail.innerHTML =
         '<div class="ble-detail-head">' +
             '<div class="ble-detail-name">' + escapeHtml(dev.name || '未知设备') + '</div>' +
-            '<div class="ble-detail-meta">' + dev.address + ' · ' + (dev.addressType || '—') + ' · ' + (typeof dev.rssi === 'number' ? dev.rssi + ' dBm' : '—') + '</div>' +
+            '<div class="ble-detail-meta">' + escapeHtml(bleDetailMetaText(dev, dev.rssi, _bleMtu)) + '</div>' +
             '<button class="add-btn icon-btn ble-connect-btn' + (dev.connected ? ' connected' : '') + '" onclick="toggleBleConnect()" title="连接/断开">' + (dev.connected ? '断开设备' : '连接设备') + '</button>' +
         '</div>' +
         '<div class="ble-detail-sec ble-adv-sec">' +
@@ -7922,6 +8566,8 @@ function bleOnConnected(address, label) {
         var chars = 0;
         _bleServices.forEach(function(s) { chars += (s.characteristics || []).length; });
         logBle('[连接成功] ' + label + ' (' + address + ') · 服务 ' + _bleServices.length + ' · 特征 ' + chars);
+        return refreshBleMtu();   // 拿到 MTU 再渲染，详情头一次到位
+    }).then(function() {
         renderBleDetail();
         renderBleDeviceList();   // 让列表立刻出现「已连接」提示
         startBleNotifyPoll();
@@ -8015,6 +8661,697 @@ function toggleBleConnect() {
         });
     }
 }
+
+/* ===== BLE 从机（外设）模式 —— 本机对外广播，供手机 / 其它主机搜索并连接 =====
+   主机模式 = 扫描连接别人的设备；从机模式 = 本机当外设。
+   后端走 WinRT GattServiceProvider（btleplug 是 central-only，没有外设角色）。
+
+   平台限制（不是缺陷，已记入 doc/BLE_PERIPHERAL.md）：
+     1) 广播里的设备名由 Windows 决定（系统蓝牙名称），这里配不了 —— 手机看到的是电脑名；
+     2) 一个服务提供者只广播它自己那一个服务 UUID；
+     3) 没有主机订阅时无法下发通知（后端会明确报错）。 */
+var _bleMode = 'host';              // 'host' 主机（扫描连接） | 'periph' 从机（对外广播）
+// 从机模式的界面开关。**默认关闭**：本机（Intel 集成蓝牙）实测无法广播 ——
+// 射频能发广播（仅厂商数据时 Started），但带「服务 UUID / 广播名」的广播帧被系统拒绝
+// （E_INVALIDARG），而 GattServiceProvider 必须广播服务 UUID 且没有绕过开关，故恒 Aborted。
+// 完整证据与结论见 doc/BLE_PERIPHERAL.md 第 5 节。
+// 代码**整体保留**（后端命令、面板、表格导入导出都还在），换到允许 service UUID 广播的机器时，
+// 把这里改成 true 即可恢复入口。
+var BLE_PERIPH_MODE_ENABLED = false;
+var _blePeriphRunning = false;      // 后端是否已建好 GATT 服务
+var _blePeriphAdv = false;          // 是否真的在广播（服务建好 ≠ 广播成功）
+var _blePeriphStatusChars = [];     // 后端上报的特征运行态
+var _blePeriphLog = [];
+var _blePeriphLogMax = 400;
+var _blePeriphEventTimer = null;    // 事件轮询（500ms）
+var _blePeriphStatusTimer = null;   // 状态轮询（2s）
+
+// 常见从机服务预设：打开就能被搜到并能读能写，不用每次手抄 UUID
+var BLE_PERIPH_PRESETS = [
+    {
+        id: 'nus',
+        name: 'Nordic UART（透传常用）',
+        service: '6E400001-B5A3-F393-E0A9-E50E24DCCA9E',
+        hint: 'nRF Connect 直接认这个服务：RX 收主机写入，TX 向主机通知',
+        chars: [
+            { uuid: '6E400002-B5A3-F393-E0A9-E50E24DCCA9E', props: ['write', 'write_without_response'], value: '' },
+            { uuid: '6E400003-B5A3-F393-E0A9-E50E24DCCA9E', props: ['notify'], value: '' }
+        ]
+    },
+    {
+        id: 'ffe0',
+        name: '透传模块 FFE0/FFE1',
+        service: '0000FFE0-0000-1000-8000-00805F9B34FB',
+        hint: '多数 BLE 串口透传模块用的服务：单特征同时支持读写与通知',
+        chars: [
+            { uuid: '0000FFE1-0000-1000-8000-00805F9B34FB', props: ['read', 'write', 'write_without_response', 'notify'], value: '48656C6C6F' }
+        ]
+    },
+    {
+        id: 'rw',
+        name: '自定义（读 + 写 + 通知）',
+        service: '0000FFF0-0000-1000-8000-00805F9B34FB',
+        hint: '一个可读可写特征 + 一个通知特征，适合验证主机侧的读写与订阅流程',
+        chars: [
+            { uuid: '0000FFF1-0000-1000-8000-00805F9B34FB', props: ['read', 'write'], value: '48656C6C6F' },
+            { uuid: '0000FFF2-0000-1000-8000-00805F9B34FB', props: ['notify'], value: '' }
+        ]
+    }
+];
+var BLE_PERIPH_PROP_ORDER = ['read', 'write', 'write_without_response', 'notify', 'indicate'];
+var BLE_PERIPH_PROP_LABEL = { read: '读', write: '写', write_without_response: '无响应写', notify: '通知', indicate: '指示' };
+var BLE_PERIPH_CHAR_MAX = 16;
+
+// 从机表单状态：唯一数据源，DOM 只是它的投影（切换模式 / 重进页面都不丢编辑）
+var _blePeriphForm = {
+    presetId: 'nus',
+    service: '6E400001-B5A3-F393-E0A9-E50E24DCCA9E',
+    chars: [
+        { uuid: '6E400002-B5A3-F393-E0A9-E50E24DCCA9E', props: ['write', 'write_without_response'], value: '' },
+        { uuid: '6E400003-B5A3-F393-E0A9-E50E24DCCA9E', props: ['notify'], value: '' }
+    ],
+    discoverable: true,
+    connectable: true,
+    advData: false,
+    advDataHex: ''
+};
+
+// 按 id 找预设；找不到返回 null（调用方决定回退，不在这里悄悄改掉用户的选择）
+function blePeriphPreset(id) {
+    for (var i = 0; i < BLE_PERIPH_PRESETS.length; i++) {
+        if (BLE_PERIPH_PRESETS[i].id === id) return BLE_PERIPH_PRESETS[i];
+    }
+    return null;
+}
+
+// HEX 文本 → 字节数组。宽容分隔符（空格 / 逗号 / 冒号 / 连字符）与 0x 前缀，
+// 空串合法（表示"不填初值"）。返回 { bytes } 或 { error }：
+// **不静默把非法输入当空**，否则用户会以为初值填进去了。
+function blePeriphHexBytes(label, s) {
+    var t = String(s == null ? '' : s).replace(/0[xX]/g, '').replace(/[\s,;:_-]/g, '');
+    if (!t) return { bytes: [] };
+    if (!/^[0-9a-fA-F]+$/.test(t)) return { error: label + ' 含非十六进制字符：' + s };
+    if (t.length % 2 !== 0) return { error: label + ' 的 HEX 长度为奇数（每个字节两位）：' + s };
+    var out = [];
+    for (var i = 0; i < t.length; i += 2) out.push(parseInt(t.substr(i, 2), 16));
+    return { bytes: out };
+}
+
+// 后端事件 → 日志行（纯函数，便于无头断言）。
+// 返回 { text, dim }：text 是主文本，dim 是灰显的十六进制部分。
+function blePeriphFmtEvent(ev) {
+    ev = ev || {};
+    var uuid = ev.uuid ? ('0x' + shortUuid(ev.uuid)) : '';
+    var who = ev.peer ? (' · ' + ev.peer) : '';
+    var hex = ev.value_hex ? String(ev.value_hex) : '';
+    var dim = hex ? ('  ' + bleFmtHex(hex) + ' · 0x' + hex.replace(/ /g, '')) : '';
+    switch (ev.kind) {
+        case 'start':
+            return { text: '[广播] 服务 ' + uuid + ' 已启动' + (ev.note ? ' · ' + ev.note : ''), dim: '' };
+        case 'stop':
+            return { text: '[广播] 已停止', dim: '' };
+        case 'adv':
+            return { text: '[广播状态] ' + (ev.status || '') +
+                (ev.status === 'Aborted' ? '（广播被中止：确认蓝牙已打开、本机有适配器）' : ''), dim: '' };
+        case 'write':
+            return { text: '[收到写入] ' + uuid + who + (ev.note ? ' · ' + ev.note : ''), dim: dim };
+        case 'write_reply':
+            return { text: '[写入应答] ' + (ev.note || ('#' + (ev.pending_id || '?'))), dim: '' };
+        case 'notice':
+            return { text: '[提示] ' + (ev.note || ''), dim: '' };
+        case 'read':
+            return { text: '[主机读取] ' + uuid + who, dim: dim };
+        case 'subscribe': {
+            var n = ev.subscribed || 0;
+            var size = (n > 0 && ev.max_notify > 0) ? ('，单次最多 ' + ev.max_notify + ' 字节') : '';
+            return { text: '[订阅] ' + uuid + (n > 0 ? (' 已被 ' + n + ' 台主机订阅' + size) : ' 订阅已取消') + who, dim: '' };
+        }
+        case 'notify':
+            return { text: '[下发] ' + uuid + (ev.note ? ' · ' + ev.note : ''), dim: dim };
+        default:
+            return { text: '[' + (ev.kind || '事件') + '] ' + (ev.note || ''), dim: '' };
+    }
+}
+
+function blePeriphTime(ts) {
+    if (!ts) return '';
+    var d = new Date(ts);
+    if (isNaN(d.getTime())) return '';
+    var p = function(n) { return (n < 10 ? '0' : '') + n; };
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+}
+
+// MARK: 模式切换
+// 说明文字不再单独占一行（界面要干净），改为挂在两个切换按钮的 title 上。
+// 从机广播在后端是**跨页持续**的，切回主机模式时必须如实写出来 —— 否则用户会忘了自己还在广播。
+function updateBleModeHint() {
+    var hostTitle = '本机作为主机：扫描并连接周边 BLE 从机'
+        + (_blePeriphRunning ? '（注意：从机广播仍在后台运行）' : '');
+    var pfTitle = '本机作为从机：对外广播，等手机 / 主机搜索并连接（手机看到的设备名是电脑名，由 Windows 决定）';
+    document.querySelectorAll('#ble-pane .ble-mode-btn').forEach(function(b) {
+        var m = b.getAttribute('data-ble-mode');
+        b.classList.toggle('active', m === _bleMode);
+        b.title = (m === 'host') ? hostTitle : pfTitle;
+    });
+}
+
+// 模式切换器的 HTML。从机模式关闭时返回空串 —— 入口不出现，但下面那套面板与逻辑都还在。
+function bleModeSegHtml() {
+    if (!BLE_PERIPH_MODE_ENABLED) return '';
+    return '<div class="ble-mode-seg">' +
+        '<button class="ble-mode-btn active" data-ble-mode="host" onclick="setBleMode(\'host\')">主机模式</button>' +
+        '<button class="ble-mode-btn" data-ble-mode="periph" onclick="setBleMode(\'periph\')">从机模式</button>' +
+    '</div>';
+}
+
+function setBleMode(mode) {
+    // 入口关着时把 'periph' 一律折回主机模式：否则配置里残留的 mode:"periph"
+    // 会让人启动就落进一个没有出口的隐藏模式
+    if (mode === 'periph' && !BLE_PERIPH_MODE_ENABLED) {
+        mode = 'host';
+    }
+    _bleMode = (mode === 'periph') ? 'periph' : 'host';
+    var body = document.getElementById('bleBody');
+    var pf = document.getElementById('blePeriph');
+    if (body) body.style.display = (_bleMode === 'host') ? 'flex' : 'none';
+    if (pf) pf.classList.toggle('active', _bleMode === 'periph');
+    if (_bleMode === 'periph') {
+        renderBlePfForm();
+        startBlePeriphPoll();
+        // 刷一次真实状态：title 里要如实反映"后台还在广播吗"
+        refreshBlePeriphStatus().then(updateBleModeHint);
+    } else {
+        stopBlePeriphPoll();
+        refreshBlePeriphStatus().then(updateBleModeHint);
+    }
+    updateBleModeHint();
+    scheduleConfigSave();
+}
+
+// MARK: 从机表单
+function renderBlePfForm() {
+    var sel = document.getElementById('blePfPreset');
+    if (sel) {
+        if (!sel.options || !sel.options.length) {
+            var opts = '';
+            for (var i = 0; i < BLE_PERIPH_PRESETS.length; i++) {
+                opts += '<option value="' + BLE_PERIPH_PRESETS[i].id + '">' +
+                        escapeHtml(BLE_PERIPH_PRESETS[i].name) + '</option>';
+            }
+            sel.innerHTML = opts;
+        }
+        sel.value = _blePeriphForm.presetId;
+        // 预设说明改成下拉框的 tooltip：说明还在，但不再占一行版面
+        var p = blePeriphPreset(_blePeriphForm.presetId);
+        if (p) sel.title = p.name + '：' + p.hint;
+    }
+    var svc = document.getElementById('blePfService');
+    if (svc && svc.value !== _blePeriphForm.service) svc.value = _blePeriphForm.service;
+    var d = document.getElementById('blePfDiscoverable');
+    if (d) d.checked = !!_blePeriphForm.discoverable;
+    var cn = document.getElementById('blePfConnectable');
+    if (cn) cn.checked = !!_blePeriphForm.connectable;
+    var ad = document.getElementById('blePfAdvData');
+    if (ad) ad.checked = !!_blePeriphForm.advData;
+    var adh = document.getElementById('blePfAdvDataHex');
+    if (adh && adh.value !== _blePeriphForm.advDataHex) adh.value = _blePeriphForm.advDataHex;
+    var mr = document.getElementById('blePfManualReply');
+    if (mr) mr.checked = !!_blePeriphForm.manualReply;
+    renderBlePfSaved();
+    renderBlePfAdvLen();
+    renderBlePfChars();
+}
+
+// 表单里的特征行（可编辑）。行内不用内联 onclick：UUID 走 data-* + 事件委托，
+// 免得"用户填的 UUID"进到 HTML 属性里（同类隐患见 TODO M13/L13）
+function renderBlePfChars() {
+    var box = document.getElementById('blePfCharEditor');
+    var cnt = document.getElementById('blePfCharCount');
+    if (cnt) cnt.textContent = _blePeriphForm.chars.length + ' / ' + BLE_PERIPH_CHAR_MAX;
+    if (!box) return;
+    var html = '';
+    _blePeriphForm.chars.forEach(function(c, i) {
+        var props = '';
+        BLE_PERIPH_PROP_ORDER.forEach(function(p) {
+            var on = (c.props || []).indexOf(p) >= 0;
+            props += '<span class="ble-pf-prop' + (on ? ' on' : '') + '" data-ci="' + i + '" data-prop="' + p + '">' +
+                     BLE_PERIPH_PROP_LABEL[p] + '</span>';
+        });
+        html += '<div class="ble-pf-char">' +
+            '<div class="ble-pf-char-head">' +
+                '<input class="ble-pf-input" data-ci="' + i + '" data-field="uuid" spellcheck="false" autocomplete="off" ' +
+                    'value="' + escapeHtml(c.uuid || '') + '" placeholder="特征 UUID">' +
+                '<button class="ble-pf-del" data-del="' + i + '" title="删除该特征">&#10005;</button>' +
+            '</div>' +
+            '<div class="ble-pf-props">' + props + '</div>' +
+            '<div class="ble-pf-value">' +
+                '<input class="ble-pf-input" data-ci="' + i + '" data-field="value" spellcheck="false" autocomplete="off" ' +
+                    'value="' + escapeHtml(c.value || '') + '" placeholder="初值 HEX（可留空），如 48656C6C6F">' +
+            '</div>' +
+            '<div class="ble-pf-value">' +
+                '<input class="ble-pf-input" data-ci="' + i + '" data-field="desc" spellcheck="false" autocomplete="off" ' +
+                    'value="' + escapeHtml(c.desc || '') + '" ' +
+                    'placeholder="描述符（可选）：UUID=值，多个用 ; 分隔；T: 前缀表示文本，如 2901=T:温度计">' +
+            '</div>' +
+        '</div>';
+    });
+    box.innerHTML = html || '<div class="ble-pf-empty">还没有特征，点下面的「添加特征」</div>';
+}
+
+// 只绑一次：输入 / 点击都走委托，行增删重渲染不用重绑
+function initBlePfForm() {
+    var box = document.getElementById('blePfCharEditor');
+    if (box && !box._bound) {
+        box._bound = true;
+        box.addEventListener('input', blePfEditorInput);
+        box.addEventListener('click', blePfEditorClick);
+    }
+    var charsBox = document.getElementById('blePfChars');
+    if (charsBox && !charsBox._bound) {
+        charsBox._bound = true;
+        charsBox.addEventListener('click', function(e) {
+            var el = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
+            if (!el) return;
+            blePeriphCharAction(el.getAttribute('data-uuid'), el.getAttribute('data-act'));
+        });
+    }
+    var pendBox = document.getElementById('blePfPending');
+    if (pendBox && !pendBox._bound) {
+        pendBox._bound = true;
+        pendBox.addEventListener('click', onBlePfPendingClick);
+    }
+}
+
+function blePfEditorInput(e) {
+    var t = e.target;
+    if (!t || !t.dataset) return;
+    var c = _blePeriphForm.chars[parseInt(t.dataset.ci, 10)];
+    if (!c) return;
+    if (t.dataset.field === 'uuid') c.uuid = t.value;
+    else if (t.dataset.field === 'value') c.value = t.value;
+    else if (t.dataset.field === 'desc') c.desc = t.value;
+    scheduleConfigSave();
+}
+
+function blePfEditorClick(e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    var del = t.closest('[data-del]');
+    if (del) {
+        var di = parseInt(del.getAttribute('data-del'), 10);
+        if (!isNaN(di)) {
+            _blePeriphForm.chars.splice(di, 1);
+            renderBlePfChars();
+            scheduleConfigSave();
+        }
+        return;
+    }
+    var prop = t.closest('.ble-pf-prop');
+    if (prop) {
+        var c = _blePeriphForm.chars[parseInt(prop.getAttribute('data-ci'), 10)];
+        if (!c) return;
+        var pv = prop.getAttribute('data-prop');
+        c.props = c.props || [];
+        var k = c.props.indexOf(pv);
+        if (k >= 0) c.props.splice(k, 1); else c.props.push(pv);
+        // 统一按固定顺序排列：顺序稳定，配置 diff 才不会因为勾选先后而抖动
+        c.props = BLE_PERIPH_PROP_ORDER.filter(function(p) { return c.props.indexOf(p) >= 0; });
+        prop.classList.toggle('on', k < 0);
+        scheduleConfigSave();
+    }
+}
+
+function blePfAddChar() {
+    if (_blePeriphForm.chars.length >= BLE_PERIPH_CHAR_MAX) {
+        showToast('特征数量上限 ' + BLE_PERIPH_CHAR_MAX + ' 个', 'error');
+        return;
+    }
+    _blePeriphForm.chars.push({ uuid: '', props: ['read', 'write'], value: '' });
+    renderBlePfChars();
+    scheduleConfigSave();
+}
+
+function blePfApplyPreset(id) {
+    var p = blePeriphPreset(id);
+    if (!p) return;
+    _blePeriphForm.presetId = p.id;
+    _blePeriphForm.service = p.service;
+    _blePeriphForm.chars = p.chars.map(function(c) {
+        return { uuid: c.uuid, props: c.props.slice(), value: c.value || '' };
+    });
+    renderBlePfForm();
+    scheduleConfigSave();
+}
+
+function blePfSyncService(v) {
+    _blePeriphForm.service = v;
+    scheduleConfigSave();
+}
+
+// 只把「存在」的控件读进状态：页面没建好时不要把状态冲成 false
+function blePfCollectOptions() {
+    var a = document.getElementById('blePfDiscoverable');
+    if (a) _blePeriphForm.discoverable = !!a.checked;
+    var b = document.getElementById('blePfConnectable');
+    if (b) _blePeriphForm.connectable = !!b.checked;
+    var c = document.getElementById('blePfAdvData');
+    if (c) _blePeriphForm.advData = !!c.checked;
+    var d = document.getElementById('blePfAdvDataHex');
+    if (d) _blePeriphForm.advDataHex = d.value.trim();
+    var e = document.getElementById('blePfManualReply');
+    if (e) _blePeriphForm.manualReply = !!e.checked;
+}
+
+// 表单 → 可持久化的纯数据（顺带把选项控件读进状态，切模式不丢改动）
+function blePfCollectForm() {
+    blePfCollectOptions();
+    return {
+        presetId: _blePeriphForm.presetId,
+        service: _blePeriphForm.service,
+        chars: _blePeriphForm.chars.map(function(c) {
+            return { uuid: c.uuid, props: (c.props || []).slice(), value: c.value, desc: c.desc || '' };
+        }),
+        discoverable: _blePeriphForm.discoverable,
+        connectable: _blePeriphForm.connectable,
+        advData: _blePeriphForm.advData,
+        advDataHex: _blePeriphForm.advDataHex,
+        manualReply: !!_blePeriphForm.manualReply
+    };
+}
+
+// 恢复从机表单（纯数据）。形状不对就保持默认预设 —— 别让一个坏配置把面板弄成空白
+function restoreBlePeriphForm(p) {
+    if (!p || typeof p !== 'object') return;
+    if (typeof p.presetId === 'string' && blePeriphPreset(p.presetId)) _blePeriphForm.presetId = p.presetId;
+    if (typeof p.service === 'string' && p.service) _blePeriphForm.service = p.service;
+    if (Object.prototype.toString.call(p.chars) === '[object Array]' && p.chars.length) {
+        var list = [];
+        p.chars.forEach(function(c) {
+            if (!c || typeof c !== 'object' || list.length >= BLE_PERIPH_CHAR_MAX) return;
+            list.push({
+                uuid: typeof c.uuid === 'string' ? c.uuid : '',
+                props: Object.prototype.toString.call(c.props) === '[object Array]'
+                    ? BLE_PERIPH_PROP_ORDER.filter(function(x) { return c.props.indexOf(x) >= 0; })
+                    : ['read'],
+                value: typeof c.value === 'string' ? c.value : '',
+                desc: typeof c.desc === 'string' ? c.desc : ''
+            });
+        });
+        if (list.length) _blePeriphForm.chars = list;
+    }
+    _blePeriphForm.discoverable = p.discoverable !== false;
+    _blePeriphForm.connectable = p.connectable !== false;
+    _blePeriphForm.advData = !!p.advData;
+    _blePeriphForm.advDataHex = typeof p.advDataHex === 'string' ? p.advDataHex : '';
+    _blePeriphForm.manualReply = !!p.manualReply;
+}
+
+// 表单 → ble_periph_start 参数；返回 { params } 或 { error }
+function blePeriphStartParams() {
+    blePfCollectOptions();
+    var serviceUuid = (_blePeriphForm.service || '').trim();
+    if (!serviceUuid) return { error: '请填写服务 UUID' };
+    if (!_blePeriphForm.chars.length) return { error: '至少需要一个特征' };
+    var chars = [];
+    for (var i = 0; i < _blePeriphForm.chars.length; i++) {
+        var c = _blePeriphForm.chars[i];
+        var uuid = (c.uuid || '').trim();
+        if (!uuid) return { error: '第 ' + (i + 1) + ' 个特征的 UUID 为空' };
+        if (!(c.props || []).length) return { error: '第 ' + (i + 1) + ' 个特征至少要选一个属性' };
+        var v = blePeriphHexBytes('第 ' + (i + 1) + ' 个特征的初值', c.value);
+        if (v.error) return { error: v.error };
+        var d = blePeriphParseDescriptors(c.desc);
+        if (d.error) return { error: '第 ' + (i + 1) + ' 个特征：' + d.error };
+        chars.push({ uuid: uuid, props: c.props.slice(), value: v.bytes, descriptors: d.descs });
+    }
+    var adv = { bytes: [] };
+    if (_blePeriphForm.advData) {
+        adv = blePeriphHexBytes('广播服务数据', _blePeriphForm.advDataHex);
+        if (adv.error) return { error: adv.error };
+    }
+    return { params: {
+        serviceUuid: serviceUuid,
+        characteristics: chars,
+        discoverable: !!_blePeriphForm.discoverable,
+        connectable: !!_blePeriphForm.connectable,
+        advData: adv.bytes,
+        manualReply: !!_blePeriphForm.manualReply
+    } };
+}
+
+// MARK: 广播启停
+function startBlePeriph() {
+    var built = blePeriphStartParams();
+    if (built.error) { showToast(built.error, 'error'); return; }
+    var p = built.params;
+    var btn = document.getElementById('blePfStartBtn');
+    if (btn) btn.disabled = true;
+    pushBlePeriphLog({ text: '[启动] 服务 ' + p.serviceUuid + ' · ' + p.characteristics.length + ' 个特征', dim: '' });
+    renderBlePeriphLog();
+    invoke('ble_periph_start', {
+        serviceUuid: p.serviceUuid,
+        characteristics: p.characteristics,
+        discoverable: p.discoverable,
+        connectable: p.connectable,
+        advData: p.advData,
+        manualReply: p.manualReply
+    }).then(function(st) {
+        renderBlePeriphStatus(st);
+        // 关键：服务建好 ≠ 在广播。后端会回报 advertising，别把 Aborted 显示成"一切正常"。
+        // 有 warning 就用 warning —— 它写的是真实原因（蓝牙关着 / 不支持外设角色…），
+        // 比一个状态码对用户有用得多。
+        if (st && st.advertising) {
+            showToast('已开始广播（' + shortUuid(st.service_uuid || '') + '）', 'success');
+        } else {
+            var why = (st && st.warning) ? st.warning : ('广播状态 ' + ((st && st.advertising_status) || '未知'));
+            showToast('服务已建好，但' + why, 'error');
+        }
+        return refreshBlePeriphStatus();
+    }).catch(function(e) {
+        pushBlePeriphLog({ text: '[启动失败] ' + e, dim: '' });
+        renderBlePeriphLog();
+        showToast('启动失败: ' + e, 'error');
+        // 失败也要回读一次真实状态：后端此时已经把服务收干净了，
+        // 但界面上的 _blePeriphRunning / 特征表可能还停在"上一次是运行中"
+        return refreshBlePeriphStatus();
+    }).then(function() {
+        if (btn) btn.disabled = false;
+    });
+}
+
+function stopBlePeriph() {
+    invoke('ble_periph_stop').then(function() {
+        // 停掉后待应答列表必然作废（后端会把它们按协议错误回掉）
+        _blePfPending = [];
+        renderBlePfPending();
+        showToast('已停止广播', 'info');
+        return refreshBlePeriphStatus();
+    }).catch(function(e) {
+        showToast('停止失败: ' + e, 'error');
+    });
+}
+
+// MARK: 状态与事件
+function refreshBlePeriphStatus() {
+    var pane = document.getElementById('ble-pane');
+    if (!pane || pane.style.display === 'none') return Promise.resolve(null);
+    return invoke('ble_periph_status').then(function(st) {
+        if (st) renderBlePeriphStatus(st);
+        return st;
+    }).catch(function(e) {
+        console.warn('[BLE从机] 取状态失败:', e);
+        return null;
+    });
+}
+
+function renderBlePeriphStatus(st) {
+    st = st || {};
+    _blePeriphRunning = !!st.running;
+    _blePeriphAdv = !!st.advertising;
+    _blePeriphStatusChars = st.characteristics || [];
+    var badge = document.getElementById('blePfBadge');
+    if (badge) {
+        var txt = '未启动', cls = '';
+        if (_blePeriphRunning) {
+            if (_blePeriphAdv) { txt = '广播中'; cls = 'on'; }
+            else { txt = '广播未生效 ' + (st.advertising_status || ''); cls = 'off'; }
+        }
+        badge.textContent = txt;
+        badge.className = 'ble-pf-badge' + (cls ? ' ' + cls : '');
+    }
+    var warn = document.getElementById('blePfWarn');
+    if (warn) {
+        warn.innerHTML = st.warning ? '<div class="ble-pf-warn"></div>' : '';
+        // 文案来自后端，仍走 textContent：不给自己留注入口
+        if (st.warning && warn.firstChild) warn.firstChild.textContent = st.warning;
+    }
+    var adapterEl = document.getElementById('blePfAdapter');
+    if (adapterEl) {
+        var a = st.adapter;
+        if (!a) {
+            adapterEl.textContent = '';
+        } else {
+            // 无线电访问权单独列出来：扫描可能仍可用，但广播一定起不来。
+            // 注意别把它当成"用户拒绝了权限"——非打包桌面进程/非交互会话也会返回 DeniedByUser
+            var access = '';
+            if (a.radio_access === 'DeniedByUser' || a.radio_access === 'DeniedBySystem') {
+                access = ' · 无线电访问权异常(' + a.radio_access + ')';
+            }
+            adapterEl.textContent = '本机适配器：' + (a.present ? '已找到' : '未找到')
+                + ' · BLE ' + (a.low_energy ? '支持' : '不支持')
+                // 只说"驱动声明了什么"，**不暗示一定能广播**：
+                // 本机实测就出现过「驱动声明支持外设角色、但带服务 UUID 的广播被系统拒绝」，
+                // 写"支持"会让人以为能用，白白浪费时间
+                + ' · 外设角色 ' + (a.peripheral_role ? '驱动已声明' : '未声明')
+                + (a.radio_state ? ' · 蓝牙 ' + (a.radio_state === 'On' ? '已开启' : a.radio_state) : '')
+                + access;
+            adapterEl.title = '「驱动已声明」只是适配器驱动程序上报的能力位，'
+                + '不代表一定能广播：GATT 服务必须广播服务 UUID，而部分适配器/驱动会拒绝这类广播帧'
+                + '（表现就是「开始广播」后状态变成 Aborted）。';
+        }
+    }
+    var startBtn = document.getElementById('blePfStartBtn');
+    if (startBtn) startBtn.textContent = _blePeriphRunning ? '重新广播' : '开始广播';
+    var stopBtn = document.getElementById('blePfStopBtn');
+    if (stopBtn) stopBtn.disabled = !_blePeriphRunning;
+    var svc = document.getElementById('blePfSvcLabel');
+    if (svc) svc.textContent = st.service_uuid ? ('服务 ' + shortUuid(st.service_uuid)) : '';
+    renderBlePeriphStatusChars();
+}
+
+function renderBlePeriphStatusChars() {
+    var box = document.getElementById('blePfChars');
+    if (!box) return;
+    if (!_blePeriphStatusChars.length) {
+        box.innerHTML = '<div class="ble-pf-empty">' + (_blePeriphRunning ? '该服务下没有特征' : '还未启动广播') + '</div>';
+        return;
+    }
+    box.innerHTML = _blePeriphStatusChars.map(function(c) {
+        var props = (c.props || []).map(function(p) { return BLE_PERIPH_PROP_LABEL[p] || p; }).join(' / ');
+        // 「设值」只在特征**可读**时才有意义：不可读的特征主机读不到，
+        // 它上面的值只反映"主机刚写进来什么"，给个设值按钮纯属误导
+        var canRead = (c.props || []).indexOf('read') >= 0;
+        var canNotify = (c.props || []).indexOf('notify') >= 0 || (c.props || []).indexOf('indicate') >= 0;
+        var sub = (c.subscribed > 0)
+            ? '<span class="ble-pf-badge on">已订阅 ' + c.subscribed + '</span>'
+            : '<span class="ble-pf-badge">未订阅</span>';
+        var val = c.value_hex ? bleFmtHex(c.value_hex) : '（空）';
+        return '<div class="ble-char">' +
+            '<span class="ble-char-uuid">0x' + escapeHtml(shortUuid(c.uuid || '')) + '</span>' +
+            '<span class="ble-char-name">' + escapeHtml(props) + '</span>' +
+            '<span class="ble-char-tag">' + (canRead ? '主机读到 ' : '主机写入 ') + escapeHtml(val) + '</span>' +
+            '<span class="ble-char-actions">' + sub +
+                (canRead ? '<span class="ble-ch-action ready" data-act="set" data-uuid="' + escapeHtml(c.uuid || '') + '" title="设置主机读到的值">' + BLE_ICONS.read + '</span>' : '') +
+                (canNotify ? '<span class="ble-ch-action ready" data-act="notify" data-uuid="' + escapeHtml(c.uuid || '') + '" title="向已订阅主机下发通知">' + BLE_ICONS.notify_enable + '</span>' : '') +
+            '</span>' +
+        '</div>';
+    }).join('');
+}
+
+function startBlePeriphPoll() {
+    if (!_blePeriphEventTimer) _blePeriphEventTimer = setInterval(pollBlePeriphEvents, 500);
+    if (!_blePeriphStatusTimer) _blePeriphStatusTimer = setInterval(refreshBlePeriphStatus, 2000);
+}
+
+function stopBlePeriphPoll() {
+    if (_blePeriphEventTimer) { clearInterval(_blePeriphEventTimer); _blePeriphEventTimer = null; }
+    if (_blePeriphStatusTimer) { clearInterval(_blePeriphStatusTimer); _blePeriphStatusTimer = null; }
+}
+
+function pollBlePeriphEvents() {
+    var pane = document.getElementById('ble-pane');
+    if (!pane || pane.style.display === 'none') return;
+    if (_bleMode !== 'periph' || !_blePeriphRunning) return;
+    invoke('ble_periph_poll_events').then(function(items) {
+        if (!items || !items.length) return;
+        items.forEach(function(ev) {
+            var line = blePeriphFmtEvent(ev);
+            var t = blePeriphTime(ev.ts);
+            if (t) line.text = t + '  ' + line.text;
+            pushBlePeriphLog(line);
+            // 手动应答模式：把待应答的写请求挂到右列等用户点接受/拒绝
+            if (ev.pending_id) {
+                if (ev.kind === 'write') {
+                    _blePfPending.push({ id: ev.pending_id, uuid: ev.uuid, hex: ev.value_hex || '' });
+                    renderBlePfPending();
+                } else if (ev.kind === 'write_reply') {
+                    _blePfPending = _blePfPending.filter(function(x) { return x.id !== ev.pending_id; });
+                    renderBlePfPending();
+                }
+            }
+        });
+        renderBlePeriphLog();
+    }).catch(function() {});
+}
+
+function pushBlePeriphLog(entry) {
+    if (!entry) return;
+    _blePeriphLog.push(entry);
+    if (_blePeriphLog.length > _blePeriphLogMax) _blePeriphLog.splice(0, _blePeriphLog.length - _blePeriphLogMax);
+}
+
+function renderBlePeriphLog() {
+    var log = document.getElementById('blePfLog');
+    if (!log) return;
+    if (!_blePeriphLog.length) {
+        log.textContent = '暂无事件。开始广播后，手机的读取 / 写入 / 订阅都会记在这里。';
+        return;
+    }
+    log.innerHTML = _blePeriphLog.map(function(e) {
+        return escapeHtml(e.text || '') + (e.dim ? '<span class="ble-log-dim">' + escapeHtml(e.dim) + '</span>' : '');
+    }).join('\n') + '\n';
+    log.scrollTop = log.scrollHeight;
+}
+
+function clearBlePeriphLog() {
+    _blePeriphLog = [];
+    renderBlePeriphLog();
+}
+
+// MARK: 运行时对特征的操作（设值 / 下发）
+function blePeriphCharAction(uuid, kind) {
+    if (!_blePeriphRunning) { showToast('请先开始广播', 'error'); return; }
+    var c = null;
+    _blePeriphStatusChars.forEach(function(x) { if (x.uuid === uuid) c = x; });
+    if (!c) return;
+    if (kind === 'notify') {
+        if (!c.subscribed) { showToast('还没有主机订阅该特征：先在手机侧打开通知', 'error'); return; }
+        openBleWriteModal(uuid, '下发通知', ['notify'], { kind: 'periph_notify' });
+    } else {
+        // 不可读的特征上设值没有意义（主机根本读不到），按钮本就不显示，这里再兜一层
+        if ((c.props || []).indexOf('read') < 0) { showToast('该特征不可读，设值无效', 'error'); return; }
+        openBleWriteModal(uuid, '设置可读值', ['write'], { kind: 'periph_set' });
+    }
+}
+
+// 从机模式下写入弹窗的发送分支（与主机模式共用同一个弹窗与解析逻辑）
+function sendBlePeriphWrite() {
+    var t = _bleWriteTarget;
+    if (!t) return;
+    if (!_blePeriphRunning) { showToast('请先开始广播', 'error'); return; }
+    var r = bleReadWriteModalInput();
+    if (r.error) { showToast(r.error, 'error'); return; }
+    var inp = document.getElementById('bleWriteValue');
+    var isNotify = (t.kind === 'periph_notify');
+    var label = isNotify ? '下发' : '设值';
+    pushBlePeriphLog({ text: '[' + label + '] 0x' + shortUuid(t.uuid) + ' ← 0x' + r.hex, dim: '' });
+    renderBlePeriphLog();
+    // 两条命令分开写：命令名保持字面量，"哪个命令被谁调用"能直接被静态检索到
+    var call = isNotify
+        ? invoke('ble_periph_notify', { charUuid: t.uuid, data: r.bytes })
+        : invoke('ble_periph_set_value', { charUuid: t.uuid, data: r.bytes });
+    call.then(function(res) {
+        var extra = (res && res.count != null) ? (' · ' + res.count + ' 个订阅者') : '';
+        showToast(label + '成功：0x' + r.hex + extra, 'success');
+        if (inp) { inp.value = ''; inp.focus(); }   // 发完一条即清空
+        return refreshBlePeriphStatus();
+    }).catch(function(e) {
+        pushBlePeriphLog({ text: '[' + label + '失败] ' + e, dim: '' });
+        renderBlePeriphLog();
+        showToast(label + '失败: ' + e, 'error');
+    });
+}
+
 
 /* ===== ADB 调试面板（前端壳） ===== */
 function openAdb() {

@@ -4266,6 +4266,1763 @@ fn bt_addr_to_u64(s: &str) -> Option<u64> {
     u64::from_str_radix(&hex, 16).ok()
 }
 
+fn ble_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
+}
+
+/* ===== BLE 从机（Peripheral / GATT Server，WinRT） =====
+   btleplug 是 central-only，没有外设角色，所以这里直接用 WinRT：
+   建本地 GATT 服务 → StartAdvertisingWithParameters，本机作为从机被主机搜到并连接；
+   主机的读 / 写 / 订阅都通过 GattLocalCharacteristic 的事件回调转成前端可见的事件。
+
+   ⚠ 平台限制（不是缺陷，已记入 doc/BLE_PERIPHERAL.md）：
+   1) 广播里的设备名由 Windows 决定（系统蓝牙名称），GattServiceProvider 改不了 ——
+      手机上看到的是电脑名，不是这里配的服务名；
+   2) 一个 GattServiceProvider 只广播它自己那一个服务 UUID；
+   3) 没有任何主机订阅时 NotifyValueAsync 无处可发，必须先被订阅；
+   4) 同一时刻只能有一个进程持有同一个服务 UUID，重复「开始广播」要先收掉上一个。 */
+
+use windows::Devices::Bluetooth::BluetoothError;
+use windows::Devices::Bluetooth::GenericAttributeProfile::{
+    GattCharacteristicProperties, GattCommunicationStatus, GattLocalCharacteristic,
+    GattLocalCharacteristicParameters, GattLocalDescriptorParameters, GattProtectionLevel,
+    GattReadRequestedEventArgs, GattServiceProvider, GattServiceProviderAdvertisementStatus,
+    GattServiceProviderAdvertisementStatusChangedEventArgs, GattServiceProviderAdvertisingParameters,
+    GattSession, GattWriteOption, GattWriteRequest, GattWriteRequestedEventArgs,
+};
+use windows::Storage::Streams::{DataReader, DataWriter, IBuffer};
+
+/// 从机侧的一个本地特征
+struct BlePeriphChar {
+    uuid: String,
+    /// 属性名（与主机面板同一套命名：read / write / write_without_response / notify / indicate）
+    props: Vec<String>,
+    /// 主机读到的值。收到主机写入时同步更新，这样「主机写 → 本机读回」的闭环成立。
+    value: std::sync::Arc<Mutex<Vec<u8>>>,
+    /// 当前订阅该特征的主机数（由 SubscribedClientsChanged 维护）
+    subscribed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// 单次通知的最大字节数（= 协商后的 ATT_MTU - 3，由 GattSubscribedClient 给出）。
+    /// 0 表示还没有订阅者、还不知道。
+    max_notify: std::sync::Arc<std::sync::atomic::AtomicU16>,
+    /// 该特征下建出来的描述符 UUID（如 2901 用户描述）
+    descriptors: Vec<String>,
+    /// 持有它才能下发通知（WinRT 要求特征对象存活）
+    characteristic: GattLocalCharacteristic,
+}
+
+/// 一条等待用户决定如何应答的写请求。
+/// 手动应答模式下写回调**不立即 Respond**，而是把请求与 Deferral 存下来等前端决定 ——
+/// 调试主机侧的错误处理逻辑时必须能主动拒绝（返回协议错误码），而不是只能接受。
+struct BlePeriphPendingWrite {
+    request: GattWriteRequest,
+    deferral: windows::Foundation::Deferral,
+    uuid: String,
+}
+
+/// 手动应答的兜底超时：到点按协议错误回过去，不能让主机一直挂着。
+const BLE_PERIPH_REPLY_TIMEOUT_MS: u64 = 20_000;
+
+/// 下发前的长度校验（纯函数，便于无头断言）。
+/// 超长时 WinRT 只会给一个底层错误（甚至静默截断），提前挡住并说清"该切多少字节"要好得多。
+fn ble_periph_notify_size_check(len: usize, max_notify: u16) -> Result<(), String> {
+    // 0 = 还没有订阅者 / 没拿到 MTU：不做长度判断，交给下面的"没有订阅者"分支去报
+    if max_notify == 0 || len <= max_notify as usize {
+        return Ok(());
+    }
+    Err(format!(
+        "下发数据 {len} 字节超过单次通知上限 {max_notify} 字节（= 协商 MTU - 3）：请拆成多包发送",
+    ))
+}
+
+/// 按写请求的 Offset 落值（纯函数，便于无头断言）。
+/// 长写（Prepare Write / Execute Write）会带 Offset；以前直接忽略它，
+/// 于是多段写会被当成互相覆盖的独立写入，值就乱了。
+fn ble_periph_apply_write(value: &mut Vec<u8>, offset: usize, data: &[u8]) {
+    if offset == 0 {
+        // 普通写：整段替换（也顺带把之前更长的旧值截掉）
+        *value = data.to_vec();
+        return;
+    }
+    if value.len() < offset + data.len() {
+        value.resize(offset + data.len(), 0);
+    }
+    value[offset..offset + data.len()].copy_from_slice(data);
+}
+
+/// UUID → 16 位短写（仅当它落在 Bluetooth SIG 基址下）
+fn ble_periph_uuid_short(u: &uuid::Uuid) -> Option<u16> {
+    const BASE_LOW96: u128 = 0x0000_1000_8000_0080_5F9B_34FB;
+    let v = u.as_u128();
+    let mask: u128 = (1u128 << 96) - 1;
+    if (v & mask) == BASE_LOW96 {
+        Some((v >> 96) as u16)
+    } else {
+        None
+    }
+}
+
+/// WinRT 会**自己发布**这一组标准描述符，手工创建会被拒。
+/// 真机实测（0x2901）：`所提供的描述符 uuid 已保留，并且将由系统自动发布。(0x80070057)`。
+/// 与其把这句底层 HRESULT 甩给用户，不如在本地就挡住并说清楚该用什么。
+fn ble_periph_desc_reserved(short: Option<u16>) -> Option<&'static str> {
+    match short {
+        Some(v) if (0x2900..=0x290F).contains(&v) => Some(
+            "这是 Bluetooth SIG 标准描述符（0x2900~0x290F：用户描述 / CCCD / 表示格式等），\
+             由系统按特征自动发布，不能也不必手工创建；需要附加信息请改用厂商自定义 UUID（128 位）",
+        ),
+        _ => None,
+    }
+}
+
+/// 特征是否可读。设值只对可读特征有意义 —— 不可读的特征主机取不到，
+/// 那个值只反映"主机刚写进来什么"。
+fn ble_periph_props_readable(props: &[String]) -> bool {
+    props.iter().any(|p| p == "read")
+}
+
+/// 传统广播总长只有 31 字节（flags 3 + 服务数据段头 4 + UUID/载荷）。
+/// 这里给的是保守提示值，**真正的判定以后端返回的 `StartedWithoutAllAdvertisementData` 为准**。
+const BLE_PERIPH_ADV_DATA_SAFE: usize = 24;
+
+fn ble_periph_adv_data_warn(len: usize) -> Option<String> {
+    if len > BLE_PERIPH_ADV_DATA_SAFE {
+        Some(format!(
+            "广播服务数据填了 {len} 字节，偏长：传统广播总共只有 31 字节（还要放 flags 与服务 UUID），\
+             可能被截断 —— 看下面的广播状态是否为「部分数据被截断」"
+        ))
+    } else {
+        None
+    }
+}
+
+struct BlePeripheralState {
+    /// 持有 provider 才能维持广播；置 None 即释放服务注册
+    provider: Mutex<Option<GattServiceProvider>>,
+    service_uuid: Mutex<Option<String>>,
+    chars: Mutex<Vec<BlePeriphChar>>,
+    /// 最近一次探测到的适配器能力（启动时刷新）
+    adapter: Mutex<BlePeriphAdapterInfo>,
+    /// 手动应答模式下待处理的写请求（id → 请求 + Deferral）
+    pending_writes: std::sync::Arc<Mutex<std::collections::HashMap<u64, BlePeriphPendingWrite>>>,
+    /// 待应答 id 序号
+    write_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// 是否启用「写入需手动应答」
+    manual_write_reply: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// 主机动作事件队列（写入 / 读取 / 订阅 / 广播状态），前端轮询取走
+    events: std::sync::Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>,
+    running: std::sync::atomic::AtomicBool,
+}
+
+/// 事件缓冲上限：前端 500ms 拉一次；不设限的话主机持续写会无限堆积。
+const BLE_PERIPH_EVENT_MAX: usize = 400;
+/// 一个服务下最多允许建多少个特征（Windows 的属性表空间有限，超了 CreateCharacteristicAsync 会失败）
+const BLE_PERIPH_CHAR_MAX: usize = 16;
+
+fn ble_periph_emit(
+    events: &std::sync::Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>,
+    mut item: serde_json::Value,
+) {
+    if let Some(o) = item.as_object_mut() {
+        o.insert("ts".to_string(), json!(chrono::Utc::now().timestamp_millis()));
+    }
+    let mut q = events.lock().unwrap_or_else(|e| e.into_inner());
+    while q.len() >= BLE_PERIPH_EVENT_MAX {
+        q.pop_front();
+    }
+    q.push_back(item);
+}
+
+/// 数据类事件（写入 / 读取 / 下发）的统一载荷
+fn ble_periph_data_event(kind: &str, uuid: &str, value: &[u8], peer: &str, note: &str) -> serde_json::Value {
+    json!({
+        "kind": kind,
+        "uuid": uuid,
+        "value_hex": ble_hex(value),
+        "len": value.len(),
+        "peer": peer,
+        "note": note,
+    })
+}
+
+/// 适配器能力探测结果（启动从机前先问一遍）。
+/// 存在的意义：广播失败时 `StartAdvertisingWithParameters` 只会给一个 `Aborted`，
+/// 且 `AdvertisementStatusChanged` 里的 `BluetoothError` 实测是 `Success`（等于没说），
+/// 所以"真正的原因"只能靠自己探 —— 没适配器 / 不支持 BLE / 蓝牙关着 / 没有无线电访问权 /
+/// 不支持外设角色。
+#[derive(Clone, Default)]
+struct BlePeriphAdapterInfo {
+    present: bool,
+    low_energy: bool,
+    peripheral_role: bool,
+    central_role: bool,
+    /// 电源状态："On" / "Off" / "Disabled" / "Unknown"（取不到时为空）
+    radio_state: String,
+    /// 无线电访问权："Allowed" / "DeniedByUser" / "DeniedBySystem" / "Unspecified" / ""（未取到）
+    radio_access: String,
+}
+
+impl BlePeriphAdapterInfo {
+    fn to_json(&self) -> serde_json::Value {
+        json!({
+            "present": self.present,
+            "low_energy": self.low_energy,
+            "peripheral_role": self.peripheral_role,
+            "central_role": self.central_role,
+            "radio_state": self.radio_state,
+            "radio_access": self.radio_access,
+        })
+    }
+}
+
+/// 按适配器能力给出"为什么广播不起来"的可操作结论（纯函数，便于无头断言）。
+/// 返回 `None` 表示能力层面没问题，广播失败要往别处找。
+fn ble_periph_probe_warning(i: &BlePeriphAdapterInfo) -> Option<&'static str> {
+    if !i.present {
+        return Some("本机没有蓝牙适配器：无法作为 BLE 从机广播");
+    }
+    if !i.low_energy {
+        return Some("当前蓝牙适配器不支持 BLE（低功耗蓝牙）：无法作为 BLE 从机广播");
+    }
+    if i.radio_state == "Off" {
+        return Some("蓝牙已关闭：请在「Windows 设置 → 蓝牙和其他设备」中打开蓝牙后重试");
+    }
+    if i.radio_state == "Disabled" {
+        return Some("蓝牙被禁用（可能是飞行模式或设备管理器里停用了适配器）：启用后重试");
+    }
+    if !i.peripheral_role {
+        return Some("该适配器不支持 BLE 外设角色：硬件层面无法作为从机被搜索到（换适配器或用手机当从机）");
+    }
+    // 无线电访问权异常：桌面进程拿不到 AppContainer 身份时 RequestAccessAsync 也会返回这个，
+    // 不一定等于"用户真的拒绝了"，所以文案只说现象与两种可能，不下断言
+    if i.radio_access == "DeniedByUser" || i.radio_access == "DeniedBySystem" {
+        return Some("无线电访问权未获授权（RadioAccessStatus 非 Allowed）：可能是隐私设置/组策略拒绝，也可能是非交互会话无法弹窗授权；本项不一定会挡住扫描，但会挡住广播");
+    }
+    None
+}
+
+/// 探测默认蓝牙适配器的能力。探测本身也可能失败（比如蓝牙栈没起来），
+/// 那种情况下把所有能力都当 false，让上层给出"没有可用适配器"的结论。
+async fn ble_periph_probe_adapter() -> BlePeriphAdapterInfo {
+    let mut info = BlePeriphAdapterInfo::default();
+    // 访问权先问：它是"能不能广播"的前置条件，且扫描用不到它
+    if let Ok(op) = windows::Devices::Radios::Radio::RequestAccessAsync() {
+        if let Ok(st) = op.await {
+            info.radio_access = match st {
+                windows::Devices::Radios::RadioAccessStatus::Allowed => "Allowed",
+                windows::Devices::Radios::RadioAccessStatus::DeniedByUser => "DeniedByUser",
+                windows::Devices::Radios::RadioAccessStatus::DeniedBySystem => "DeniedBySystem",
+                _ => "Unspecified",
+            }
+            .to_string();
+        }
+    }
+    let adapter = {
+        let op = match windows::Devices::Bluetooth::BluetoothAdapter::GetDefaultAsync() {
+            Ok(o) => o,
+            Err(_) => return info,
+        };
+        match op.await {
+            Ok(a) => a,
+            Err(_) => return info,
+        }
+    };
+    info.present = true;
+    info.low_energy = adapter.IsLowEnergySupported().unwrap_or(false);
+    info.peripheral_role = adapter.IsPeripheralRoleSupported().unwrap_or(false);
+    info.central_role = adapter.IsCentralRoleSupported().unwrap_or(false);
+    if let Ok(op) = adapter.GetRadioAsync() {
+        if let Ok(radio) = op.await {
+            info.radio_state = match radio.State() {
+                Ok(windows::Devices::Radios::RadioState::On) => "On",
+                Ok(windows::Devices::Radios::RadioState::Off) => "Off",
+                Ok(windows::Devices::Radios::RadioState::Disabled) => "Disabled",
+                _ => "Unknown",
+            }
+            .to_string();
+        }
+    }
+    info
+}
+
+/// UUID 文本 → WinRT GUID（同时回一个规范化后的字符串给前端回显）。
+/// 支持 128 位完整写法，也支持 `FFE0` / `0xFFE0` 这类短写法（按 Bluetooth SIG 基址展开）。
+fn ble_periph_guid(s: &str) -> Result<(windows::core::GUID, String), String> {
+    const BASE: u128 = 0x0000_0000_0000_1000_8000_0080_5F9B_34FB;
+    let t = s.trim();
+    let hex = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
+    let u = if (hex.len() == 4 || hex.len() == 8) && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        let v = u128::from_str_radix(hex, 16).map_err(|_| format!("UUID 格式不正确: {s}"))?;
+        uuid::Uuid::from_u128(BASE | (v << 96))
+    } else {
+        uuid::Uuid::parse_str(t).map_err(|_| {
+            "UUID 格式不正确（例：6E400001-B5A3-F393-E0A9-E50E24DCCA9E，或短写 0xFFE0）".to_string()
+        })?
+    };
+    Ok((windows::core::GUID::from_u128(u.as_u128()), u.to_string()))
+}
+
+/// 属性名 → WinRT 属性位。未知名字直接报错，避免"配了不生效的属性还去怀疑设备"。
+fn ble_periph_props_from_names(names: &[String]) -> Result<GattCharacteristicProperties, String> {
+    let mut p = GattCharacteristicProperties::None;
+    for n in names {
+        p |= match n.trim() {
+            "read" => GattCharacteristicProperties::Read,
+            "write" => GattCharacteristicProperties::Write,
+            "write_without_response" => GattCharacteristicProperties::WriteWithoutResponse,
+            "notify" => GattCharacteristicProperties::Notify,
+            "indicate" => GattCharacteristicProperties::Indicate,
+            "broadcast" => GattCharacteristicProperties::Broadcast,
+            other => return Err(format!("不支持的属性: {other}")),
+        };
+    }
+    if p == GattCharacteristicProperties::None {
+        return Err("特征至少要有一个属性".to_string());
+    }
+    Ok(p)
+}
+
+fn ble_periph_props_to_names(p: GattCharacteristicProperties) -> Vec<&'static str> {
+    let mut v = Vec::new();
+    if p.contains(GattCharacteristicProperties::Read) { v.push("read"); }
+    if p.contains(GattCharacteristicProperties::Write) { v.push("write"); }
+    if p.contains(GattCharacteristicProperties::WriteWithoutResponse) { v.push("write_without_response"); }
+    if p.contains(GattCharacteristicProperties::Notify) { v.push("notify"); }
+    if p.contains(GattCharacteristicProperties::Indicate) { v.push("indicate"); }
+    if p.contains(GattCharacteristicProperties::Broadcast) { v.push("broadcast"); }
+    v
+}
+
+fn ble_periph_adv_status(s: GattServiceProviderAdvertisementStatus) -> &'static str {
+    match s.0 {
+        0 => "Created",
+        1 => "Stopped",
+        2 => "Started",
+        3 => "Aborted",
+        4 => "StartedWithoutAllAdvertisementData",
+        _ => "Unknown",
+    }
+}
+
+/// WinRT 的 GattSession.DeviceId 形如 `BluetoothLE#BluetoothLE<本机MAC>-<对端MAC>`。
+/// 取末尾的 MAC 更利于用户辨认（"到底是哪台手机连上来的"）；解析不出来就原样返回。
+fn ble_periph_parse_device_id(raw: &str) -> String {
+    if let Some(pos) = raw.rfind('-') {
+        let tail = &raw[pos + 1..];
+        let ok = tail.len() == 17
+            && tail.as_bytes().iter().enumerate().all(|(i, b)| {
+                if i % 3 == 2 { *b == b':' } else { b.is_ascii_hexdigit() }
+            });
+        if ok {
+            return tail.to_ascii_uppercase();
+        }
+    }
+    raw.to_string()
+}
+
+fn ble_periph_peer_of(session: Option<&GattSession>) -> String {
+    let s = match session {
+        Some(s) => s,
+        None => return String::new(),
+    };
+    match s.DeviceId().and_then(|d| d.Id()) {
+        Ok(h) => ble_periph_parse_device_id(&h.to_string()),
+        Err(_) => String::new(),
+    }
+}
+
+/// 字节 → WinRT IBuffer（特征值 / 广播服务数据都要用）
+fn ble_periph_to_buffer(data: &[u8]) -> Result<IBuffer, String> {
+    let w = DataWriter::new().map_err(|e| format!("创建数据写入器失败: {e}"))?;
+    w.WriteBytes(data).map_err(|e| format!("写入缓冲失败: {e}"))?;
+    w.DetachBuffer().map_err(|e| format!("取出缓冲失败: {e}"))
+}
+
+/// WinRT IBuffer → 字节
+fn ble_periph_from_buffer(buf: &IBuffer) -> Vec<u8> {
+    let len = buf.Length().unwrap_or(0) as usize;
+    if len == 0 {
+        return Vec::new();
+    }
+    let mut out = vec![0u8; len];
+    if let Ok(r) = DataReader::FromBuffer(buf) {
+        let _ = r.ReadBytes(&mut out);
+    }
+    out
+}
+
+/// 给一个本地特征挂上读 / 写 / 订阅三组回调。
+/// 读和写都要先取 Deferral 再异步应答（WinRT 的标准姿势）——
+/// 同步 block_on 会占住回调线程，一旦完成回调也要同一个线程就死锁。
+fn ble_periph_attach_handlers(
+    ch: &GattLocalCharacteristic,
+    uuid: &str,
+    value: std::sync::Arc<Mutex<Vec<u8>>>,
+    subscribed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    max_notify: std::sync::Arc<std::sync::atomic::AtomicU16>,
+    pending_writes: std::sync::Arc<Mutex<std::collections::HashMap<u64, BlePeriphPendingWrite>>>,
+    write_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    manual_write_reply: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    events: std::sync::Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>,
+) -> Result<(), String> {
+    // ---- 主机读：把当前值回过去 ----
+    {
+        let value = value.clone();
+        let events = events.clone();
+        let uuid = uuid.to_string();
+        ch.ReadRequested(&windows::Foundation::TypedEventHandler::<
+            GattLocalCharacteristic,
+            GattReadRequestedEventArgs,
+        >::new(move |_sender, args| {
+            let args = match args.as_ref() {
+                Some(a) => a,
+                None => return Ok(()),
+            };
+            let deferral = args.GetDeferral()?;
+            let peer = ble_periph_peer_of(args.Session().ok().as_ref());
+            let op = match args.GetRequestAsync() {
+                Ok(o) => o,
+                Err(e) => {
+                    let _ = deferral.Complete();
+                    return Err(e);
+                }
+            };
+            let value = value.clone();
+            let events = events.clone();
+            let uuid = uuid.clone();
+            tauri::async_runtime::spawn(async move {
+                let bytes = value.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let mut note = String::new();
+                if let Ok(req) = op.await {
+                    match ble_periph_to_buffer(&bytes) {
+                        Ok(buf) => {
+                            if let Err(e) = req.RespondWithValue(&buf) {
+                                note = format!("应答失败: {e}");
+                            }
+                        }
+                        Err(e) => {
+                            let _ = req.RespondWithProtocolError(0x80); // 0x80 = Application Error
+                            note = e;
+                        }
+                    }
+                }
+                ble_periph_emit(&events, ble_periph_data_event("read", &uuid, &bytes, &peer, &note));
+                let _ = deferral.Complete();
+            });
+            Ok(())
+        }))
+        .map_err(|e| format!("注册读回调失败: {e}"))?;
+    }
+
+    // ---- 主机写：记录 + 更新本地值 + 按需回写响应 ----
+    {
+        let value = value.clone();
+        let events = events.clone();
+        let uuid = uuid.to_string();
+        ch.WriteRequested(&windows::Foundation::TypedEventHandler::<
+            GattLocalCharacteristic,
+            GattWriteRequestedEventArgs,
+        >::new(move |_sender, args| {
+            let args = match args.as_ref() {
+                Some(a) => a,
+                None => return Ok(()),
+            };
+            let deferral = args.GetDeferral()?;
+            let peer = ble_periph_peer_of(args.Session().ok().as_ref());
+            let op = match args.GetRequestAsync() {
+                Ok(o) => o,
+                Err(e) => {
+                    let _ = deferral.Complete();
+                    return Err(e);
+                }
+            };
+            let value = value.clone();
+            let events = events.clone();
+            let uuid = uuid.clone();
+            let pending = pending_writes.clone();
+            let seq = write_seq.clone();
+            let manual = manual_write_reply.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut bytes = Vec::new();
+                let mut note = String::new();
+                let mut offset = 0usize;
+                if let Ok(req) = op.await {
+                    if let Ok(buf) = req.Value() {
+                        bytes = ble_periph_from_buffer(&buf);
+                    }
+                    offset = req.Offset().unwrap_or(0) as usize;
+                    // 落值：**按 Offset 写**。长写会被拆成多段，忽略 Offset 会把值写乱。
+                    {
+                        let mut v = value.lock().unwrap_or_else(|e| e.into_inner());
+                        ble_periph_apply_write(&mut v, offset, &bytes);
+                    }
+                    // 「无响应写」调 Respond() 会返回 E_ILLEGAL_METHOD_CALL，必须分开处理
+                    match req.Option() {
+                        Ok(GattWriteOption::WriteWithResponse) => {
+                            if manual.load(std::sync::atomic::Ordering::Relaxed) {
+                                // 手动应答：存下请求与 Deferral 等前端决定，这里**不** Complete
+                                let id = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                                pending
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .insert(id, BlePeriphPendingWrite {
+                                        request: req,
+                                        deferral: deferral.clone(),
+                                        uuid: uuid.clone(),
+                                    });
+                                ble_periph_emit(&events, json!({
+                                    "kind": "write",
+                                    "uuid": uuid,
+                                    "value_hex": ble_hex(&bytes),
+                                    "len": bytes.len(),
+                                    "peer": peer,
+                                    "note": format!("待应答 #{id}"),
+                                    "offset": offset,
+                                    "pending_id": id,
+                                }));
+                                // 兜底：用户一直不理也不能让主机永远挂着
+                                let pending2 = pending.clone();
+                                let events2 = events.clone();
+                                let uuid2 = uuid.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    let _ = tauri::async_runtime::spawn_blocking(|| {
+                                        std::thread::sleep(std::time::Duration::from_millis(
+                                            BLE_PERIPH_REPLY_TIMEOUT_MS,
+                                        ))
+                                    })
+                                    .await;
+                                    let taken = pending2
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .remove(&id);
+                                    if let Some(w) = taken {
+                                        let _ = w.request.RespondWithProtocolError(0x80);
+                                        let _ = w.deferral.Complete();
+                                        ble_periph_emit(&events2, json!({
+                                            "kind": "write_reply",
+                                            "uuid": uuid2,
+                                            "pending_id": id,
+                                            "note": format!("#{id} 超时未应答，已按协议错误 0x80 回复"),
+                                        }));
+                                    }
+                                });
+                                return;
+                            }
+                            note = "写响应".to_string();
+                            if let Err(e) = req.Respond() {
+                                note = format!("写响应失败: {e}");
+                            }
+                        }
+                        Ok(_) => note = "无响应写".to_string(),
+                        Err(e) => note = format!("读取写入类型失败: {e}"),
+                    }
+                }
+                if offset > 0 {
+                    note = format!("{note} · offset {offset}");
+                }
+                let cur = value.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                ble_periph_emit(&events, ble_periph_data_event("write", &uuid, &cur, &peer, &note));
+                let _ = deferral.Complete();
+            });
+            Ok(())
+        }))
+        .map_err(|e| format!("注册写回调失败: {e}"))?;
+    }
+
+    // ---- 订阅变化：主机开了/关了通知 ----
+    {
+        let events = events.clone();
+        let uuid = uuid.to_string();
+        let max_notify = max_notify.clone();
+        ch.SubscribedClientsChanged(&windows::Foundation::TypedEventHandler::<
+            GattLocalCharacteristic,
+            windows::core::IInspectable,
+        >::new(move |sender, _args| {
+            let sender = match sender.as_ref() {
+                Some(s) => s,
+                None => return Ok(()),
+            };
+            let mut peers = Vec::new();
+            // 单次通知的最大字节数（= 协商后的 ATT_MTU - 3）。下发长数据被截断/失败时，
+            // 用户最需要知道的就是这个数字，所以订阅时就一并报出来。
+            let mut max_notify_size: u16 = 0;
+            let count = match sender.SubscribedClients() {
+                Ok(list) => {
+                    let n = list.Size().unwrap_or(0);
+                    for i in 0..n {
+                        if let Ok(c) = list.GetAt(i) {
+                            if let Ok(s) = c.Session() {
+                                peers.push(ble_periph_peer_of(Some(&s)));
+                            }
+                            if let Ok(m) = c.MaxNotificationSize() {
+                                max_notify_size = max_notify_size.max(m);
+                            }
+                        }
+                    }
+                    n
+                }
+                Err(_) => 0,
+            };
+            subscribed.store(count as usize, std::sync::atomic::Ordering::Relaxed);
+            max_notify.store(max_notify_size, std::sync::atomic::Ordering::Relaxed);
+            ble_periph_emit(&events, json!({
+                "kind": "subscribe",
+                "uuid": uuid,
+                "subscribed": count,
+                "max_notify": max_notify_size,
+                "peer": peers.join(", "),
+            }));
+            Ok(())
+        }))
+        .map_err(|e| format!("注册订阅回调失败: {e}"))?;
+    }
+
+    Ok(())
+}
+
+/// 建服务提供者。重复「开始广播」时上一个 provider 刚释放，Windows 可能还占着这个 UUID
+/// （ResourceInUse 等）—— 等一拍重试一次即可。
+async fn ble_periph_create_provider(guid: windows::core::GUID) -> Result<GattServiceProvider, String> {
+    let mut last = String::new();
+    for attempt in 0..2 {
+        if attempt > 0 {
+            let _ = tauri::async_runtime::spawn_blocking(|| {
+                std::thread::sleep(std::time::Duration::from_millis(300))
+            })
+            .await;
+        }
+        let op = GattServiceProvider::CreateAsync(guid)
+            .map_err(|e| format!("创建 GATT 服务失败: {e}"))?;
+        let res = op.await.map_err(|e| format!("创建 GATT 服务失败: {e}"))?;
+        let err = res.Error().map_err(|e| format!("读取服务错误码失败: {e}"))?;
+        if err == BluetoothError::Success {
+            return res.ServiceProvider().map_err(|e| format!("获取服务提供者失败: {e}"));
+        }
+        last = format!("{err:?}");
+        // ResourceInUse 是文档里的"UUID 还被占着"；其余错误码 Windows 之间不一致，
+        // 多试一次没有副作用（多等 300ms），不值得为它写一张映射表
+    }
+    Err(format!(
+        "创建 GATT 服务失败: {last}（该服务 UUID 可能已被系统或其它程序占用）"
+    ))
+}
+
+fn ble_periph_stop_inner(state: &BlePeripheralState) -> bool {
+    let provider = state.provider.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let was = provider.is_some();
+    if let Some(p) = provider {
+        let _ = p.StopAdvertising();
+    }
+    // 待应答的写请求要收干净：不回的话主机会一直挂着等响应
+    {
+        let mut pending = state.pending_writes.lock().unwrap_or_else(|e| e.into_inner());
+        for (_, w) in pending.drain() {
+            let _ = w.request.RespondWithProtocolError(0x80);
+            let _ = w.deferral.Complete();
+        }
+    }
+    state.chars.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    *state.service_uuid.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    state.running.store(false, std::sync::atomic::Ordering::Relaxed);
+    was
+}
+
+/// 等广播状态落定：`StartAdvertisingWithParameters` 返回 Ok **不代表真的在广播**。
+/// 没有蓝牙适配器或蓝牙被关时状态会停在 `Aborted`（本机实测：无射频环境下必然如此）。
+async fn ble_periph_settle_adv_status(provider: &GattServiceProvider) -> &'static str {
+    let mut status = "Created";
+    for _ in 0..8 {
+        match provider.AdvertisementStatus() {
+            Ok(s) => {
+                status = ble_periph_adv_status(s);
+                // Created/Stopped 是"还没起来"的中间态，继续等；Started/Aborted 是终态
+                if status != "Created" && status != "Stopped" {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+        let _ = tauri::async_runtime::spawn_blocking(|| {
+            std::thread::sleep(std::time::Duration::from_millis(200))
+        })
+        .await;
+    }
+    status
+}
+
+fn ble_periph_adv_ok(status: &str) -> bool {
+    status == "Started" || status == "StartedWithoutAllAdvertisementData"
+}
+
+/// 广播没起来时的可操作提示。
+/// 走到这里说明能力位与电源状态都正常、权限也没有被策略拒绝 —— 本机实测（Intel 适配器）就是这种情况。
+/// **逐字段实测的结论**：这块射频能发广播（仅厂商数据时 `Started`），但带「广播名」或
+/// 「服务 UUID」的广播一律被拒（`E_INVALIDARG`）；而 `GattServiceProvider` 必须广播自己的
+/// 服务 UUID，所以恒 `Aborted`。故文案指向"服务 UUID 类广播被拒"这个真实现象，
+/// 而不是笼统地让人换适配器。
+fn ble_periph_adv_warning(status: &str) -> Option<&'static str> {
+    match status {
+        "Aborted" => Some(
+            "广播被系统中止：本机实测**能**发广播，但带「广播名 / 服务 UUID」的广播会被系统拒绝，\
+             而 GATT 服务必须广播服务 UUID。可能是该适配器/驱动的限制，也可能是非打包桌面应用的\
+             平台限制（缺应用标识）。可用一个已打包的 BLE 外设工具在本机试同一个服务来区分 —— \
+             详见 doc/BLE_PERIPHERAL.md 第 5 节",
+        ),
+        "StartedWithoutAllAdvertisementData" => Some(
+            "广播已启动，但**部分数据没发出去**（被系统截断）：传统广播总共只有 31 字节，\
+             服务数据/UUID 加起来超了。请把「广播服务数据」改短或留空",
+        ),
+        "Created" | "Stopped" => Some("广播尚未生效（状态仍为未启动），可停止后重试"),
+        _ => None,
+    }
+}
+
+fn ble_periph_status_json(state: &BlePeripheralState) -> serde_json::Value {
+    let advertising_status = {
+        let p = state.provider.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match p.and_then(|p| p.AdvertisementStatus().ok()) {
+            Some(s) => ble_periph_adv_status(s),
+            None => "Stopped",
+        }
+    };
+    let chars: Vec<serde_json::Value> = state
+        .chars
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|c| {
+            json!({
+                "uuid": c.uuid,
+                "props": c.props,
+                "value_hex": ble_hex(&c.value.lock().unwrap_or_else(|e| e.into_inner())),
+                "subscribed": c.subscribed.load(std::sync::atomic::Ordering::Relaxed),
+                "max_notify": c.max_notify.load(std::sync::atomic::Ordering::Relaxed),
+                "descriptors": c.descriptors,
+            })
+        })
+        .collect();
+    let service_uuid = state.service_uuid.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let adapter = state.adapter.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let running = state.running.load(std::sync::atomic::Ordering::Relaxed);
+    let manual_reply = state.manual_write_reply.load(std::sync::atomic::Ordering::Relaxed);
+    let pending_count = state.pending_writes.lock().unwrap_or_else(|e| e.into_inner()).len();
+    // 告警分两级：
+    //  - **阻断级**（能力/权限问题）只在广播确实没起来时报 —— 广播起来就别吓唬人，能力位有假阴性；
+    //  - **提示级**（广播起来了但数据被截断）任何时候都要报，否则用户不知道发出去的不全。
+    let blocking: Option<String> = if !running || ble_periph_adv_ok(advertising_status) {
+        None
+    } else {
+        ble_periph_probe_warning(&adapter)
+            .map(|s| s.to_string())
+            .or_else(|| ble_periph_adv_warning(advertising_status).map(|s| s.to_string()))
+    };
+    let warning = blocking.or_else(|| {
+        if running {
+            ble_periph_adv_warning(advertising_status).map(|s| s.to_string())
+        } else {
+            None
+        }
+    });
+    json!({
+        "running": running,
+        // running 只表示"服务建好了"；真正对外可被搜到要看 advertising。
+        // 分开报是为了不让"建好了服务但广播被中止"显示成一切正常。
+        "advertising": running && ble_periph_adv_ok(advertising_status),
+        "advertising_status": advertising_status,
+        "warning": warning,
+        "adapter": adapter.to_json(),
+        "manual_write_reply": manual_reply,
+        "pending_writes": pending_count,
+        "service_uuid": service_uuid,
+        "characteristics": chars,
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct BlePeriphDescSpec {
+    uuid: String,
+    #[serde(default)]
+    value: Vec<u8>,
+}
+
+#[derive(serde::Deserialize)]
+struct BlePeriphCharSpec {
+    uuid: String,
+    props: Vec<String>,
+    #[serde(default)]
+    value: Vec<u8>,
+    /// 该特征下的自定义描述符（可选）
+    #[serde(default)]
+    descriptors: Vec<BlePeriphDescSpec>,
+}
+
+/// 启动从机广播：建本地 GATT 服务（1 个服务 + N 个特征）并开始广播。
+/// 重复调用会先收掉上一次，避免残留 provider 抢同一个 UUID。
+async fn ble_periph_start_inner(
+    state: &BlePeripheralState,
+    service_uuid: String,
+    characteristics: Vec<BlePeriphCharSpec>,
+    discoverable: Option<bool>,
+    connectable: Option<bool>,
+    adv_data: Option<Vec<u8>>,
+    manual_reply: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    if characteristics.is_empty() {
+        return Err("至少需要一个特征".to_string());
+    }
+    if characteristics.len() > BLE_PERIPH_CHAR_MAX {
+        return Err(format!("特征数量上限 {BLE_PERIPH_CHAR_MAX} 个"));
+    }
+    ble_periph_stop_inner(state);
+    state
+        .manual_write_reply
+        .store(manual_reply.unwrap_or(false), std::sync::atomic::Ordering::Relaxed);
+    let adv_data = adv_data.unwrap_or_default();
+    // 长度只是提示，不阻断：真正的判定以后端返回的广播状态为准
+    let adv_data_note = ble_periph_adv_data_warn(adv_data.len());
+    // 启动前先探适配器能力：不是为了提前失败，而是为了把"为什么搜不到"说清楚。
+    // 服务与特征照建不误 —— 用户可以先配好、看到特征树，打开蓝牙后直接「重新广播」。
+    let info = ble_periph_probe_adapter().await;
+    *state.adapter.lock().unwrap_or_else(|e| e.into_inner()) = info.clone();
+    let (svc_guid, svc_str) = ble_periph_guid(&service_uuid)?;
+    let provider = ble_periph_create_provider(svc_guid).await?;
+    let service = provider.Service().map_err(|e| format!("获取本地服务失败: {e}"))?;
+
+    let mut built: Vec<BlePeriphChar> = Vec::new();
+    for spec in &characteristics {
+        let (guid, uuid_str) = ble_periph_guid(&spec.uuid)?;
+        if built.iter().any(|c| c.uuid == uuid_str) {
+            return Err(format!("特征 UUID 重复: {uuid_str}"));
+        }
+        let props = ble_periph_props_from_names(&spec.props)?;
+        let params = GattLocalCharacteristicParameters::new()
+            .map_err(|e| format!("创建特征参数失败: {e}"))?;
+        params
+            .SetCharacteristicProperties(props)
+            .map_err(|e| format!("设置特征属性失败: {e}"))?;
+        // 调试场景一律不做配对/加密：否则主机"只是来读一下"也要先配对，白白卡住
+        params
+            .SetReadProtectionLevel(GattProtectionLevel::Plain)
+            .map_err(|e| format!("设置读保护级别失败: {e}"))?;
+        params
+            .SetWriteProtectionLevel(GattProtectionLevel::Plain)
+            .map_err(|e| format!("设置写保护级别失败: {e}"))?;
+        let op = service
+            .CreateCharacteristicAsync(guid, &params)
+            .map_err(|e| format!("创建特征 {uuid_str} 失败: {e}"))?;
+        let cres = op.await.map_err(|e| format!("创建特征 {uuid_str} 失败: {e}"))?;
+        let cerr = cres.Error().map_err(|e| format!("读取特征错误码失败: {e}"))?;
+        if cerr != BluetoothError::Success {
+            return Err(format!("创建特征 {uuid_str} 失败: {cerr:?}"));
+        }
+        let ch = cres.Characteristic().map_err(|e| format!("获取特征对象失败: {e}"))?;
+        let value = std::sync::Arc::new(Mutex::new(spec.value.clone()));
+        let subs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_notify = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0));
+        ble_periph_attach_handlers(
+            &ch,
+            &uuid_str,
+            value.clone(),
+            subs.clone(),
+            max_notify.clone(),
+            state.pending_writes.clone(),
+            state.write_seq.clone(),
+            state.manual_write_reply.clone(),
+            state.events.clone(),
+        )?;
+        // 自定义描述符（如 0x2901 用户描述）：WinRT 的本地描述符只支持静态值，够用了
+        let mut desc_uuids: Vec<String> = Vec::new();
+        for d in &spec.descriptors {
+            let (dguid, duuid) = ble_periph_guid(&d.uuid)?;
+            // 标准描述符由系统自动发布，手工创建必失败 —— 本地先挡掉并说清原因
+            if let Ok(du) = uuid::Uuid::parse_str(&duuid) {
+                if let Some(msg) = ble_periph_desc_reserved(ble_periph_uuid_short(&du)) {
+                    return Err(format!("描述符 {duuid} 不能手工创建：{msg}"));
+                }
+            }
+            let dparams = GattLocalDescriptorParameters::new()
+                .map_err(|e| format!("创建描述符参数失败: {e}"))?;
+            dparams
+                .SetReadProtectionLevel(GattProtectionLevel::Plain)
+                .map_err(|e| format!("设置描述符读保护级别失败: {e}"))?;
+            dparams
+                .SetWriteProtectionLevel(GattProtectionLevel::Plain)
+                .map_err(|e| format!("设置描述符写保护级别失败: {e}"))?;
+            if !d.value.is_empty() {
+                let buf = ble_periph_to_buffer(&d.value)?;
+                dparams
+                    .SetStaticValue(&buf)
+                    .map_err(|e| format!("设置描述符静态值失败: {e}"))?;
+            }
+            let dop = ch
+                .CreateDescriptorAsync(dguid, &dparams)
+                .map_err(|e| format!("创建描述符 {duuid} 失败: {e}"))?;
+            let dres = dop.await.map_err(|e| format!("创建描述符 {duuid} 失败: {e}"))?;
+            dres.Descriptor().map_err(|e| format!("创建描述符 {duuid} 失败: {e}"))?;
+            desc_uuids.push(duuid);
+        }
+        built.push(BlePeriphChar {
+            uuid: uuid_str,
+            props: ble_periph_props_to_names(props).into_iter().map(|s| s.to_string()).collect(),
+            value,
+            subscribed: subs,
+            max_notify,
+            descriptors: desc_uuids,
+            characteristic: ch,
+        });
+    }
+
+    // 广播状态变化：StartedWithoutAllAdvertisementData / Aborted 正是"主机搜不到"的线索
+    {
+        let events = state.events.clone();
+        let _ = provider.AdvertisementStatusChanged(&windows::Foundation::TypedEventHandler::<
+            GattServiceProvider,
+            GattServiceProviderAdvertisementStatusChangedEventArgs,
+        >::new(move |_sender, args| {
+            let status = match args.as_ref().and_then(|a| a.Status().ok()) {
+                Some(s) => ble_periph_adv_status(s),
+                None => "Unknown",
+            };
+            ble_periph_emit(&events, json!({ "kind": "adv", "status": status }));
+            Ok(())
+        }));
+    }
+
+    let adv = GattServiceProviderAdvertisingParameters::new()
+        .map_err(|e| format!("创建广播参数失败: {e}"))?;
+    adv.SetIsDiscoverable(discoverable.unwrap_or(true))
+        .map_err(|e| format!("设置「可被发现」失败: {e}"))?;
+    adv.SetIsConnectable(connectable.unwrap_or(true))
+        .map_err(|e| format!("设置「可连接」失败: {e}"))?;
+    let adv_len = adv_data.len();
+    if !adv_data.is_empty() {
+        let buf = ble_periph_to_buffer(&adv_data)?;
+        adv.SetServiceData(&buf)
+            .map_err(|e| format!("设置广播服务数据失败: {e}"))?;
+    }
+    provider
+        .StartAdvertisingWithParameters(&adv)
+        .map_err(|e| format!("启动广播失败: {e}"))?;
+    let adv_status = ble_periph_settle_adv_status(&provider).await;
+
+    *state.service_uuid.lock().unwrap_or_else(|e| e.into_inner()) = Some(svc_str.clone());
+    *state.chars.lock().unwrap_or_else(|e| e.into_inner()) = built;
+    *state.provider.lock().unwrap_or_else(|e| e.into_inner()) = Some(provider);
+    state.running.store(true, std::sync::atomic::Ordering::Relaxed);
+    ble_periph_emit(
+        &state.events,
+        json!({
+            "kind": "start",
+            "uuid": svc_str,
+            "note": format!(
+                "{} 个特征 · 广播数据 {} 字节 · {adv_status}{}",
+                characteristics.len(),
+                adv_len,
+                if manual_reply.unwrap_or(false) { " · 写入需手动应答" } else { "" },
+            ),
+        }),
+    );
+    if let Some(n) = adv_data_note {
+        ble_periph_emit(&state.events, json!({ "kind": "notice", "note": n }));
+    }
+    Ok(ble_periph_status_json(state))
+}
+
+#[tauri::command]
+async fn ble_periph_start(
+    state: tauri::State<'_, BlePeripheralState>,
+    service_uuid: String,
+    characteristics: Vec<BlePeriphCharSpec>,
+    discoverable: Option<bool>,
+    connectable: Option<bool>,
+    adv_data: Option<Vec<u8>>,
+    manual_reply: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    ble_periph_start_inner(
+        &state,
+        service_uuid,
+        characteristics,
+        discoverable,
+        connectable,
+        adv_data,
+        manual_reply,
+    )
+    .await
+}
+
+/// 对一条待应答的写请求作出决定：接受，或按协议错误码拒绝（默认 0x80 Application Error）。
+#[tauri::command]
+async fn ble_periph_respond_write(
+    state: tauri::State<'_, BlePeripheralState>,
+    pending_id: u64,
+    accept: bool,
+    protocol_error: Option<u8>,
+) -> Result<(), String> {
+    let w = state
+        .pending_writes
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&pending_id)
+        .ok_or_else(|| format!("没有待应答的写入 #{pending_id}（可能已超时或已应答过）"))?;
+    let note = if accept {
+        w.request
+            .Respond()
+            .map(|_| "已接受".to_string())
+            .map_err(|e| format!("应答失败: {e}"))?
+    } else {
+        let code = protocol_error.unwrap_or(0x80);
+        w.request
+            .RespondWithProtocolError(code)
+            .map(|_| format!("已按协议错误 0x{code:02X} 回复"))
+            .map_err(|e| format!("应答失败: {e}"))?
+    };
+    let _ = w.deferral.Complete();
+    ble_periph_emit(
+        &state.events,
+        json!({ "kind": "write_reply", "uuid": w.uuid, "pending_id": pending_id,
+                "note": format!("#{pending_id} {note}") }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+async fn ble_periph_stop(state: tauri::State<'_, BlePeripheralState>) -> Result<serde_json::Value, String> {
+    let was = ble_periph_stop_inner(&state);
+    ble_periph_emit(&state.events, json!({ "kind": "stop" }));
+    Ok(json!({ "stopped": was }))
+}
+
+#[tauri::command]
+async fn ble_periph_status(state: tauri::State<'_, BlePeripheralState>) -> Result<serde_json::Value, String> {
+    Ok(ble_periph_status_json(&state))
+}
+
+/// 改某个特征的可读值（主机下次读到的就是它）
+fn ble_periph_set_value_inner(
+    state: &BlePeripheralState,
+    char_uuid: &str,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    let (val, readable) = {
+        let chars = state.chars.lock().unwrap_or_else(|e| e.into_inner());
+        let c = chars
+            .iter()
+            .find(|c| c.uuid.eq_ignore_ascii_case(char_uuid))
+            .ok_or_else(|| format!("未找到从机特征: {char_uuid}"))?;
+        (c.value.clone(), ble_periph_props_readable(&c.props))
+    };
+    // 不可读的特征主机取不到，那个值只反映"主机刚写进来什么" —— 设值没有意义，
+    // 早点报错比静默接受好（前端也会把这个入口藏起来，这里是第二道）
+    if !readable {
+        return Err(format!("特征 {char_uuid} 没有 read 属性：主机读不到它，设置可读值没有意义"));
+    }
+    *val.lock().unwrap_or_else(|e| e.into_inner()) = data;
+    Ok(())
+}
+
+#[tauri::command]
+async fn ble_periph_set_value(
+    state: tauri::State<'_, BlePeripheralState>,
+    char_uuid: String,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    ble_periph_set_value_inner(&state, &char_uuid, data)
+}
+
+/// 主动向已订阅的主机下发通知（Notify / Indicate 都走这里）
+async fn ble_periph_notify_inner(
+    state: &BlePeripheralState,
+    char_uuid: &str,
+    data: Vec<u8>,
+) -> Result<serde_json::Value, String> {
+    let (ch, subs, max_notify) = {
+        let chars = state.chars.lock().unwrap_or_else(|e| e.into_inner());
+        let c = chars
+            .iter()
+            .find(|c| c.uuid.eq_ignore_ascii_case(char_uuid))
+            .ok_or_else(|| format!("未找到从机特征: {char_uuid}"))?;
+        (
+            c.characteristic.clone(),
+            c.subscribed.load(std::sync::atomic::Ordering::Relaxed),
+            c.max_notify.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    };
+    if !ch
+        .CharacteristicProperties()
+        .map(|p| p.contains(GattCharacteristicProperties::Notify) || p.contains(GattCharacteristicProperties::Indicate))
+        .unwrap_or(false)
+    {
+        return Err("该特征没有 notify / indicate 属性，无法下发".to_string());
+    }
+    if subs == 0 {
+        return Err("还没有主机订阅该特征（请先在主机侧打开通知）".to_string());
+    }
+    ble_periph_notify_size_check(data.len(), max_notify)?;
+    // IBuffer 不是 Send：必须在 await 之前把它丢掉，否则整个 command 的 future 不 Send。
+    // NotifyValueAsync 已经把缓冲引用进去了，调用返回后本地这份就不需要了。
+    let op = {
+        let buf = ble_periph_to_buffer(&data)?;
+        ch.NotifyValueAsync(&buf).map_err(|e| format!("下发失败: {e}"))?
+    };
+    let results = op.await.map_err(|e| format!("下发失败: {e}"))?;
+    let mut sent = Vec::new();
+    let n = results.Size().unwrap_or(0);
+    for i in 0..n {
+        if let Ok(r) = results.GetAt(i) {
+            let peer = r
+                .SubscribedClient()
+                .ok()
+                .and_then(|c| c.Session().ok())
+                .map(|s| ble_periph_peer_of(Some(&s)))
+                .unwrap_or_default();
+            sent.push(json!({
+                "peer": peer,
+                "status": match r.Status() { Ok(GattCommunicationStatus::Success) => "Success", Ok(_) => "Failed", Err(_) => "Unknown" },
+                "bytes": r.BytesSent().unwrap_or(0),
+            }));
+        }
+    }
+    ble_periph_emit(
+        &state.events,
+        ble_periph_data_event("notify", char_uuid, &data, "", &format!("已下发 {} 个订阅者", sent.len())),
+    );
+    Ok(json!({ "count": sent.len(), "sent": sent }))
+}
+
+#[tauri::command]
+async fn ble_periph_notify(
+    state: tauri::State<'_, BlePeripheralState>,
+    char_uuid: String,
+    data: Vec<u8>,
+) -> Result<serde_json::Value, String> {
+    ble_periph_notify_inner(&state, &char_uuid, data).await
+}
+
+#[tauri::command]
+async fn ble_periph_poll_events(
+    state: tauri::State<'_, BlePeripheralState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut q = state.events.lock().unwrap_or_else(|e| e.into_inner());
+    Ok(q.drain(..).collect())
+}
+
+/// 从机配置：弹文件框选一个表格文件（CSV / Markdown），返回 `{path, text}`；取消返回 None。
+/// 文件读写放在后端：`capabilities/default.json` 里只有 `core:*`，没有 fs 插件权限，
+/// 而且路径必须由用户在原生对话框里亲自选。
+#[tauri::command]
+fn ble_periph_pick_config_file() -> Result<Option<serde_json::Value>, String> {
+    let picked = rfd::FileDialog::new()
+        .set_title("选择广播配置表格")
+        .add_filter("表格文件", &["csv", "md", "markdown", "txt"])
+        .pick_file();
+    let path = match picked {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+    Ok(Some(json!({
+        "path": path.to_string_lossy(),
+        "text": text,
+    })))
+}
+
+/// 从机配置：弹保存框把表格写到文件，返回路径（取消返回 None）。
+#[tauri::command]
+fn ble_periph_save_config_file(text: String) -> Result<Option<String>, String> {
+    let picked = rfd::FileDialog::new()
+        .set_title("导出广播配置表格")
+        .set_file_name("ble-peripheral-config.csv")
+        .add_filter("CSV 表格", &["csv"])
+        .add_filter("Markdown 表格", &["md"])
+        .save_file();
+    let path = match picked {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    std::fs::write(&path, text.as_bytes())
+        .map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+#[cfg(test)]
+mod ble_periph_tests {
+    use super::*;
+
+    fn state() -> BlePeripheralState {
+        BlePeripheralState {
+            provider: Mutex::new(None),
+            service_uuid: Mutex::new(None),
+            chars: Mutex::new(Vec::new()),
+            adapter: Mutex::new(BlePeriphAdapterInfo::default()),
+            pending_writes: std::sync::Arc::new(Mutex::new(std::collections::HashMap::new())),
+            write_seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            manual_write_reply: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            events: std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            running: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn adapter(present: bool, le: bool, periph: bool, radio: &str) -> BlePeriphAdapterInfo {
+        BlePeriphAdapterInfo {
+            present,
+            low_energy: le,
+            peripheral_role: periph,
+            central_role: true,
+            radio_state: radio.to_string(),
+            radio_access: "Allowed".to_string(),
+        }
+    }
+
+    fn adapter_with_access(access: &str) -> BlePeriphAdapterInfo {
+        let mut a = adapter(true, true, true, "On");
+        a.radio_access = access.to_string();
+        a
+    }
+
+    #[test]
+    fn guid_parses_full_and_short_forms() {
+        let (g, s) = ble_periph_guid("6E400001-B5A3-F393-E0A9-E50E24DCCA9E").unwrap();
+        assert_eq!(s, "6e400001-b5a3-f393-e0a9-e50e24dcca9e");
+        assert_eq!(g.to_u128(), 0x6E400001_B5A3_F393_E0A9_E50E24DCCA9E);
+        // 16 位短写按 Bluetooth SIG 基址展开（用户从模块手册抄 0xFFE0 是常态）
+        let (_, s16) = ble_periph_guid("0xFFE0").unwrap();
+        assert_eq!(s16, "0000ffe0-0000-1000-8000-00805f9b34fb");
+        // 32 位短写同理
+        let (_, s32) = ble_periph_guid("1234ABCD").unwrap();
+        assert_eq!(s32, "1234abcd-0000-1000-8000-00805f9b34fb");
+        // 大小写归一：同一个 UUID 必须落到同一个字符串，否则前端回传会找不到特征
+        assert_eq!(ble_periph_guid("6e400001-b5a3-f393-e0a9-e50e24dcca9e").unwrap().1, s);
+        // 前后空格容忍
+        assert!(ble_periph_guid("  0xFFE0  ").is_ok());
+        // 非法输入要报错，不能静默当成 0
+        assert!(ble_periph_guid("不是UUID").is_err());
+        assert!(ble_periph_guid("").is_err());
+    }
+
+    #[test]
+    fn props_map_both_ways_and_reject_unknown() {
+        let names: Vec<String> = ["write", "write_without_response", "notify"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let p = ble_periph_props_from_names(&names).unwrap();
+        assert_eq!(
+            ble_periph_props_to_names(p),
+            vec!["write", "write_without_response", "notify"]
+        );
+        let p2 = ble_periph_props_from_names(&["read".to_string()]).unwrap();
+        assert_eq!(ble_periph_props_to_names(p2), vec!["read"]);
+        // 未知属性必须报错：静默忽略会让人以为是设备不生效
+        assert!(ble_periph_props_from_names(&["readd".to_string()]).is_err());
+        // 一个属性都没有的特征在 BLE 上无意义
+        assert!(ble_periph_props_from_names(&[]).is_err());
+    }
+
+    #[test]
+    fn device_id_parsing_extracts_peer_mac() {
+        assert_eq!(
+            ble_periph_parse_device_id("BluetoothLE#BluetoothLE00:11:22:33:44:55-aa:bb:cc:dd:ee:ff"),
+            "AA:BB:CC:DD:EE:FF"
+        );
+        // 认不出来就原样返回，别把设备 ID 吃掉（否则日志里什么线索都没有）
+        assert_eq!(ble_periph_parse_device_id("some-other-id"), "some-other-id");
+        assert_eq!(ble_periph_parse_device_id(""), "");
+    }
+
+    #[test]
+    fn adv_status_names_cover_documented_values() {
+        // 值取自 WinRT GattServiceProviderAdvertisementStatus
+        assert_eq!(ble_periph_adv_status(GattServiceProviderAdvertisementStatus(0)), "Created");
+        assert_eq!(ble_periph_adv_status(GattServiceProviderAdvertisementStatus(1)), "Stopped");
+        assert_eq!(ble_periph_adv_status(GattServiceProviderAdvertisementStatus(2)), "Started");
+        assert_eq!(ble_periph_adv_status(GattServiceProviderAdvertisementStatus(3)), "Aborted");
+        assert_eq!(
+            ble_periph_adv_status(GattServiceProviderAdvertisementStatus(4)),
+            "StartedWithoutAllAdvertisementData"
+        );
+        assert_eq!(ble_periph_adv_status(GattServiceProviderAdvertisementStatus(99)), "Unknown");
+    }
+
+    /// 适配器能力判定：广播失败时到底该怪谁，全靠这一条
+    #[test]
+    fn probe_warning_names_the_real_blocker() {
+        // 能力齐全 → 没有能力层面的问题（广播再失败就是别的原因）
+        assert!(ble_periph_probe_warning(&adapter(true, true, true, "On")).is_none());
+        // 没适配器
+        let w = ble_periph_probe_warning(&adapter(false, false, false, "")).unwrap();
+        assert!(w.contains("没有蓝牙适配器"), "{w}");
+        // 有适配器但不支持 BLE
+        let w = ble_periph_probe_warning(&adapter(true, false, false, "On")).unwrap();
+        assert!(w.contains("不支持 BLE"), "{w}");
+        // 蓝牙关着（这是最常见的"搜不到"）
+        let w = ble_periph_probe_warning(&adapter(true, true, true, "Off")).unwrap();
+        assert!(w.contains("蓝牙已关闭") && w.contains("设置"), "{w}");
+        // 被禁用（飞行模式 / 设备管理器停用）
+        let w = ble_periph_probe_warning(&adapter(true, true, true, "Disabled")).unwrap();
+        assert!(w.contains("禁用"), "{w}");
+        // 硬件不支持外设角色：这一条最容易被误当成软件 bug
+        let w = ble_periph_probe_warning(&adapter(true, true, false, "On")).unwrap();
+        assert!(w.contains("外设角色"), "{w}");
+        // radio_state 取不到（空串）不应被当成"关着"
+        assert!(ble_periph_probe_warning(&adapter(true, true, true, "")).is_none());
+        assert!(ble_periph_probe_warning(&adapter(true, true, true, "Unknown")).is_none());
+        // 顺序：能力问题比电源状态更根本，必须先报能力
+        let w = ble_periph_probe_warning(&adapter(true, false, false, "Off")).unwrap();
+        assert!(w.contains("不支持 BLE"), "{w}");
+        // 无线电访问权被拒：扫描可能仍可用，所以"能搜到别人"不代表能广播 —— 很隐蔽
+        let w = ble_periph_probe_warning(&adapter_with_access("DeniedByUser")).unwrap();
+        assert!(w.contains("无线电访问权") && w.contains("RadioAccessStatus"), "{w}");
+        // 文案不能说死是"用户拒绝了"：本机 ConsentStore\radios = Allow，却仍返回 DeniedByUser
+        assert!(!w.contains("请在「Windows 设置"), "不该断言是隐私设置导致：{w}");
+        let w = ble_periph_probe_warning(&adapter_with_access("DeniedBySystem")).unwrap();
+        assert!(w.contains("无线电访问权"), "{w}");
+        // Allowed / 取不到都不该报权限问题（免得没权限问题时乱提示）
+        assert!(ble_periph_probe_warning(&adapter_with_access("Allowed")).is_none());
+        assert!(ble_periph_probe_warning(&adapter_with_access("")).is_none());
+        assert!(ble_periph_probe_warning(&adapter_with_access("Unspecified")).is_none());
+        // 能力位比权限更根本：硬件不支持时不必谈权限
+        let mut a = adapter_with_access("DeniedByUser");
+        a.peripheral_role = false;
+        assert!(ble_periph_probe_warning(&a).unwrap().contains("外设角色"));
+    }
+
+    #[test]
+    fn adapter_json_shape_is_stable() {
+        let j = adapter(true, true, false, "Off").to_json();
+        assert_eq!(j["present"], true);
+        assert_eq!(j["low_energy"], true);
+        assert_eq!(j["peripheral_role"], false);
+        assert_eq!(j["radio_state"], "Off");
+        assert_eq!(j["radio_access"], "Allowed");
+        // 默认值：什么都探测不到
+        let d = BlePeriphAdapterInfo::default().to_json();
+        assert_eq!(d["present"], false);
+        assert_eq!(d["radio_state"], "");
+        assert_eq!(d["radio_access"], "");
+    }
+
+    #[test]
+    fn event_buffer_is_bounded_and_timestamped() {
+        let events = std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new()));
+        for i in 0..(BLE_PERIPH_EVENT_MAX + 10) {
+            ble_periph_emit(&events, json!({ "kind": "write", "i": i }));
+        }
+        let q = events.lock().unwrap();
+        assert_eq!(q.len(), BLE_PERIPH_EVENT_MAX);
+        // 丢的是最旧的，不是最新的
+        assert_eq!(q.front().unwrap()["i"], 10);
+        assert_eq!(q.back().unwrap()["i"], BLE_PERIPH_EVENT_MAX + 9);
+        // ts 由后端补，前端不猜时间
+        assert!(q.back().unwrap()["ts"].is_i64());
+    }
+
+    #[test]
+    fn data_event_shape_is_stable() {
+        let e = ble_periph_data_event("write", "0000ffe1-0000-1000-8000-00805f9b34fb", &[0x01, 0xA0], "AA:BB:CC:DD:EE:FF", "写响应");
+        assert_eq!(e["kind"], "write");
+        assert_eq!(e["value_hex"], "01 A0");
+        assert_eq!(e["len"], 2);
+        assert_eq!(e["peer"], "AA:BB:CC:DD:EE:FF");
+        assert_eq!(e["note"], "写响应");
+    }
+
+    #[test]
+    fn set_value_and_notify_reject_unknown_char() {
+        let s = state();
+        assert!(ble_periph_set_value_inner(&s, "0000ffe1-0000-1000-8000-00805f9b34fb", vec![1]).is_err());
+        // 没启动时停止是幂等 no-op，不该报错
+        assert!(!ble_periph_stop_inner(&s));
+        let st = ble_periph_status_json(&s);
+        assert_eq!(st["running"], false);
+        assert_eq!(st["advertising_status"], "Stopped");
+        assert_eq!(st["characteristics"].as_array().unwrap().len(), 0);
+    }
+
+    /// 长写要按 Offset 落值：忽略它会把多段写当成互相覆盖的独立写入
+    #[test]
+    fn apply_write_honours_offset() {
+        let mut v: Vec<u8> = vec![];
+        // 普通写：整段替换
+        ble_periph_apply_write(&mut v, 0, &[1, 2, 3]);
+        assert_eq!(v, vec![1, 2, 3]);
+        // 再来一次普通写：旧值更长时要被截掉，不能留尾巴
+        ble_periph_apply_write(&mut v, 0, &[9]);
+        assert_eq!(v, vec![9]);
+        // 长写：往中间写
+        let mut v2 = vec![0xAAu8; 6];
+        ble_periph_apply_write(&mut v2, 2, &[1, 2]);
+        assert_eq!(v2, vec![0xAA, 0xAA, 1, 2, 0xAA, 0xAA]);
+        // 超出当前长度：扩展并补 0
+        let mut v3 = vec![0xAAu8; 2];
+        ble_periph_apply_write(&mut v3, 4, &[7]);
+        assert_eq!(v3, vec![0xAA, 0xAA, 0, 0, 7]);
+        // 空数据 + offset 0：清空
+        let mut v4 = vec![1, 2, 3];
+        ble_periph_apply_write(&mut v4, 0, &[]);
+        assert!(v4.is_empty());
+    }
+
+    /// 标准描述符由系统发布，必须本地挡住（真机在 0x2901 上实测过）
+    #[test]
+    fn reserved_descriptors_are_rejected_locally() {
+        for v in [0x2900u16, 0x2901, 0x2902, 0x2904, 0x290F] {
+            let msg = ble_periph_desc_reserved(Some(v)).unwrap_or_else(|| panic!("0x{v:04X} 应被判为保留"));
+            assert!(msg.contains("自动发布"), "{msg}");
+        }
+        // 厂商自定义 UUID 不该被拦
+        assert!(ble_periph_desc_reserved(Some(0xFFF1)).is_none());
+        assert!(ble_periph_desc_reserved(None).is_none());
+        // 短写提取：SIG 基址下的 16 位 UUID 能取出来，自定义 128 位取不出来
+        assert_eq!(ble_periph_uuid_short(&uuid::Uuid::parse_str("00002901-0000-1000-8000-00805f9b34fb").unwrap()), Some(0x2901));
+        assert_eq!(ble_periph_uuid_short(&uuid::Uuid::parse_str("6e400001-b5a3-f393-e0a9-e50e24dcca9e").unwrap()), None);
+    }
+
+    #[test]
+    fn readable_check_matches_props() {
+        assert!(ble_periph_props_readable(&["read".to_string(), "notify".to_string()]));
+        assert!(!ble_periph_props_readable(&["write".to_string(), "write_without_response".to_string()]));
+        assert!(!ble_periph_props_readable(&[]));
+        // 只认精确的 "read"，不被 "write_without_response" 之类混淆
+        assert!(!ble_periph_props_readable(&["readd".to_string()]));
+    }
+
+    /// 广播服务数据过长要给出提示（传统广播只有 31 字节）
+    #[test]
+    fn adv_data_length_is_flagged() {
+        assert!(ble_periph_adv_data_warn(0).is_none());
+        assert!(ble_periph_adv_data_warn(BLE_PERIPH_ADV_DATA_SAFE).is_none());
+        let w = ble_periph_adv_data_warn(BLE_PERIPH_ADV_DATA_SAFE + 1).unwrap();
+        assert!(w.contains("31 字节") && w.contains("截断"), "{w}");
+    }
+
+    /// 下发长度守卫：超长要在本地挡住并说清"该切多少"，而不是丢一个底层错误
+    #[test]
+    fn notify_size_check_guards_mtu_limit() {
+        // MTU 23 → 单次通知 20 字节，这是 BLE 默认值，最常见
+        assert!(ble_periph_notify_size_check(20, 20).is_ok());
+        let e = ble_periph_notify_size_check(21, 20).unwrap_err();
+        assert!(e.contains("21") && e.contains("20") && e.contains("拆成多包"), "{e}");
+        // MTU 185 → 182 字节
+        assert!(ble_periph_notify_size_check(182, 182).is_ok());
+        assert!(ble_periph_notify_size_check(183, 182).is_err());
+        // 0 表示"还没有订阅者/还没拿到 MTU"：不在这里报长度问题，交给订阅检查去报
+        assert!(ble_periph_notify_size_check(9999, 0).is_ok());
+        // 空数据永远合法
+        assert!(ble_periph_notify_size_check(0, 20).is_ok());
+    }
+
+    /// 能力/权限问题必须压过广播状态码：否则用户会照着 Aborted 去查"是不是被别的程序占了"
+    #[test]
+    fn probe_warning_outranks_adv_status_warning() {
+        let s = state();
+        {
+            let mut a = s.adapter.lock().unwrap();
+            *a = adapter(true, true, false, "On");
+        }
+        s.running.store(true, std::sync::atomic::Ordering::Relaxed);
+        let st = ble_periph_status_json(&s);
+        let w = st["warning"].as_str().unwrap();
+        assert!(w.contains("外设角色"), "{w}");
+        assert_eq!(st["adapter"]["peripheral_role"], false);
+        // 没启动时不该有告警（免得一进页面就红一片）
+        s.running.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(ble_periph_status_json(&s)["warning"].is_null());
+    }
+
+    /// 无线电访问权被拒时也要给出可操作文案（本机实测就是这一种）
+    #[test]
+    fn denied_radio_access_is_reported() {
+        let s = state();
+        {
+            let mut a = s.adapter.lock().unwrap();
+            *a = adapter_with_access("DeniedByUser");
+        }
+        s.running.store(true, std::sync::atomic::Ordering::Relaxed);
+        let st = ble_periph_status_json(&s);
+        let w = st["warning"].as_str().unwrap();
+        assert!(w.contains("无线电访问权"), "{w}");
+        assert_eq!(st["adapter"]["radio_access"], "DeniedByUser");
+    }
+
+    /// Aborted 的文案必须指向"适配器自报支持但广播不了"，而不是误导成"蓝牙没开"
+    #[test]
+    fn aborted_adv_warning_points_at_adapter() {
+        let s = state();
+        {
+            let mut a = s.adapter.lock().unwrap();
+            *a = adapter(true, true, true, "On"); // 能力位全正常、蓝牙也开着
+        }
+        s.running.store(true, std::sync::atomic::Ordering::Relaxed);
+        let st = ble_periph_status_json(&s);
+        // 没有适配器能力问题时，才会落到广播状态码的文案上
+        assert_eq!(st["advertising_status"], "Stopped", "没建 provider 时状态应为 Stopped");
+        let w = st["warning"].as_str().unwrap();
+        assert!(w.contains("未启动"), "{w}");
+
+        // 直接验 Aborted 的措辞（这是本机实测唯一命中的分支）
+        let w = ble_periph_adv_warning("Aborted").unwrap();
+        // 逐字段实测：能发广播，被拒的是"带服务 UUID / 广播名"的内容 —— 文案要指向这个现象
+        assert!(w.contains("服务 UUID") && w.contains("能**发") && w.contains("平台限制"), "{w}");
+        assert!(!w.contains("USB 蓝牙适配器再试"), "不该只把人往换适配器上引：{w}");
+        assert!(ble_periph_adv_warning("Started").is_none());
+    }
+
+    /// 环境诊断（`#[ignore]`，排障用）：把"广播为什么起不来"可能的原因一次性打全，
+    /// 输出可以直接贴进 issue / 文档。
+    ///
+    ///   cargo test --manifest-path src-tauri/Cargo.toml ble_periph_diagnose -- --ignored --nocapture
+    ///
+    /// 打的内容：无线电访问权（`DeniedByUser` 会挡住广播，而**扫描仍然可用**）、
+    /// 系统里的适配器清单、默认适配器的能力位与 Radio 明细、应用侧探测结论，
+    /// 以及一次真实广播的返回值和落定状态（含 `AdvertisementStatusChanged` 里的 `BluetoothError`）。
+    #[test]
+    #[ignore]
+    fn ble_periph_diagnose() {
+        use windows::Devices::Bluetooth::GenericAttributeProfile as g;
+        use windows::Devices::Enumeration::DeviceInformation;
+        use windows::Devices::Radios::Radio;
+        tauri::async_runtime::block_on(async {
+            println!("==== BLE 从机环境诊断 ====");
+            // [1] 无线电访问权：被拒时扫描仍可能可用，但广播会被挡
+            match Radio::RequestAccessAsync() {
+                Ok(op) => match op.await {
+                    Ok(st) => println!(
+                        "[1] RadioAccessStatus = {st:?}   (1=Allowed 2=DeniedByUser 3=DeniedBySystem)"
+                    ),
+                    Err(e) => println!("[1] RequestAccessAsync 等待失败: {e}"),
+                },
+                Err(e) => println!("[1] RequestAccessAsync 调用失败: {e}"),
+            }
+            // [2] 适配器清单（"默认"那个是不是真的可用）
+            match windows::Devices::Bluetooth::BluetoothAdapter::GetDeviceSelector() {
+                Ok(sel) => match DeviceInformation::FindAllAsyncAqsFilter(&sel) {
+                    Ok(op) => match op.await {
+                        Ok(col) => {
+                            let n = col.Size().unwrap_or(0);
+                            println!("[2] 蓝牙适配器数量 = {n}");
+                            for i in 0..n {
+                                if let Ok(d) = col.GetAt(i) {
+                                    println!("    [{i}] enabled={:?} id={:?}", d.IsEnabled(), d.Id());
+                                }
+                            }
+                        }
+                        Err(e) => println!("[2] 枚举失败: {e}"),
+                    },
+                    Err(e) => println!("[2] 枚举失败: {e}"),
+                },
+                Err(e) => println!("[2] 取选择器失败: {e}"),
+            }
+            // [3] 默认适配器能力位 + Radio 明细
+            if let Ok(op) = windows::Devices::Bluetooth::BluetoothAdapter::GetDefaultAsync() {
+                if let Ok(a) = op.await {
+                    println!(
+                        "[3] 默认适配器: le={:?} periph={:?} central={:?} offload={:?} classic={:?}",
+                        a.IsLowEnergySupported(),
+                        a.IsPeripheralRoleSupported(),
+                        a.IsCentralRoleSupported(),
+                        a.IsAdvertisementOffloadSupported(),
+                        a.IsClassicSupported()
+                    );
+                    if let Ok(rop) = a.GetRadioAsync() {
+                        if let Ok(r) = rop.await {
+                            println!("    radio: kind={:?} state={:?} name={:?}", r.Kind(), r.State(), r.Name());
+                        }
+                    }
+                }
+            }
+            // [4] 应用侧探测结论（与界面 warning 用的是同一份判定）
+            println!("[4] 应用侧探测 = {}", ble_periph_probe_adapter().await.to_json());
+            // [5] 真广播一次
+            let (svc, _) = ble_periph_guid("0000FFE0-0000-1000-8000-00805F9B34FB").unwrap();
+            let (chr, _) = ble_periph_guid("0000FFE1-0000-1000-8000-00805F9B34FB").unwrap();
+            if let Ok(p) = ble_periph_create_provider(svc).await {
+                if let Ok(s) = p.Service() {
+                    let params = g::GattLocalCharacteristicParameters::new().unwrap();
+                    let _ = params.SetCharacteristicProperties(
+                        g::GattCharacteristicProperties::Read | g::GattCharacteristicProperties::Write,
+                    );
+                    let _ = params.SetReadProtectionLevel(g::GattProtectionLevel::Plain);
+                    let _ = params.SetWriteProtectionLevel(g::GattProtectionLevel::Plain);
+                    if let Ok(op) = s.CreateCharacteristicAsync(chr, &params) {
+                        let _ = op.await; // 只需要它建出来；成败由下面的广播状态体现
+                    }
+                    let _ = p.AdvertisementStatusChanged(&windows::Foundation::TypedEventHandler::<
+                        g::GattServiceProvider,
+                        g::GattServiceProviderAdvertisementStatusChangedEventArgs,
+                    >::new(|_s, args| {
+                        if let Some(a) = args.as_ref() {
+                            println!(
+                                "    [事件] status={:?} error={:?}",
+                                a.Status().map(ble_periph_adv_status),
+                                a.Error()
+                            );
+                        }
+                        Ok(())
+                    }));
+                    let adv = g::GattServiceProviderAdvertisingParameters::new().unwrap();
+                    let _ = adv.SetIsDiscoverable(true);
+                    let _ = adv.SetIsConnectable(true);
+                    println!(
+                        "[5] StartAdvertisingWithParameters = {:?}",
+                        p.StartAdvertisingWithParameters(&adv)
+                    );
+                    println!("    落定状态 = {}", ble_periph_settle_adv_status(&p).await);
+                    let _ = p.StopAdvertising();
+                }
+            }
+            println!("==== 诊断结束 ====");
+        });
+    }
+
+    /// 真机冒烟（已证实部分）：真的建出 GATT 服务与特征，并可读写本地值。
+    #[test]
+    #[ignore]
+    fn ble_periph_builds_service_and_characteristics() {
+        let s = state();
+        let out = tauri::async_runtime::block_on(ble_periph_start_inner(
+            &s,
+            "6E400001-B5A3-F393-E0A9-E50E24DCCA9E".to_string(),
+            vec![
+                BlePeriphCharSpec {
+                    uuid: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E".to_string(),
+                    props: vec!["write".to_string(), "write_without_response".to_string()],
+                    value: vec![],
+                    // 顺带在真机上验一下自定义描述符的创建路径。
+                    // 注意不能用 0x2901：标准描述符由系统自动发布，手工建会被拒（真机实测）
+                    descriptors: vec![BlePeriphDescSpec {
+                        uuid: "6E400004-B5A3-F393-E0A9-E50E24DCCA9E".to_string(),
+                        value: b"RX".to_vec(),
+                    }],
+                },
+                BlePeriphCharSpec {
+                    uuid: "6E400003-B5A3-F393-E0A9-E50E24DCCA9E".to_string(),
+                    props: vec!["read".to_string(), "notify".to_string()],
+                    value: vec![0x41],
+                    descriptors: vec![],
+                },
+            ],
+            Some(true),
+            Some(true),
+            Some(vec![0x01, 0x02]),
+            Some(false),
+        ))
+        .expect("建 GATT 服务 / 特征失败");
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+        // UUID 必须被规范化成小写，前端回传才能命中
+        assert_eq!(out["service_uuid"], "6e400001-b5a3-f393-e0a9-e50e24dcca9e");
+        assert_eq!(out["running"], true);
+        assert_eq!(out["characteristics"].as_array().unwrap().len(), 2);
+        assert_eq!(out["characteristics"][0]["uuid"], "6e400002-b5a3-f393-e0a9-e50e24dcca9e");
+        assert_eq!(out["characteristics"][1]["props"], serde_json::json!(["read", "notify"]));
+        // 自定义描述符真的建出来了
+        assert_eq!(
+            out["characteristics"][0]["descriptors"],
+            serde_json::json!(["6e400004-b5a3-f393-e0a9-e50e24dcca9e"])
+        );
+
+        // 不可读的特征（只写）不接受设值 —— 主机读不到它，设了没意义
+        let e = ble_periph_set_value_inner(&s, "6E400002-B5A3-F393-E0A9-E50E24DCCA9E", vec![1])
+            .unwrap_err();
+        assert!(e.contains("read"), "不可读特征的设值报错应提到 read，实际: {e}");
+        // 可读特征照常
+        ble_periph_set_value_inner(&s, "6E400003-B5A3-F393-E0A9-E50E24DCCA9E", vec![0xDE, 0xAD]).unwrap();
+        assert_eq!(ble_periph_status_json(&s)["characteristics"][1]["value_hex"], "DE AD");
+
+        // 没有订阅者时下发必须明确报错，而不是静默成功
+        let err = tauri::async_runtime::block_on(ble_periph_notify_inner(
+            &s,
+            "6E400003-B5A3-F393-E0A9-E50E24DCCA9E",
+            vec![1],
+        ))
+        .unwrap_err();
+        assert!(err.contains("订阅"), "错误文案应当提示先订阅，实际: {err}");
+
+        // 不存在的特征也要报错
+        assert!(ble_periph_set_value_inner(&s, "0000ffe1-0000-1000-8000-00805f9b34fb", vec![1]).is_err());
+
+        // 状态自洽：没在广播就必须给出可操作告警，不能显示成一切正常
+        let st = ble_periph_status_json(&s);
+        if !st["advertising"].as_bool().unwrap() {
+            assert!(st["warning"].is_string(), "未广播时必须给出告警：{st}");
+            println!("⚠ 广播未生效：{}", st["warning"]);
+        }
+
+        assert!(ble_periph_stop_inner(&s));
+        let after = ble_periph_status_json(&s);
+        assert_eq!(after["running"], false);
+        assert_eq!(after["advertising"], false);
+        assert_eq!(after["characteristics"].as_array().unwrap().len(), 0);
+
+        // 标准描述符（0x2901 等）由系统发布，手工创建必须在本地就被挡住并给出原因。
+        // 注意用**独立 state**：ble_periph_start_inner 开头会清空上一个服务，
+        // 复用同一个 state 会把上面刚建好、还没断言完的特征清掉。
+        let s2 = state();
+        let reserved = tauri::async_runtime::block_on(ble_periph_start_inner(
+            &s2,
+            "6E400001-B5A3-F393-E0A9-E50E24DCCA9E".to_string(),
+            vec![BlePeriphCharSpec {
+                uuid: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E".to_string(),
+                props: vec!["read".to_string()],
+                value: vec![],
+                descriptors: vec![BlePeriphDescSpec { uuid: "0x2901".to_string(), value: vec![] }],
+            }],
+            Some(true),
+            Some(true),
+            None,
+            Some(false),
+        ))
+        .unwrap_err();
+        assert!(reserved.contains("不能手工创建"), "实际: {reserved}");
+        assert!(ble_periph_stop_inner(&s2) == false, "被本地挡下后不该留下运行中的服务");
+    }
+
+    /// 真机冒烟（**待你在自己的桌面会话里验证**）：本机是否真的在对外广播。
+    ///
+    /// 现状（2026-09，开发执行环境实测）：**这一条是失败的**。
+    /// 同一个环境里 BLE 扫描完全正常（btleplug 扫到 29 台设备）、GATT 服务与特征也建得出来、
+    /// 适配器自报 `BLE 支持 / 外设角色 支持 / 蓝牙 On`，但 `StartAdvertisingWithParameters`
+    /// 返回 Ok 之后状态落定为 `Aborted`（把 connectable 关掉则一直停在 `Created`）。
+    /// 结论：不是"没硬件"，但**"能被手机搜到"这件事至今没有任何真机证据** —— 见
+    /// `doc/BLE_PERIPHERAL.md` 第 5 节。请在有蓝牙的交互式桌面会话里跑本应用点「开始广播」，
+    /// 用手机 nRF Connect 扫一次，把结果回填到那份清单里。
+    ///
+    ///   cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn ble_periph_starts_advertising() {
+        let s = state();
+        let out = tauri::async_runtime::block_on(ble_periph_start_inner(
+            &s,
+            "6E400001-B5A3-F393-E0A9-E50E24DCCA9E".to_string(),
+            vec![BlePeriphCharSpec {
+                uuid: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E".to_string(),
+                props: vec!["read".to_string(), "write".to_string(), "notify".to_string()],
+                value: vec![0x41],
+                descriptors: vec![],
+            }],
+            Some(true),
+            Some(true),
+            None,
+            Some(false),
+        ))
+        .expect("建 GATT 服务 / 特征失败");
+        let adapter = &out["adapter"];
+        let status = out["advertising_status"].as_str().unwrap().to_string();
+        let advertising = out["advertising"].as_bool().unwrap();
+        ble_periph_stop_inner(&s);
+        // 不管成功失败都把证据打全，方便贴进 issue / 文档
+        println!("adapter = {adapter}");
+        println!("advertising_status = {status}");
+        println!("advertising = {advertising}");
+        assert!(
+            advertising,
+            "广播没有起来：advertising_status={status}、adapter={adapter}。\
+             若 adapter 显示 present=true / low_energy=true / peripheral_role=true 而状态是 Aborted，\
+             说明适配器自报支持外设角色但实际广播不了 —— 请把这几行连同 doc/BLE_PERIPHERAL.md 第 5 节的清单一起回填"
+        );
+    }
+}
+
 fn main() {
     // 初始化错误上报通道
     init_error_reporter();
@@ -4297,10 +6054,13 @@ fn main() {
 use btleplug::api::{Central, Peripheral as PeripheralTrait, ScanFilter, CharPropFlags, WriteType, Manager as ManagerTrait};
 use btleplug::api::{Service as BtService, Characteristic as BtChar, PeripheralProperties, Descriptor as BtDescriptor};
 use btleplug::api::bleuuid::BleUuid;
-use btleplug::platform::{Adapter as BtAdapter, Manager as BleManager, Peripheral as BtPeripheral};
+use btleplug::api::BDAddr;
+use btleplug::platform::{Adapter as BtAdapter, Manager as BleManager, Peripheral as BtPeripheral, PeripheralId as BtPeripheralId};
 
 struct BleState {
-    adapter: Mutex<Option<BtAdapter>>,
+    /// 系统里的**全部**蓝牙适配器（`ble_start_scan` 时刷新）。
+    /// 以前只留第一个，导致"插在第二个适配器上的设备永远搜不到"。
+    adapters: Mutex<Vec<BtAdapter>>,
     scanning: std::sync::atomic::AtomicBool,
     connected: Mutex<Option<BtPeripheral>>,
     /// 上次断开时保留的外设对象。
@@ -4313,14 +6073,18 @@ struct BleState {
     connected_addr: Mutex<Option<String>>,
     services: Mutex<Vec<BtService>>,
     notify_buf: std::sync::Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>,
+    /// 通知缓冲溢出被丢掉的条数。以前只是静默丢最旧的，用户完全不知道丢了数据。
+    notify_dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// 通知循环是否在跑。用 Arc 是为了让循环结束时能自行复位 ——
     /// 断开会让通知流结束，若不复位则重连后再订阅不会起新循环（收不到通知）。
     notify_spawned: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-fn ble_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
-}
+/// 后端连接超时。比前端 `BLE_CONNECT_TIMEOUT_MS`(15s) 略短，
+/// 这样超时时**后端先报错并清干净**，而不是前端单方面放弃、
+/// 后端稍后才连上（那会造成"界面未连接、实际已连接"的长期错位）。
+const BLE_CONNECT_TIMEOUT_MS: u64 = 10_000;
+
 fn ble_addr_type(at: &Option<btleplug::api::AddressType>) -> &'static str {
     match at {
         Some(btleplug::api::AddressType::Public) => "Public",
@@ -4482,12 +6246,17 @@ fn ble_find_descriptor(services: &[BtService], char_uuid: &str, desc_uuid: &str)
     }
     None
 }
-async fn ble_notify_loop(peripheral: BtPeripheral, buf: std::sync::Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>) {
+async fn ble_notify_loop(
+    peripheral: BtPeripheral,
+    buf: std::sync::Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) {
     use futures::StreamExt;
-    /// 通知缓冲上限：前端每 400ms 轮询取走（drain），正常远到不了这个量。
+    /// 通知缓冲上限：前端每 250ms 轮询取走（drain），正常远到不了这个量。
     /// 但前端若停止轮询（切到别的页面、或自身异常），通知会在这里无限堆积 ——
     /// 加上限后丢最旧的，内存不会随设备持续上报而线性增长。
-    const NOTIFY_BUF_MAX: usize = 500;
+    /// **丢弃要记账**：静默丢数据会让人以为"设备就没发那么多"。
+    const NOTIFY_BUF_MAX: usize = 2000;
     if let Ok(mut stream) = peripheral.notifications().await {
         while let Some(n) = stream.next().await {
             let item = json!({
@@ -4496,11 +6265,29 @@ async fn ble_notify_loop(peripheral: BtPeripheral, buf: std::sync::Arc<Mutex<std
                 "value_hex": ble_hex(&n.value),
             });
             if let Ok(mut b) = buf.lock() {
-                while b.len() >= NOTIFY_BUF_MAX { b.pop_front(); }
+                while b.len() >= NOTIFY_BUF_MAX {
+                    b.pop_front();
+                    dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 b.push_back(item);
             }
         }
     }
+}
+
+/// 取系统里的全部蓝牙适配器，并记进 state 供后续命令（设备列表 / 连接 / RSSI）使用。
+async fn ble_load_adapters(state: &BleState) -> Result<Vec<BtAdapter>, String> {
+    let manager = BleManager::new().await.map_err(|e| format!("BLE manager: {e}"))?;
+    let adapters = manager.adapters().await.map_err(|e| format!("BLE adapters: {e}"))?;
+    if adapters.is_empty() {
+        return Err("未找到蓝牙适配器".to_string());
+    }
+    *state.adapters.lock().unwrap_or_else(|e| e.into_inner()) = adapters.clone();
+    Ok(adapters)
+}
+
+fn ble_cached_adapters(state: &BleState) -> Vec<BtAdapter> {
+    state.adapters.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 #[tauri::command]
@@ -4508,45 +6295,65 @@ async fn ble_get_adapters() -> Result<Vec<serde_json::Value>, String> {
     let manager = BleManager::new().await.map_err(|e| format!("BLE manager: {e}"))?;
     let adapters = manager.adapters().await.map_err(|e| format!("BLE adapters: {e}"))?;
     let mut out = Vec::new();
-    for a in &adapters {
+    for (i, a) in adapters.iter().enumerate() {
         let info = a.adapter_info().await.unwrap_or_default();
-        out.push(json!({"info": info}));
+        let addr = a
+            .adapter_address()
+            .await
+            .ok()
+            .flatten()
+            .map(|x| x.to_string())
+            .unwrap_or_default();
+        out.push(json!({"index": i, "info": info, "address": addr}));
     }
     Ok(out)
 }
 
+/// 开始扫描**全部**适配器；返回成功启动的适配器数量。
 #[tauri::command]
-async fn ble_start_scan(state: tauri::State<'_, BleState>) -> Result<(), String> {
-    let manager = BleManager::new().await.map_err(|e| format!("BLE manager: {e}"))?;
-    let adapters = manager.adapters().await.map_err(|e| format!("BLE adapters: {e}"))?;
-    let adapter = adapters.into_iter().next().ok_or("未找到蓝牙适配器")?;
-    adapter.start_scan(ScanFilter::default()).await.map_err(|e| format!("start_scan: {e}"))?;
-    *state.adapter.lock().unwrap_or_else(|e| e.into_inner()) = Some(adapter);
+async fn ble_start_scan(state: tauri::State<'_, BleState>) -> Result<usize, String> {
+    let adapters = ble_load_adapters(&state).await?;
+    let mut started = 0usize;
+    let mut errs: Vec<String> = Vec::new();
+    for a in &adapters {
+        match a.start_scan(ScanFilter::default()).await {
+            Ok(_) => started += 1,
+            Err(e) => errs.push(e.to_string()),
+        }
+    }
+    if started == 0 {
+        return Err(format!("启动扫描失败: {}", errs.join("; ")));
+    }
     state.scanning.store(true, std::sync::atomic::Ordering::Relaxed);
-    Ok(())
+    Ok(started)
 }
 
 #[tauri::command]
 async fn ble_stop_scan(state: tauri::State<'_, BleState>) -> Result<(), String> {
-    let adapter = state.adapter.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    if let Some(a) = adapter {
+    for a in ble_cached_adapters(&state) {
         let _ = a.stop_scan().await;
     }
     state.scanning.store(false, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
+/// 设备列表：把所有适配器扫到的设备合并，按 MAC 去重（同一台设备可能被两个适配器同时听到）。
 #[tauri::command]
 async fn ble_get_devices(state: tauri::State<'_, BleState>) -> Result<Vec<serde_json::Value>, String> {
-    let adapter = match state.adapter.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-        Some(a) => a,
-        None => return Ok(Vec::new()),
-    };
-    let periphs = adapter.peripherals().await.map_err(|e| format!("peripherals: {e}"))?;
+    let adapters = ble_cached_adapters(&state);
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for p in periphs {
-        if let Ok(Some(props)) = p.properties().await {
-            out.push(ble_props_json(&props));
+    for a in &adapters {
+        let periphs = match a.peripherals().await {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        for p in periphs {
+            if let Ok(Some(props)) = p.properties().await {
+                if seen.insert(props.address.to_string().to_uppercase()) {
+                    out.push(ble_props_json(&props));
+                }
+            }
         }
     }
     Ok(out)
@@ -4666,17 +6473,73 @@ async fn ble_pair(app: tauri::AppHandle, address: String) -> Result<bool, String
         .map_err(|e| format!("配对任务失败: {e}"))?
 }
 
+/// 建立链路（含显式超时）。已经连着的不重复 connect。
+async fn ble_ensure_connected(target: &BtPeripheral, address: &str) -> Result<(), String> {
+    // 已经连着就不要再 connect 一次：connect() 会换掉底层设备对象，
+    // 旧对象随之关闭；若 GATT 缓存没跟着刷新，后续写入/订阅会用到已关闭的对象。
+    // （前端状态一旦与后端不同步，用户就可能对同一台设备重复点「连接设备」）
+    if target.is_connected().await.unwrap_or(false) {
+        #[cfg(debug_assertions)]
+        dbg_log(&format!("ble_ensure_connected: {address} 已处于连接状态，跳过重复连接"));
+        return Ok(());
+    }
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(BLE_CONNECT_TIMEOUT_MS),
+        target.connect(),
+    )
+    .await
+    {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
+            let s = e.to_string();
+            // WinRT 对「设备已离开范围」和「随机地址已轮换」都只报含糊的 Device not found，
+            // 这里翻译成用户能理解的提示（随机地址设备过一段时间旧地址就失效）
+            if s.contains("not found") || s.contains("Not found") {
+                Err(format!("设备已离线或地址已变化（{s}）：随机地址设备会轮换地址，请重新扫描后再试"))
+            } else {
+                Err(format!("connect: {s}"))
+            }
+        }
+        Err(_) => {
+            // 超时后主动断开：把"到底连上没有"收敛掉，别留给下一次操作去猜
+            let _ = target.disconnect().await;
+            Err(format!(
+                "连接超时（{BLE_CONNECT_TIMEOUT_MS}ms）：设备未响应。请确认设备在范围内、未被其它主机占用（地址 {address}）"
+            ))
+        }
+    }
+}
+
+/// 连接成功后的收尾：发现服务、落状态。
+/// 抽出来是为了让「扫描找到的设备」与「按 MAC 直连的设备」走**同一条**路径。
+async fn ble_finalize_connection(
+    state: &BleState,
+    target: BtPeripheral,
+) -> Result<(), String> {
+    target.discover_services().await.map_err(|e| format!("discover: {e}"))?;
+    let svcs: Vec<BtService> = target.services().iter().cloned().collect();
+    let addr = target.address().to_string();
+    // 新连接不继承上一台设备的残留通知，丢弃计数也清零
+    state.notify_buf.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    state.notify_dropped.store(0, std::sync::atomic::Ordering::Relaxed);
+    *state.services.lock().unwrap_or_else(|e| e.into_inner()) = svcs;
+    *state.connected_addr.lock().unwrap_or_else(|e| e.into_inner()) = Some(addr);
+    *state.connected.lock().unwrap_or_else(|e| e.into_inner()) = Some(target);
+    *state.last_peripheral.lock().unwrap_or_else(|e| e.into_inner()) = None;   // 已成为当前连接，槽位清空
+    Ok(())
+}
+
 #[tauri::command]
 async fn ble_connect(state: tauri::State<'_, BleState>, address: String) -> Result<(), String> {
-    let adapter = match state.adapter.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-        Some(a) => a,
-        None => return Err("请先扫描设备".to_string()),
-    };
+    let adapters = ble_cached_adapters(&state);
+    if adapters.is_empty() {
+        return Err("请先扫描设备".to_string());
+    }
     // 找设备，三条路依次兜底：
-    // 1) 适配器表（扫描时已在表内，最快）
+    // 1) 各适配器表（扫描时已在表内，最快）
     // 2) 上次断开保留的外设对象（按地址重连，不需要广播，断开后立刻重连走这条）
-    // 3) 短扫描脉冲重试若干轮（设备不在表内、也没有保留对象时兜底）
-    let mut target = ble_find_peripheral(&adapter, &address).await?;
+    // 3) 全适配器短扫描脉冲重试若干轮（设备不在表内、也没有保留对象时兜底）
+    let mut target = ble_find_peripheral(&adapters, &address).await;
     if target.is_none() {
         let last = state.last_peripheral.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(p) = last {
@@ -4691,40 +6554,40 @@ async fn ble_connect(state: tauri::State<'_, BleState>, address: String) -> Resu
         #[cfg(debug_assertions)]
         dbg_log(&format!("ble_connect: {address} 不在适配器表内，补短扫描重试"));
         for _ in 0..3 {
-            ble_scan_pulse(&adapter, &state.scanning, 1500).await;
-            target = ble_find_peripheral(&adapter, &address).await?;
+            ble_scan_pulse(&adapters, &state.scanning, 1500).await;
+            target = ble_find_peripheral(&adapters, &address).await;
             if target.is_some() { break; }
         }
     }
     let target = target.ok_or("未找到该设备（重新扫描后仍未发现，请确认设备在范围内）")?;
-    // 已经连着就不要再 connect 一次：connect() 会换掉底层设备对象，
-    // 旧对象随之关闭；若 GATT 缓存没跟着刷新，后续写入/订阅会用到已关闭的对象。
-    // （前端状态一旦与后端不同步，用户就可能对同一台设备重复点「连接设备」）
-    if target.is_connected().await.unwrap_or(false) {
-        #[cfg(debug_assertions)]
-        dbg_log(&format!("ble_connect: {address} 已处于连接状态，跳过重复连接"));
-    } else {
-        target.connect().await.map_err(|e| {
-            let s = e.to_string();
-            // WinRT 对「设备已离开范围」和「随机地址已轮换」都只报含糊的 Device not found，
-            // 这里翻译成用户能理解的提示（随机地址设备过一段时间旧地址就失效）
-            if s.contains("not found") || s.contains("Not found") {
-                format!("设备已离线或地址已变化（{s}）：随机地址设备会轮换地址，请重新扫描后再试")
-            } else {
-                format!("connect: {s}")
-            }
-        })?;
-    }
-    target.discover_services().await.map_err(|e| format!("discover: {e}"))?;
-    let svcs: Vec<BtService> = target.services().iter().cloned().collect();
-    let addr = target.address().to_string();
-    // 新连接不继承上一台设备的残留通知
-    state.notify_buf.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    *state.services.lock().unwrap_or_else(|e| e.into_inner()) = svcs;
-    *state.connected_addr.lock().unwrap_or_else(|e| e.into_inner()) = Some(addr);
-    *state.connected.lock().unwrap_or_else(|e| e.into_inner()) = Some(target);
-    *state.last_peripheral.lock().unwrap_or_else(|e| e.into_inner()) = None;   // 已成为当前连接，槽位清空
-    Ok(())
+    ble_ensure_connected(&target, &address).await?;
+    ble_finalize_connection(&state, target).await
+}
+
+/// 按 MAC 直连 —— **不要求设备出现在扫描列表里**。
+///
+/// 这是"从机搜不到、也连不上"的正解：从机一旦被 Windows 配对过、或被另一台主机连走，
+/// 就常常不再广播，于是永远进不了扫描列表，用户也就永远选不中它。
+/// btleplug 提供了 `add_peripheral`，注释原文：
+/// "a device the OS already knows (bonded or connected to another central) can be
+/// reached without waiting for an advertisement." —— 应用以前一处都没用它。
+#[tauri::command]
+async fn ble_connect_direct(state: tauri::State<'_, BleState>, address: String) -> Result<(), String> {
+    let adapters = ble_cached_adapters(&state);
+    let adapter = adapters
+        .first()
+        .ok_or("需要先初始化蓝牙适配器：请先在主机模式里点一次「开始扫描」")?;
+    let parsed: BDAddr = address
+        .trim()
+        .parse()
+        .map_err(|_| "蓝牙地址格式不正确（应形如 A4:C1:38:11:14:2B）".to_string())?;
+    let pid: BtPeripheralId = parsed.into();
+    let target = adapter
+        .add_peripheral(&pid)
+        .await
+        .map_err(|e| format!("按地址取出设备失败: {e}"))?;
+    ble_ensure_connected(&target, &address).await?;
+    ble_finalize_connection(&state, target).await
 }
 
 #[tauri::command]
@@ -4787,27 +6650,50 @@ async fn ble_get_connection(state: tauri::State<'_, BleState>) -> Result<Option<
 /// 若用户已在扫描则只等待，不重复开关（避免抢走用户的扫描）；
 /// 收尾前复查一次，防止脉冲期间用户点了「开始扫描」被误关。
 async fn ble_scan_pulse(
-    adapter: &BtAdapter,
+    adapters: &[BtAdapter],
     scanning: &std::sync::atomic::AtomicBool,
     ms: u64,
 ) {
     let already = scanning.load(std::sync::atomic::Ordering::Relaxed);
     if !already {
-        let _ = adapter.start_scan(ScanFilter::default()).await;
+        for a in adapters {
+            let _ = a.start_scan(ScanFilter::default()).await;
+        }
     }
     // 等广播到达；用 spawn_blocking 睡，避免为一次 sleep 引入 tokio 直接依赖
     let _ = tauri::async_runtime::spawn_blocking(
         move || std::thread::sleep(std::time::Duration::from_millis(ms))
     ).await;
     if !already && !scanning.load(std::sync::atomic::Ordering::Relaxed) {
-        let _ = adapter.stop_scan().await;
+        for a in adapters {
+            let _ = a.stop_scan().await;
+        }
     }
 }
 
-/// 在适配器已知设备里按地址查找（忽略大小写）
-async fn ble_find_peripheral(adapter: &BtAdapter, address: &str) -> Result<Option<BtPeripheral>, String> {
-    let periphs = adapter.peripherals().await.map_err(|e| format!("peripherals: {e}"))?;
-    Ok(periphs.into_iter().find(|p| p.address().to_string().eq_ignore_ascii_case(address)))
+/// 在**全部**适配器的已知设备里按地址查找（忽略大小写）。
+/// 单个适配器查不到不该让整体失败 —— 设备在另一个适配器上是很正常的。
+async fn ble_find_peripheral(adapters: &[BtAdapter], address: &str) -> Option<BtPeripheral> {
+    for a in adapters {
+        if let Ok(periphs) = a.peripherals().await {
+            if let Some(p) = periphs
+                .into_iter()
+                .find(|p| p.address().to_string().eq_ignore_ascii_case(address))
+            {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// 协商后的 ATT MTU。
+/// 默认值是 23（有效载荷 20 字节），写长数据失败时"到底是 MTU 还是特征的问题"
+/// 就靠这个数字来分辨，以前界面上完全看不到。
+#[tauri::command]
+async fn ble_get_mtu(state: tauri::State<'_, BleState>) -> Result<u16, String> {
+    let p = state.connected.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    Ok(p.map(|p| p.mtu()).unwrap_or(0))
 }
 
 /// RSSI 轮询的返回：顺带报告链路是否还在。
@@ -4843,16 +6729,16 @@ async fn ble_refresh_rssi(state: tauri::State<'_, BleState>) -> Result<BleRssiIn
         state.notify_spawned.store(false, std::sync::atomic::Ordering::Relaxed);
         return Ok(BleRssiInfo { rssi: None, connected: false });
     }
-    let adapter = match state.adapter.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-        Some(a) => a,
-        None => return Ok(BleRssiInfo { rssi: None, connected: true }),
-    };
-    ble_scan_pulse(&adapter, &state.scanning, 800).await;
+    let adapters = ble_cached_adapters(&state);
+    if adapters.is_empty() {
+        return Ok(BleRssiInfo { rssi: None, connected: true });
+    }
+    ble_scan_pulse(&adapters, &state.scanning, 800).await;
     // 广播回调会把设备（可能是一个新的外设对象）放进适配器表，
     // 优先用表里那个读 RSSI；表里没有再退回我们持有的连接对象（其 last_rssi 可能偏旧）
     let addr = periph.address().to_string();
     let mut rssi = None;
-    if let Some(p) = ble_find_peripheral(&adapter, &addr).await? {
+    if let Some(p) = ble_find_peripheral(&adapters, &addr).await {
         rssi = p.read_rssi().await.ok();
     }
     if rssi.is_none() {
@@ -4923,8 +6809,9 @@ async fn ble_subscribe(state: tauri::State<'_, BleState>, char_uuid: String) -> 
     let flag = state.notify_spawned.clone();
     if !flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
         let buf = state.notify_buf.clone();
+        let dropped = state.notify_dropped.clone();
         tauri::async_runtime::spawn(async move {
-            ble_notify_loop(p.clone(), buf).await;
+            ble_notify_loop(p.clone(), buf, dropped).await;
             // 通知流结束（断开连接会走到这里）：复位标志，下次订阅才能重新起循环
             flag.store(false, std::sync::atomic::Ordering::Relaxed);
         });
@@ -4943,9 +6830,14 @@ async fn ble_unsubscribe(state: tauri::State<'_, BleState>, char_uuid: String) -
 }
 
 #[tauri::command]
-async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec<serde_json::Value>, String> {
-    let mut b = state.notify_buf.lock().unwrap_or_else(|e| e.into_inner());
-    Ok(b.drain(..).collect())
+async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<serde_json::Value, String> {
+    let items: Vec<serde_json::Value> = {
+        let mut b = state.notify_buf.lock().unwrap_or_else(|e| e.into_inner());
+        b.drain(..).collect()
+    };
+    // 丢弃数一并取走并清零：静默丢数据会让人以为"设备就没发那么多"
+    let dropped = state.notify_dropped.swap(0, std::sync::atomic::Ordering::Relaxed);
+    Ok(json!({ "items": items, "dropped": dropped }))
 }
 
     tauri::Builder::default()
@@ -4967,16 +6859,28 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec
             sessions: std::sync::Mutex::new(HashMap::new()),
         })
         .manage(BleState {
-            adapter: Mutex::new(None),
+            adapters: Mutex::new(Vec::new()),
             scanning: std::sync::atomic::AtomicBool::new(false),
             connected: Mutex::new(None),
             last_peripheral: Mutex::new(None),
             connected_addr: Mutex::new(None),
             services: Mutex::new(Vec::new()),
             notify_buf: std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            notify_dropped: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             notify_spawned: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
         .manage(BlePairState { responder: Mutex::new(None) })
+        .manage(BlePeripheralState {
+            provider: Mutex::new(None),
+            service_uuid: Mutex::new(None),
+            chars: Mutex::new(Vec::new()),
+            adapter: Mutex::new(BlePeriphAdapterInfo::default()),
+            pending_writes: std::sync::Arc::new(Mutex::new(std::collections::HashMap::new())),
+            write_seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            manual_write_reply: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            events: std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            running: std::sync::atomic::AtomicBool::new(false),
+        })
         .invoke_handler(tauri::generate_handler![
             list_ports,
             list_wsl_devices,
@@ -5038,6 +6942,8 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec
             ble_stop_scan,
             ble_get_devices,
             ble_connect,
+            ble_connect_direct,
+            ble_get_mtu,
         ble_pair,
         ble_pair_respond,
             ble_disconnect,
@@ -5051,6 +6957,15 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec
         ble_subscribe,
             ble_unsubscribe,
             ble_poll_notifications,
+            ble_periph_start,
+            ble_periph_stop,
+            ble_periph_status,
+            ble_periph_set_value,
+            ble_periph_respond_write,
+            ble_periph_pick_config_file,
+            ble_periph_save_config_file,
+            ble_periph_notify,
+            ble_periph_poll_events,
             #[cfg(debug_assertions)]
             test_error_report,
         ])
@@ -5113,6 +7028,13 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<Vec
                     }
                     state.services.lock().unwrap_or_else(|e| e.into_inner()).clear();
                     *state.connected_addr.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                }
+
+                // 停止 BLE 从机广播：否则进程退出前手机仍能看到并尝试连接
+                if let Some(state) = window.try_state::<BlePeripheralState>() {
+                    if ble_periph_stop_inner(&state) {
+                        dbg_log("CloseRequested: BLE peripheral advertising stopped");
+                    }
                 }
 
                 dbg_log("CloseRequested: cleanup done");
