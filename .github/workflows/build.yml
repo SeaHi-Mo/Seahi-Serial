@@ -80,6 +80,21 @@ jobs:
           echo "$body" >> $env:GITHUB_OUTPUT
           echo "EOF" >> $env:GITHUB_OUTPUT
 
+      - name: Run tests
+        shell: pwsh
+        # 三套都要过才继续构建：后端单测（含真实回环端口的 MCP 端到端）、
+        # 前端无头断言（含 BLE / 内存上限 / MCP 控件注册表与日志中心）、
+        # npm 安装器自测（临时目录 + 自带探活服务，不碰真实客户端配置）。
+        # 任一套失败就中断，避免带着回归发版。
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw "后端单测失败" }
+          node .walkthrough/gen_ble_preview.js
+          if ($LASTEXITCODE -ne 0) { throw "前端断言失败" }
+          node npm/seahi-serial-mcp/test/self-test.js
+          if ($LASTEXITCODE -ne 0) { throw "npm 安装器自测失败" }
+          Write-Host "三套测试全部通过"
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:

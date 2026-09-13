@@ -1,6 +1,6 @@
 [package]
 name = "seahi-serial"
-version = "0.4.1"
+version = "0.5.0"
 description = "Seahi 串口调试器"
 authors = ["Seahi"]
 edition = "2021"
@@ -32,9 +32,10 @@ regex = "1"
 sentry = { version = "0.34", optional = true }
 chrono = "0.4"
 btleplug = "0.13"
-# 只用到 tokio::time::timeout（给 BLE connect 加显式超时）。
-# 版本与 tauri 内部一致，不会多编译一份。
-tokio = { version = "1", features = ["time"] }
+# 原来只用到 tokio::time::timeout（给 BLE connect 加显式超时）；
+# MCP 的 SSE 服务器需要 net（监听/连接）、io-util（读写）、sync（mpsc/oneshot）、rt（spawn）。
+# 版本与 tauri 内部一致，不会多编译一份。刻意不开 macros（避免再拉 tokio-macros）。
+tokio = { version = "1", features = ["time", "rt", "net", "sync", "io-util"] }
 # BLE 配对与 BLE 从机（GATT Server）走 WinRT（btleplug 是 central-only，都不提供）。
 # 版本与 features 对齐 vendor/btleplug，避免再编译一份 windows crate。
 # GenericAttributeProfile = 从机的 GattServiceProvider/GattLocalCharacteristic；
@@ -53,6 +54,16 @@ windows = { version = "0.62", features = [
 windows-future = "0.3"
 uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
+
+# ===== MCP 服务器（SSE）=====
+# 原计划用 axum（见 doc/MCP_DESIGN.md §3.3），但本机 cargo 无法联网下载新 crate，
+# 而 axum 不在本地缓存中；hyper 一族早已由 reqwest 带入依赖树且已在缓存里，
+# 所以改用 hyper 直接实现：路由与 SSE 分帧自己写，chunked/keep-alive/请求解析交给 hyper。
+# 版本刻意不写死到 patch，交给 Cargo.lock 里已有的版本（不会引入第二份）。
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
 
 [patch.crates-io]
 btleplug = { path = "vendor/btleplug" }

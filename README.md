@@ -29,6 +29,7 @@
 - **蓝牙调试（主机）** — 扫描周边 BLE 设备（含原始广播字节解析、设备类型识别、RSSI），连接后浏览 GATT 服务树并读写特征 / 描述符、订阅通知与指示、WinRT 配对
 - **蓝牙调试（从机）** — 本机作为 BLE 外设对外广播，被手机 / 其它主机搜索并连接；内置 Nordic UART、FFE0 透传等预设，可收发主机写入、改可读值、向已订阅主机下发通知
 - **USB 设备插拔检测** — 设备插拔自动刷新列表
+- **MCP 服务器（AI 控制接口）** — 程序内置 Model Context Protocol 服务器（SSE 模式 / 仅监听回环），把串口、日志、界面控件暴露成 20 个内置工具供 AI 客户端调用；工具操作**与前端界面实时同步**，调用记录写在独立的 `ai-calls.jsonl`，绝不污染用户配置
 - **首次使用引导** — 9 步聚光灯引导，快速上手
 - **自动更新** — 启动时检测 GitHub 最新版本
 
@@ -65,22 +66,80 @@ npm run build
 ```
 serial-debugger-tauri/
 ├── src/
-│   └── index.html                # 前端（单文件，~4400 行）
+│   └── index.html                # 前端（单文件，~10400 行）
 ├── src-tauri/
 │   ├── Cargo.toml                # Rust 依赖
 │   ├── tauri.conf.json           # Tauri 应用配置
 │   ├── capabilities/
 │   │   └── default.json          # ACL 权限配置
+│   ├── vendor/btleplug/          # btleplug 的 vendored fork（4 处本地补丁）
 │   ├── wsl-daemon/               # WSL bridge 脚本（base64 编码）
 │   └── src/
-│       └── main.rs               # Rust 后端（~1745 行）
+│       ├── main.rs               # Rust 后端（~7400 行）
+│       └── mcp/                  # MCP 服务器（transport / protocol / bridge /
+│                                 #   registry / loghub / calllog / aiconfig / mod）
+├── npm/
+│   └── seahi-serial-mcp/         # MCP 客户端配置安装器（零依赖 CLI）
 ├── skills/
 │   └── seahi-serial-dev/
 │       └── SKILL.md              # AI 开发技能指南
-├── doc/                          # 项目文档
+├── doc/                          # 项目文档（含 MCP.md / MCP_DESIGN.md）
 ├── installer.iss                 # Inno Setup 安装脚本
 └── TEST_CASES.md                 # 测试用例
 ```
+
+## MCP（AI 控制接口）
+
+程序内置一个 **MCP（Model Context Protocol）服务器**，让 Claude Code / Claude Desktop / Cursor 等 AI 客户端直接操作本程序。
+
+### 设计要点
+
+| 项 | 说明 |
+|------|------|
+| **运行方式** | 与程序同进程（开箱即用，无需额外启动任何服务）；随程序启动自动监听 |
+| **传输协议** | 仅 **SSE**（`GET /sse` 建立会话，`POST /messages` 发请求），**只监听回环地址** |
+| **鉴权** | 每次请求必须携带 token（`?token=` 或 `Authorization: Bearer`）；`/healthz` 是唯一免鉴权端点，且只回 `{"ok":true}` |
+| **显隐** | 顶栏 MCP 图标 → 弹窗内「启用 / 关闭」一键切换；开关状态保存到 `ai-config.json` |
+| **配置隔离** | 用户配置 `config.json` **完全不受影响**；AI 相关设置与调用记录单独存放（见下） |
+| **稳定性** | 会话数 / 队列长度 / 请求体大小 / 调用频率均有限额，空闲会话自动回收，日志中心按通道环形缓冲并有总量上限 |
+
+### 内置工具（20 个）
+
+| 分类 | 工具 |
+|------|------|
+| 应用信息 | `app_info`、`mcp_status`、`mcp_limits` |
+| 串口 | `serial_list_ports` |
+| 界面控件 | `ui_list`、`ui_describe`、`ui_get`、`ui_set`、`ui_click`、`ui_get_state` |
+| 日志中心 | `log_channels`、`log_tail`、`log_search`、`log_stats`、`log_clear`、`log_export` |
+| MCP 自身 | `mcp_calls`、`mcp_stats`、`mcp_config_get`、`mcp_config_set` |
+
+此外可选开启 `expose.autoControlTools`：程序启动时会扫描界面上的按钮 / 输入框 / 下拉框，按控件生成 `ctl_*` 工具（**默认关闭**——几百个工具会显著拖累模型选工具的准确率）。
+
+### 文件位置
+
+| 文件 | 内容 |
+|------|------|
+| `%APPDATA%\seahi-serial\ai-config.json` | MCP 服务器设置（开关、端口、token、暴露策略） |
+| `%APPDATA%\seahi-serial\ai-calls.jsonl` | AI 工具调用记录（追加写，按大小轮转；默认不落盘，可在弹窗里开启） |
+| `%APPDATA%\seahi-serial\mcp-endpoint.json` | 当前监听地址与 token（供安装器自动探测） |
+
+### 客户端接入
+
+```bash
+# 一键写入客户端 MCP 配置（自动探测本机正在运行的程序实例）
+npx seahi-serial-mcp install
+
+# 只预览将要改动的内容，不落盘
+npx seahi-serial-mcp install --dry-run
+
+# 查看当前状态 / 卸载
+npx seahi-serial-mcp status
+npx seahi-serial-mcp uninstall
+```
+
+也可以在程序顶栏点击 MCP 图标，弹窗内直接复制「连接地址」与「安装提示词」手动配置。
+
+> 详细使用说明见 [`doc/MCP.md`](./doc/MCP.md)；**20 个工具的完整参考（入参 + 返回结构）见 [`doc/MCP_TOOLS.md`](./doc/MCP_TOOLS.md)**；架构与设计取舍见 [`doc/MCP_DESIGN.md`](./doc/MCP_DESIGN.md)。
 
 ## 技术栈
 
@@ -89,6 +148,8 @@ serial-debugger-tauri/
 - **桌面框架**：Tauri 2
 - **原生对话框**：`rfd 0.15`
 - **WSL 桥接**：Python bridge 脚本 + `usbipd-win`
+- **蓝牙**：`btleplug 0.13`（主机，vendored fork）+ `windows 0.62`（从机 / 配对）
+- **MCP 服务器**：`hyper 1` + `hyper-util` + `http-body-util`（SSE，均随 `reqwest` 进入依赖树，无新增下载）
 
 ## 自动构建（GitHub Actions）
 
@@ -144,7 +205,7 @@ git push origin v0.x.x
 
 | 区域 | 说明 |
 |------|------|
-| **全局操作栏** | 最顶部，包含「打开额外监视器」「WSL 端口映射」、主题风格选择、提交 issue 和深浅色切换 |
+| **全局操作栏** | 最顶部，包含「打开额外监视器」「WSL 端口映射」、主题风格选择、MCP 开关、提交 issue 和深浅色切换 |
 | **工具栏** | 串口配置区：查看模式、端口选择、波特率、行尾、开始/停止监控，以及图标按钮组 |
 | **输出区** | 中间大面积区域，显示接收到的串口数据 |
 | **发送栏** | 底部输入框，支持文本/HEX 模式、发送历史、快速指令 |

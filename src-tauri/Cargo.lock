@@ -1847,6 +1847,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -3665,13 +3666,17 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "seahi-serial"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
  "btleplug",
+ "bytes",
  "chrono",
  "crossbeam-channel",
  "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "portable-pty",
  "regex",
  "reqwest 0.12.28",

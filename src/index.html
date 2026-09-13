@@ -1026,6 +1026,16 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     cursor:default;
     user-select:none;
     -webkit-user-select:none;
+    /* 顶栏所有控件之间的间距**只在这一处定义**。
+       以前是各控件自带 margin：图标按钮 12px、提交issue/更新 8px、主题开关 10px、
+       加监视器 0（靠 app-info 的 margin-right:10px）、MCP 两侧 12px —— 于是相邻间距
+       在 8/10/12 之间跳，肉眼一看就不齐（用户反馈"按钮间距没有统一"）。
+       现在全部改成 gap，各控件里的 margin 已删干净；要调间距只改这一个数。
+
+       取 8px 而不是三种里的最大值 12px：12px 试过一版，整条栏比原先松，
+       用户反馈"这么宽的距离不符合原先的审美设计" —— 原先右侧那一组
+       （风格 / 提交issue / 更新）用的就是 8px，紧一点才是本来的观感。 */
+    gap:8px;
 }
 .add-btn { color:var(--link); font-size:12px; cursor:pointer; display:inline-flex; align-items:center; gap:4px; padding:2px 6px; border-radius:4px; transition: opacity .15s; }
 .add-btn:hover { text-decoration:underline; }
@@ -1299,24 +1309,103 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .ble-modal-btn:hover { border-color:var(--border-h); }
 .ble-modal-btn.primary { background:var(--accent-focus); border-color:transparent; color:#fff; }
 .ble-modal-btn.primary:hover { filter:brightness(1.08); }
+/* 禁用态必须一眼看得出来，并且不能再显示手型光标：
+   「启用 MCP 服务器」在运行中是被禁用的，但它是 primary（蓝底白字），
+   不压暗、不换光标的话就跟可点的按钮长得一模一样 —— 用户会去点、点了没反应。 */
+.ble-modal-btn:disabled { cursor:default; opacity:.45; }
+.ble-modal-btn:disabled:hover { border-color:var(--border); filter:none; }
+/* ===== MCP 服务器弹窗（复用上面 .ble-modal-* 的外观，只加自己需要的）===== */
+.mcp-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+/* 标题与内容**上下**排（用户反馈左右并排太丑）：标题单独一行，内容占满整行宽度。
+   之前左右并排时标题要吃 62px，长 URL / 长 JSON 只能挤在剩下的窄条里横向滚动。 */
+.mcp-field { margin-bottom:12px; }
+.mcp-label { display:block; font-size:12px; color:var(--text-d); margin-bottom:5px; }
+/* 复制按钮压在**内容框内的右上角**（用户指定）。所以框要有定位上下文，
+   右侧还要给按钮留出位置（`.mcp-url`/`.mcp-code` 的 padding-right），否则内容会钻到按钮底下。
+   留 64px 而不是按"复制"两个字的宽度算：点完会短暂变成"已复制"（3 个字，更宽），
+   按钮是右对齐的、会往左长 —— 按最宽状态留位，点击时才不会盖住内容。 */
+.mcp-box { position:relative; }
+.mcp-copy-btn { position:absolute; top:3px; right:4px; height:20px; padding:0 8px; font-size:11px; }
+/* display:block 是必需的：它是 <span>，以前靠"是 flex 子项"被块级化；
+   现在放在普通块级容器里，不写就还是行内元素，padding/overflow 都不按预期生效。
+   上内边距 26px = **给按钮让出整整一行**（按钮 top:3px + 高 20px = 占 3~23px）：
+   内容只有一行时它正好落在按钮那一行上，会撞在一起（用户反馈），所以把内容整体下移一行。
+   min-height 与内边距对齐（26 + 18 行高 + 5 = 49），框不会被内容撑变形。 */
+.mcp-url { display:block; box-sizing:border-box; min-height:49px; line-height:18px;
+           font-family:var(--font-mono); font-size:11px; padding:26px 64px 5px 8px;
+           background:var(--input-bg); border:1px solid var(--border); border-radius:5px;
+           color:var(--text); overflow-x:auto; white-space:nowrap; }
+/* 代码框是多行，第一行右边的内容很短（`{` / 提示词首行），按钮只压住右上角一小块，
+   不需要像单行那样整体下移 —— 那会白白浪费一大截高度 */
+.mcp-code { font-family:var(--font-mono); font-size:11px; line-height:1.5;
+            padding:8px 64px 8px 8px; margin:0; background:var(--input-bg); border:1px solid var(--border);
+            border-radius:5px; color:var(--text); max-height:132px; overflow:auto; white-space:pre; }
+.mcp-hint { font-size:11px; color:var(--text-d); line-height:1.7; word-break:break-all; }
+.mcp-reason { font-size:11px; color:var(--accent-red); margin-top:6px; word-break:break-all; }
+/* 状态点：灰=未启用 / 绿=监听中 / 蓝=有会话 / 红=失败 */
+.mcp-dot { width:7px; height:7px; border-radius:50%; background:var(--text-muted);
+           display:inline-block; flex-shrink:0; }
+.mcp-dot.on { background:var(--accent-green); }
+.mcp-dot.live { background:var(--accent-focus); }
+.mcp-dot.err { background:var(--accent-red); }
+/* 左/右间距都交给 .global-bar 的 gap，这里不再自带 margin
+   （以前是 margin-left/right:12px，与「提交issue/更新」的 8px、「主题开关」的 10px
+   混在一起，相邻间距在 8/10/12 之间跳，看着不齐 —— 用户反馈"按钮间距没有统一"）。
+
+   颜色显式写成与「风格」下拉（`.sel`，见上）**同一个 token**：两处本来就都是 var(--text)，
+   但这里写死是故意的 —— 哪天 `#globalBar` 里图标按钮整体换配色（比如 .add-btn.icon-btn 改成
+   --text-b），这个图标不该跟着漂，用户要的是"和风格那个图标一个色"。 */
+#mcpBtn { position:relative; color:var(--text); }
+/* 但**同色不等于同观感**：这个图标是螺旋带（实心面积约 27%），「风格」的调色板是
+   细环 + 小圆点（约 21%），同一个 --text 下前者看着明显更亮、不像灰的（用户实测反馈）。
+   所以只对**图形**压一点亮度。注意必须挂在 svg 上而不是 #mcpBtn 上 ——
+   挂父节点会把右下角的状态点（绿/蓝/红）一起压暗，那是状态指示，不能失真。
+   用 opacity 而不是换 color token：12 套主题都按比例变，不会在低对比主题里直接糊掉。 */
+#mcpBtn > svg { opacity:.8; }
+#mcpBtn .mcp-dot { position:absolute; right:0; bottom:0; width:6px; height:6px;
+                   box-shadow:0 0 0 1px var(--toolbar-bg); }
 /* 从机模式下所有可滚动区统一滚动条：日志、特征状态、左栏配置。
    不套这套规则就会落到 Chromium 默认的白底宽条，深色主题下非常扎眼。
-   用中性灰半透明，浅色/深色主题下都可见，无需逐主题覆盖 */
+   用中性灰半透明，浅色/深色主题下都可见，无需逐主题覆盖。
+   MCP 弹窗里的连接 URL（横向）与客户端配置/安装提示词（两个方向）也要套，
+   否则同一个界面里一半是细灰条、一半是白宽条。
+   `height` 是给横向滚动条用的 —— 只设 width 的话横条仍是默认的粗白条 */
 .ble-log::-webkit-scrollbar,
 .ble-pf-left::-webkit-scrollbar,
-.ble-pf-chars::-webkit-scrollbar { width:10px; }
+.ble-pf-chars::-webkit-scrollbar,
+.mcp-url::-webkit-scrollbar,
+.mcp-code::-webkit-scrollbar,
+#mcpModal .ble-modal-body::-webkit-scrollbar { width:10px; height:10px; }
 .ble-log::-webkit-scrollbar-track,
 .ble-pf-left::-webkit-scrollbar-track,
-.ble-pf-chars::-webkit-scrollbar-track { background:transparent; }
+.ble-pf-chars::-webkit-scrollbar-track,
+.mcp-url::-webkit-scrollbar-track,
+.mcp-code::-webkit-scrollbar-track,
+#mcpModal .ble-modal-body::-webkit-scrollbar-track { background:transparent; }
+/* 横竖两条滚动条交汇的那一小块（corner）：不写这条就还是 Chromium 默认的**白色方块**，
+   在深色主题下特别显眼（用户截图指出来了）。track/thumb 都改了却漏掉它 —— 三个都要写。 */
+.ble-log::-webkit-scrollbar-corner,
+.ble-pf-left::-webkit-scrollbar-corner,
+.ble-pf-chars::-webkit-scrollbar-corner,
+.mcp-url::-webkit-scrollbar-corner,
+.mcp-code::-webkit-scrollbar-corner,
+#mcpModal .ble-modal-body::-webkit-scrollbar-corner { background:transparent; }
 .ble-log::-webkit-scrollbar-thumb,
 .ble-pf-left::-webkit-scrollbar-thumb,
-.ble-pf-chars::-webkit-scrollbar-thumb {
+.ble-pf-chars::-webkit-scrollbar-thumb,
+.mcp-url::-webkit-scrollbar-thumb,
+.mcp-code::-webkit-scrollbar-thumb,
+#mcpModal .ble-modal-body::-webkit-scrollbar-thumb {
     background:rgba(128,134,146,.42); border:3px solid transparent; background-clip:content-box; border-radius:6px;
 }
 .ble-log::-webkit-scrollbar-thumb:hover,
 .ble-pf-left::-webkit-scrollbar-thumb:hover,
-.ble-pf-chars::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
-.app-info { display:inline-flex; align-items:center; gap:6px; margin-right:10px; cursor:default; flex-shrink:0; }
+.ble-pf-chars::-webkit-scrollbar-thumb:hover,
+.mcp-url::-webkit-scrollbar-thumb:hover,
+.mcp-code::-webkit-scrollbar-thumb:hover,
+#mcpModal .ble-modal-body::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
+/* 水平间距一律交给 .global-bar 的 gap，这里不再自带 margin-right */
+.app-info { display:inline-flex; align-items:center; gap:6px; cursor:default; flex-shrink:0; }
 .app-info-icon { width:22px; height:22px; flex-shrink:0; object-fit:contain; }
 .app-info-name { font-size:12px; font-weight:600; color:var(--text-b); white-space:nowrap; }
 
@@ -1757,7 +1846,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     color:#fff;
     font-size:11px; cursor:pointer;
     display:inline-flex; align-items:center; gap:3px;
-    padding:2px 8px; border-radius:4px; margin-left:8px;
+    padding:2px 8px; border-radius:4px;
     border:none; user-select:none;
     transition:background .15s;
 }
@@ -1767,7 +1856,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 
 /* ===== 主题切换开关 ===== */
 .theme-switch {
-    display:inline-flex; align-items:center; gap:5px; margin-left:10px; cursor:pointer; user-select:none;
+    display:inline-flex; align-items:center; gap:5px; cursor:pointer; user-select:none;
 }
 .theme-switch-icon { color:var(--text-d); display:inline-flex; align-items:center; transition:color .2s; }
 .theme-switch-track {
@@ -1792,7 +1881,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     color:var(--text-soft);
     font-size:11px; cursor:pointer;
     display:inline-flex; align-items:center; gap:3px;
-    padding:2px 8px; border-radius:4px; margin-left:8px;
+    padding:2px 8px; border-radius:4px;
     border:none; user-select:none;
     transition:background .15s, color .15s;
 }
@@ -2119,23 +2208,30 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     <span id="appInfoWrap" class="app-info" onclick="goMain()" style="cursor:pointer;" title="加载中...">
         <img class="app-info-icon" src="app-icon.png" alt="Seahi Serial">
     </span>
-    <span class="add-btn icon-btn" id="addMonitorBtn" onclick="addMonitor()" title="打开额外监视器">
+    <span class="add-btn icon-btn" id="addMonitorBtn" onclick="addMonitor()" title="再开一个串口监视器分栏：各自独立选端口与配置">
         <svg width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M937.2 403c-13.8-4.3-28.5 0.8-36.6 12.6l-50.2 72.6-24.7 35.7c-10.3 14.8-6.6 35.2 8.3 45.4 14.7 10.2 35.1 6.6 45.4-8.3l15.5-22.4v353.5H129.2V131.3h706.5c0.4 0 0.8-0.2 1.3-0.3 17.4-0.7 31.4-14.8 31.4-32.4 0-18-14.6-32.6-32.6-32.6H96.6C78.6 66 64 80.6 64 98.6v826.2c0 18 14.6 32.6 32.6 32.6h830.8c18 0 32.6-14.6 32.6-32.6V434.1c0.1-14.3-9.3-26.9-22.8-31.1z"/><path d="M512 703.6c19.5 0 35.2-15.8 35.2-35.2V540.2h128.2c19.5 0 35.2-15.8 35.2-35.2 0-19.5-15.8-35.2-35.2-35.2H547.2V341.5c0-19.5-15.8-35.2-35.2-35.2-19.5 0-35.2 15.8-35.2 35.2v128.2H348.6c-19.5 0-35.2 15.8-35.2 35.2 0 19.5 15.8 35.2 35.2 35.2h128.2v128.2c0 19.6 15.7 35.3 35.2 35.3z"/></svg>
     </span>
-    <span id="wslToggleBtn" class="add-btn icon-btn" onclick="openWslMapping()" style="margin-left:12px;" title="WSL 端口映射">
+    <span id="wslToggleBtn" class="add-btn icon-btn" onclick="openWslMapping()" title="把 USB 串口映射进 WSL（依赖 usbipd-win，需管理员权限）">
         <svg id="wslToggleIcon" width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M424.256 96h175.488c78.4 0 140.544 0 189.12 6.528 50.048 6.72 90.496 20.928 122.432 52.8 31.936 32 46.08 72.448 52.864 122.496 6.528 48.64 6.528 110.72 6.528 189.12v87.68a32 32 0 1 1-64 0V544H117.312v10.688c0 81.28 0.064 139.136 5.952 183.04 5.76 42.88 16.64 67.584 34.688 85.632 18.048 18.112 42.752 28.928 85.76 34.688 43.776 5.888 101.568 5.952 182.976 5.952h128a32 32 0 0 1 0 64H424.256c-78.4 0-140.544 0-189.12-6.528-50.048-6.72-90.496-20.928-122.432-52.8-32-32-46.08-72.448-52.864-122.496C53.312 697.6 53.312 635.52 53.312 557.056V466.944c0-78.4 0-140.544 6.528-189.12 6.72-50.048 20.928-90.56 52.864-122.496 31.936-31.872 72.384-46.08 122.432-52.8 48.64-6.528 110.72-6.528 189.12-6.528z m-306.944 384h789.376v-10.688c0-81.28-0.064-139.136-6.016-183.04-5.76-42.88-16.576-67.584-34.624-85.632-18.048-18.112-42.816-28.928-85.76-34.688-43.776-5.888-101.568-5.952-182.976-5.952H426.688c-81.408 0-139.2 0.064-183.04 5.952-42.88 5.76-67.648 16.64-85.76 34.688-17.984 18.048-28.8 42.752-34.56 85.696-5.952 43.84-6.016 101.632-6.016 183.04V480z"/><path d="M576 281.6h192a38.4 38.4 0 0 1 0 76.8H576a38.4 38.4 0 1 1 0-76.8zM217.6 661.312a38.4 38.4 0 1 1 76.8 0v85.376a38.4 38.4 0 0 1-76.8 0v-85.376zM217.6 277.312a38.4 38.4 0 1 1 76.8 0v85.376a38.4 38.4 0 0 1-76.8 0V277.312zM345.6 661.312a38.4 38.4 0 1 1 76.8 0v85.376a38.4 38.4 0 0 1-76.8 0v-85.376zM345.6 277.312a38.4 38.4 0 1 1 76.8 0v85.376a38.4 38.4 0 0 1-76.8 0V277.312zM810.688 977.088a209.088 209.088 0 1 0 0-418.176 209.088 209.088 0 0 0 0 418.176z m0-341.376a132.288 132.288 0 1 1 0 264.576 132.288 132.288 0 0 1 0-264.576z"/><path d="M831.168 680.32l-5.568-4.928a38.4 38.4 0 1 0-51.2 57.28l5.632 4.992q24.768 22.08 30.656 29.12l1.024 1.216-1.024 1.28q-5.888 6.976-30.72 29.056l-5.568 4.992a38.4 38.4 0 0 0 51.2 57.344l5.568-5.056q28.8-25.728 38.272-36.864 20.48-24.32 20.48-50.752 0-26.368-20.48-50.752-9.408-11.136-38.272-36.864z"/></svg>
         <span id="wslToggleText" style="display:none;">WSL 端口映射</span>
     </span>
-    <span id="adbToggleBtn" class="add-btn icon-btn" onclick="openAdb()" style="margin-left:12px;" title="ADB 调试">
+    <span id="adbToggleBtn" class="add-btn icon-btn" onclick="openAdb()" title="ADB 设备调试：设备列表、shell 命令、文件传输">
         <svg id="adbToggleIcon" width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M252.16 776.96l-23.04-135.68H105.6l-21.76 135.68H0L103.68 192h122.24l111.36 584.96zM217.6 573.44l-53.12-308.48-48.64 308.48zM348.8 192h203.52c87.04 0 87.04 81.92 87.04 81.92v421.12c0 81.92-87.04 81.92-87.04 81.92H348.8z m205.44 93.44c0-16.64-5.76-21.76-5.76-21.76-5.12-5.12-22.4-5.12-22.4-5.12H433.92v451.84h92.16c17.28 0 22.4-5.12 22.4-5.12 5.76-5.12 5.76-16.64 5.76-21.76z m332.8 0c0-16.64-5.76-21.76-5.76-21.76-5.12-5.12-22.4-5.12-22.4-5.12h-93.44v187.52h93.44c17.28 0 22.4-5.12 22.4-5.12 5.76-5.12 5.76-22.4 5.76-21.76z m0 254.08c0-16.64-5.76-21.76-5.76-21.76-5.12-5.12-22.4-5.12-22.4-5.12h-93.44v197.76h93.44c17.28 0 22.4-5.12 22.4-5.12 5.76-5.12 5.76-21.76 5.76-21.76zM681.6 192h202.88c87.68 0 87.68 81.92 87.68 81.92v149.12c0 49.28-37.12 57.6-37.12 57.6 37.12 9.6 37.12 54.4 37.12 54.4v160c0 81.92-87.68 81.92-87.68 81.92h-202.88z"/></svg>
         <span id="adbToggleText" style="display:none;">ADB 调试</span>
     </span>
-    <span id="bleToggleBtn" class="add-btn icon-btn" onclick="openBle()" style="margin-left:12px;" title="蓝牙调试">
+    <span id="bleToggleBtn" class="add-btn icon-btn" onclick="openBle()" title="BLE 扫描与连接：GATT 服务/特征读写、订阅通知">
         <svg id="bleToggleIcon" width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M466.125 149.709a45.875 45.875 0 0 1 70.349-39.936l1.638 1.126 250.982 178.483a48.128 48.128 0 0 1 2.253 76.186l-1.843 1.331L593.92 508.723l194.56 137.728a48.026 48.026 0 0 1 1.946 76.493l-1.844 1.434-250.47 178.483a45.773 45.773 0 0 1-71.68-36.762V601.6L287.437 731.238a45.056 45.056 0 0 1-62.157-9.523l-1.331-1.945a48.23 48.23 0 0 1 9.216-64.41l1.843-1.434 198.246-144.179L235.52 369.664a48.026 48.026 0 0 1-13.107-63.693l1.229-2.048a45.056 45.056 0 0 1 61.44-13.517l1.945 1.332 179.2 126.566z m92.16 448.102V773.94l123.801-87.859z m0-358.4V419.84l124.928-90.624z" p-id="13027"></path></svg>
         <span id="bleToggleText" style="display:none;">蓝牙调试</span>
     </span>
     <span style="flex:1;"></span>
-    <span id="themeStyleWrap" class="sel" style="height:24px;width:auto;padding:0 4px;justify-content:center;" onclick="toggleThemeStyleDrop(event)" title="主题风格: 默认">
+    <!-- MCP 服务器入口（放在「风格」下拉的左边）。
+         图标内联而不是 <img src="...">：源文件的 path 写死了 fill="#bfbfbf"（该源文件不留在仓库里），
+         用 img 引入无法跟随主题换色。 -->
+    <span id="mcpBtn" class="add-btn icon-btn" onclick="openMcpModal()" title="MCP 服务器：点开可开关它，让本机 AI 客户端连接并操作本程序">
+        <svg width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M895.67 256.204l2.006 2.039c65.554 67.714 64.892 175.746-1.993 242.632L550.615 845.944l76.342 76.342c15.62 15.62 15.62 40.947 0 56.568-15.621 15.621-40.948 15.621-56.569 0l-80.585-80.585c-28.899-28.899-28.899-75.753 0-104.652l349.311-349.311c36.318-36.318 36.314-95.207-0.013-131.534-34.322-34.322-88.787-36.22-125.325-5.692a171.457 171.457 0 0 1-5.933 6.236L417.84 603.32c-15.621 15.621-40.948 15.621-56.569 0a40.435 40.435 0 0 1-3.009-3.363c-12.928-15.713-12.05-38.979 2.637-53.665l290.1-290.101a175.882 175.882 0 0 1 6.038-5.758c30.422-36.517 28.491-90.892-5.793-125.176-36.32-36.32-95.191-36.33-131.49-0.032L140.712 504.266c-15.621 15.621-40.948 15.621-56.569 0-15.62-15.62-15.62-40.947 0-56.568L463.184 68.657C530.73 1.11 640.253 1.13 707.812 68.689c37.652 37.652 54.325 88.338 50.016 137.529 49.287-4.41 100.11 12.254 137.842 49.986z m-85.129 87.345c15.621 15.621 15.621 40.948 0 56.569l-286.48 286.48c-67.511 67.511-177.003 67.452-244.557-0.102s-67.613-177.045-0.102-244.557l286.48-286.48c15.621-15.621 40.948-15.621 56.569 0 15.62 15.62 15.62 40.947 0 56.568L335.97 498.508c-36.256 36.255-36.224 95.094 0.102 131.42 36.325 36.325 95.164 36.357 131.419 0.102l286.48-286.48c15.622-15.622 40.948-15.622 56.57 0z"/></svg>
+        <span class="mcp-dot" id="mcpDot"></span>
+    </span>
+    <span id="themeStyleWrap" class="sel" style="height:24px;width:auto;padding:0 4px;justify-content:center;" onclick="toggleThemeStyleDrop(event)" title="主题风格：6 种配色风格 × 深浅色">
         <svg width="16" height="16" viewBox="0 0 1024 1024" fill="currentColor"><path d="M512 51.2a460.8 460.8 0 0 0 0 921.6c78.5408 0 133.12-40.0384 139.264-102.4 2.3552-23.6544-6.5536-44.9536-15.1552-65.6384-14.336-34.5088-24.6784-59.4944 9.216-93.2864s73.5232-27.4432 119.7056-20.48c29.7984 4.5056 60.416 9.0112 89.1904 1.2288C929.5872 672.0512 972.8 606.208 972.8 512A461.312 461.312 0 0 0 512 51.2z m331.3664 601.9072c-20.48 5.5296-45.568 1.8432-71.68-2.2528-47.4112-7.0656-106.496-15.9744-154.7264 31.9488-53.4528 53.248-33.0752 102.4-18.1248 138.1376a105.2672 105.2672 0 0 1 12.1856 45.8752C604.672 927.1296 533.6064 931.84 512 931.84a419.84 419.84 0 1 1 419.84-419.84c0 43.6224-11.4688 120.1152-88.4736 141.1072z"/><path d="M235.52 512m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M307.2 337.92m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M471.04 245.76m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M655.36 276.48m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/><path d="M778.24 419.84m-51.2 0a51.2 51.2 0 1 0 102.4 0 51.2 51.2 0 1 0-102.4 0Z"/></svg>
         <span class="sel-arrow">&#9662;</span>
         <div id="themeStyleDrop" class="sel-drop">
@@ -2147,9 +2243,9 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
             <div class="sel-opt" data-style="autumn" onclick="event.stopPropagation();selectThemeStyle('autumn')">金风玉露</div>
         </div>
     </span>
-    <span class="issue-btn" onclick="invoke('open_url',{url:'https://github.com/SeaHi-Mo/Seahi-Serial/issues/new'})">提交issue</span>
-    <span id="updateBtn" class="update-btn" style="display:none;" onclick="downloadAndInstallUpdate()">更新</span>
-    <span id="themeSwitch" class="theme-switch" onclick="toggleTheme()" title="主题: 浅色">
+    <span class="issue-btn" onclick="invoke('open_url',{url:'https://github.com/SeaHi-Mo/Seahi-Serial/issues/new'})" title="在 GitHub 上提交问题或建议（会打开浏览器）">提交issue</span>
+    <span id="updateBtn" class="update-btn" style="display:none;" onclick="downloadAndInstallUpdate()" title="发现新版本：点击下载并安装">更新</span>
+    <span id="themeSwitch" class="theme-switch" onclick="toggleTheme()" title="深浅色切换（当前：深色）">
         <span class="theme-switch-icon sun"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg></span>
         <span class="theme-switch-track"><span class="theme-switch-thumb"></span></span>
         <span class="theme-switch-icon moon"><svg width="14" height="14" viewBox="0 0 1024 1024" fill="currentColor"><path d="M507.58 162.84c190 0 344.09 154 344.09 344.09S697.62 851 507.58 851 163.49 697 163.49 506.93s154.05-344.09 344.09-344.09z m-98.07 129C283.27 338.39 218.63 478.45 265.15 604.7S451.73 795.58 578 749.05a243.61 243.61 0 0 0 144.64-145.17c-126.73 46-266.79-19.36-312.83-146.09a244.14 244.14 0 0 1-0.3-165.92z"/></svg></span>
@@ -2165,6 +2261,52 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
         <button class="win-ctrl-btn close" onclick="winClose()" title="关闭">
             <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><line x1="2" y1="2" x2="8" y2="8"/><line x1="8" y1="2" x2="2" y2="8"/></svg>
         </button>
+    </div>
+</div>
+
+<!-- MCP 服务器弹窗：点标题栏 MCP 图标打开 -->
+<div class="ble-modal-mask" id="mcpModal" onmousedown="mcpMaskPress(event)" onclick="mcpMaskClick(event)">
+    <div class="ble-modal" style="width:600px;" onclick="event.stopPropagation()">
+        <div class="ble-modal-head">
+            <span class="ble-modal-title">MCP 服务器</span>
+            <span class="mcp-dot" id="mcpModalDot"></span>
+            <span class="mcp-hint" id="mcpStateText" style="flex:1;">读取中…</span>
+        </div>
+        <div class="ble-modal-body" style="flex-direction:column;align-items:stretch;overflow-y:auto;">
+            <div class="mcp-row">
+                <button class="ble-modal-btn primary" id="mcpToggleBtn" onclick="mcpToggleEnabled()">启用 MCP 服务器</button>
+                <span class="mcp-hint" id="mcpToggleHint"></span>
+                <span style="flex:1;"></span>
+                <button class="ble-modal-btn" onclick="mcpResetToken()" title="重新生成访问令牌：旧令牌立即失效，客户端需重新复制配置">重置令牌</button>
+            </div>
+            <div id="mcpOnBox" style="display:none;">
+                <div class="mcp-field">
+                    <span class="mcp-label" title="AI 客户端要连接的地址（已含访问令牌，等同于密码，别外发）">连接 URL</span>
+                    <div class="mcp-box">
+                        <span class="mcp-url" id="mcpUrl"></span>
+                        <button class="ble-modal-btn mcp-copy-btn" onclick="mcpCopy('url', this)" title="复制完整连接地址（含访问令牌）">复制</button>
+                    </div>
+                </div>
+                <div class="mcp-field">
+                    <span class="mcp-label" title="粘进 AI 客户端配置文件 mcpServers 里的片段">客户端配置</span>
+                    <div class="mcp-box">
+                        <pre class="mcp-code" id="mcpClientCfg"></pre>
+                        <button class="ble-modal-btn mcp-copy-btn" onclick="mcpCopy('clientConfig', this)" title="复制客户端配置 JSON：粘进 Claude / Cursor 的 mcpServers">复制</button>
+                    </div>
+                </div>
+                <div class="mcp-field">
+                    <span class="mcp-label" title="直接把这段话发给 AI 客户端，它会自己把配置加好">安装提示词</span>
+                    <div class="mcp-box">
+                        <pre class="mcp-code" id="mcpPrompt"></pre>
+                        <button class="ble-modal-btn mcp-copy-btn" onclick="mcpCopy('installPrompt', this)" title="复制这段提示词发给 AI，让它自己完成客户端配置">复制</button>
+                    </div>
+                </div>
+            </div>
+            <div class="mcp-reason" id="mcpError" style="display:none;"></div>
+        </div>
+        <div class="ble-modal-foot">
+            <button class="ble-modal-btn" onclick="closeMcpModal()" title="只关闭这个窗口，不影响 MCP 服务器运行">关闭</button>
+        </div>
     </div>
 </div>
 
@@ -2352,6 +2494,13 @@ function bootErrorExit() {
 }
 
 const _textDecoder = new TextDecoder();
+
+/* ===== 紧凑存储容量（M29-d）=====
+ * 原来每个监视器一创建就预分配 1 MB + 3×10 万槽位 ≈ 1.7 MB，哪怕这个监视器一直空着。
+ * 实测（Chrome 堆快照）：两个监视器占掉 3.5 MB 的「Typed arrays」，几乎全是没用到的预留容量。
+ * 现在改为小容量起步、按需翻倍；这两个值同时也是 bufferCompactCapacity 的收缩下限。 */
+var TEXT_BUF_INIT = 64 * 1024;   // 64 KB 初始数据缓冲
+var TEXT_IDX_INIT = 4096;        // 4096 行索引槽位
 
 /* ===== 全局状态 ===== */
 const monitors = {}; // { mid: { isConnected, portName, readTimer, sendHistory: [] } }
@@ -2624,11 +2773,12 @@ function createMonitorPane(mid, title, closable) {
         {label:'指令4', value:''}, {label:'指令5', value:''}
     ], workflows: [], _bufferStart: 0,
     // 紧凑存储：TypedArray 替代对象数组
-    _textData: new Uint8Array(1024 * 1024),  // 1 MB 初始缓冲区
+    _textData: new Uint8Array(TEXT_BUF_INIT),  // 起步 64 KB，按需翻倍（原来固定 1 MB）
     _textDataLen: 0,
-    _textOffsets: new Uint32Array(100000),    // 偏移表（每行结束位置）
-    _textTypes: new Uint8Array(100000),       // 类型表（0=recv,1=send,2=sys,3=err）
-    _textTsLens: new Uint16Array(100000),     // 时间戳长度
+    _textDataMaxBytes: 8 * 1024 * 1024,       // 紧凑存储字节预算（M29：按字节而非行数限制）
+    _textOffsets: new Uint32Array(TEXT_IDX_INIT),  // 偏移表（每行结束位置）
+    _textTypes: new Uint8Array(TEXT_IDX_INIT),     // 类型表（0=recv,1=send,2=sys,3=err）
+    _textTsLens: new Uint16Array(TEXT_IDX_INIT),   // 时间戳长度
     _textCount: 0};
 
     // 新建监视器默认展开高级设置
@@ -4040,9 +4190,10 @@ function addWslMonitor() {
         {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
         {label:'指令4', value:''}, {label:'指令5', value:''}
     ], isWsl: true, workflows: [], _bufferStart: 0,
-    _textData: new Uint8Array(1024 * 1024), _textDataLen: 0,
-    _textOffsets: new Uint32Array(100000), _textTypes: new Uint8Array(100000),
-    _textTsLens: new Uint16Array(100000), _textCount: 0 };
+    _textData: new Uint8Array(TEXT_BUF_INIT), _textDataLen: 0,
+    _textDataMaxBytes: 8 * 1024 * 1024,
+    _textOffsets: new Uint32Array(TEXT_IDX_INIT), _textTypes: new Uint8Array(TEXT_IDX_INIT),
+    _textTsLens: new Uint16Array(TEXT_IDX_INIT), _textCount: 0 };
     initWslMonitor(wmid);
     // 复制主 WSL 监视器的用户配置到新 WSL 监视器
     copyMonitorConfig('wsl', wmid);
@@ -4194,17 +4345,34 @@ function copyOutput(mid) {
         fallbackCopy(mid, text);
     }
 }
-function fallbackCopy(mid, text) {
+// 把文本写进剪贴板：优先 Clipboard API，失败回退 execCommand。返回 Promise<boolean>。
+// 抽成独立函数是为了让日志复制与 MCP 弹窗共用同一份实现（弹窗那边没有 monitor，用不了 fallbackCopy）。
+function writeClipboard(text) {
+    return new Promise(function(resolve) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text)
+                .then(function() { resolve(true); })
+                .catch(function() { resolve(_execCommandCopy(text)); });
+        } else {
+            resolve(_execCommandCopy(text));
+        }
+    });
+}
+function _execCommandCopy(text) {
     var ta = document.createElement('textarea');
     ta.value = text;
     ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
     document.body.appendChild(ta);
     ta.focus();
     ta.select();
-    try {
-        document.execCommand('copy') ? appendOutput(mid, 'sys', '已复制。') : appendOutput(mid, 'err', '复制失败。');
-    } catch(e) { appendOutput(mid, 'err', '复制失败: ' + e); }
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
     document.body.removeChild(ta);
+    return ok;
+}
+function fallbackCopy(mid, text) {
+    var ok = _execCommandCopy(text);
+    appendOutput(mid, ok ? 'sys' : 'err', ok ? '已复制。' : '复制失败。');
 }
 function getOutputText(mid) {
     // 优先从紧凑存储读取（保留完整日志，不受 DOM maxLines 限制）
@@ -4302,26 +4470,79 @@ function appendOutput(mid, type, text, opts) {
         }
     }
     if (!(opts && opts.fragment)) {
-        var maxLines = 10000;
-        var softLimit = 15000;
-        // 用户在顶部查看历史或有选区时，跳过清理，保护已加载内容
-        var isAtTop = el.scrollTop < 100;
-        var hasSelection = (function() { var s = window.getSelection(); return s && s.toString().length > 0; })();
-        if (el.children.length > softLimit && !isAtTop && !hasSelection) {
-            var removeCount = el.children.length - maxLines;
-            var removedNonEmpty = 0;
-            for (var r = 0; r < removeCount; r++) {
-                if (!el.firstChild.classList.contains('empty-line')) removedNonEmpty++;
-                el.removeChild(el.firstChild);
-            }
-            if (el._lineCount > removedNonEmpty) el._lineCount -= removedNonEmpty; else el._lineCount = 0;
-            if (monitors[mid]) monitors[mid]._bufferStart += removedNonEmpty;
-        }
+        trimOutputDom(mid, el);
         var scrollBtn = document.getElementById(mid + '-btnScroll');
         if (scrollBtn && scrollBtn.classList.contains('on')) requestScroll(el);
     }
     return div;
 }
+
+/* ===== 输出区 DOM 上限（M29）=====
+ * 原逻辑在"用户在顶部看历史"或"有选区"时**整个跳过**清理，DOM 行数因此无上限增长
+ * （每行是真实 DOM 元素，比字节缓冲贵得多）。现在改成：
+ *   正常：超过 softLimit 就裁到 maxLines（与旧行为一致）
+ *   受保护（在顶部 / 有选区）：只裁到 hardLimit，且只移除超出部分（最小干预）+ 滚动补偿
+ *   有选区：把"补裁"挂到 selectionchange，选区一消失就补裁 —— 延后，而不是永远不裁 */
+var OUT_DOM_MAX_LINES = 10000;
+var OUT_DOM_SOFT_LIMIT = 15000;
+var OUT_DOM_HARD_LIMIT = 60000;
+
+function hasTextSelection() {
+    var s = window.getSelection();
+    return !!(s && s.toString().length > 0);
+}
+
+// 裁剪输出区 DOM；force=true 时忽略保护（用户已滚回底部）。返回移除的非空行数。
+function trimOutputDom(mid, el, force) {
+    if (!el || !el.firstChild) return 0;
+    var m = monitors[mid];
+    var hasSel = force ? false : hasTextSelection();
+    var atTop = el.scrollTop < 100;
+    var protect = !force && (atTop || hasSel);
+    var limit = force ? OUT_DOM_MAX_LINES : (protect ? OUT_DOM_HARD_LIMIT : OUT_DOM_SOFT_LIMIT);
+    if (el.children.length <= limit) {
+        if (m && !hasSel) m._domTrimPending = false;
+        return 0;
+    }
+    var target = protect ? OUT_DOM_HARD_LIMIT : OUT_DOM_MAX_LINES;
+    var removeCount = el.children.length - target;
+    if (removeCount <= 0) return 0;
+
+    var prevScrollHeight = el.scrollHeight;
+    var prevScrollTop = el.scrollTop;
+    var removedNonEmpty = 0;
+    for (var r = 0; r < removeCount; r++) {
+        if (!el.firstChild) break;
+        if (!el.firstChild.classList.contains('empty-line')) removedNonEmpty++;
+        el.removeChild(el.firstChild);
+    }
+    if (el._lineCount > removedNonEmpty) el._lineCount -= removedNonEmpty; else el._lineCount = 0;
+    if (m) {
+        m._bufferStart += removedNonEmpty;
+        // 还有选区且仍超标：标记待补裁，等 selectionchange 再裁到正常上限
+        if (hasSel && el.children.length > OUT_DOM_SOFT_LIMIT) m._domTrimPending = true;
+        else if (!hasSel) m._domTrimPending = false;
+    }
+    // 从顶部移除会让内容整体上移，把 scrollTop 减掉同样的高度，视觉位置保持不动
+    if (prevScrollTop > 0) {
+        var removedPx = prevScrollHeight - el.scrollHeight;
+        var want = prevScrollTop - removedPx;
+        el.scrollTop = want > 0 ? want : 0;
+    }
+    return removedNonEmpty;
+}
+
+// 选区消失后补裁（替换原先"有选区就永久跳过"的行为）
+document.addEventListener('selectionchange', function() {
+    if (hasTextSelection()) return;
+    Object.keys(monitors).forEach(function(mid) {
+        var m = monitors[mid];
+        if (!m || !m._domTrimPending) return;
+        var el = document.getElementById(mid + '-output');
+        if (!el) { m._domTrimPending = false; return; }
+        trimOutputDom(mid, el);
+    });
+});
 
 function flushBatch(mid, fragment) {
     var el = document.getElementById(mid + '-output');
@@ -4333,23 +4554,679 @@ function flushBatch(mid, fragment) {
     } else {
         el.appendChild(fragment);
     }
-    var maxLines = 10000;
-    var softLimit = 15000;
-    // 用户在顶部查看历史或有选区时，跳过清理
-    var isAtTop = el.scrollTop < 100;
-    var hasSelection = (function() { var s = window.getSelection(); return s && s.toString().length > 0; })();
-    if (el.children.length > softLimit && !isAtTop && !hasSelection) {
-        var removeCount = el.children.length - maxLines;
-        var removedNonEmpty = 0;
-        for (var r = 0; r < removeCount; r++) {
-            if (!el.firstChild.classList.contains('empty-line')) removedNonEmpty++;
-            el.removeChild(el.firstChild);
-        }
-        if (el._lineCount > removedNonEmpty) el._lineCount -= removedNonEmpty; else el._lineCount = 0;
-        if (monitors[mid]) monitors[mid]._bufferStart += removedNonEmpty;
-    }
+    trimOutputDom(mid, el);
     var scrollBtn = document.getElementById(mid + '-btnScroll');
     if (scrollBtn && scrollBtn.classList.contains('on')) requestScroll(el);
+}
+
+/* ===== MCP 服务器入口（标题栏图标 + 弹窗）=====
+ * 服务器本身跑在 Rust 侧（进程内、只监听回环、只用 SSE）；这里只负责开关、展示连接 URL
+ * 与"安装提示词"，并把状态点画出来。所有状态都来自后端 mcp_status，前端不自己猜。 */
+var _mcpStatus = null;
+var _mcpConfig = null;
+// 正在发 mcp_set_enabled 的那一小会儿：按钮要禁用，否则连点会陆续发出两条相反的 IPC
+var _mcpBusy = false;
+
+function openMcpModal() {
+    var m = document.getElementById('mcpModal');
+    if (!m) return;
+    m.classList.add('show');
+    refreshMcpStatus();
+}
+function closeMcpModal() {
+    var m = document.getElementById('mcpModal');
+    if (m) m.classList.remove('show');
+}
+var _mcpPressOnMask = false;
+function mcpMaskPress(e) { _mcpPressOnMask = !!(e.target && e.target.id === 'mcpModal'); }
+function mcpMaskClick(e) {
+    if (_mcpPressOnMask && e.target && e.target.id === 'mcpModal') closeMcpModal();
+    _mcpPressOnMask = false;
+}
+
+function _mcpDotClass(st) {
+    if (!st) return 'mcp-dot';
+    if (!st.running) return st.lastError ? 'mcp-dot err' : 'mcp-dot';
+    return st.sessions > 0 ? 'mcp-dot live' : 'mcp-dot on';
+}
+
+function renderMcpStatus(st) {
+    var cls = _mcpDotClass(st);
+    ['mcpDot', 'mcpModalDot'].forEach(function(id) {
+        var d = document.getElementById(id);
+        if (d) d.className = cls;
+    });
+    var running = !!(st && st.running);
+    var btn = document.getElementById('mcpBtn');
+    if (btn) {
+        btn.title = !st ? 'MCP 服务器：点开可让本机 AI 客户端操作本程序'
+            : (running ? ('MCP 服务器：监听 ' + st.host + ':' + st.port + '（' + st.sessions + ' 个会话）· 点开查看连接地址')
+                       : 'MCP 服务器：已关闭 · 点开可让本机 AI 客户端操作本程序');
+    }
+    var stText = document.getElementById('mcpStateText');
+    if (stText) {
+        stText.textContent = !st ? '未知'
+            : (running ? ('监听中 · ' + st.host + ':' + st.port + ' · ' + st.sessions + ' 个会话')
+                       : '已关闭');
+    }
+    // 一个按钮：点一下开、再点一下关（用户改的决定，原来那两个"启用/关闭"并排按钮已删）。
+    // 文案写的是"**点了会发生什么**"，这样不用先看状态点就知道当前处于哪一端。
+    // 正在发送命令的那一小会儿要禁用，否则连点两下会陆续发两条相反的 IPC。
+    var tg = document.getElementById('mcpToggleBtn');
+    if (tg) {
+        tg.disabled = !!_mcpBusy;
+        tg.textContent = running ? '关闭 MCP 服务器' : '启用 MCP 服务器';
+        tg.title = running ? '关闭 MCP 服务器：释放端口并清空日志中心的内存'
+            : '开启 MCP 服务器：只监听本机 127.0.0.1，让 AI 客户端连上本程序';
+    }
+    var tgh = document.getElementById('mcpToggleHint');
+    if (tgh) {
+        tgh.textContent = _mcpBusy ? '处理中…'
+            : (running ? '点按钮可停止' : '');
+    }
+
+    var box = document.getElementById('mcpOnBox');
+    if (box) box.style.display = running ? 'block' : 'none';
+
+    // 原来底部那行"版本 · 工具 · 请求 · 丢弃 · 发现文件"按用户要求删掉了；
+    // 这些数字仍然有用（排查时想知道丢了多少条），所以挪到状态文案的悬停提示里，
+    // 界面上不再占一行。
+    if (stText && st) {
+        var parts = ['版本 ' + st.version, '工具 ' + st.toolCount + ' 个',
+                     '请求 ' + st.requests, '丢弃 ' + st.dropped];
+        if (st.endpointFile) parts.push('发现文件 ' + st.endpointFile);
+        stText.title = parts.join(' · ');
+    } else if (stText) {
+        stText.title = '';
+    }
+    var err = document.getElementById('mcpError');
+    if (err) {
+        if (st && st.lastError) {
+            err.style.display = 'block';
+            err.textContent = '上次错误：' + st.lastError;
+        } else {
+            err.style.display = 'none';
+            err.textContent = '';
+        }
+    }
+}
+
+function renderMcpConfig(cfg) {
+    var urlEl = document.getElementById('mcpUrl');
+    if (urlEl) urlEl.textContent = (cfg && cfg.url) || (_mcpStatus && _mcpStatus.url) || '';
+    var c = document.getElementById('mcpClientCfg');
+    if (c) c.textContent = (cfg && cfg.clientConfig) || '';
+    var p = document.getElementById('mcpPrompt');
+    if (p) p.textContent = (cfg && cfg.installPrompt) || '';
+}
+
+function refreshMcpStatus() {
+    invoke('mcp_status').then(function(st) {
+        _mcpStatus = st;
+        renderMcpStatus(st);
+        if (st && st.running) {
+            invoke('mcp_client_config').then(function(cfg) {
+                _mcpConfig = cfg;
+                renderMcpConfig(cfg);
+            }).catch(function() { renderMcpConfig(null); });
+        } else {
+            _mcpConfig = null;
+            renderMcpConfig(null);
+        }
+    }).catch(function(e) {
+        renderMcpStatus({ running: false, lastError: String(e) });
+    });
+}
+
+function mcpSetEnabled(on) {
+    _mcpBusy = true;
+    renderMcpStatus(_mcpStatus); // 立刻把按钮置灰（"处理中…"），挡住连点
+    invoke('mcp_set_enabled', { enabled: !!on }).then(function(st) {
+        _mcpBusy = false;
+        _mcpStatus = st;
+        renderMcpStatus(st);
+        refreshMcpStatus();
+    }).catch(function(e) {
+        _mcpBusy = false;
+        showToast('MCP 操作失败: ' + e, 'error');
+        refreshMcpStatus();
+    });
+}
+
+/** 一个按钮：点一下开、再点一下关。以最近一次状态为准，不靠界面猜。 */
+function mcpToggleEnabled() {
+    if (_mcpBusy) return;
+    var running = !!(_mcpStatus && _mcpStatus.running);
+    mcpSetEnabled(!running);
+}
+
+function mcpResetToken() {
+    invoke('mcp_reset_token').then(function() {
+        showToast('已重置令牌；旧令牌立即失效，请重新复制客户端配置', 'info');
+        refreshMcpStatus();
+    }).catch(function(e) { showToast('重置令牌失败: ' + e, 'error'); });
+}
+
+function mcpCopy(kind, btn) {
+    var text = '';
+    if (kind === 'url') text = (_mcpStatus && _mcpStatus.url) || '';
+    else if (kind === 'clientConfig') text = (_mcpConfig && _mcpConfig.clientConfig) || '';
+    else if (kind === 'installPrompt') text = (_mcpConfig && _mcpConfig.installPrompt) || '';
+    if (!text) { showToast('没有可复制的内容（服务器未启用？）', 'error'); return; }
+    writeClipboard(text).then(function(ok) {
+        if (!ok) { showToast('复制失败', 'error'); return; }
+        if (btn) {
+            var old = btn.textContent;
+            btn.textContent = '已复制';
+            setTimeout(function() { btn.textContent = old; }, 1200);
+        } else {
+            showToast('已复制', 'info');
+        }
+    });
+}
+
+/* ===== MCP 控件注册表（S4）=====
+ * 把界面上的可交互控件变成"有稳定路径"的条目，供 MCP 的 ui_* 工具枚举与操作。
+ *
+ * 为什么不能靠选择器寻址：实测 230 个可交互元素里只有 83 个（36.1%）有 id，
+ * 77 个是 class-only 且在同一个容器里重复出现（比如 .ibtn-group 里 5 个 .ibtn 只有 4 个带 id）。
+ * 所以做法是 **boot 时给每个控件注入 data-mcp 属性**当唯一锚点，之后只需要 [data-mcp="…"]。
+ *
+ * 路径形如 <panel>.<group>.<name>，例如：
+ *   serial.conn.portSelect / serial.toolbar.btnSend / ble.scan.secs / global.theme.dark
+ * 路径一旦发布**只增不改**（AI 提示词与用户脚本会依赖它）。
+ */
+var MCP_SELECTOR = 'button, input, select, textarea, [onclick], [role="tab"]';
+var MCP_REGISTRY = {};        // path -> entry
+var MCP_REGISTRY_LIST = [];   // 按文档序（列表与分页都基于它）
+var _mcpRegistrySig = -1;     // 用于判断 DOM 是否变了（懒重建）
+
+/// 名称清洗：只留 [A-Za-z0-9_]，保证路径可预测
+function mcpSlug(s) {
+    var out = String(s == null ? '' : s).replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    return out || 'x';
+}
+
+/// 把监视器 id 映射到面板名
+function mcpPanelOfMid(mid) {
+    if (!mid) return 'global';
+    if (mid === 'main' || /^extra-\d+$/.test(mid)) return 'serial';
+    if (mid === 'wsl' || /^wsl-x\d+$/.test(mid)) return 'wsl';
+    if (mid === 'ble-mon') return 'ble';
+    return 'global';
+}
+
+/// 控件所在的容器 → 面板。沿 parentNode 上溯而不是用 closest()，便于无头测试。
+function mcpPanelOfNode(el) {
+    var n = el;
+    while (n) {
+        var id = n.id || '';
+        if (id === 'globalBar') return 'global';
+        if (id === 'mcpModal') return 'mcp';
+        if (id === 'bleWriteModal' || id === 'blePairModal') return 'dialog';
+        if (id === 'wsl-map-approval-overlay') return 'dialog';
+        if (id === 'ble-pane') return 'ble';
+        if (id === 'wsl-pane') return 'wsl';
+        if (id === 'adb-pane') return 'adb';
+        if (id === 'paneContainer') return 'serial';
+        if (typeof n.className === 'string' && n.className.indexOf('ble-modal-mask') >= 0) return 'dialog';
+        n = n.parentNode;
+    }
+    return 'global';
+}
+
+/// 监视器内的字段名 → 分组（写死一张表，比按 class 猜稳定）
+var MCP_GROUP_BY_FIELD = {
+    // 监视器头部的连接栏：端口 / 波特率 / 行尾 / 数据位 / 校验 / DTR / RTS / 文本·HEX / 开始
+    portSelect: 'conn', baudRate: 'conn', lineEnding: 'conn', viewMode: 'conn',
+    dataBits: 'conn', stopBits: 'conn', parity: 'conn', chkDTR: 'conn', chkRTS: 'conn', btnStart: 'conn',
+    btnSend: 'send', sendInput: 'send', sendAs: 'send',
+    btnScroll: 'toolbar', btnAutoReconnect: 'toolbar', btnSendLE: 'toolbar',
+    btnTs: 'toolbar', btnEcho: 'toolbar', btnLineNum: 'toolbar',
+    advRow: 'adv', advWf: 'adv', advBtn: 'adv'
+};
+function mcpGroupOfField(field) {
+    if (MCP_GROUP_BY_FIELD[field]) return MCP_GROUP_BY_FIELD[field];
+    if (/^btn/.test(field)) return 'toolbar';
+    if (/^(qcmd|quickCmd)/.test(field)) return 'adv';
+    return 'misc';
+}
+
+function mcpJoinPath(panel, group, name) {
+    return mcpSlug(panel) + '.' + mcpSlug(group) + '.' + mcpSlug(name);
+}
+
+/// 控件类型：决定怎么读、怎么写
+function mcpKindOf(el) {
+    var tag = String(el.tagName || '').toLowerCase();
+    if (tag === 'select') return 'select';
+    if (tag === 'textarea') return 'text';
+    if (tag === 'input') {
+        var t = String((el.getAttribute && el.getAttribute('type')) || 'text').toLowerCase();
+        if (t === 'checkbox') return 'checkbox';
+        if (t === 'radio') return 'radio';
+        if (t === 'range') return 'range';
+        if (t === 'number') return 'number';
+        return 'text';
+    }
+    if (el.classList && el.classList.contains('sel')) return 'select';
+    if (el.classList && (el.classList.contains('ibtn') || el.classList.contains('win-ctrl-btn'))) return 'toggle';
+    return 'button';
+}
+
+/// 读当前值（只读 DOM，不另存一份状态）
+function mcpReadEl(el, kind) {
+    kind = kind || mcpKindOf(el);
+    switch (kind) {
+        case 'select':
+            return String(el.tagName || '').toLowerCase() === 'select'
+                ? el.value
+                : (el.getAttribute('data-val') || '');
+        case 'checkbox': case 'radio': return !!el.checked;
+        case 'toggle': return !!(el.classList && el.classList.contains('on'));
+        case 'text': case 'number': case 'range': return el.value;
+        default: return null;
+    }
+}
+
+function _mcpDispatch(el, type) {
+    try {
+        el.dispatchEvent(new Event(type, { bubbles: true }));
+    } catch (e) { /* 假 DOM 或老环境里失败不该影响主流程 */ }
+}
+
+/// 在自定义下拉里找对应的选项元素
+function _mcpFindOption(el, v) {
+    try {
+        var opts = el.querySelectorAll ? el.querySelectorAll('.sel-opt') : [];
+        for (var i = 0; i < opts.length; i++) {
+            var dv = opts[i].getAttribute('data-val');
+            var ds = opts[i].getAttribute('data-style');
+            if ((dv != null && dv === String(v)) || (ds != null && ds === String(v))) return opts[i];
+        }
+    } catch (e) { /* ignore */ }
+    return null;
+}
+
+/// 写值：**一律走合成 DOM 事件**，复用的就是用户点那条路（界面必然同步，不写第二套逻辑）。
+/// 返回写后的真实值 —— 很多控件会规范化输入（波特率纠正、端口失效回退），AI 要看真实结果。
+function mcpWriteEl(el, kind, v) {
+    kind = kind || mcpKindOf(el);
+    switch (kind) {
+        case 'select': {
+            if (String(el.tagName || '').toLowerCase() === 'select') {
+                el.value = String(v);
+                _mcpDispatch(el, 'change');
+                return mcpReadEl(el, kind);
+            }
+            var opt = _mcpFindOption(el, v);
+            if (opt) {
+                opt.click();
+                return mcpReadEl(el, kind);
+            }
+            el.setAttribute('data-val', String(v));
+            _mcpDispatch(el, 'change');
+            return mcpReadEl(el, kind);
+        }
+        case 'checkbox': case 'radio': {
+            var want = !!v;
+            if (!!el.checked !== want) el.click();
+            return !!el.checked;
+        }
+        case 'toggle': {
+            var on = !!v;
+            var isOn = !!(el.classList && el.classList.contains('on'));
+            if (on !== isOn) el.click();
+            return !!(el.classList && el.classList.contains('on'));
+        }
+        case 'text': case 'number': case 'range': {
+            el.value = String(v);
+            _mcpDispatch(el, 'input');
+            _mcpDispatch(el, 'change');
+            return el.value;
+        }
+        default:
+            el.click();
+            return null;
+    }
+}
+
+function mcpElEnabled(el) {
+    if (el.disabled) return false;
+    if (el.style && el.style.pointerEvents === 'none') return false;
+    if (el.classList && el.classList.contains('disabled')) return false;
+    return true;
+}
+
+/// 灰掉的原因 —— 这是 AI 最需要的信息（"为什么不能点"）
+function mcpDisabledReason(el) {
+    if (el.disabled) return '控件当前被禁用';
+    if (el.style && el.style.pointerEvents === 'none') return '当前不可点（pointer-events:none）';
+    if (el.classList && el.classList.contains('disabled')) return '当前不可点（disabled 类）';
+    return null;
+}
+
+/// 单个控件 → 注册表条目
+function mcpEntryFor(el, ordinal) {
+    var id = el.id || '';
+    var panel, group, name;
+    var midMatch = /^(main|extra-\d+|wsl|wsl-x\d+|ble-mon)-(.+)$/.exec(id);
+    if (midMatch) {
+        panel = mcpPanelOfMid(midMatch[1]);
+        name = midMatch[2];
+        group = mcpGroupOfField(name);
+    } else if (id) {
+        panel = mcpPanelOfNode(el);
+        group = 'ui';
+        name = id;
+    } else {
+        // 既没有可解析的 id 也没有 data-*：用「面板 + 标签名 + 文档序」兜底。
+        // 模板不变时它是稳定的；模板改了由断言兜底（见 .walkthrough/gen_ble_preview.js）。
+        panel = mcpPanelOfNode(el);
+        group = 'misc';
+        name = String(el.tagName || 'el').toLowerCase() + '_' + ordinal;
+    }
+    var path = mcpJoinPath(panel, group, name);
+    var kind = mcpKindOf(el);
+    return {
+        path: path,
+        el: el,
+        kind: kind,
+        panel: panel,
+        group: group,
+        label: (el.getAttribute && (el.getAttribute('title') || el.getAttribute('aria-label'))) || id || name,
+        read: function () { return mcpReadEl(el, kind); },
+        write: function (v) { return mcpWriteEl(el, kind, v); },
+        enabled: function () { return mcpElEnabled(el); },
+        disabledReason: function () { return mcpDisabledReason(el); },
+    };
+}
+
+/// 重建注册表并把 data-mcp 注入到控件上（幂等）
+function mcpBuildRegistry() {
+    var nodes = document.querySelectorAll(MCP_SELECTOR);
+    MCP_REGISTRY = {};
+    MCP_REGISTRY_LIST = [];
+    var dup = {};
+    for (var i = 0; i < nodes.length; i++) {
+        var entry = mcpEntryFor(nodes[i], i);
+        if (!entry) continue;
+        if (MCP_REGISTRY[entry.path]) {
+            // 路径撞了：加序号保证唯一（模板重复出现时会走到这里）
+            dup[entry.path] = (dup[entry.path] || 1) + 1;
+            entry.path = entry.path + '_' + dup[entry.path];
+        }
+        MCP_REGISTRY[entry.path] = entry;
+        MCP_REGISTRY_LIST.push(entry);
+        try { nodes[i].setAttribute('data-mcp', entry.path); } catch (e) { /* ignore */ }
+    }
+    _mcpRegistrySig = nodes.length;
+    return MCP_REGISTRY_LIST.length;
+}
+
+/// 懒重建：DOM 数量变了就重建（面板懒加载/增删监视器都会改变数量），
+/// 这样不用去改各面板的渲染代码。重建后顺带把注册表报给后端（S6）。
+function mcpEnsureRegistry(force) {
+    var n = document.querySelectorAll(MCP_SELECTOR).length;
+    if (force || n !== _mcpRegistrySig) {
+        mcpBuildRegistry();
+        mcpReportRegistry();
+    }
+    return MCP_REGISTRY_LIST.length;
+}
+
+/// 下拉类控件的可选值（给 AI 当 enum，省得它猜）
+function mcpEnumValuesFor(entry) {
+    if (!entry || entry.kind !== 'select') return [];
+    var out = [];
+    try {
+        var list = entry.el.querySelectorAll ? entry.el.querySelectorAll('.sel-opt') : [];
+        for (var i = 0; i < list.length; i++) {
+            var v = list[i].getAttribute('data-val') || list[i].getAttribute('data-style');
+            if (v) out.push(String(v));
+        }
+    } catch (e) { /* 假 DOM/老环境忽略 */ }
+    return out;
+}
+
+var _mcpRegistryReported = '';
+var _mcpReportTimer = null;
+
+/// 把注册表报给后端（S6）：后端据此生成 `ctl_*` 工具定义。
+/// 带签名去重 + 300ms 合并 —— 面板每次渲染都会重建注册表，不能每次都发一遍。
+function mcpReportRegistry() {
+    if (_mcpReportTimer) return;
+    _mcpReportTimer = setTimeout(function() {
+        _mcpReportTimer = null;
+        var entries = MCP_REGISTRY_LIST.map(function(e) {
+            return {
+                path: e.path,
+                kind: e.kind,
+                label: e.label || '',
+                panel: e.panel,
+                group: e.group,
+                enabled: e.enabled(),
+                disabledReason: e.disabledReason(),
+                options: mcpEnumValuesFor(e),
+            };
+        });
+        var sig = entries.map(function(e) {
+            return e.path + '/' + e.kind + '/' + (e.enabled ? '1' : '0');
+        }).join('|');
+        if (sig === _mcpRegistryReported) return;   // 没变就不发
+        _mcpRegistryReported = sig;
+        invoke('mcp_report_registry', { entries: entries }).catch(function() {});
+    }, 300);
+}
+
+/// 供 AI 的输入 schema 用：把控件类型翻译成 JSON Schema 片段
+function mcpInputSchemaFor(entry) {
+    var s = { type: 'object', properties: {}, additionalProperties: false };
+    if (entry.kind === 'button' || entry.kind === 'toggle') {
+        s.properties = { value: { type: 'boolean', description: 'true=点击/打开，false=关闭（按钮可省略）' } };
+        return s;
+    }
+    if (entry.kind === 'checkbox' || entry.kind === 'radio') {
+        s.properties = { value: { type: 'boolean' } };
+        s.required = ['value'];
+        return s;
+    }
+    if (entry.kind === 'number' || entry.kind === 'range') {
+        s.properties = { value: { type: 'number' } };
+        s.required = ['value'];
+        return s;
+    }
+    if (entry.kind === 'select') {
+        var opts = [];
+        try {
+            var list = entry.el.querySelectorAll ? entry.el.querySelectorAll('.sel-opt') : [];
+            for (var i = 0; i < list.length; i++) {
+                var dv = list[i].getAttribute('data-val') || list[i].getAttribute('data-style');
+                if (dv) opts.push(dv);
+            }
+        } catch (e) { /* ignore */ }
+        s.properties = { value: opts.length ? { type: 'string', enum: opts } : { type: 'string' } };
+        s.required = ['value'];
+        return s;
+    }
+    s.properties = { value: { type: 'string' } };
+    s.required = ['value'];
+    return s;
+}
+
+/// 给 AI 看的条目摘要（不含 DOM 句柄）
+function mcpEntryPublic(entry) {
+    return {
+        path: entry.path,
+        kind: entry.kind,
+        panel: entry.panel,
+        group: entry.group,
+        label: entry.label,
+        enabled: entry.enabled(),
+        disabledReason: entry.disabledReason(),
+        value: entry.read(),
+    };
+}
+
+/* ===== MCP 前端桥（S5）：接收后端下发的 ui 命令并回执 =====
+ * 后端 emit("mcp-ui-cmd") → 这里执行 → invoke("mcp_ui_ack") 回执。
+ * 执行走的就是上面的合成 DOM 事件路径，所以界面必然会跟着变。 */
+var _mcpUiOrigin = 0;   // >0 表示当前变更由 AI 触发（用于回声抑制）
+
+function mcpHandleUiCmd(op, payload) {
+    payload = payload || {};
+    mcpEnsureRegistry(false);
+    if (op === 'list') {
+        var panel = payload.panel, kind = payload.kind, q = payload.query;
+        var all = MCP_REGISTRY_LIST.filter(function (e) {
+            if (panel && e.panel !== panel) return false;
+            if (kind && e.kind !== kind) return false;
+            if (q) {
+                var hay = (e.path + ' ' + (e.label || '')).toLowerCase();
+                if (hay.indexOf(String(q).toLowerCase()) < 0) return false;
+            }
+            return true;
+        });
+        var cursor = payload.cursor ? parseInt(payload.cursor, 10) || 0 : 0;
+        var limit = payload.limit ? Math.max(1, Math.min(500, parseInt(payload.limit, 10) || 100)) : 100;
+        var page = all.slice(cursor, cursor + limit);
+        var out = {
+            total: all.length,
+            controls: page.map(mcpEntryPublic),
+        };
+        if (cursor + limit < all.length) out.nextCursor = String(cursor + limit);
+        return { ok: true, value: out };
+    }
+    if (op === 'describe') {
+        var e = MCP_REGISTRY[payload.path];
+        if (!e) return { ok: false, notFound: true, error: '未找到控件: ' + payload.path };
+        var pub = mcpEntryPublic(e);
+        pub.description = e.label;
+        pub.inputSchema = mcpInputSchemaFor(e);
+        return { ok: true, value: pub };
+    }
+    if (op === 'get') {
+        var g = MCP_REGISTRY[payload.path];
+        if (!g) return { ok: false, notFound: true, error: '未找到控件: ' + payload.path };
+        return { ok: true, value: { path: g.path, value: g.read(), enabled: g.enabled(), disabledReason: g.disabledReason() } };
+    }
+    if (op === 'getState') {
+        // 界面状态的唯一真源就是 collectConfig()（与"随用户配置持久化"用的是同一份）
+        var snap = (typeof collectConfig === 'function') ? collectConfig() : null;
+        if (!snap) return { ok: false, error: '界面状态不可用（初始化未完成）' };
+        var sec = payload.section;
+        if (!sec) return { ok: true, value: snap };
+        var out;
+        if (sec === 'monitors') {
+            out = snap.monitors;
+        } else if (sec === 'serial' || sec === 'wsl') {
+            out = {};
+            Object.keys(snap.monitors || {}).forEach(function(mid) {
+                var isWsl = (mid === 'wsl' || /^wsl-x\d+$/.test(mid));
+                if ((sec === 'wsl') === isWsl) out[mid] = snap.monitors[mid];
+            });
+        } else if (sec === 'ble') {
+            out = snap.ble;
+        } else if (sec === 'theme') {
+            out = { theme: snap.theme, themeStyle: snap.themeStyle };
+        } else if (sec === 'window') {
+            out = { width: snap.windowWidth, height: snap.windowHeight };
+        } else {
+            return {
+                ok: false, notFound: true,
+                error: '没有这个区段: ' + sec + '（可用：serial / wsl / ble / theme / window / monitors）',
+            };
+        }
+        return { ok: true, value: out };
+    }
+    if (op === 'set' || op === 'click') {
+        var items = payload.items;
+        if (!items) items = [{ path: payload.path, value: (op === 'click' ? true : payload.value) }];
+        var results = [], effects = [], changed = [];
+        _mcpUiOrigin++;
+        try {
+            for (var i = 0; i < items.length; i++) {
+                var it = items[i] || {};
+                var ent = MCP_REGISTRY[it.path];
+                if (!ent) {
+                    results.push({ path: it.path, ok: false, notFound: true, error: '未找到控件: ' + it.path });
+                    continue;
+                }
+                if (!ent.enabled()) {
+                    // 不可用就明确说原因，不要假装成功
+                    results.push({
+                        path: ent.path, ok: false,
+                        error: ent.disabledReason() || '控件当前不可用',
+                        disabledReason: ent.disabledReason(),
+                    });
+                    continue;
+                }
+                var before = ent.read();
+                var after = ent.write(it.value);
+                if (before !== after) effects.push({ path: ent.path, from: before, to: after });
+                changed.push(ent.path);
+                results.push({ path: ent.path, ok: true, value: after });
+            }
+        } finally {
+            _mcpUiOrigin--;
+        }
+        // 让界面把这次变更落盘（与用户操作走同一条路）
+        try { scheduleConfigSave(); } catch (e) { /* ignore */ }
+        if (changed.length) mcpNotifyState(changed);
+        return { ok: true, value: { results: results, effects: effects } };
+    }
+    return { ok: false, error: '未知的 ui 操作: ' + op };
+}
+
+/// 界面状态变化通知（回声抑制：AI 自己造成的变更打 origin 标记）
+function mcpNotifyState(paths) {
+    try {
+        invoke('mcp_notify_state', {
+            paths: paths || [],
+            origin: _mcpUiOrigin > 0 ? 'mcp' : 'user',
+        }).catch(function () {});
+    } catch (e) { /* ignore */ }
+}
+
+/* ===== MCP 日志回灌（S7）=====
+ * 后端已经把**生产端**的日志收进 LogHub（app / error / ble:rx / mcp）；
+ * 界面这边产生的行（串口收发、sys/err 提示）从这里批量回灌。
+ * 必须批量：串口 921600 波特下每秒几十上百行，逐行 invoke 会把 IPC 打爆。
+ * 也必须**有上限**：宁可丢日志，也不能让待发队列无界堆积。 */
+var _mcpLogPending = [];
+var _mcpLogTimer = null;
+var _mcpLogFlushMs = 200;
+var _mcpLogBatchMax = 200;
+var _mcpLogQueueMax = 2000;
+
+function mcpLogSchedule() {
+    if (_mcpLogTimer) return;
+    _mcpLogTimer = setTimeout(function() {
+        _mcpLogTimer = null;
+        mcpLogFlush();
+    }, _mcpLogFlushMs);
+}
+
+function mcpLogFlush() {
+    if (!_mcpLogPending.length) return;
+    var batch = _mcpLogPending;
+    _mcpLogPending = [];
+    if (batch.length > _mcpLogBatchMax) batch = batch.slice(batch.length - _mcpLogBatchMax);
+    invoke('log_push_batch', { lines: batch }).catch(function() {});
+}
+
+function mcpLogPush(channel, level, dir, text, bytes) {
+    if (!text) return;
+    // 队列也有硬上限：万一定时器被浏览器节流，不能无界堆积
+    if (_mcpLogPending.length >= _mcpLogQueueMax) _mcpLogPending.shift();
+    _mcpLogPending.push({
+        channel: channel,
+        level: level,
+        dir: dir,
+        text: String(text).slice(0, 8192),
+        bytes: bytes || 0,
+    });
+    mcpLogSchedule();
 }
 
 /* ===== 接收行缓冲（防止轮询分块造成“假换行”）=====
@@ -4489,6 +5366,9 @@ function clearLog(mid) {
         monitors[mid]._textCount = 0;
         monitors[mid]._bufferStart = 0;
         closeRecvPartial(monitors[mid]);
+        // 「清空输出」是用户明确表达"这些我不要了"的时刻，顺手把容量收回到起步值
+        // （否则一个跑满 8 MiB 预算的监视器会一直占着这份内存）
+        bufferCompactCapacity(monitors[mid]);
     }
     if (_terminalBuffers[mid]) setTermPrompt(mid, '');
 }
@@ -4552,18 +5432,28 @@ function bufferPush(mid, type, ts, text) {
     var textBytes = new TextEncoder().encode(text);
     var totalLen = tsBytes.length + textBytes.length;
 
-    // 扩容数据缓冲区
+    // 扩容数据缓冲区。
+    // 必须用 Math.max(翻倍, 实际需要)：只翻倍时，单行比当前容量还大就会 set 越界抛错
+    // （原来初始容量 1 MB 掩盖了这个问题，容量调小后必须修掉）。
     if (m._textDataLen + totalLen > m._textData.length) {
-        var newBuf = new Uint8Array(m._textData.length * 2);
-        newBuf.set(m._textData);
+        var newBuf = new Uint8Array(Math.max(m._textData.length * 2, m._textDataLen + totalLen));
+        newBuf.set(m._textData.subarray(0, m._textDataLen));
         m._textData = newBuf;
     }
-    // 扩容索引缓冲区
+    // 扩容索引缓冲区。
+    // ⚠️ 必须把旧数据拷过去：原来只 new 了更大的数组就替换，等于把已积累的偏移表清零，
+    // 会让保存/复制/历史加载读到错乱的数据。原来要 10 万行才踩到，容量调小后 4096 行就会触发。
     if (m._textCount >= m._textOffsets.length) {
-        var newSize = m._textOffsets.length * 2;
-        m._textOffsets = new Uint32Array(newSize);
-        m._textTypes = new Uint8Array(newSize);
-        m._textTsLens = new Uint16Array(newSize);
+        var newSize = Math.max(m._textOffsets.length * 2, 64);
+        var nOffsets = new Uint32Array(newSize);
+        var nTypes = new Uint8Array(newSize);
+        var nTsLens = new Uint16Array(newSize);
+        nOffsets.set(m._textOffsets);
+        nTypes.set(m._textTypes);
+        nTsLens.set(m._textTsLens);
+        m._textOffsets = nOffsets;
+        m._textTypes = nTypes;
+        m._textTsLens = nTsLens;
     }
 
     // 写入数据
@@ -4578,10 +5468,8 @@ function bufferPush(mid, type, ts, text) {
     m._textTsLens[m._textCount] = tsBytes.length;
     m._textCount++;
 
-    // 自动清理：超过 100 万行时移除最旧的 50 万行
-    if (m._textCount > 1000000) {
-        bufferTrimOld(m, 500000);
-    }
+    // 自动清理：按字节预算裁到一半（行数对 20 字节和 4KB 的行完全不是一个量级）
+    bufferEnforceBudget(m);
 
     // 隐形日志缓存：会话活跃时把收发内容批量写入缓存文件（300ms 节流）
     if (m.isConnected && (type === 'recv' || type === 'send')) {
@@ -4589,6 +5477,20 @@ function bufferPush(mid, type, ts, text) {
         m._logCachePending += ts + text + '\n';
         logCacheScheduleFlush(mid);
     }
+
+    // MCP 日志中心回灌（S7）：串口/WSL 收发 → serial:/wsl: 通道；系统提示 → ui: 通道。
+    // 后端拿不到这些（它们在界面这边才成型），所以必须从这里回灌。
+    var mcpCh, mcpLevel, mcpDir;
+    if (type === 'recv' || type === 'send') {
+        mcpCh = (m.isWsl ? 'wsl:' : 'serial:') + mid + (type === 'send' ? ':tx' : ':rx');
+        mcpLevel = 'info';
+        mcpDir = (type === 'send' ? 'tx' : 'rx');
+    } else {
+        mcpCh = (type === 'err' ? 'ui:err' : 'ui:sys');
+        mcpLevel = (type === 'err' ? 'error' : 'info');
+        mcpDir = 'none';
+    }
+    mcpLogPush(mcpCh, mcpLevel, mcpDir, ts + text, textBytes.length);
 }
 
 // 移除最旧的 N 行
@@ -4608,6 +5510,59 @@ function bufferTrimOld(m, count) {
     }
     m._textCount -= count;
     m._bufferStart = Math.max(0, m._bufferStart - count);
+}
+
+// 按字节预算裁剪：保留尾部约 targetBytes 字节的数据（二分找起点，O(log n)）
+// 单调性：从第 i 行起到末尾的字节数随 i 递增而单调不增，所以可以二分。
+function bufferTrimToBytes(m, targetBytes) {
+    if (!m || m._textCount <= 1) return;
+    if (m._textDataLen <= targetBytes) return;
+    var lo = 0, hi = m._textCount - 1; // hi 上界保证至少保留最后一行
+    while (lo < hi) {
+        var mid = (lo + hi) >> 1;
+        var start = mid === 0 ? 0 : m._textOffsets[mid - 1];
+        if (m._textDataLen - start <= targetBytes) hi = mid; else lo = mid + 1;
+    }
+    if (lo > 0) bufferTrimOld(m, lo);
+}
+
+// 容量跟随活跃数据收缩。
+// 原实现只做 2 倍扩容、裁剪后从不收缩 ⇒ 容量单调增长，且扩容瞬间要同时持有"旧+新"两份
+// （瞬时峰值可达活跃数据的 3 倍）。这里在"用量不到容量一半"时重新分配到刚好够用的 2 的幂。
+function bufferCompactCapacity(m) {
+    if (!m) return;
+    var needData = m._textDataLen;
+    if (m._textData.length > TEXT_BUF_INIT && needData * 2 < m._textData.length) {
+        var cap = TEXT_BUF_INIT;
+        while (cap < needData) cap <<= 1;
+        var nd = new Uint8Array(cap);
+        nd.set(m._textData.subarray(0, needData));
+        m._textData = nd;
+    }
+    var needIdx = m._textCount;
+    if (m._textOffsets.length > TEXT_IDX_INIT && needIdx * 2 < m._textOffsets.length) {
+        var capIdx = TEXT_IDX_INIT;
+        while (capIdx < needIdx) capIdx <<= 1;
+        var no = new Uint32Array(capIdx), nt = new Uint8Array(capIdx), nl = new Uint16Array(capIdx);
+        no.set(m._textOffsets.subarray(0, needIdx));
+        nt.set(m._textTypes.subarray(0, needIdx));
+        nl.set(m._textTsLens.subarray(0, needIdx));
+        m._textOffsets = no;
+        m._textTypes = nt;
+        m._textTsLens = nl;
+    }
+}
+
+// 超预算就裁到一半并压缩容量（紧凑存储的唯一入口，别在别处单独写裁剪逻辑）
+function bufferEnforceBudget(m) {
+    if (!m) return;
+    // 防御：万一某条监视器创建路径忘了设 _textDataMaxBytes，`len <= undefined` 恒为 false、
+    // `undefined >> 1` 又是 0，会把缓冲裁成只剩一行（保存/复制全废）。这里回退到默认预算。
+    var max = (typeof m._textDataMaxBytes === 'number' && m._textDataMaxBytes > 0)
+        ? m._textDataMaxBytes : (8 * 1024 * 1024);
+    if (m._textDataLen <= max) return;
+    bufferTrimToBytes(m, max >> 1);
+    bufferCompactCapacity(m);
 }
 
 // 找到紧凑存储中最后一条 recv 记录（即“未结束的接收行”所在条目）
@@ -4644,6 +5599,9 @@ function bufferUpdateLineText(m, idx, text) {
     for (var j = idx + 1; j < m._textCount; j++) {
         m._textOffsets[j] += delta;
     }
+    // 单行持续增长（比如设备长时间不发换行）也要受字节预算约束；
+    // bufferTrimToBytes 至少保留最后一行，所以正在更新的这一行不会被裁掉。
+    bufferEnforceBudget(m);
 }
 
 // 读取一行
@@ -4739,20 +5697,10 @@ function loadMoreHistory(mid, el, callback) {
     if (callback) callback();
 }
 
-// 滚回底部时清理多余旧行
+// 滚回底部时清理多余旧行（force：用户已回到底部，不必再保护）
 function cleanupExtraLines(mid, el) {
-    var m = monitors[mid];
-    if (!m) return;
-    var maxLines = 10000;
-    if (el.children.length <= maxLines) return;
-    var removeCount = el.children.length - maxLines;
-    var removedNonEmpty = 0;
-    for (var r = 0; r < removeCount; r++) {
-        if (!el.firstChild.classList.contains('empty-line')) removedNonEmpty++;
-        el.removeChild(el.firstChild);
-    }
-    if (el._lineCount > removedNonEmpty) el._lineCount -= removedNonEmpty; else el._lineCount = 0;
-    m._bufferStart += removedNonEmpty;
+    if (!monitors[mid]) return;
+    trimOutputDom(mid, el, true);
 }
 
 /* ===== 工具函数 ===== */
@@ -5650,7 +6598,7 @@ function syncThemeUI() {
     var sw = document.getElementById('themeSwitch');
     if (sw) {
         sw.classList.toggle('on', _currentTheme === 'dark');
-        sw.title = _currentTheme === 'dark' ? '主题: 深色' : '主题: 浅色';
+        sw.title = '深浅色切换（当前：' + (_currentTheme === 'dark' ? '深色' : '浅色') + '）';
     }
     var drop = document.getElementById('themeStyleDrop');
     if (drop) {
@@ -5660,7 +6608,7 @@ function syncThemeUI() {
     }
     var wrap = document.getElementById('themeStyleWrap');
     var names = { 'default': '默认', 'japanese': '浮世绘彩', 'poetic': '诗意东方', 'ink': '水墨丹青', 'peach': '桃之夭夭', 'autumn': '金风玉露' };
-    if (wrap) wrap.title = '主题风格: ' + (names[_currentThemeStyle] || '默认');
+    if (wrap) wrap.title = '主题风格：' + (names[_currentThemeStyle] || '默认') + '（6 种配色 × 深浅色）';
 }
 
 function applyTheme(theme) {
@@ -6169,9 +7117,10 @@ function initWslMonitor(wmid) {
             {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
             {label:'指令4', value:''}, {label:'指令5', value:''}
         ], isWsl: true, workflows: [], _bufferStart: 0,
-        _textData: new Uint8Array(1024 * 1024), _textDataLen: 0,
-        _textOffsets: new Uint32Array(100000), _textTypes: new Uint8Array(100000),
-        _textTsLens: new Uint16Array(100000), _textCount: 0 };
+        _textData: new Uint8Array(TEXT_BUF_INIT), _textDataLen: 0,
+        _textDataMaxBytes: 8 * 1024 * 1024,
+        _textOffsets: new Uint32Array(TEXT_IDX_INIT), _textTypes: new Uint8Array(TEXT_IDX_INIT),
+        _textTsLens: new Uint16Array(TEXT_IDX_INIT), _textCount: 0 };
     }
     // 输出区域编辑状态检测：进入编辑关自动滚动，退出恢复
     var wslOutputEl = document.getElementById(wmid + '-output');
@@ -10290,7 +11239,7 @@ document.addEventListener('DOMContentLoaded', function() {
         // 加载应用信息（版本号 + commit hash），设置到 tooltip
         invoke('get_app_info').then(function(info) {
             var wrap = document.getElementById('appInfoWrap');
-            if (wrap) wrap.title = 'Seahi Serial v' + info.version + ' (' + info.commit + ')';
+            if (wrap) wrap.title = 'Seahi Serial v' + info.version + ' (' + info.commit + ') · 点击回到串口主界面';
         }).catch(function() {});
 
         // 主面板创建成功后隐藏启动兜底页（createMonitorPane 抛错则进入 catch 显示错误）
@@ -10349,9 +11298,47 @@ document.addEventListener('DOMContentLoaded', function() {
                     }
                 }, 150);
             });
+            // 日志缓存文件触顶（后端单文件 8 MiB 上限）：明确告知用户，不静默停止写入
+            window.__TAURI__.event.listen('log-cache-capped', function(ev) {
+                var p = (ev && ev.payload) || {};
+                var mid = p.monitorId || 'main';
+                var mb = Math.round((p.maxBytes || 0) / (1024 * 1024));
+                if (monitors[mid]) {
+                    appendOutput(mid, 'sys', '日志缓存文件已达上限 ' + mb + ' MiB，后续内容不再写入（完整内容以实时输出为准）');
+                }
+                showToast('会话 ' + mid + ' 的日志缓存已达 ' + mb + ' MiB 上限，已停止写入', 'info');
+            });
+            // AI 下发的界面操作：执行后回执（后端在等这个 ack，5s 超时）
+            window.__TAURI__.event.listen('mcp-ui-cmd', function(ev) {
+                var p = (ev && ev.payload) || {};
+                var res;
+                try {
+                    res = mcpHandleUiCmd(p.op, p.payload);
+                } catch (e) {
+                    res = { ok: false, error: String((e && e.message) || e) };
+                }
+                invoke('mcp_ui_ack', {
+                    cmdId: p.cmdId,
+                    ok: !!(res && res.ok),
+                    value: (res && res.value !== undefined) ? res.value : null,
+                    error: (res && res.error) || null,
+                    disabledReason: (res && res.disabledReason) || null,
+                }).catch(function() {});
+            });
+            // MCP 服务器状态变化（启用/停用/会话增减）：更新标题栏图标上的状态点
+            window.__TAURI__.event.listen('mcp-status-changed', function(ev) {
+                _mcpStatus = ev && ev.payload;
+                renderMcpStatus(_mcpStatus);
+            });
+            // 启动时拉一次状态，把状态点画对（服务器是随程序启动的）
+            setTimeout(refreshMcpStatus, 500);
+            // 启动时把控件注册表报给后端，这样 ctl_* 工具从一开始就存在
+            setTimeout(function() { try { mcpEnsureRegistry(true); } catch (e) {} }, 700);
             // 安装更新前强制保存配置（process::exit 会跳过 beforeunload）
             window.__TAURI__.event.listen('save-before-exit', function() {
                 if (_saveConfigTimer) { clearTimeout(_saveConfigTimer); _saveConfigTimer = null; }
+                // 退出前把待回灌的日志发出去（批量窗口可能还没到）
+                try { mcpLogFlush(); } catch (e) {}
                 Object.keys(monitors).forEach(function(mid) { logCacheEnd(mid); }); // 退出前 flush 并结束所有会话缓存
                 var cfg = collectConfig();
                 invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) { console.warn('退出前保存配置失败:', e); reportError(e, 'save-before-exit'); });

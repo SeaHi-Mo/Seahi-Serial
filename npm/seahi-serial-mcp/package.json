@@ -1,0 +1,32 @@
+{
+  "name": "seahi-serial-mcp",
+  "version": "0.1.0",
+  "description": "SeaHi Serial 的 MCP 客户端配置安装器：把应用暴露的 SSE 端点写进 Claude/Cursor/VS Code 的配置（不是 MCP 服务器，零依赖，不下载任何东西）",
+  "bin": {
+    "seahi-serial-mcp": "cli.js"
+  },
+  "main": "cli.js",
+  "files": [
+    "cli.js",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node test/self-test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "win32"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "sse",
+    "serial",
+    "windows",
+    "installer"
+  ],
+  "license": "MIT",
+  "private": false
+}

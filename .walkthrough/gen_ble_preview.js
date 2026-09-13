@@ -1348,11 +1348,13 @@ console.log('preview ->', out);
   const pfLeftRule = /^\.ble-pf-left \{[^}]*\}/m.exec(html);
   check(!!pfLeftRule && !/width:/.test(pfLeftRule[0]),
     '从机左栏不再自带宽度（否则和主机左栏不一致）', pfLeftRule ? pfLeftRule[0] : '(没有这条规则)');
-  // 滚动条：从机模式下所有可滚动区都套上统一样式
-  check(/\.ble-pf-left::-webkit-scrollbar,/.test(html) && /\.ble-pf-chars::-webkit-scrollbar \{/.test(html),
+  // 滚动条：从机模式下所有可滚动区都套上统一样式（MCP 弹窗后来也并进了同一份规则）。
+  // 断言按"成员是否在这条规则的选择器列表里"来查，而不是钉死整段文本 —— 以后往里加
+  // 选择器（这次就加了 MCP 弹窗主体）不必再改断言。
+  const sbRuleSel = (/([^\n]*(?:,\s*\n[^\n]*)*) \{ width:10px; height:10px; \}/.exec(html) || [, ''])[1];
+  const inSbRule = (s) => sbRuleSel.indexOf(s + '::-webkit-scrollbar') >= 0;
+  check(sbRuleSel !== '' && inSbRule('.ble-log') && inSbRule('.ble-pf-left') && inSbRule('.ble-pf-chars'),
     '从机左栏与特征列表都套上统一滚动条样式（默认那条又宽又亮，很丑）');
-  check(/\.ble-log::-webkit-scrollbar,\s*\n\.ble-pf-left::-webkit-scrollbar,/.test(html),
-    '滚动条规则与日志区共用同一份，风格一致');
   check(/\.ble-pf-left \.ble-mode-seg \{ position:sticky; top:0; z-index:3; \}/.test(html),
     '从机左栏滚动时模式切换钉在顶部（不会滚走）');
 
@@ -1650,6 +1652,1080 @@ console.log('preview ->', out);
     '文件框限定表格类扩展名');
   check(/id="blePfImportBtn"/.test(html) && /id="blePfExportBtn"/.test(html),
     '广播配置区有「导入表格 / 导出表格」两个按钮');
+
+  console.log('\n【内存与磁盘上限（L3a / M28 / M29）】');
+
+  // ---------- 源码级防回退 ----------
+  check(!/_textCount > 1000000/.test(html), '旧的"100 万行才裁剪"逻辑已移除');
+  check(!/var softLimit/.test(html), 'DOM 裁剪不再各写一份软上限变量');
+  check(/_textDataMaxBytes: 8 \* 1024 \* 1024/.test(html), '紧凑缓冲有字节预算');
+  const trimCalls = (html.match(/trimOutputDom\(mid, el/g) || []).length;
+  check(trimCalls >= 4, '三处 DOM 裁剪入口都收敛到 trimOutputDom', trimCalls);
+  check(/function bufferTrimToBytes/.test(html) && /function bufferCompactCapacity/.test(html),
+    '有按字节裁剪 + 容量收缩两个函数');
+
+  check(/DEBUG_LOG_MAX_BYTES/.test(mainRs) && /fn debug_log_rotate/.test(mainRs) && /SEAHI_DEBUG_LOG/.test(mainRs),
+    'L3a：调试日志有上限 / 轮转 / 开关');
+  check(/const LOG_CACHE_MAX_BYTES: u64 = 8 \* 1024 \* 1024;/.test(mainRs)
+     && /const LOG_CACHE_MAX_TOTAL_BYTES: u64 = 64 \* 1024 \* 1024;/.test(mainRs),
+    'M28：会话缓存有单文件与目录总预算');
+  check(/app\.emit\(\s*"log-cache-capped"/.test(mainRs), 'M28：后端触顶时通知前端（不静默）');
+  check(/listen\('log-cache-capped'/.test(html), 'M28：前端接了这个事件');
+  check(/fn enforce_log_cache_limit_in\(/.test(mainRs) && /active\.contains\(p\)/.test(mainRs),
+    'M28：清理时跳过正在写入的文件');
+
+  // ---------- 行为级：紧凑缓冲按字节裁剪 ----------
+  const sbM = {
+    console,
+    TextEncoder,
+    monitors: {},
+    _typeMap: { recv: 0, send: 1, sys: 2, err: 3 },
+    logCacheScheduleFlush() {},
+    // bufferPush 现在还会回灌日志（S7）；这一段只测紧凑缓冲，给个桩即可
+    mcpLogPush() {},
+    document: { getElementById() { return null; }, addEventListener() {} },
+  };
+  vm.createContext(sbM);
+  const bufConsts = ['TEXT_BUF_INIT', 'TEXT_IDX_INIT']
+    .map((n) => (new RegExp('var ' + n + ' = ([^;]+);').exec(html) || [])[0])
+    .filter(Boolean).join('\n');
+  vm.runInContext([
+    bufConsts,
+    extractFunction('bufferPush'),
+    extractFunction('bufferTrimOld'),
+    extractFunction('bufferTrimToBytes'),
+    extractFunction('bufferCompactCapacity'),
+    extractFunction('bufferEnforceBudget'),
+  ].join('\n'), sbM);
+
+  const makeMon = (initCap, budget) => ({
+    isConnected: false, _bufferStart: 0,
+    _textData: new Uint8Array(initCap), _textDataLen: 0,
+    _textDataMaxBytes: budget,
+    _textOffsets: new Uint32Array(64), _textTypes: new Uint8Array(64),
+    _textTsLens: new Uint16Array(64), _textCount: 0,
+  });
+  const pushLines = (mid, n) => {
+    for (let i = 0; i < n; i++) sbM.bufferPush(mid, 'recv', '', 'LINE-' + String(i).padStart(3, '0') + '\n');
+  };
+
+  sbM.monitors.small = makeMon(1024, 4096);
+  pushLines('small', 2000);   // 每行 9~10 字节 ⇒ 约 19KB，远超 4096 预算
+  const small = sbM.monitors.small;
+  check(small._textDataLen <= 4096, '超出字节预算后被裁剪', small._textDataLen);
+  check(small._textCount > 0 && small._textCount < 2000, '裁剪后仍保留尾部数据（不是清空）', small._textCount);
+
+  const tail = new TextDecoder().decode(small._textData.subarray(0, small._textDataLen));
+  check(tail.includes('LINE-1999'), '保留的是最新数据：最后一行还在', tail.slice(-24));
+  check(!tail.includes('LINE-000'), '最旧的行已被裁掉');
+
+  // 容量收缩：初始给 4 MiB，裁剪后应回落到 1 MiB 下限（不再单调增长）
+  sbM.monitors.big = makeMon(4 * 1024 * 1024, 4096);
+  pushLines('big', 2000);
+  const big = sbM.monitors.big;
+  check(big._textData.length === sbM.TEXT_BUF_INIT,
+    '裁剪后容量收缩到起步值（64 KB）而不单调增长', big._textData.length);
+
+  // 预算极小时也不能把缓冲清空
+  sbM.monitors.tiny = makeMon(1024, 8);
+  pushLines('tiny', 5);
+  const tiny = sbM.monitors.tiny;
+  check(tiny._textCount >= 1 && tiny._textDataLen > 0, '预算极小时仍保留最后一行（不清空）', tiny._textCount);
+
+  // ---------- M29-d：容量起步值 + 扩容正确性 ----------
+  check(/new Uint8Array\(TEXT_BUF_INIT\)/.test(html) && /var TEXT_BUF_INIT = 64 \* 1024;/.test(html),
+    'M29-d：紧凑存储改为小容量起步（不再每个监视器预分配 1.7 MB）');
+  check(/nOffsets\.set\(m\._textOffsets\)/.test(html), '索引数组扩容时拷贝旧数据');
+  check(/bufferCompactCapacity\(monitors\[mid\]\);/.test(html), '「清空输出」时回收紧凑存储容量');
+  // 三条监视器创建路径（createMonitorPane / addWslMonitor / initWslMonitor）都必须设字节预算，
+  // 否则 bufferEnforceBudget 里 `len <= undefined` 恒为 false、`undefined >> 1` 为 0，
+  // 会把该监视器的紧凑缓冲裁成只剩一行（保存/复制全废）—— 这个 bug 真实发生过。
+  const bufDeclSites = (html.match(/_textData: new Uint8Array\(/g) || []).length;
+  const budgetSites = (html.match(/_textDataMaxBytes:/g) || []).length;
+  check(bufDeclSites > 0 && bufDeclSites === budgetSites,
+    '每条监视器创建路径都设了字节预算', bufDeclSites + ' vs ' + budgetSites);
+  check(!/_textData: new Uint8Array\(1024 \* 1024\)/.test(html), '没有遗留的 1 MB 预分配创建路径');
+
+  // 跨扩容边界的回归防护：曾经只 new 更大的数组就替换 ⇒ 已积累的偏移表被清零，
+  // 保存/复制/历史加载会读到错乱数据。原来要 10 万行才踩到，容量调小后 4096 行就会触发。
+  sbM.monitors.grow = makeMon(64 * 1024, 64 * 1024 * 1024);   // 预算放大，确保只扩容不裁剪
+  pushLines('grow', 5000);
+  const grow = sbM.monitors.grow;
+  check(grow._textCount === 5000, '写完 5000 行（跨过 4096 的扩容边界）', grow._textCount);
+  check(grow._textOffsets[4095] > 0 && grow._textOffsets[4095] < grow._textOffsets[4096],
+    '跨扩容边界后旧偏移仍有效（没被清零）',
+    grow._textOffsets[4095] + ' / ' + grow._textOffsets[4096]);
+  check(grow._textOffsets[4999] === grow._textDataLen, '最后一个偏移等于数据总长',
+    grow._textOffsets[4999] + ' / ' + grow._textDataLen);
+
+  // 空闲监视器（比如从没打开过的 WSL 分栏、加过又没用的额外监视器）容量能收回到起步值
+  const idle = makeMon(4 * 1024 * 1024, 8 * 1024 * 1024);
+  idle._textOffsets = new Uint32Array(200000);
+  idle._textTypes = new Uint8Array(200000);
+  idle._textTsLens = new Uint16Array(200000);
+  sbM.monitors.idle = idle;
+  vm.runInContext('bufferCompactCapacity(monitors.idle)', sbM);
+  check(idle._textData.length === sbM.TEXT_BUF_INIT && idle._textOffsets.length === sbM.TEXT_IDX_INIT,
+    '空闲监视器容量可回收到底线', idle._textData.length + ' / ' + idle._textOffsets.length);
+
+  // 防御：漏设 _textDataMaxBytes 时回退到默认预算，而不是把缓冲裁空
+  sbM.monitors.nofield = makeMon(64 * 1024, 8 * 1024 * 1024);
+  delete sbM.monitors.nofield._textDataMaxBytes;
+  pushLines('nofield', 200);
+  check(sbM.monitors.nofield._textCount === 200,
+    '漏设字节预算时回退到默认值（不会把缓冲裁成一行）', sbM.monitors.nofield._textCount);
+
+  // ---------- 行为级：DOM 裁剪（延后，而不是永久跳过）----------
+  const listeners = {};
+  let selection = '';
+  const sbD = {
+    console,
+    monitors: {},
+    window: { getSelection() { return { toString() { return selection; } }; } },
+    _els: {},
+    document: {
+      addEventListener(type, fn) { listeners[type] = fn; },
+      getElementById(id) { return sbD._els[id] || null; },
+    },
+  };
+  vm.createContext(sbD);
+  const domConsts = ['OUT_DOM_MAX_LINES', 'OUT_DOM_SOFT_LIMIT', 'OUT_DOM_HARD_LIMIT']
+    .map((n) => (new RegExp('var ' + n + ' = (\\d+);').exec(html) || [])[0])
+    .filter(Boolean).join('\n');
+  vm.runInContext([
+    domConsts,
+    extractFunction('hasTextSelection'),
+    extractFunction('trimOutputDom'),
+  ].join('\n'), sbD);
+  check(sbD.OUT_DOM_MAX_LINES === 10000 && sbD.OUT_DOM_SOFT_LIMIT === 15000 && sbD.OUT_DOM_HARD_LIMIT === 60000,
+    'DOM 三档上限齐备（10000 / 15000 / 60000）',
+    [sbD.OUT_DOM_MAX_LINES, sbD.OUT_DOM_SOFT_LIMIT, sbD.OUT_DOM_HARD_LIMIT].join('/'));
+
+  const fakeOut = (n) => {
+    const el = {
+      children: [], _lineCount: n, scrollTop: 0, scrollHeight: n * 10,
+      get firstChild() { return this.children[0] || null; },
+      removeChild(c) {
+        const i = this.children.indexOf(c);
+        if (i >= 0) { this.children.splice(i, 1); this.scrollHeight -= 10; }
+        return c;
+      },
+    };
+    for (let i = 0; i < n; i++) el.children.push({ classList: { contains() { return false; } } });
+    return el;
+  };
+
+  // A. 正常情况：与旧行为一致
+  const elA = fakeOut(20000);
+  elA.scrollTop = 5000;
+  sbD.monitors.main = { _bufferStart: 0 };
+  sbD._els['main-output'] = elA;
+  const removedA = sbD.trimOutputDom('main', elA);
+  check(elA.children.length === 10000, '正常：超过 15000 行裁到 10000', elA.children.length);
+  check(removedA === 10000 && sbD.monitors.main._bufferStart === 10000, '返回并累计移除的非空行数', removedA);
+  check(elA.scrollTop === 0, '移除高度远超滚动位置时 scrollTop 收敛到 0', elA.scrollTop);
+
+  // B. 用户在顶部看历史：只裁到硬上限，不再无限跳过
+  const elB = fakeOut(70000);
+  sbD.monitors.main = { _bufferStart: 0 };
+  const removedB = sbD.trimOutputDom('main', elB);
+  check(elB.children.length === 60000, '在顶部时只裁到硬上限 60000（不再无限增长）', elB.children.length);
+  check(removedB === 10000, '只移除超出部分，最小干预', removedB);
+
+  // C. 有选区：仍受硬上限约束 + 标记待补裁，选区消失后补裁
+  selection = 'selected text';
+  const elC = fakeOut(70000);
+  elC.scrollTop = 400000;
+  const monC = { _bufferStart: 0 };
+  sbD.monitors.main = monC;
+  sbD._els['main-output'] = elC;   // 补裁监听要靠 id 找到同一个元素
+  sbD.trimOutputDom('main', elC);
+  check(elC.children.length === 60000, '有选区时仍受硬上限约束', elC.children.length);
+  check(monC._domTrimPending === true, '有选区且仍超标 → 标记待补裁（不是永久跳过）');
+  check(elC.scrollTop === 300000, '滚动被补偿：视觉位置保持不动', elC.scrollTop);
+
+  const scMarker = "document.addEventListener('selectionchange', function() {";
+  const scStart = html.indexOf(scMarker);
+  const scEnd = html.indexOf('\n});', scStart);
+  check(scStart > 0 && scEnd > scStart, 'index.html 注册了 selectionchange 补裁监听');
+  vm.runInContext('var onSelectionChange = function() {'
+    + html.slice(scStart + scMarker.length, scEnd + 1) + '};', sbD);
+  selection = '';
+  sbD.onSelectionChange();
+  check(elC.children.length === 10000, '选区消失后补裁到正常上限 10000', elC.children.length);
+  check(monC._domTrimPending === false, '补裁完成后清掉待裁标记');
+
+  // D. force：用户已滚回底部，忽略保护
+  const elD = fakeOut(20000);
+  sbD.monitors.main = { _bufferStart: 0 };
+  sbD.trimOutputDom('main', elD, true);
+  check(elD.children.length === 10000, 'force=true（滚回底部）时忽略保护直接裁到 10000', elD.children.length);
+
+  console.log('\n【MCP 服务器（入口 / 协议 / 配置隔离）】');
+
+  const mcpBtnIdx = html.indexOf('id="mcpBtn"');
+  const themeIdx = html.indexOf('id="themeStyleWrap"');
+  check(mcpBtnIdx > 0, '标题栏有 MCP 图标');
+  check(mcpBtnIdx > 0 && themeIdx > 0 && mcpBtnIdx < themeIdx,
+    'MCP 图标在「风格」下拉的左边', mcpBtnIdx + ' vs ' + themeIdx);
+  // 顶栏间距：以前各控件自带 margin（图标按钮 12 / 提交issue·更新 8 / 主题开关 10 /
+  // 加监视器 0+app-info 10），相邻间距在 8·10·12 之间跳，肉眼看着不齐。现在统一成容器的 gap。
+  // 取 8px：先试过 12px（三种里的最大值），整条栏比原先松，用户反馈不符合原先的审美。
+  check(/\.global-bar \{[\s\S]{0,1200}?gap:8px;/.test(html), '顶栏用容器 gap 统一定义间距（8px）');
+  check(!/\.global-bar \{[\s\S]{0,1200}?gap:12px;/.test(html), '没有留下 12px 那版（太松）');
+  {
+    // 结束标记必须带 `<div class=`：只写 `win-ctrl` 会命中**前面的 CSS 规则**（位置比顶栏还靠前），
+    // 切片直接成空串 —— 那种"空切片恒真/恒假"的断言最会骗人，所以这里还断言了长度。
+    const barFrom = html.indexOf('<div class="global-bar"');
+    const barTo = html.indexOf('<div class="win-ctrl"');
+    const bar = (barFrom >= 0 && barTo > barFrom) ? html.slice(barFrom, barTo) : '';
+    check(bar.length > 500, '取到了顶栏标记片段（否则下面的检查都是空转）', bar.length);
+    check(!/style="margin-(left|right)/.test(bar) && !/margin-left:12px/.test(bar),
+      '顶栏控件不再各自内联 margin（那是间距不齐的根源）');
+    const ruleOf = (sel) => {
+      const re = new RegExp('^' + sel.replace(/[.#]/g, '\\$&') + ' \\{[^}]*\\}', 'm');
+      return (re.exec(html) || [''])[0];
+    };
+    ['.app-info', '.issue-btn', '.update-btn', '.theme-switch', '#mcpBtn'].forEach((sel) => {
+      const r = ruleOf(sel);
+      check(r !== '' && !/margin-(left|right)/.test(r), '顶栏 ' + sel + ' 不再自带左右 margin');
+    });
+  }
+  check(/id="mcpBtn"[\s\S]{0,1400}?fill="currentColor"/.test(html),
+    '图标是内联 SVG 且用 currentColor（能跟主题换色）');
+  check(!/id="mcpBtn"[\s\S]{0,1400}?#bfbfbf/.test(html),
+    '没有把图形源里写死的 #bfbfbf 抄进来');
+  // 2026-09 换过一版图标（用户给的 MCP.svg）：钉住新图形的起点，防止回退成旧的那份
+  check(/id="mcpBtn"[\s\S]{0,400}?<path d="M895\.67 256\.204/.test(html),
+    '图标是新版 MCP.svg 的那份（viewBox 1024、单条 path）');
+  // 图形源**不留在仓库里**：图标本体就是 index.html 里那段内联 SVG，那才是唯一真源。
+  // 留着一份 .svg 只会让人以为改它能生效（它其实不会被任何地方引用）。
+  check(!fs.existsSync(path.join(root, 'mcp.svg'))
+    && !fs.existsSync(path.join(root, 'doc', 'IMG', 'mcp.svg')),
+    '仓库里不再留图形源 svg（避免出现"改了不生效"的第二份真源）');
+  check(/<span class="mcp-dot" id="mcpDot">/.test(html), '图标上有状态点');
+  // 图标颜色与「风格」下拉里的图标同一个 token（用户要求"和风格那个图标一个色"）
+  check(/#mcpBtn \{[^}]*color:var\(--text\)/.test(html),
+    'MCP 图标显式用 var(--text)（与 .sel 的「风格」控件同色）');
+  check(/^\.sel \{[^}]*color:var\(--text\)/m.test(html),
+    '「风格」下拉确实也是 var(--text)（两边同 token，才不会一边亮一边暗）');
+  // 同色 ≠ 同观感：螺旋形墨量比调色板大，看着更亮，所以要单独压一点亮度
+  check(/#mcpBtn > svg \{ opacity:\.8; \}/.test(html),
+    '图形本身压到 0.8 亮度（用户实测反馈"显得更亮、不是灰的"）');
+  check(!/#mcpBtn \{[^}]*opacity/.test(html),
+    '亮度只能压在 svg 上：挂在 #mcpBtn 会把右下角状态点一起压暗（那是状态指示，不能失真）');
+
+  // 用户改主意了：**一个切换按钮**（原来并排的"启用/关闭"两个按钮已删）
+  check(/id="mcpToggleBtn"[^>]*onclick="mcpToggleEnabled\(\)"/.test(html), '有且只有一个切换按钮');
+  check(!/id="mcpEnableBtn"|id="mcpDisableBtn"/.test(html), '两个并列按钮已删除');
+  check(/function mcpToggleEnabled\(\)/.test(html), '切换函数存在');
+  check(/var running = !!\(_mcpStatus && _mcpStatus\.running\);\s*\n\s*mcpSetEnabled\(!running\);/.test(html),
+    '切换以最近一次真实状态为准（不靠界面猜）');
+  check(/tg\.textContent = running \? '关闭 MCP 服务器' : '启用 MCP 服务器'/.test(html),
+    '按钮文案写的是"点了会发生什么"（关着→启用 / 开着→关闭）');
+  check(/_mcpBusy = true;/.test(html) && /tg\.disabled = !!_mcpBusy;/.test(html),
+    '命令发出期间按钮禁用（连点会陆续发两条相反的 IPC）');
+  check(/id="mcpUrl"/.test(html) && /id="mcpClientCfg"/.test(html) && /id="mcpPrompt"/.test(html),
+    '弹窗有 连接 URL / 客户端配置 / 安装提示词 三块');
+  const copyBtns = (html.match(/onclick="mcpCopy\(/g) || []).length;
+  check(copyBtns === 3, '三块各有一个复制按钮', copyBtns);
+  // 用户要求删掉底部那行"版本 · 工具 · 请求 · 丢弃 · 发现文件"
+  check(!/id="mcpMeta"/.test(html), '底部那行元信息已删除（界面不再占一行）');
+  check(/stText\.title = parts\.join\(' · '\)/.test(html),
+    '这些数字挪进状态文案的悬停提示（排查"丢了多少条"时还查得到）');
+  check(/class="ble-modal-mask" id="mcpModal"/.test(html), '弹窗复用现有模态框外观');
+  // 滚动条：同一个弹窗里不能一半是细灰条、一半是 Chromium 默认的白宽条
+  check(inSbRule('.mcp-url') && inSbRule('.mcp-code') && inSbRule('#mcpModal .ble-modal-body'),
+    '连接 URL / 客户端配置 / 安装提示词 / 弹窗主体（窗口太矮时滚动）都套上同一份滚动条规则');
+  check(/\.mcp-url::-webkit-scrollbar-thumb,[\s\S]{0,220}?background-clip:content-box/.test(html),
+    'MCP 弹窗的滚动条滑块与从机面板同一套配色（半透明中性灰）');
+  // 横竖交汇处（corner）：只改 track/thumb 不够，漏了这块就留一个白色方块（用户截图指出来了）
+  check(/\.mcp-code::-webkit-scrollbar-corner,[\s\S]{0,120}?\{ background:transparent; \}/.test(html),
+    '滚动条交汇处不再是默认白方块（MCP 弹窗）');
+  check(/\.ble-log::-webkit-scrollbar-corner,[\s\S]{0,400}?background:transparent/.test(html),
+    '滚动条交汇处一并覆盖从机面板（同一个毛病，别只修看得见的那一处）');
+  check((html.match(/::-webkit-scrollbar-corner/g) || []).length === 6,
+    '六个可滚动区都写了 corner（3 从机 + 2 MCP 内容框 + 弹窗主体）',
+    (html.match(/::-webkit-scrollbar-corner/g) || []).length);
+  // 标题在上、内容占满整行；复制按钮压在**内容框内的右上角**（用户指定的两轮调整结果）
+  check(/\.mcp-label \{ display:block; font-size:12px; color:var\(--text-d\); margin-bottom:5px; \}/.test(html),
+    '标题单独一行（不再和内容左右并排）');
+  check(/\.mcp-box \{ position:relative; \}/.test(html)
+    && /\.mcp-copy-btn \{ position:absolute; top:3px; right:4px;/.test(html),
+    '复制按钮绝对定位在内容框右上角');
+  check(/class="ble-modal-btn mcp-copy-btn"/.test(html)
+    && (html.match(/class="ble-modal-btn mcp-copy-btn"/g) || []).length === 3,
+    '三块内容各有且只有一个复制按钮',
+    (html.match(/class="ble-modal-btn mcp-copy-btn"/g) || []).length);
+  check(/<div class="mcp-box">\s*\n\s*<span class="mcp-url" id="mcpUrl"><\/span>\s*\n\s*<button class="ble-modal-btn mcp-copy-btn"/.test(html),
+    '按钮和 URL 在同一个定位容器里（用户举的例子：URL 框的右上角）');
+  check(/padding:26px 64px 5px 8px;/.test(html) && /padding:8px 64px 8px 8px;/.test(html),
+    '内容右侧留出按钮的位置（按点击后变宽的"已复制"算，否则会盖住内容）');
+  // 单行内容必须**整体下移一行**给按钮让位 —— 用几何关系断言，避免只改数字改出重叠
+  {
+    const urlRule = (/\.mcp-url \{[^}]*\}/.exec(html) || [''])[0];
+    const btnRule = (/\.mcp-copy-btn \{[^}]*\}/.exec(html) || [''])[0];
+    const padTop = +((/padding:(\d+)px 64px/.exec(urlRule) || [, 0])[1]);
+    const btnTop = +((/top:(\d+)px/.exec(btnRule) || [, 0])[1]);
+    const btnH = +((/height:(\d+)px/.exec(btnRule) || [, 0])[1]);
+    check(padTop >= btnTop + btnH,
+      'URL 内容下移一整行避开按钮（上内边距 ' + padTop + 'px ≥ 按钮底边 ' + (btnTop + btnH) + 'px）');
+    const lh = +((/line-height:(\d+)px/.exec(urlRule) || [, 0])[1]);
+    const padBottom = +((/padding:\d+px 64px (\d+)px/.exec(urlRule) || [, 0])[1]);
+    const minH = +((/min-height:(\d+)px/.exec(urlRule) || [, 0])[1]);
+    check(minH === padTop + lh + padBottom,
+      'min-height 与内边距 + 行高一致（' + minH + ' = ' + padTop + '+' + lh + '+' + padBottom + '）');
+  }
+  check(/\.mcp-url \{ display:block; box-sizing:border-box; min-height:49px; line-height:18px;/.test(html),
+    'URL 框：块级 + border-box + 与内边距对齐的最小高度');
+  check(/\.mcp-url \{ display:block;/.test(html),
+    'URL 是 span，必须 display:block —— 以前靠"是 flex 子项"被块级化，现在不在 flex 里了');
+  check(!/mcp-field-head/.test(html), '标题行容器已删除（上下结构后不再需要）');
+  check(/overflow-y:auto;/.test(html.split('id="mcpModal"')[1] || ''),
+    '弹窗主体可滚动（窗口太矮时不会把内容裁掉）');
+  check(/listen\('mcp-status-changed'/.test(html), '前端监听后端的状态变化事件');
+
+  // ---- MCP 模块源码（命令实现与隔离性都在这里，不在 main.rs）----
+  const mcpDir = path.join(root, 'src-tauri', 'src', 'mcp');
+  const mcpFiles = ['mod.rs', 'protocol.rs', 'transport.rs', 'aiconfig.rs', 'bridge.rs', 'loghub.rs', 'calllog.rs', 'registry.rs', 'report.rs'];
+  const mcpSrc = mcpFiles
+    .map((f) => fs.readFileSync(path.join(mcpDir, f), 'utf8'))
+    .join('\n');
+  // 生产代码部分（去掉 #[cfg(test)] 之后的测试模块）：
+  // "绝不碰 config.json" 这类断言针对生产代码 —— 测试里为了验证隔离会故意造一个 config.json。
+  const mcpProd = mcpFiles
+    .map((f) => {
+      const s = fs.readFileSync(path.join(mcpDir, f), 'utf8');
+      const i = s.indexOf('#[cfg(test)]');
+      return i > 0 ? s.slice(0, i) : s;
+    })
+    .join('\n');
+
+  // ---- 前后端契约 ----
+  const mcpCmds = ['mcp_status', 'mcp_set_enabled', 'mcp_reset_token', 'mcp_client_config'];
+  mcpCmds.forEach((c) => {
+    check(new RegExp("invoke\\('" + c + "'").test(html), '前端调用 ' + c);
+    check(new RegExp('fn ' + c + '\\(').test(mcpSrc), '后端实现 ' + c);
+    check(new RegExp('^\\s*mcp::' + c + ',\\s*$', 'm').test(mainRs), '后端已注册 ' + c);
+  });
+  check(/AI_CONFIG_FILE: &str = "ai-config\.json"/.test(mcpSrc), 'AI 配置写独立文件 ai-config.json');
+  check(!/save_config|load_config|backup_config/.test(mcpSrc),
+    'MCP 模块绝不调用用户配置的读写命令（R5 的硬约束）');
+  // 只查"当字面量用"的 config.json；注释里说明"绝不碰 config.json"是允许的
+  check(!/["']config\.json["']/.test(mcpProd), 'MCP 生产代码里根本不把 config.json 当文件名用');
+  check(/fn write_atomic/.test(mcpSrc) && /std::fs::rename\(&tmp, path\)/.test(mcpSrc),
+    'AI 配置用临时文件 + rename 原子写（不重犯 M7）');
+  check(/enabled: true/.test(mcpSrc) && /host: "127\.0\.0\.1"/.test(mcpSrc),
+    '默认随程序启动，且只监听回环');
+  // 要拦的是"真的绑 0.0.0.0"；测试数据里出现 "0.0.0.0" 是为了验证它会被拒，属正常
+  check(!/bind\([^)]*0\.0\.0\.0/.test(mcpSrc) && !/host:\s*"0\.0\.0\.0"/.test(mcpSrc),
+    '绝不把 0.0.0.0 当监听地址用（只监听回环）');
+  check(/"\/healthz"/.test(mcpSrc) && /"\/sse"/.test(mcpSrc) && /"\/messages"/.test(mcpSrc),
+    '有 /healthz、/sse、/messages 三个端点');
+  check(/constant_time_eq/.test(mcpSrc), 'token 用定长比较');
+  check(/event: endpoint/.test(mcpSrc), 'SSE 首帧下发 endpoint');
+  check(/: ping/.test(mcpSrc), '有 SSE 心跳（防中间层断流）');
+  check(/fn limits_json/.test(mcpSrc) && /maxSessions/.test(mcpSrc), '硬性上限可被 AI 查询');
+  check(/E_USER_DENIED/.test(mcpSrc) && /E_UI_TIMEOUT/.test(mcpSrc),
+    '自定义错误码已定义（供后续危险工具确认/前端桥超时使用）');
+  check(/jsonrpc/.test(mcpSrc) && /"isError"/.test(mcpSrc),
+    '工具失败返回 isError 而不是 JSON-RPC error（规范要求）');
+  // 前提：不能开 panic=abort，否则工具里一次 panic 会杀掉整个进程
+  check(!/panic\s*=\s*"abort"/.test(fs.readFileSync(path.join(root, 'src-tauri', 'Cargo.toml'), 'utf8')),
+    'Cargo.toml 没有 panic=abort（工具 panic 不能杀进程）');
+  // release 不带 DevTools（用户要求）。真正的开关是 tauri 的 cargo feature：
+  //   tauri-runtime-wry 里 `with_devtools(...)` 整块被 `#[cfg(any(debug_assertions, feature = "devtools"))]` 门控，
+  //   所以 release（debug_assertions 关闭）只要不开这个 feature，那段代码根本不编译 —— wry 的默认值 false 生效。
+  // 注意 tauri.conf.json 里的 `"devtools": true` 是**死配置**：tauri 2.11.2/codegen/build 里没有任何代码读它
+  //   （已逐个 crate 搜过），留着只会让人以为 release 开了 devtools。已删除，这里一并钉住别再回来。
+  {
+    const cargoToml = fs.readFileSync(path.join(root, 'src-tauri', 'Cargo.toml'), 'utf8');
+    check(!/^tauri\s*=\s*\{[^}]*"devtools"/m.test(cargoToml) && !/^tauri\s*=\s*\{[^}]*\bdevtools\b/m.test(cargoToml),
+      'tauri 没开 devtools feature（release 构建里 DevTools 会被编译掉）',
+      (/^tauri\s*=.*$/m.exec(cargoToml) || [''])[0].trim());
+    const conf = fs.readFileSync(path.join(root, 'src-tauri', 'tauri.conf.json'), 'utf8');
+    check(!/"devtools"/.test(conf), 'tauri.conf.json 里不再写 devtools（那行没人读，只会误导）');
+  }
+
+  // ---- 行为：状态点与按钮禁用 ----
+  const mcpEls = {};
+  const mcpEl = (id) => {
+    if (!mcpEls[id]) {
+      mcpEls[id] = { id: id, className: '', textContent: '', title: '', disabled: false, style: {} };
+    }
+    return mcpEls[id];
+  };
+  const sbMcp = {
+    console,
+    document: { getElementById: (id) => mcpEl(id) },
+    showToast() {},
+    invoke() { return Promise.resolve({}); },
+    setTimeout() {},
+    navigator: {},
+    window: {},
+    _mcpStatus: null,
+    _mcpBusy: false,
+  };
+  vm.createContext(sbMcp);
+  vm.runInContext([
+    'var _mcpBusy = false;',
+    extractFunction('_mcpDotClass'),
+    extractFunction('renderMcpStatus'),
+  ].join('\n'), sbMcp);
+
+  check(sbMcp._mcpDotClass(null) === 'mcp-dot', '状态未知时点是灰的');
+  check(sbMcp._mcpDotClass({ running: false }) === 'mcp-dot', '未启用是灰的');
+  check(sbMcp._mcpDotClass({ running: false, lastError: 'x' }) === 'mcp-dot err', '启动失败是红的');
+  check(sbMcp._mcpDotClass({ running: true, sessions: 0 }) === 'mcp-dot on', '监听中无会话是绿的');
+  check(sbMcp._mcpDotClass({ running: true, sessions: 2 }) === 'mcp-dot live', '有会话是蓝的');
+
+  sbMcp.renderMcpStatus({
+    running: false, enabled: true, host: '127.0.0.1', port: 7777, sessions: 0,
+    version: '0.9.9', toolCount: 4, requests: 0, dropped: 0,
+  });
+  check(mcpEl('mcpToggleBtn').disabled === false, '未运行时切换按钮可点');
+  check(mcpEl('mcpToggleBtn').textContent === '启用 MCP 服务器', '未运行时按钮说"启用"',
+    mcpEl('mcpToggleBtn').textContent);
+  check(mcpEl('mcpToggleHint').textContent === '', '未运行时按钮旁边没有多余的灰字');
+  check(mcpEl('mcpOnBox').style.display === 'none', '未运行时隐藏 URL / 提示词区块');
+  check(mcpEl('mcpStateText').textContent === '已关闭', '未运行时状态文案正确');
+  check(mcpEl('mcpBtn').title.indexOf('MCP 服务器：已关闭') === 0
+    && mcpEl('mcpBtn').title.indexOf('AI 客户端') > 0,
+    '未运行时图标提示：状态 + 一句"这个是干什么的"', mcpEl('mcpBtn').title);
+  check(mcpEl('mcpStateText').title.indexOf('工具 4 个') > 0,
+    '删掉的那行数字挪进了状态文案的悬停提示', mcpEl('mcpStateText').title);
+
+  sbMcp.renderMcpStatus({
+    running: true, host: '127.0.0.1', port: 7777, sessions: 1,
+    version: '0.9.9', toolCount: 4, requests: 3, dropped: 0,
+  });
+  check(mcpEl('mcpToggleBtn').disabled === false, '运行中切换按钮仍可点（它就是用来关的）');
+  check(mcpEl('mcpToggleBtn').textContent === '关闭 MCP 服务器', '运行中按钮说"关闭"',
+    mcpEl('mcpToggleBtn').textContent);
+  check(mcpEl('mcpToggleHint').textContent === '点按钮可停止', '运行中旁边给出下一步提示');
+  check(mcpEl('mcpToggleBtn').title.indexOf('释放端口') > 0, '运行中按钮提示写的是"停止并释放端口"');
+  // 悬停说明要"说明主要作用"，不能只是换个名字
+  check(mcpEl('mcpToggleBtn').title.indexOf('关闭 MCP 服务器：') === 0
+    && mcpEl('mcpToggleBtn').title.indexOf('日志中心') > 0,
+    '运行中：说明关掉会发生什么（释放端口 + 清日志中心内存）', mcpEl('mcpToggleBtn').title);
+  {
+    const titles = (html.match(/title="[^"]{12,}"/g) || []).join('\n');
+    [['连接 URL', '访问令牌'], ['客户端配置', 'mcpServers'], ['安装提示词', '发给 AI 客户端']]
+      .forEach(([label, must]) => {
+        const re = new RegExp('title="([^"]*)"[^>]*>' + label + '<');
+        const m = re.exec(html);
+        check(!!m && m[1].indexOf(must) > 0,
+          '「' + label + '」的悬停说明讲了它的作用（含"' + must + '"）', m ? m[1] : '(没有 title)');
+      });
+    check(/title="复制完整连接地址（含访问令牌）"/.test(titles), '复制 URL 的悬停说明');
+    check(/title="复制客户端配置 JSON：粘进 Claude \/ Cursor 的 mcpServers"/.test(titles),
+      '复制客户端配置的悬停说明');
+    check(/title="复制这段提示词发给 AI，让它自己完成客户端配置"/.test(titles),
+      '复制安装提示词的悬停说明');
+    check(/onclick="closeMcpModal\(\)" title="只关闭这个窗口，不影响 MCP 服务器运行"/.test(html),
+      '底部「关闭」说清它只关窗口、不关服务器（最容易被误解的一处）');
+    check(/id="appInfoWrap"[^>]*title="加载中\.\.\."/.test(html)
+      && /点击回到串口主界面/.test(html),
+      '左上角图标悬停：版本号 + 点击会做什么');
+  }
+  check(!/en\.style\.opacity|dis\.style\.opacity/.test(html),
+    '变暗只由 CSS 的 :disabled 负责（JS 再写一份内联 opacity 就是两处口径，迟早漂移）');
+  check(/\.ble-modal-btn:disabled \{ cursor:default; opacity:\.45; \}/.test(html),
+    '有统一的按钮禁用态样式（压暗 + 不再是手型光标）');
+  check(/\.ble-modal-btn:disabled:hover \{ border-color:var\(--border\); filter:none; \}/.test(html),
+    '禁用态悬停不再有"可点"的反馈（边框不变亮、primary 不提亮）');
+  check(mcpEl('mcpOnBox').style.display === 'block', '运行中显示 URL / 提示词区块');
+  check(mcpEl('mcpDot').className === 'mcp-dot live', '有 1 个会话时状态点为蓝');
+  check(mcpEl('mcpBtn').title.indexOf('1 个会话') > 0, '图标提示带会话数');
+  check(mcpEl('mcpDot').className === mcpEl('mcpModalDot').className, '图标与弹窗的状态点一致');
+
+  // 处理中：按钮禁用 + 提示"处理中…"（挡住连点发两条相反的 IPC）
+  sbMcp._mcpBusy = true;
+  sbMcp.renderMcpStatus({ running: true, host: '127.0.0.1', port: 7777, sessions: 0, version: '0.9.9', toolCount: 4, requests: 0, dropped: 0 });
+  check(mcpEl('mcpToggleBtn').disabled === true, '命令进行中按钮禁用');
+  check(mcpEl('mcpToggleHint').textContent === '处理中…', '命令进行中提示"处理中…"');
+  sbMcp._mcpBusy = false;
+
+  // 启动失败要把原因显示出来（否则用户只看到一个红点不知道怎么修）
+  sbMcp.renderMcpStatus({ running: false, lastError: '端口全被占用' });
+  check(mcpEl('mcpError').style.display === 'block' && mcpEl('mcpError').textContent.indexOf('端口全被占用') > 0,
+    '启动失败原因可见');
+
+  console.log('\n【MCP 控件注册表与界面桥（S4 / S5）】');
+
+  // 选择器必须覆盖所有"可交互载体"，否则会漏掉控件
+  check(/button, input, select, textarea, \[onclick\], \[role="tab"\]/.test(html),
+    'MCP_SELECTOR 覆盖 button/input/select/textarea/[onclick]/[role=tab]');
+
+  function extractVarObject(name) {
+    const marker = 'var ' + name + ' = {';
+    const i = html.indexOf(marker);
+    if (i < 0) throw new Error('not found: ' + name);
+    const j = html.indexOf('\n};', i);
+    return html.slice(i, j + 3);
+  }
+
+  // ---- 假 DOM：够跑注册表与读写 ----
+  const mcpFakeEl = (tag, attrs) => {
+    attrs = attrs || {};
+    const el = {
+      tagName: String(tag).toUpperCase(),
+      id: attrs.id || '',
+      className: attrs.class || '',
+      parentNode: null,
+      children: [],
+      attrs: Object.assign({}, attrs),
+      style: {},
+      disabled: !!attrs.disabled,
+      checked: !!attrs.checked,
+      value: attrs.value === undefined ? '' : attrs.value,
+      _opts: [],
+      _clicks: 0,
+      onclick: null,
+      getAttribute(k) { return this.attrs[k] === undefined ? null : this.attrs[k]; },
+      setAttribute(k, v) { this.attrs[k] = v; },
+      classList: (() => {
+        const s = new Set(String(attrs.class || '').split(/\s+/).filter(Boolean));
+        return {
+          contains: (c) => s.has(c),
+          add: (c) => s.add(c),
+          remove: (c) => s.delete(c),
+          toggle: (c) => { if (s.has(c)) s.delete(c); else s.add(c); },
+          _s: s,
+        };
+      })(),
+      querySelectorAll(sel) { return sel === '.sel-opt' ? this._opts : []; },
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; },
+      dispatchEvent() { return true; },
+      // 模拟真实 DOM：checkbox/radio 被点击时自己翻转（否则测不出"值没变就不重复点"）
+      click() {
+        this._clicks++;
+        if (this.tagName === 'INPUT' && (this.attrs.type === 'checkbox' || this.attrs.type === 'radio')) {
+          this.checked = !this.checked;
+        }
+        if (this.onclick) this.onclick();
+      },
+    };
+    return el;
+  };
+
+  const pane = mcpFakeEl('div', { id: 'paneContainer' });
+  // 自定义下拉：#main-portSelect，内部两个选项；点选项时模拟真实行为（更新 data-val）
+  const portSel = mcpFakeEl('div', { id: 'main-portSelect', class: 'sel', 'data-val': 'COM1' });
+  const optCOM3 = mcpFakeEl('div', { class: 'sel-opt', 'data-val': 'COM3' });
+  optCOM3.onclick = () => { portSel.setAttribute('data-val', 'COM3'); };
+  portSel._opts = [optCOM3];
+  const btnStart = mcpFakeEl('button', { id: 'main-btnStart', title: '开始/停止' });
+  const baud = mcpFakeEl('input', { id: 'main-baudRate', type: 'number', value: '115200' });
+  const chk = mcpFakeEl('input', { id: 'main-chkDTR', type: 'checkbox', checked: false });
+  const iBtn = mcpFakeEl('button', { id: 'main-btnTs', class: 'ibtn' });
+  // 模拟真实的 toggleIbtn(this)：点击就是翻转 on 类
+  iBtn.onclick = () => { iBtn.classList.toggle('on'); };
+  const globalBar = mcpFakeEl('div', { id: 'globalBar' });
+  const themeSwitch = mcpFakeEl('span', { id: 'themeSwitch', onclick: 'toggleTheme()' });
+  const noIdBtn = mcpFakeEl('button', { onclick: 'clearLog("main")' });
+  const nativeSel = mcpFakeEl('select', { id: 'extra-1-viewMode' });
+  [portSel, btnStart, baud, chk, iBtn].forEach((e) => pane.appendChild(e));
+  [themeSwitch, noIdBtn].forEach((e) => globalBar.appendChild(e));
+  const mcpNodes = [portSel, btnStart, baud, chk, iBtn, themeSwitch, noIdBtn, nativeSel];
+
+  const sbReg = {
+    console,
+    document: { querySelectorAll: () => mcpNodes },
+    scheduleConfigSave() {},
+    invoke() { return Promise.resolve({}); },
+    showToast() {},
+  };
+  vm.createContext(sbReg);
+  vm.runInContext([
+    "var MCP_REGISTRY = {}; var MCP_REGISTRY_LIST = []; var _mcpRegistrySig = -1; var _mcpUiOrigin = 0;",
+    extractVarObject('MCP_GROUP_BY_FIELD'),
+    /var MCP_SELECTOR = '[^']+';/.exec(html)[0],
+    ...['mcpSlug', 'mcpPanelOfMid', 'mcpPanelOfNode', 'mcpGroupOfField', 'mcpJoinPath',
+        'mcpKindOf', 'mcpReadEl', '_mcpDispatch', '_mcpFindOption', 'mcpWriteEl',
+        'mcpElEnabled', 'mcpDisabledReason', 'mcpEntryFor', 'mcpBuildRegistry',
+        'mcpEnsureRegistry', 'mcpInputSchemaFor', 'mcpEntryPublic', 'mcpHandleUiCmd',
+        'mcpNotifyState'].map(extractFunction),
+  ].join('\n'), sbReg);
+
+  // ---- 纯函数：路径派生 ----
+  check(sbReg.mcpSlug('port-Select!') === 'port_Select', 'mcpSlug 清洗非字母数字', sbReg.mcpSlug('port-Select!'));
+  check(sbReg.mcpSlug('') === 'x', 'mcpSlug 空串有兜底');
+  check(sbReg.mcpPanelOfMid('main') === 'serial' && sbReg.mcpPanelOfMid('extra-3') === 'serial',
+    'main/extra-N 归串口面板');
+  check(sbReg.mcpPanelOfMid('wsl') === 'wsl' && sbReg.mcpPanelOfMid('wsl-x2') === 'wsl', 'wsl/wsl-xN 归 WSL');
+  check(sbReg.mcpPanelOfMid('ble-mon') === 'ble', 'ble-mon 归蓝牙');
+  check(sbReg.mcpPanelOfMid('') === 'global', '空 mid 归全局');
+  check(sbReg.mcpGroupOfField('portSelect') === 'conn' && sbReg.mcpGroupOfField('btnStart') === 'conn',
+    '连接类字段归 conn');
+  check(sbReg.mcpGroupOfField('btnSend') === 'send', 'btnSend 归 send');
+  check(sbReg.mcpGroupOfField('btnTs') === 'toolbar', '其余 btn* 归 toolbar');
+  check(sbReg.mcpGroupOfField('qcmd3') === 'adv', 'qcmd* 归 adv');
+  check(sbReg.mcpGroupOfField('whatever') === 'misc', '认不出的归 misc');
+  check(sbReg.mcpJoinPath('serial', 'conn', 'portSelect') === 'serial.conn.portSelect', '路径拼接');
+
+  // ---- 控件类型识别 ----
+  check(sbReg.mcpKindOf(portSel) === 'select', '带 .sel 类的 div 视为 select');
+  check(sbReg.mcpKindOf(nativeSel) === 'select', '原生 select');
+  check(sbReg.mcpKindOf(chk) === 'checkbox', 'checkbox');
+  check(sbReg.mcpKindOf(baud) === 'number', 'number');
+  check(sbReg.mcpKindOf(iBtn) === 'toggle', '.ibtn 视为 toggle');
+  check(sbReg.mcpKindOf(btnStart) === 'button', '普通 button');
+
+  // ---- 读写往返：写回的必须是"写后的真实值" ----
+  sbReg.mcpWriteEl(portSel, 'select', 'COM3');
+  check(portSel.getAttribute('data-val') === 'COM3', '自定义下拉：写值点中了对应选项');
+  check(sbReg.mcpReadEl(portSel, 'select') === 'COM3', '读回写入的值');
+  sbReg.mcpWriteEl(baud, 'number', 9600);
+  check(sbReg.mcpReadEl(baud, 'number') === '9600', '数字输入写后读回字符串形式的真实值');
+  sbReg.mcpWriteEl(chk, 'checkbox', true);
+  check(chk.checked === true, 'checkbox 由合成 click 打开');
+  sbReg.mcpWriteEl(chk, 'checkbox', true);
+  check(chk._clicks === 1, '值没变就不重复点（避免无意义的状态抖动）');
+  sbReg.mcpWriteEl(iBtn, 'toggle', true);
+  check(iBtn.classList.contains('on'), 'toggle 写 true 后加上 on 类');
+  sbReg.mcpWriteEl(btnStart, 'button', true);
+  check(btnStart._clicks === 1, '按钮写值 = 点一次');
+
+  // ---- 注册表构建：路径 + data-mcp 注入 + 唯一性 ----
+  const total = sbReg.mcpBuildRegistry();
+  check(total === mcpNodes.length, '每个可交互元素都进了注册表', total);
+  check(!!sbReg.MCP_REGISTRY['serial.conn.portSelect'], 'main-portSelect → serial.conn.portSelect');
+  check(!!sbReg.MCP_REGISTRY['serial.conn.btnStart'], 'main-btnStart → serial.conn.btnStart');
+  check(!!sbReg.MCP_REGISTRY['serial.conn.baudRate'], 'main-baudRate → serial.conn.baudRate');
+  check(!!sbReg.MCP_REGISTRY['serial.conn.chkDTR'], 'main-chkDTR → serial.conn.chkDTR');
+  check(!!sbReg.MCP_REGISTRY['serial.toolbar.btnTs'], 'main-btnTs → serial.toolbar.btnTs');
+  check(!!sbReg.MCP_REGISTRY['global.ui.themeSwitch'], 'themeSwitch → global.ui.themeSwitch');
+  check(!!sbReg.MCP_REGISTRY['serial.conn.viewMode'], 'extra-N 是串口监视器 → serial.conn.viewMode');
+  const uniq = Object.keys(sbReg.MCP_REGISTRY).length;
+  check(uniq === mcpNodes.length, '路径唯一（撞了就加序号）', uniq);
+  check(portSel.getAttribute('data-mcp') === 'serial.conn.portSelect',
+    'data-mcp 属性已注入（这是唯一锚点）', portSel.getAttribute('data-mcp'));
+  const noIdPath = noIdBtn.getAttribute('data-mcp');
+  check(!!noIdPath && noIdPath.indexOf('global.') === 0,
+    '没有 id 的控件也有稳定路径（靠面板+标签+文档序兜底）', noIdPath);
+
+  // ---- 禁用原因要能说清楚（AI 最需要这个）----
+  const disBtn = mcpFakeEl('button', { id: 'main-btnX', disabled: true });
+  sbReg.MCP_REGISTRY['serial.misc.btnX'] = sbReg.mcpEntryFor(
+    Object.assign(disBtn, { getAttribute: disBtn.getAttribute.bind(disBtn) }), 99);
+  check(sbReg.mcpDisabledReason(disBtn) !== null, '被禁用的控件能给出原因');
+
+  // ---- ui 命令处理 ----
+  const all = sbReg.mcpHandleUiCmd('list', {});
+  check(all.ok === true && all.value.total === mcpNodes.length, 'ui_list 返回全部', JSON.stringify(all.value && all.value.total));
+  const onlySerial = sbReg.mcpHandleUiCmd('list', { panel: 'serial' });
+  check(onlySerial.value.controls.every((c) => c.panel === 'serial'), 'ui_list 能按面板过滤');
+  const q = sbReg.mcpHandleUiCmd('list', { query: 'baud' });
+  check(q.value.total === 1 && q.value.controls[0].path.indexOf('baudRate') > 0,
+    'ui_list 能按关键字过滤', JSON.stringify(q.value.controls.map((c) => c.path)));
+  const page1 = sbReg.mcpHandleUiCmd('list', { limit: 2 });
+  check(page1.value.controls.length === 2 && !!page1.value.nextCursor, 'ui_list 分页给出 nextCursor');
+  const page2 = sbReg.mcpHandleUiCmd('list', { limit: 2, cursor: page1.value.nextCursor });
+  check(page2.value.controls[0].path !== page1.value.controls[0].path, '第二页与第一页不重复');
+
+  const desc = sbReg.mcpHandleUiCmd('describe', { path: 'serial.conn.portSelect' });
+  check(desc.ok === true && desc.value.inputSchema, 'ui_describe 返回输入格式');
+  check(Array.isArray(desc.value.inputSchema.properties.value.enum)
+     && desc.value.inputSchema.properties.value.enum.indexOf('COM3') >= 0,
+    '下拉的可选值作为 enum 暴露（AI 不用猜）',
+    JSON.stringify(desc.value.inputSchema.properties.value));
+
+  const g = sbReg.mcpHandleUiCmd('get', { path: 'serial.conn.baudRate' });
+  check(g.ok === true && g.value.value === '9600', 'ui_get 读实时值', JSON.stringify(g.value));
+
+  const nf = sbReg.mcpHandleUiCmd('get', { path: 'no.such.control' });
+  check(nf.ok === false && nf.notFound === true,
+    '找不到控件时带 notFound 标记（后端据此返回协议级 -32602）', JSON.stringify(nf));
+
+  // 先把值改回去，确保这次 set 真的产生差异（前面"读写往返"把夹具改成了 COM3）
+  portSel.setAttribute('data-val', 'COM1');
+  const setRes = sbReg.mcpHandleUiCmd('set', { path: 'serial.conn.portSelect', value: 'COM3' });
+  check(setRes.ok === true && setRes.value.effects.length === 1, 'ui_set 记录前后值差异',
+    JSON.stringify(setRes.value.effects));
+  check(setRes.value.results[0].ok === true && setRes.value.results[0].value === 'COM3',
+    'ui_set 返回写后的真实值', JSON.stringify(setRes.value.results[0]));
+
+  const disSet = sbReg.mcpHandleUiCmd('set', { path: 'serial.misc.btnX', value: 'x' });
+  check(disSet.value.results[0].ok === false && disSet.value.results[0].disabledReason,
+    '操作被禁用的控件要明确失败并给出原因，而不是假装成功',
+    JSON.stringify(disSet.value.results[0]));
+
+  const batch = sbReg.mcpHandleUiCmd('set', { items: [
+    { path: 'serial.conn.baudRate', value: 57600 },
+    { path: 'no.such.control', value: 1 },
+  ] });
+  check(batch.value.results.length === 2 && batch.value.results[0].ok === true && batch.value.results[1].ok === false,
+    '批量设置：逐条返回成败（一条失败不影响其它）', JSON.stringify(batch.value.results));
+
+  check(sbReg.mcpHandleUiCmd('bogus', {}).ok === false, '未知 ui 操作明确失败');
+
+  console.log('\n【MCP 日志中心（S7）】');
+
+  // 源码：生产端旁路点（设计原则是"在生产处复制"，而不是去抢前端轮询的队列）
+  check(/loghub::hub\(\)\s*\.push\(\s*"app"/.test(mainRs), 'dbg_log 旁路进 app 通道');
+  check(/loghub::hub\(\)\s*\.push\(\s*"error"/.test(mainRs), 'report_error 旁路进 error 通道');
+  check(/"ble:rx"/.test(mainRs), 'BLE 通知循环旁路进 ble:rx（生产端复制，不抢队列）');
+  check(/fn log_push_batch\(/.test(mcpSrc) && /mcp::log_push_batch,/.test(mainRs),
+    '后端有并注册了 log_push_batch');
+  check(/invoke\('log_push_batch'/.test(html), '前端回灌调用后端');
+  check(/mcpLogPush\(mcpCh/.test(html), 'bufferPush 里接了回灌（所有输出行的唯一漏斗）');
+  check(/\(m\.isWsl \? 'wsl:' : 'serial:'\) \+ mid \+ \(type === 'send' \? ':tx' : ':rx'\)/.test(html),
+    '通道名按 WSL/串口 + 收发方向区分');
+  check(/'ui:err' : 'ui:sys'/.test(html), '界面系统提示进 ui:sys / ui:err 通道');
+  check(/var _mcpLogBatchMax = 200;/.test(html) && /var _mcpLogQueueMax = 2000;/.test(html),
+    '回灌有"单批 + 队列"双上限');
+  check(/_mcpLogFlushMs = 200/.test(html), '回灌节流 200ms（避免高频串口把 IPC 打爆）');
+
+  // 源码：日志工具与硬约束
+  ['log_channels', 'log_tail', 'log_search', 'log_stats', 'log_clear', 'log_export'].forEach((t) => {
+    check(new RegExp('"name": "' + t + '"').test(mcpSrc), '日志工具已定义 ' + t);
+  });
+  check(/fn drop_all/.test(mcpSrc), '停用时真正释放通道，而不是只清空内容');
+  // 全局内存兜底必须**被执行**，不能只是报告值（`log_stats` 里的 totalCapBytes 曾是空头承诺）
+  check(/pub const TOTAL_CAP_BYTES/.test(mcpSrc) && /pub const MAX_CHANNELS/.test(mcpSrc),
+    '有全局字节上限与通道数上限两个常量');
+  check(/fn reclaim\(/.test(mcpSrc) && /if self\.total_bytes\.load\(Ordering::Relaxed\) > TOTAL_CAP_BYTES/.test(mcpSrc),
+    'push 超全局预算时真的触发回收（不是只把数字报出去）');
+  check(/fn handle_capped\(/.test(mcpSrc) && /if map\.len\(\) >= MAX_CHANNELS/.test(mcpSrc),
+    '通道表本身也有上限（通道名是动态的，开多个监视器就多几个通道）');
+  check(/try_lock\(\)[\s\S]{0,600}?MAX_RECLAIM_PER_CALL/.test(mcpSrc),
+    '回收用 try_lock 且单次只动固定几个通道（有界代价，不拖累生产者）');
+  check(/channel_skips/.test(mcpSrc) && /reclaims/.test(mcpSrc),
+    '两种新的丢弃/回收计数都被暴露出来（丢了多少要能查）');
+  check(/fn global_budget_is_enforced_across_channels/.test(mcpSrc)
+    && /fn channel_count_is_capped_and_skips_are_counted/.test(mcpSrc)
+    && /fn reclaim_never_blocks_the_producer/.test(mcpSrc),
+    '三条内存兜底单测都在（全局预算 / 通道封顶 / 回收不阻塞）');
+  check(/fn cap_for\(/.test(mcpSrc) && /512 \* 1024/.test(mcpSrc), '每通道有字节上限表');
+  check(/try_lock\(\)/.test(mcpSrc) && /lock_skips/.test(mcpSrc),
+    '写入用 try_lock：拿不到锁就丢弃并计数（绝不阻塞生产者）');
+  check(/MAX_LINE_BYTES/.test(mcpSrc) && /被截断/.test(mcpSrc), '单条日志会截断并留标记');
+  check(/OVERHEAD_PER_LINE/.test(mcpSrc), '字节统计含每行固定开销（否则上限形同虚设）');
+  check(/enabled: AtomicBool::new\(false\)/.test(mcpSrc), '默认关闭：MCP 停用时零成本');
+  check(/since_seq/.test(mcpSrc), '支持按 seq 增量拉取日志');
+
+  // 行为：批量与上限
+  const logCalls = [];
+  const logTimers = [];
+  const sbHub = {
+    console,
+    invoke(cmd, args) { logCalls.push({ cmd: cmd, args: args }); return Promise.resolve(0); },
+    setTimeout(fn) { logTimers.push(fn); return logTimers.length; },
+    clearTimeout() {},
+  };
+  vm.createContext(sbHub);
+  vm.runInContext([
+    'var _mcpLogPending = []; var _mcpLogTimer = null; var _mcpLogFlushMs = 200;',
+    'var _mcpLogBatchMax = 200; var _mcpLogQueueMax = 2000;',
+    extractFunction('mcpLogSchedule'),
+    extractFunction('mcpLogFlush'),
+    extractFunction('mcpLogPush'),
+  ].join('\n'), sbHub);
+
+  sbHub.mcpLogPush('serial:main:rx', 'info', 'rx', 'AT', 2);
+  sbHub.mcpLogPush('serial:main:rx', 'info', 'rx', 'OK', 2);
+  check(logCalls.length === 0, '未到冲刷窗口时不发送（批量而不是逐行）');
+  logTimers[0]();
+  check(logCalls.length === 1 && logCalls[0].cmd === 'log_push_batch', '到点后一次性发出');
+  check(logCalls[0].args.lines.length === 2, '一批带走两行', logCalls[0].args.lines.length);
+  check(logCalls[0].args.lines[0].channel === 'serial:main:rx' && logCalls[0].args.lines[0].dir === 'rx',
+    '通道与方向确实带上了');
+
+  logCalls.length = 0;
+  for (let i = 0; i < 2500; i++) sbHub.mcpLogPush('ui:sys', 'info', 'none', 'l' + i, 1);
+  check(sbHub._mcpLogPending.length === 2000, '待发队列有硬上限（防无界堆积）', sbHub._mcpLogPending.length);
+  sbHub.mcpLogFlush();
+  check(logCalls[0].args.lines.length === 200, '单批上限 200', logCalls[0].args.lines.length);
+  check(logCalls[0].args.lines[199].text === 'l2499', '超限时丢最旧、保留最新',
+    logCalls[0].args.lines[199].text);
+
+  console.log('\n【MCP AI 调用记录与配置（S8）】');
+
+  check(/CALL_LOG_FILE: &str = "ai-calls\.jsonl"/.test(mcpSrc), '调用记录写独立文件 ai-calls.jsonl');
+  // 只看非注释的代码行：注释里写"与用户配置 config.json 严格隔离"正是我们想要的说明，
+  // 要拦的是**代码里真的去碰它**。
+  const mcpProdCode = mcpProd
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l))
+    .join('\n');
+  // 注意不能写成 /config\.json/ —— 那会命中我们自己的 `ai-config.json`。
+  // 真正要拦的是"独立的 config.json"（前面不是 - 或标识符字符）。
+  check(!/(^|[^a-zA-Z0-9_-])config\.json/.test(mcpProdCode),
+    'MCP 生产代码里不出现独立的 config.json（S8 的核心约束）');
+  check(/fn rotate\(/.test(mcpSrc) && /rotate_keep/.test(mcpSrc), '记录文件按大小轮转且保留份数有界');
+  check(/READ_TAIL_BYTES/.test(mcpSrc), '查询只读文件尾部窗口（不把整个文件读进内存）');
+  check(/#\[serde\(rename_all = "camelCase"\)\]/.test(mcpSrc),
+    '记录设置用 camelCase（与工具入参一致）');
+  check(/#\[serde\(rename = "maxFileMiB"\)\]/.test(mcpSrc),
+    'maxFileMiB 显式重命名（serde 的 camelCase 会写成 maxFileMib，导致"写出去的名字读不回来"）');
+  check(/fn fit\(/.test(mcpSrc) && /_truncated/.test(mcpSrc), '超长入参截断并留标记');
+  check(/include_results: false/.test(mcpSrc), '默认不记返回值（可能很大或含敏感内容）');
+
+  // 记录器的挂载点：每一次工具调用（含协议级失败）
+  check(/core\.calllog\.record\(/.test(mcpSrc), '工具调用漏斗里调用了记录');
+  check(/\(missing-name\)/.test(mcpSrc), '连"缺少 name"这种协议级失败也要记');
+  check(/let effects = result_val/.test(mcpSrc), '把 ui_set 的 effects 单独提出来（事后能查 AI 改了什么）');
+  check(/fn handle_raw_with_session/.test(mcpSrc), '协议层带会话 id（记录要能查明是谁调的）');
+  check(/handle_raw_(with_session|guarded)\(core, &text, &sid\)/.test(mcpSrc), '传输层把真实 sessionId 传下去');
+  check(/fn apply_config_patch_with\(/.test(mcpSrc), '写盘动作可注入（单测不碰用户真实配置）');
+  check(/不接受通过工具修改 token/.test(mcpSrc), '工具不能改 token（必须走界面重置）');
+  check(/只允许监听回环地址/.test(mcpSrc), '不允许通过工具把服务器暴露到局域网');
+  check(/need_restart/.test(mcpSrc) && /重新启用 MCP 服务器/.test(mcpSrc),
+    '改 server.* 只保存不重启（否则会掐断正在回话的这次调用）');
+  check(/tokenMasked/.test(mcpSrc) && /config_summary/.test(mcpSrc),
+    '配置摘要里 token 只回打码值');
+
+  ['mcp_calls', 'mcp_stats', 'mcp_config_get', 'mcp_config_set'].forEach((t) => {
+    check(new RegExp('"name": "' + t + '"').test(mcpSrc), '工具已定义 ' + t);
+  });
+  check(/"callLog": self\.calllog\.stats\(\)/.test(mcpSrc), '状态里带调用记录概览（界面/工具都能看）');
+
+  // 配置文件的名字必须与"用户配置"彻底分开
+  check(/pub struct AiConfig/.test(mcpSrc) && /pub call_log/.test(mcpSrc), 'AI 配置含 callLog 段');
+  check(/serde\(default, rename = "callLog"\)/.test(mcpSrc),
+    'callLog 段缺省可升级（老 ai-config.json 不会因为少字段而失效）');
+
+  console.log('\n【MCP 全量控件工具（S6）】');
+
+  // 前后端契约：前端上报注册表
+  check(/fn mcp_report_registry\(/.test(mcpSrc) && /mcp::mcp_report_registry,/.test(mainRs),
+    '后端有并注册了 mcp_report_registry');
+  check(/invoke\('mcp_report_registry'/.test(html), '前端会调用上报');
+  check(/function mcpReportRegistry\(/.test(html) && /_mcpRegistryReported/.test(html),
+    '上报带签名去重（面板渲染会反复重建注册表，不能每次都发）');
+  check(/_mcpReportTimer\) return/.test(html) && /\}, 300\)/.test(html), '上报 300ms 合并');
+  check(/mcpBuildRegistry\(\);\s*mcpReportRegistry\(\)/.test(html),
+    '重建注册表后紧接着上报');
+  check(/mcpEnsureRegistry\(true\)/.test(html), '启动时强制采集并上报一次');
+  check(/function mcpEnumValuesFor\(/.test(html) && /options: mcpEnumValuesFor\(e\)/.test(html),
+    '下拉的可选值随注册表一起上报（AI 才不用猜）');
+
+  // 后端：命名 / schema / 上限 / 门控
+  check(/pub fn tool_name_for\(/.test(mcpSrc) && /"ctl_"/.test(mcpSrc),
+    '控件工具名以 ctl_ 开头（客户端不允许工具名带点号）');
+  check(/MAX_TOOL_NAME_LEN: usize = 64/.test(mcpSrc) && /NAME_BUDGET/.test(mcpSrc),
+    '工具名有 64 字符上限并留出加序号的余量');
+  check(/while used\.contains\(&n\)/.test(mcpSrc), '清洗后撞名要加序号保证唯一');
+  check(/pub fn schema_for\(/.test(mcpSrc) && /"enum": options/.test(mcpSrc),
+    '入参 schema 按控件类型派生（下拉给 enum）');
+  check(/pub const MAX_CTL_TOOLS: usize = 400/.test(mcpSrc),
+    '生成数量有上限（工具列表要进模型上下文，不能无限）');
+  check(/pub fn exposed_tools\(/.test(mcpSrc), '有统一的 exposed_tools（三处口径一致）');
+  check(/let all = exposed_tools\(core\)/.test(mcpSrc), 'tools/list 用 exposed_tools');
+  check(/n if n\.starts_with\("ctl_"\)/.test(mcpSrc), 'ctl_* 调用解析回控件路径走同一条界面桥');
+  check(/path_for_tool\(n\)/.test(mcpSrc) && /界面可能已经变了/.test(mcpSrc),
+    '未知控件工具要给可执行的下一步');
+  // Rust 里字段是 snake_case、默认 false；JSON 表面（rename_all=camelCase）才是 autoControlTools
+  check(/auto_control_tools: false/.test(mcpSrc) && /autoControlTools/.test(mcpSrc),
+    '全量控件工具默认关闭（§5.6 D2 的取舍）');
+  check(/未知面板名/.test(mcpSrc), '命名空间打错字要报错（否则"工具全没了"却查不出原因）');
+
+  // ui_get_state
+  check(/"name": "ui_get_state"/.test(mcpSrc), '有 ui_get_state 工具');
+  check(/op === 'getState'/.test(html) && /collectConfig\(\)/.test(html),
+    'ui_get_state 复用 collectConfig（与持久化同一份真源）');
+  check(/sec === 'serial' \|\| sec === 'wsl'/.test(html), 'section 能按面板切出子树');
+
+  // 行为：签名去重与 enum 采集
+  const repCalls = [];
+  const repTimers = [];
+  const regEl = {
+    kind: 'select', el: null,
+  };
+  const sbRep = {
+    console,
+    invoke(cmd, args) { repCalls.push({ cmd: cmd, args: args }); return Promise.resolve({}); },
+    setTimeout(fn) { repTimers.push(fn); return repTimers.length; },
+    _mcpRegistryReported: '', _mcpReportTimer: null,
+    MCP_REGISTRY_LIST: [],
+  };
+  vm.createContext(sbRep);
+  // 造两个假条目：一个下拉（有选项）、一个按钮
+  const optEl = {
+    _opts: [
+      { getAttribute: (k) => (k === 'data-val' ? 'COM1' : null) },
+      { getAttribute: (k) => (k === 'data-val' ? 'COM3' : null) },
+    ],
+    querySelectorAll(sel) { return sel === '.sel-opt' ? this._opts : []; },
+  };
+  sbRep.MCP_REGISTRY_LIST = [
+    { path: 'serial.conn.portSelect', kind: 'select', label: '端口', panel: 'serial', group: 'conn',
+      el: optEl, enabled: () => true, disabledReason: () => null },
+    { path: 'serial.toolbar.btnSend', kind: 'button', label: '发送', panel: 'serial', group: 'toolbar',
+      el: null, enabled: () => false, disabledReason: () => '串口未连接' },
+  ];
+  vm.runInContext([
+    extractFunction('mcpEnumValuesFor'),
+    extractFunction('mcpReportRegistry'),
+  ].join('\n'), sbRep);
+
+  sbRep.mcpReportRegistry();
+  check(repCalls.length === 0, '上报也走合并窗口（不立刻发）');
+  repTimers[0]();
+  check(repCalls.length === 1 && repCalls[0].cmd === 'mcp_report_registry', '合并到点后发一次');
+  const sent = repCalls[0].args.entries;
+  check(sent.length === 2, '两条都上报', sent.length);
+  check(JSON.stringify(sent[0].options) === '["COM1","COM3"]',
+    '下拉选项被采成 enum', JSON.stringify(sent[0].options));
+  check(sent[1].enabled === false && sent[1].disabledReason === '串口未连接',
+    '不可用状态与原因一起上报（AI 才不会盲试）');
+  check(sent[1].options.length === 0, '非下拉控件不带 options');
+
+  // 同样内容再报一次：应被签名挡掉
+  repTimers.length = 0;
+  sbRep.mcpReportRegistry();
+  repTimers[0]();
+  check(repCalls.length === 1, '内容没变就不重复上报（省 IPC）');
+
+  // 内容变了要重报
+  sbRep.MCP_REGISTRY_LIST[1].enabled = () => true;
+  repTimers.length = 0;
+  sbRep.mcpReportRegistry();
+  repTimers[0]();
+  check(repCalls.length === 2, '可用状态变了要重报（工具列表会跟着变）');
+
+  console.log('\n【MCP 运行期错误 → 错误上报（S11）】');
+
+  // 以前 MCP 出问题只写本地日志，用户报障时我们既看不到、也不知道发生过多少次。
+  // 现在接进程序既有的 report_error（LogHub + 本地日志 + Sentry + 自建服务/SQLite）。
+  check(/pub mod report;/.test(mcpSrc), '有 report 模块');
+  check(/fn report\(kind: &str, detail: &str\)/.test(mcpSrc) && /crate::report_error\(/.test(mcpSrc),
+    'MCP 错误走的是程序既有的 report_error（换新通道就是两套上报，迟早分叉）');
+  check(/fn report_with\(/.test(mcpSrc), '上报入口可注入（单测不碰网络/文件）');
+  check(/DEDUP_WINDOW_SECS: u64 = 300/.test(mcpSrc) && /fn should_report\(/.test(mcpSrc),
+    '同类错误 5 分钟内只上报一次（服务端去重是最后一道闸，不能靠它兜客户端刷屏）');
+  check(/MAX_TRACKED: usize = 64/.test(mcpSrc), '去重表有上限（错误消息带变量时不会无限增长）');
+  check(/fn sanitize\(/ && /token=\*\*\*\*/.test(mcpSrc), '上报前把 token=… 打码');
+  check(/fn remember_secret\(/ && /report::remember_secret\(&token\)/.test(mcpSrc),
+    '启动时把当前令牌登记为敏感串（连裸 token 也不会漏进错误库）');
+  check(/fn panic_message\(/ && /fn guard</.test(mcpSrc), '有 panic 兜底工具函数');
+  // 关键：文档一直写着"分派边界有 catch_unwind 兜底"，但 2026-09 核对时**全 crate 都没有**。
+  // 现在真的有了，断言把它钉住，别让文档再次变成空话。
+  check(/std::panic::catch_unwind\(f\)/.test(mcpSrc), 'catch_unwind 真的存在（不是只写在文档里）');
+  check(/pub async fn handle_raw_guarded\(/.test(mcpSrc)
+    && /futures::FutureExt::catch_unwind\(fut\)/.test(mcpSrc),
+    '分派入口有 panic 兜底：panic → JSON-RPC 错误 + 上报，而不是把连接静默打死');
+  check(/handle_raw_guarded\(core, &text, &sid\)/.test(mcpSrc),
+    '传输层走的是带兜底的入口（别再退回不兜底的那个）');
+  check(/E_INTERNAL, format!\("服务器内部错误（已上报）/.test(mcpSrc),
+    'panic 转成的错误里告诉调用方"已上报"（否则用户不知道该不该反馈）');
+  // 会话回收：客户端断开必须**立刻**回收，不能干等 30 分钟空闲超时 ——
+  // 否则客户端重启/重连 4 次就把 MAX_SESSIONS 占满，之后所有连接吃 429
+  // （官方 Python SDK 一致性检查在真机上抓到的真问题，见 §17 最新记录）
+  check(/struct SseBody/.test(mcpSrc) && /impl Drop for SseBody/.test(mcpSrc),
+    'SSE 响应体带 Drop 守卫：流被丢弃（= 客户端断开）时回收会话');
+  check(/fn sse_response\(core: Arc<McpCore>, sid: String/.test(mcpSrc),
+    'sse_response 拿得到 core 与 sid（否则守卫无从回收）');
+  check(/sse_response\(core\.clone\(\), id\.clone\(\), rx\)/.test(mcpSrc), '调用点把两个都传进去了');
+  check(/fn session_is_reclaimed_as_soon_as_the_client_disconnects/.test(mcpSrc),
+    '有"连断 6 次、每次都要立刻回收"的回归测试');
+
+  // 用户可读的工具参考文档必须与源码同步：doc/MCP_TOOLS.md 里得列出**全部**内置工具名。
+  // （文档由 .walkthrough/gen_mcp_tools_doc.js 从 protocol.rs 生成，这里只防"加了工具忘了重跑"）
+  {
+    const toolsDoc = fs.readFileSync(path.join(root, 'doc', 'MCP_TOOLS.md'), 'utf8');
+    const srcTools = [...new Set(
+      // 用带捕获组的 matchAll 一次拿干净；上一版先 match 再 exec，每次都抓到 "name" 这个键名
+      [...mcpSrc.slice(mcpSrc.indexOf('pub fn tool_defs()'), mcpSrc.indexOf('pub fn limits_json()'))
+        .matchAll(/"name":\s*"([a-z][a-z0-9_]*)"/g)].map((m) => m[1])
+    )];
+    check(srcTools.length === 20, '源码里是 20 个内置工具', srcTools.length);
+    const missing = srcTools.filter((n) => toolsDoc.indexOf('#### `' + n + '`') < 0);
+    check(missing.length === 0, '工具参考文档 doc/MCP_TOOLS.md 列出了全部内置工具', '缺：' + missing.join(','));
+    check((toolsDoc.match(/^#### `/gm) || []).length === srcTools.length,
+      '文档里的工具小节数 == 工具数（没有多余/重复）');
+    check(/只有 SSE/.test(toolsDoc) && /-32602/.test(toolsDoc),
+      '文档写清了传输（只有 SSE）与错误码语义');
+  }
+
+  // 每个运行期错误点都要真的调用上报（漏一个就是一个盲区）
+  const reportSites = [
+    ['start_failed', 'MCP 起不来（端口被占是最常见的用户故障）'],
+    ['start_timeout', '绑定超时'],
+    ['config_save_failed', 'ai-config.json 写盘失败'],
+    ['endpoint_write_failed', '端点发现文件写盘失败'],
+    ['accept_failed', 'accept 循环出错'],
+    ['unauthorized', 'token 不匹配（客户端配置过期）'],
+    ['sse_endpoint_queue_full', '会话队列刚建就满'],
+    ['session_slow_consumer_dropped', '慢消费者被断开'],
+    ['rate_limited', '被限流'],
+    ['ui_bridge_timeout', '前端 5 秒没回执'],
+    ['calllog_write_failed', '调用记录写不进去'],
+    ['dispatch_panic', '请求处理 panic'],
+    ['registry_entry_invalid', '控件注册项解析失败（前后端结构漂移）'],
+  ];
+  reportSites.forEach(([kind, why]) => {
+    check(new RegExp('report(::report)?\\(\\s*"' + kind + '"').test(mcpSrc)
+      || new RegExp('"' + kind + '"').test(mcpSrc),
+      '上报点存在：' + kind + '（' + why + '）');
+  });
+  check(/report::report\(\s*"accept_failed", &e\.to_string\(\)\)/.test(mcpSrc)
+    && /report::report\(\s*"unauthorized"/.test(mcpSrc),
+    'accept 失败与鉴权失败都带上了具体信息');
+  // 上报线程必须真的被初始化，否则所有 report 都进黑洞
+  check(/init_error_reporter\(\);/.test(mainRs), 'main.rs 里初始化了上报线程（否则上报全进黑洞）');
+  check(/"errorReports": \{/.test(mcpSrc) && /"deduped": report::stats\(\)\.1/.test(mcpSrc),
+    '状态里能看到报了多少条、被去重挡了多少次');
+
+  console.log('\n【MCP 加固（S10：状态端点 / 工具变更通知 / 安装包约束）】');
+
+  // ---- /status：必须验 token，且回显里绝不含 token 与完整 URL ----
+  check(/\(Method::GET, "\/status"\)/.test(mcpSrc), '有 /status 详情端点');
+  check(/"\/status"[\s\S]{0,320}?constant_time_eq\(&given, &core\.token\(\)\)/.test(mcpSrc),
+    '/status 先验 token 才回详情（未授权只回 401）');
+  check(/if !constant_time_eq\(&given, &core\.token\(\)\) \{[\s\S]{0,120}?unauthorized\(\)[\s\S]{0,120}?status_json_public\(\)/
+    .test(mcpSrc), '/status 的未授权分支与授权分支分得很清楚');
+  check(/pub fn status_json_public\(/.test(mcpSrc), '有「对外可见」的状态序列化函数');
+  check(/o\.remove\("token"\)/.test(mcpSrc), '对外状态里 token 被摘掉');
+  check(/o\.remove\("url"\)/.test(mcpSrc) && /o\.insert\("urlMasked"\.into\(\)/.test(mcpSrc),
+    '对外状态里完整 url 被换成 urlMasked');
+  check(/pub fn mask_url\(url: &str\) -> String/.test(mcpSrc), 'mask_url 在配置模块里（与写盘口径一致）');
+  // /healthz 仍然只回 {"ok":true}（唯一免鉴权端点不能变成信息泄露点）
+  check(/\(Method::GET, "\/healthz"\) => json_resp\(StatusCode::OK, serde_json::json!\(\{ "ok": true \}\)\)/.test(mcpSrc),
+    '/healthz 仍只回 {"ok":true}（未因新增 /status 而放宽）');
+
+  // ---- 工具名集合变化 → 主动广播 notifications/tools/list_changed ----
+  check(/pub fn replace_and_diff\(/.test(mcpSrc), '注册表能算出「工具名集合是否变了」');
+  check(/let \(n, tools_changed\) = core\.registry\.replace_and_diff\(parsed\)/.test(mcpSrc),
+    '上报注册表时拿到 tools_changed');
+  check(/if tools_changed && core\.running\.load\(Ordering::Relaxed\)/.test(mcpSrc),
+    '只在服务器运行中且真的变了才通知（不打扰客户端）');
+  check(/"method": "notifications\/tools\/list_changed"/.test(mcpSrc),
+    '发的是规范里的 notifications/tools/list_changed（没有 id 的通知报文）');
+  check(/transport::broadcast\(/.test(mcpSrc), '通知走 broadcast（非阻塞，不给任何人添堵）');
+  check(/"toolsChanged": tools_changed/.test(mcpSrc), '返回值里也带上 toolsChanged（界面/测试可断言）');
+  check(/notified/.test(mcpSrc), '广播了几个会话是可见的（便于排查"客户端没刷新"）');
+
+  // ---- 启停幂等：停机标志只能有一个复位点，且必须在绑端口之前 ----
+  check(/pub async fn serve\([\s\S]{0,900}?core\.shutdown\.store\(false, Ordering::Relaxed\)[\s\S]{0,200}?transport::bind\(/
+    .test(mcpSrc), 'serve() 在绑端口前清掉停机标志（否则重启会"启动成功但第一圈就退出"）');
+  check((mcpProdCode.match(/shutdown\.store\(false/g) || []).length === 1,
+    '停机标志只有 serve() 一个复位点（两处口径会漂移）',
+    (mcpProdCode.match(/shutdown\.store\(false/g) || []).length);
+  check(/fn start_stop_is_idempotent_over_many_cycles/.test(mcpSrc),
+    '有「启停 50 次幂等」的真机单测（S10 的验收门）');
+  check(/for i in 0\.\.50/.test(mcpSrc) && /第 \{\} 次停止后端口/.test(mcpSrc),
+    '单测真的跑 50 圈并逐圈检查端口释放');
+
+  // ---- npm 包只是「客户端配置安装器」，不能偷偷装东西 ----
+  const npmPkg = JSON.parse(fs.readFileSync(path.join(root, 'npm', 'seahi-serial-mcp', 'package.json'), 'utf8'));
+  check(npmPkg.bin && npmPkg.bin['seahi-serial-mcp'] === 'cli.js', 'npm 包有 bin 入口');
+  check(npmPkg.version === '0.1.0', 'npm 包版本独立于应用版本', npmPkg.version);
+  check(!npmPkg.dependencies && !npmPkg.optionalDependencies && !npmPkg.peerDependencies,
+    'npm 包零依赖（不下载任何东西）');
+  check(!npmPkg.scripts || !npmPkg.scripts.install && !npmPkg.scripts.postinstall,
+    'npm 包没有 install / postinstall 钩子（安装即改配置是不可接受的）');
+  check(Array.isArray(npmPkg.os) && npmPkg.os.indexOf('win32') >= 0, 'npm 包声明仅 Windows');
+  check((npmPkg.files || []).indexOf('cli.js') >= 0, 'npm 包只发布必要文件');
+  const npmCli = fs.readFileSync(path.join(root, 'npm', 'seahi-serial-mcp', 'cli.js'), 'utf8');
+  check(/--dry-run/.test(npmCli), '安装器支持 --dry-run 预览');
+  check(/mcp-endpoint\.json/.test(npmCli), '安装器读应用的端点文件自动探测');
+  check(/\.seahi-bak/.test(npmCli), '改客户端配置前先备份');
+  check(!/child_process|execSync|spawnSync/.test(npmCli),
+    '安装器不调用任何子进程（只读写 JSON 配置）');
+  check(/function installFor/.test(npmCli) && /function uninstallFor/.test(npmCli),
+    '有 install / uninstall 两条路径');
 
   console.log(`\n结果: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

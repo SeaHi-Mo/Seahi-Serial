@@ -263,20 +263,40 @@
 .ble-modal-btn:hover { border-color:var(--border-h); }
 .ble-modal-btn.primary { background:var(--accent-focus); border-color:transparent; color:#fff; }
 .ble-modal-btn.primary:hover { filter:brightness(1.08); }
+.ble-modal-btn:disabled { cursor:default; opacity:.45; }
+.ble-modal-btn:disabled:hover { border-color:var(--border); filter:none; }
 .ble-log::-webkit-scrollbar,
 .ble-pf-left::-webkit-scrollbar,
-.ble-pf-chars::-webkit-scrollbar { width:10px; }
+.ble-pf-chars::-webkit-scrollbar,
+.mcp-url::-webkit-scrollbar,
+.mcp-code::-webkit-scrollbar,
+#mcpModal .ble-modal-body::-webkit-scrollbar { width:10px; height:10px; }
 .ble-log::-webkit-scrollbar-track,
 .ble-pf-left::-webkit-scrollbar-track,
-.ble-pf-chars::-webkit-scrollbar-track { background:transparent; }
+.ble-pf-chars::-webkit-scrollbar-track,
+.mcp-url::-webkit-scrollbar-track,
+.mcp-code::-webkit-scrollbar-track,
+#mcpModal .ble-modal-body::-webkit-scrollbar-track { background:transparent; }
+.ble-log::-webkit-scrollbar-corner,
+.ble-pf-left::-webkit-scrollbar-corner,
+.ble-pf-chars::-webkit-scrollbar-corner,
+.mcp-url::-webkit-scrollbar-corner,
+.mcp-code::-webkit-scrollbar-corner,
+#mcpModal .ble-modal-body::-webkit-scrollbar-corner { background:transparent; }
 .ble-log::-webkit-scrollbar-thumb,
 .ble-pf-left::-webkit-scrollbar-thumb,
-.ble-pf-chars::-webkit-scrollbar-thumb {
+.ble-pf-chars::-webkit-scrollbar-thumb,
+.mcp-url::-webkit-scrollbar-thumb,
+.mcp-code::-webkit-scrollbar-thumb,
+#mcpModal .ble-modal-body::-webkit-scrollbar-thumb {
     background:rgba(128,134,146,.42); border:3px solid transparent; background-clip:content-box; border-radius:6px;
 }
 .ble-log::-webkit-scrollbar-thumb:hover,
 .ble-pf-left::-webkit-scrollbar-thumb:hover,
-.ble-pf-chars::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
+.ble-pf-chars::-webkit-scrollbar-thumb:hover,
+.mcp-url::-webkit-scrollbar-thumb:hover,
+.mcp-code::-webkit-scrollbar-thumb:hover,
+#mcpModal .ble-modal-body::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
 body { background: var(--bg, #1c1e22); padding: 28px; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
 .note { color: var(--text-d, #8b949e); font-size: 12px; margin: 0 0 14px; }
 h3 { color: var(--text, #c9d1d9); font-size: 14px; margin: 22px 0 6px; }

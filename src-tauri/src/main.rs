@@ -13,16 +13,93 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 use tauri::{Emitter, Manager};
 use serde_json::json;
 
+/// MCP 服务器（进程内、只用 SSE）。设计见 doc/MCP_DESIGN.md；
+/// 放在独立目录而不是继续堆进本文件：本文件已经 7000+ 行。
+mod mcp;
+
+use std::sync::atomic::{AtomicI64, Ordering};
+
+/// 调试日志单文件上限：超过即轮转到 `.1`（旧的 `.1` 会被覆盖）
+const DEBUG_LOG_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// 调试日志开关（`SEAHI_DEBUG_LOG=0/false/off` 时整体关闭），只读一次环境变量
+static DEBUG_LOG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+/// 当前文件已写字节数；-1 表示未知（下次写入前先 stat 一次，避免每次都做系统调用）
+static DEBUG_LOG_BYTES: AtomicI64 = AtomicI64::new(-1);
+/// 串行化"检查-轮转-写"，避免并发轮转互相踩（本来就有文件 I/O，加锁开销可忽略）
+static DEBUG_LOG_LOCK: Mutex<()> = Mutex::new(());
+
+fn debug_log_enabled() -> bool {
+    *DEBUG_LOG_ENABLED.get_or_init(|| {
+        !matches!(
+            std::env::var("SEAHI_DEBUG_LOG").ok().as_deref(),
+            Some("0") | Some("false") | Some("off") | Some("OFF")
+        )
+    })
+}
+
+/// 是否需要轮转（纯函数，便于单测）。
+/// `current_size > 0` 这一条是为了避免对空文件/不存在的文件做无意义的 rename。
+fn debug_log_needs_rotate(current_size: u64, line_len: u64, max_bytes: u64) -> bool {
+    current_size > 0 && current_size + line_len > max_bytes
+}
+
+/// 轮转：先删掉旧的 `.1`，再把当前文件改名为 `.1`
+fn debug_log_rotate(path: &std::path::Path) -> std::io::Result<()> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "seahi-serial-debug.log".to_string());
+    let backup = path.with_file_name(format!("{}.1", name));
+    let _ = std::fs::remove_file(&backup); // 不存在则忽略
+    std::fs::rename(path, &backup)
+}
+
 fn dbg_log(msg: &str) {
+    // 旁路进 MCP 日志中心：**与文件开关无关**（用户可能关掉文件日志但仍要在 MCP 里看）。
+    // 关闭时只是一次原子读；拿不到通道锁就丢一条并计数，绝不阻塞调用方（可能是串口读线程）。
+    crate::mcp::loghub::hub().push(
+        "app",
+        crate::mcp::loghub::LEVEL_INFO,
+        crate::mcp::loghub::DIR_NONE,
+        msg,
+        0,
+    );
+    if !debug_log_enabled() {
+        return;
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
     let line = format!("[{}ms] {}\n", now, msg);
-    let _ = std::fs::OpenOptions::new()
-        .create(true).append(true)
-        .open(std::env::temp_dir().join("seahi-serial-debug.log"))
-        .and_then(|mut f| f.write_all(line.as_bytes()));
+    let path = std::env::temp_dir().join("seahi-serial-debug.log");
+    let _guard = DEBUG_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // 已写字节数：未知时先用文件真实大小初始化
+    let cur = match DEBUG_LOG_BYTES.load(Ordering::Relaxed) {
+        n if n >= 0 => n as u64,
+        _ => {
+            let n = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            DEBUG_LOG_BYTES.store(n as i64, Ordering::Relaxed);
+            n
+        }
+    };
+    let base = if debug_log_needs_rotate(cur, line.len() as u64, DEBUG_LOG_MAX_BYTES) {
+        let _ = debug_log_rotate(&path);
+        0
+    } else {
+        cur
+    };
+    let ok = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| f.write_all(line.as_bytes()))
+        .is_ok();
+    // 写失败则置为未知，下次重新 stat（文件可能被外部删除/占用）
+    DEBUG_LOG_BYTES.store(
+        if ok { (base + line.len() as u64) as i64 } else { -1 },
+        Ordering::Relaxed,
+    );
 }
 
 /// 全局错误上报通道（单线程消费，避免每次 spawn 新线程）
@@ -105,6 +182,14 @@ fn report_to_self_hosted(error: &str, context: &str) {
 
 /// 统一错误上报入口（根据配置选择上报方式）
 fn report_error(error: &str, context: &str) {
+    // 旁路进 MCP 日志中心（错误单独一个通道，便于 AI 只看错误）
+    crate::mcp::loghub::hub().push(
+        "error",
+        crate::mcp::loghub::LEVEL_ERROR,
+        crate::mcp::loghub::DIR_NONE,
+        &format!("{}: {}", context, error),
+        0,
+    );
     // 始终写入本地日志
     dbg_log(&format!("[ERROR] {}: {}", context, error));
     
@@ -3067,6 +3152,10 @@ const LOG_CACHE_PREFIX: &str = "session-";
 const LOG_CACHE_SUFFIX: &str = ".log";
 /// 最多保留的缓存文件数
 const LOG_CACHE_MAX_COUNT: usize = 10;
+/// 单个缓存文件的大小上限（超过则停止写入并留一行终止标记）
+const LOG_CACHE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// 缓存目录总字节上限（软目标：先保证单文件上限，再按总量从最旧删）
+const LOG_CACHE_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
 /// 单个监视器的会话缓存状态
 struct LogCacheSession {
@@ -3076,6 +3165,10 @@ struct LogCacheSession {
     file: Option<std::fs::File>,
     /// 文件完整路径（结束会话时用于清理空文件）
     path: std::path::PathBuf,
+    /// 已写入字节数（用于单文件大小上限判断；只在新建文件时归零）
+    bytes: u64,
+    /// 是否已因超过单文件上限而停止写入
+    capped: bool,
 }
 
 /// 全局日志隐形缓存状态（key = monitor_id）
@@ -3132,29 +3225,52 @@ fn sanitize_for_filename(s: &str) -> String {
     out
 }
 
-/// 保证缓存目录下的文件数不超过上限：超出时删除最旧的（按文件名时间戳升序）
-fn enforce_log_cache_limit(dir: &std::path::Path) {
+/// 保证缓存目录不超预算：从最旧开始删（按文件名时间戳升序）。
+/// `active` 里的文件正在被会话写入，不删 —— 否则会把日志从正在写的会话脚下抽走。
+fn enforce_log_cache_limit_in(
+    dir: &std::path::Path,
+    max_count: usize,
+    max_total_bytes: u64,
+    active: &std::collections::HashSet<std::path::PathBuf>,
+) {
     use std::fs;
-    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut files: Vec<(std::path::PathBuf, u64)> = Vec::new();
     if let Ok(rd) = fs::read_dir(dir) {
         for entry in rd.flatten() {
             let p = entry.path();
-            if p.is_file() {
-                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with(LOG_CACHE_PREFIX) && name.ends_with(LOG_CACHE_SUFFIX) {
-                        files.push(p);
-                    }
+            if !p.is_file() {
+                continue;
+            }
+            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with(LOG_CACHE_PREFIX) && name.ends_with(LOG_CACHE_SUFFIX) {
+                    let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    files.push((p, size));
                 }
             }
         }
     }
     files.sort(); // 文件名前缀含可排序时间戳，字典序即时间序
-    if files.len() > LOG_CACHE_MAX_COUNT {
-        let remove_count = files.len() - LOG_CACHE_MAX_COUNT;
-        for p in files.into_iter().take(remove_count) {
-            let _ = fs::remove_file(p);
+    let removable: Vec<(std::path::PathBuf, u64)> = files
+        .iter()
+        .filter(|(p, _)| !active.contains(p))
+        .cloned()
+        .collect();
+    let mut total: u64 = files.iter().map(|(_, s)| *s).sum();
+    let mut count = files.len();
+    for (p, size) in removable.iter() {
+        if count <= max_count && total <= max_total_bytes {
+            break;
+        }
+        if fs::remove_file(p).is_ok() {
+            total = total.saturating_sub(*size);
+            count = count.saturating_sub(1);
         }
     }
+}
+
+/// 用默认预算执行清理
+fn enforce_log_cache_limit(dir: &std::path::Path, active: &std::collections::HashSet<std::path::PathBuf>) {
+    enforce_log_cache_limit_in(dir, LOG_CACHE_MAX_COUNT, LOG_CACHE_MAX_TOTAL_BYTES, active);
 }
 
 /// 标记一次串口会话开始（幂等：已存在则保留原文件，自动重连时日志连续）
@@ -3165,49 +3281,117 @@ fn start_log_cache(state: tauri::State<'_, LogCacheState>, monitor_id: String, p
         port_name,
         file: None,
         path: std::path::PathBuf::new(),
+        bytes: 0,
+        capped: false,
     });
     Ok(())
 }
 
-/// 向当前会话缓存文件追加内容。首次写入时创建文件并清理旧缓存（FIFO，≤10 个）
+/// 向当前会话缓存文件追加内容。首次写入时创建文件并清理旧缓存（≤10 个 / ≤64 MiB）。
+/// 单文件超过 LOG_CACHE_MAX_BYTES 后停止写入并留一行终止标记，同时通知前端（不静默丢弃）。
 #[tauri::command]
-fn append_log_cache(state: tauri::State<'_, LogCacheState>, monitor_id: String, content: String) -> Result<(), String> {
+fn append_log_cache(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, LogCacheState>,
+    monitor_id: String,
+    content: String,
+) -> Result<(), String> {
     use std::io::Write;
     if content.is_empty() {
         return Ok(());
     }
-    let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
-    let sess = sessions.entry(monitor_id).or_insert_with(|| LogCacheSession {
-        port_name: String::new(),
-        file: None,
-        path: std::path::PathBuf::new(),
-    });
+    let mut capped_notice: Option<u64> = None;
+    {
+        let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
 
-    // 首次写入：创建目录、清理旧缓存、新建文件
-    if sess.file.is_none() {
-        let dir = log_cache_dir();
-        std::fs::create_dir_all(&dir).map_err(|e| format!("创建日志缓存目录失败: {}", e))?;
-        enforce_log_cache_limit(&dir);
-        let filename = format!(
-            "{}{}-{}{}",
-            LOG_CACHE_PREFIX,
-            log_cache_time_stamp(),
-            sanitize_for_filename(&sess.port_name),
-            LOG_CACHE_SUFFIX
-        );
-        let path = dir.join(&filename);
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|e| format!("创建日志缓存文件失败: {}", e))?;
-        sess.path = path;
-        sess.file = Some(file);
+        // 1) 确保会话存在
+        if !sessions.contains_key(&monitor_id) {
+            sessions.insert(
+                monitor_id.clone(),
+                LogCacheSession {
+                    port_name: String::new(),
+                    file: None,
+                    path: std::path::PathBuf::new(),
+                    bytes: 0,
+                    capped: false,
+                },
+            );
+        }
+
+        // 2) 尚未建文件则先建（创建目录 → 清理旧缓存 → 新建）
+        let need_create = sessions.get(&monitor_id).map(|s| s.file.is_none()).unwrap_or(false);
+        if need_create {
+            let dir = log_cache_dir();
+            std::fs::create_dir_all(&dir).map_err(|e| format!("创建日志缓存目录失败: {}", e))?;
+            // 正在被其它会话写入的文件不能删（否则会把日志从其脚下抽走）
+            let active: std::collections::HashSet<std::path::PathBuf> = sessions
+                .values()
+                .filter(|s| !s.path.as_os_str().is_empty())
+                .map(|s| s.path.clone())
+                .collect();
+            enforce_log_cache_limit(&dir, &active);
+            let port_name = sessions
+                .get(&monitor_id)
+                .map(|s| s.port_name.clone())
+                .unwrap_or_default();
+            let filename = format!(
+                "{}{}-{}{}",
+                LOG_CACHE_PREFIX,
+                log_cache_time_stamp(),
+                sanitize_for_filename(&port_name),
+                LOG_CACHE_SUFFIX
+            );
+            let path = dir.join(&filename);
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|e| format!("创建日志缓存文件失败: {}", e))?;
+            if let Some(sess) = sessions.get_mut(&monitor_id) {
+                sess.path = path;
+                sess.file = Some(file);
+                sess.bytes = 0;
+                sess.capped = false;
+            }
+        }
+
+        // 3) 写入，或触顶后只补一行终止标记
+        if let Some(sess) = sessions.get_mut(&monitor_id) {
+            if sess.capped {
+                return Ok(());
+            }
+            let add = content.len() as u64;
+            if sess.bytes + add > LOG_CACHE_MAX_BYTES {
+                if let Some(f) = sess.file.as_mut() {
+                    let marker = format!(
+                        "\n--- 日志缓存已达单文件上限 {} MiB，后续内容不再写入（完整内容请以实时输出或导出为准）---\n",
+                        LOG_CACHE_MAX_BYTES / (1024 * 1024)
+                    );
+                    let _ = f.write_all(marker.as_bytes());
+                    let _ = f.flush();
+                }
+                sess.capped = true;
+                capped_notice = Some(LOG_CACHE_MAX_BYTES);
+            } else {
+                if let Some(f) = sess.file.as_mut() {
+                    f.write_all(content.as_bytes())
+                        .map_err(|e| format!("写入日志缓存失败: {}", e))?;
+                    let _ = f.flush();
+                }
+                sess.bytes += add;
+            }
+        }
     }
-
-    if let Some(f) = sess.file.as_mut() {
-        f.write_all(content.as_bytes()).map_err(|e| format!("写入日志缓存失败: {}", e))?;
-        let _ = f.flush();
+    // 在释放锁之后再通知前端，避免持锁做跨进程通信
+    if let Some(max_bytes) = capped_notice {
+        dbg_log(&format!(
+            "append_log_cache: 会话 {} 已达单文件上限 {} 字节，停止写入",
+            monitor_id, max_bytes
+        ));
+        let _ = app.emit(
+            "log-cache-capped",
+            serde_json::json!({ "monitorId": monitor_id, "maxBytes": max_bytes }),
+        );
     }
     Ok(())
 }
@@ -5445,6 +5629,137 @@ fn ble_periph_save_config_file(text: String) -> Result<Option<String>, String> {
 }
 
 #[cfg(test)]
+mod log_maintenance_tests {
+    use super::*;
+
+    /// 每个测试用独立临时目录（带 tag + pid），避免并行执行时互相踩
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("seahi-test-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("创建测试临时目录");
+        d
+    }
+
+    // ===== L3a：调试日志轮转 =====
+
+    #[test]
+    fn debug_log_rotate_decision_respects_limit() {
+        assert!(
+            !debug_log_needs_rotate(0, 100, 1000),
+            "空文件不该轮转（无意义的 rename）"
+        );
+        assert!(!debug_log_needs_rotate(900, 100, 1000), "正好等于上限时不轮转");
+        assert!(debug_log_needs_rotate(901, 100, 1000), "超出上限必须轮转");
+        assert!(
+            debug_log_needs_rotate(DEBUG_LOG_MAX_BYTES, 1, DEBUG_LOG_MAX_BYTES),
+            "已达上限后再写一行就要轮转"
+        );
+    }
+
+    #[test]
+    fn debug_log_rotate_replaces_old_backup() {
+        let dir = tmp_dir("dbglog");
+        let path = dir.join("seahi-serial-debug.log");
+        let backup = dir.join("seahi-serial-debug.log.1");
+        std::fs::write(&path, "old-content").unwrap();
+        std::fs::write(&backup, "stale-backup").unwrap();
+
+        debug_log_rotate(&path).expect("轮转应成功");
+
+        assert!(!path.exists(), "原文件应已被改名");
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            "old-content",
+            "新的 .1 应是刚轮转的内容（旧 .1 被覆盖）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ===== M28：会话缓存上限 =====
+
+    fn touch_cache_file(dir: &std::path::Path, i: u32, size: usize) -> std::path::PathBuf {
+        let p = dir.join(format!("session-20260101-{:09}-COM1.log", i));
+        std::fs::write(&p, vec![b'x'; size]).unwrap();
+        p
+    }
+
+    fn cache_file_names(dir: &std::path::Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().is_file())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn log_cache_enforces_file_count() {
+        let dir = tmp_dir("cache-count");
+        for i in 0..12 {
+            touch_cache_file(&dir, i, 1024);
+        }
+        let active = std::collections::HashSet::new();
+
+        enforce_log_cache_limit_in(&dir, 10, u64::MAX, &active);
+
+        let files = cache_file_names(&dir);
+        assert_eq!(files.len(), 10, "超过个数上限应删到 10 个");
+        assert!(
+            files[0].contains("000000002"),
+            "应删最旧的，剩下的从第 3 个开始，实际: {}",
+            files[0]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn log_cache_enforces_total_bytes() {
+        let dir = tmp_dir("cache-bytes");
+        for i in 0..10 {
+            touch_cache_file(&dir, i, 1024);
+        }
+        let active = std::collections::HashSet::new();
+
+        // 个数上限放宽到 100，只靠 3 KiB 的总预算来限制
+        enforce_log_cache_limit_in(&dir, 100, 3 * 1024, &active);
+
+        let files = cache_file_names(&dir);
+        assert_eq!(files.len(), 3, "总字节超预算应删到 3 个");
+        assert!(
+            files[0].contains("000000007"),
+            "留下的应是最新的三个，实际: {}",
+            files[0]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn log_cache_never_deletes_active_file() {
+        let dir = tmp_dir("cache-active");
+        for i in 0..3 {
+            touch_cache_file(&dir, i, 1024);
+        }
+        // 最新的那个正被会话写入；上限设成 0 以确定性地证明"活跃文件被跳过"
+        let mut active = std::collections::HashSet::new();
+        let newest = dir.join("session-20260101-000000002-COM1.log");
+        active.insert(newest.clone());
+
+        enforce_log_cache_limit_in(&dir, 0, u64::MAX, &active);
+
+        let files = cache_file_names(&dir);
+        assert_eq!(files.len(), 1, "除活跃文件外都应被删掉");
+        assert_eq!(
+            files[0],
+            "session-20260101-000000002-COM1.log",
+            "正在写入的文件绝不能被删"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 mod ble_periph_tests {
     use super::*;
 
@@ -6259,10 +6574,20 @@ async fn ble_notify_loop(
     const NOTIFY_BUF_MAX: usize = 2000;
     if let Ok(mut stream) = peripheral.notifications().await {
         while let Some(n) = stream.next().await {
+            let hex = ble_hex(&n.value);
+            // 生产端旁路：BLE 通知是"前端轮询取走的单消费者队列"，所以只能在**产生处**复制一份，
+            // 不能去 drain 队列（那会把界面要的数据抢走）。
+            crate::mcp::loghub::hub().push(
+                "ble:rx",
+                crate::mcp::loghub::LEVEL_INFO,
+                crate::mcp::loghub::DIR_RX,
+                &format!("{} · {} = {}", n.service_uuid, n.uuid, hex),
+                n.value.len() as u32,
+            );
             let item = json!({
                 "uuid": n.uuid.to_string(),
                 "service_uuid": n.service_uuid.to_string(),
-                "value_hex": ble_hex(&n.value),
+                "value_hex": hex,
             });
             if let Ok(mut b) = buf.lock() {
                 while b.len() >= NOTIFY_BUF_MAX {
@@ -6881,6 +7206,7 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
             events: std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new())),
             running: std::sync::atomic::AtomicBool::new(false),
         })
+        .manage(mcp::McpState::default())
         .invoke_handler(tauri::generate_handler![
             list_ports,
             list_wsl_devices,
@@ -6966,6 +7292,14 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
             ble_periph_save_config_file,
             ble_periph_notify,
             ble_periph_poll_events,
+            mcp::mcp_status,
+            mcp::mcp_set_enabled,
+            mcp::mcp_reset_token,
+            mcp::mcp_client_config,
+            mcp::mcp_ui_ack,
+            mcp::mcp_notify_state,
+            mcp::log_push_batch,
+            mcp::mcp_report_registry,
             #[cfg(debug_assertions)]
             test_error_report,
         ])
@@ -6978,6 +7312,9 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
                 }
             }
             start_wsl_watcher(app.handle().clone());
+            // MCP 服务器随程序启动（配置里 enabled=false 时自动跳过）。
+            // 它是"寄生"在应用里的：起不来只写日志与 last_error，绝不影响主功能。
+            mcp::autostart(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -7038,6 +7375,8 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
                 }
 
                 dbg_log("CloseRequested: cleanup done");
+                // MCP：广播收尾信号并释放监听端口/会话（放在最后，前面的清理不该被它拖慢）
+                mcp::shutdown_on_exit(window.app_handle());
             }
         })
         .run(tauri::generate_context!())
