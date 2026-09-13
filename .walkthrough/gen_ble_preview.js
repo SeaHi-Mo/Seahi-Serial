@@ -1993,13 +1993,18 @@ console.log('preview ->', out);
   const mcpSrc = mcpFiles
     .map((f) => fs.readFileSync(path.join(mcpDir, f), 'utf8'))
     .join('\n');
-  // 生产代码部分（去掉 #[cfg(test)] 之后的测试模块）：
+  // 生产代码部分（去掉测试模块）：
   // "绝不碰 config.json" 这类断言针对生产代码 —— 测试里为了验证隔离会故意造一个 config.json。
+  //
+  // ⚠️ 切点必须是**真正的测试模块**（`#[cfg(test)]` 紧跟 `mod tests`），不能是"第一个
+  // `#[cfg(test)]`"：条目级的 cfg(test) 会让切片过早截断。这个坑踩过两次 ——
+  // 一次是 `protocol.rs` 里的 `test_panic` 工具，一次是 `mod.rs` 里单测专用的 `test_ui` 字段
+  // （它出现在 `serve()` 之前，于是"停机标志只有一处复位"这类断言看到的是一片空白，直接误报失败）。
   const mcpProd = mcpFiles
     .map((f) => {
       const s = fs.readFileSync(path.join(mcpDir, f), 'utf8');
-      const i = s.indexOf('#[cfg(test)]');
-      return i > 0 ? s.slice(0, i) : s;
+      const m = /#\[cfg\(test\)\]\s*\nmod tests\b/.exec(s);
+      return m ? s.slice(0, m.index) : s;
     })
     .join('\n');
 
@@ -2668,6 +2673,29 @@ console.log('preview ->', out);
       '文档里的工具小节数 == 工具数（没有多余/重复）');
     check(/只有 SSE/.test(toolsDoc) && /-32602/.test(toolsDoc),
       '文档写清了传输（只有 SSE）与错误码语义');
+
+    // ---- 跨边界：**后端会发的每个 op/action，前端都必须有分支** ----
+    // 这类不一致最阴：后端发出去了、前端回一句"未知的 serial 操作"，工具就静默失败，
+    // 而两边各自的单测都是绿的（各自测自己那一半）。
+    const uiOps = [...new Set([...mcpProd.matchAll(/core\.ui_call\("([a-zA-Z]+)"/g)].map((m) => m[1]))];
+    check(uiOps.length >= 5, '扫到了后端的 ui 操作（不是空扫）', uiOps.join(','));
+    uiOps.forEach((op) => {
+      check(html.includes("op === '" + op + "'"), '前端实现了后端会发的 ui 操作「' + op + '」');
+    });
+    const serialActions = [...new Set([
+      ...[...mcpProd.matchAll(/\{ "action": "([a-zA-Z]+)"/g)].map((m) => m[1]),
+      ...[...mcpProd.matchAll(/serial_call\(core, "([a-zA-Z]+)"/g)].map((m) => m[1]),
+    ])];
+    check(serialActions.length >= 6, '扫到了后端的 serial 动作（不是空扫）', serialActions.join(','));
+    serialActions.forEach((a) => {
+      check(html.includes("action === '" + a + "'"), '前端实现了后端会发的 serial 动作「' + a + '」');
+    });
+
+    // ---- 文本摘要不能把数据藏起来（用户就是被这个误导的）----
+    check(/fn summarize_for_text/.test(mcpProd) && /fn render_brief/.test(mcpProd)
+      && !/Value::Array\(a\) => format!\("\{\} 项", a\.len\(\)\)/.test(mcpProd),
+      '文本摘要会真的展开数组内容（曾经只写「N 项」，`serial_list_ports` 的端口名就此消失）');
+    check(/TEXT_SUMMARY_MAX_CHARS/.test(mcpProd), '文本摘要仍有长度上限（它是重复信息，不能撑爆上下文）');
   }
 
   // 每个运行期错误点都要真的调用上报（漏一个就是一个盲区）

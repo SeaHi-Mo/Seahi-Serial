@@ -56,7 +56,7 @@ for (;;) {
 // 逐个工具的「读/写」+「返回结构」+ 备注（返回结构取自对真实服务实调抓的 structuredContent）
 const META = {
   // ===== 串口语义工具（S12）=====
-  serial_get_state: ['读', '{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, advOpen, outputLines, outputBytes, historyCount, panes}', '**操作串口前先调它**；省略 pane 默认 main'],
+  serial_get_state: ['读', '{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, advOpen, outputLines, outputBytes, historyCount, panes, logChannels:{rx,tx}}', '**操作串口前先调它**；省略 pane 默认 main；`logChannels` 是"收发内容去哪读"的通道名'],
   serial_select_port: ['写', '{pane, applied:[{name,ok,from,to}]}', '值必须是 serial_list_ports 里的端口名；给错 → 协议级 `-32602` 并**回列真实可选值**（来自界面下拉的选项），照着改就行'],
   serial_set_baud: ['写', '同上', '110..4000000；越界报 -32602'],
   serial_set_frame: ['写', '同上', 'dataBits/stopBits/parity 至少给一个；**连接中改帧格式无效**，先 serial_close'],
@@ -72,7 +72,7 @@ const META = {
   app_info: ['读', '`{name, version, profile, os, arch, pid, uptimeSecs}`', ''],
   mcp_status: ['读', '打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`', '**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）'],
   mcp_limits: ['读', '`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels}`', '用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**'],
-  serial_list_ports: ['读', '`{count, ports:[{port_name, friendly_name, product_name}]}`', '不会打开端口'],
+  serial_list_ports: ['读', '`{count, ports:[{portName, friendlyName, productName}]}`', '不会打开端口；**端口名在 `portName`**（字段一律驼峰，别去猜 `port_name`）'],
   ui_list: ['读', '`{total, controls:[{path, kind, panel, group, label, enabled, disabledReason, value?, options?}], nextCursor?}`', '`enabled=false` 时 `disabledReason` 会说明原因（如"串口未连接"）；建议先枚举再操作'],
   ui_describe: ['读', '`{…控件公开字段…, description, inputSchema}`', '等于"这个控件怎么用"的说明书'],
   ui_get: ['读', '`{path, value, enabled, disabledReason}`', ''],
@@ -80,7 +80,7 @@ const META = {
   ui_get_state: ['读', '当前会话配置快照（与界面「保存配置」同一份真源）', ''],
   ui_click: ['写', '`{results:[{path, ok, notFound?, error?}], effects:[…]}`（**单目标失败时不会有这个结构**：整个调用直接失败）', '**会真的点下去**（例如"开始监控"）；用于 setter 够不到的动作；点击不存在/不可用的控件 → `-32602` / `isError`+`-32006`，**不会**假装成功'],
   log_channels: ['读', '`{enabled, channelCount, channels:[{channel, lines, bytes, capBytes, seqFrom, seqTo, dropped, lastTs}], totalBytes, totalCapBytes, maxChannels, lockSkips, channelSkips, reclaims, reclaimedBytes}`', '不确定去哪找日志时先调它'],
-  log_tail: ['读', '`{channel, lines:[{seq, ts, level, dir, text, rawBytes}], returned, dropped, seqTo, mayBeIncomplete, truncated}`', '给了 `since_seq` 就是增量拉取；`mayBeIncomplete=true` 表示该通道丢过最旧的行'],
+  log_tail: ['读', '`{channel, lines:[{seq, ts, level, dir, text, rawBytes}], returned, dropped, seqTo, mayBeIncomplete, truncated}`', '给了 `sinceSeq` 就是增量拉取（旧拼写 `since_seq` 也认）；`mayBeIncomplete=true` 表示该通道丢过最旧的行'],
   log_search: ['读', '`{pattern, regex, scanned, hits:[{channel, seq, ts, level, text}], truncated}`', '不给 `channel` 就搜所有通道'],
   log_stats: ['读', '`{enabled, channels:[{channel, lines, bytes, dropped, warnOrError, spanSecs, linesPerSec}], totalBytes, totalCapBytes, maxChannels, lockSkips, channelSkips, reclaims, reclaimedBytes}`', '用来判断"是不是在刷屏"'],
   log_clear: ['写', '`{clearedChannels, channel}`', '省略 `channel` 清全部；**通道名不存在会报 -32602**（不静默成功）；清空后通道仍在，`log_tail` 返回 0 行而不是报错'],
@@ -124,7 +124,11 @@ md += '# MCP 工具参考\n\n';
 md += '> 本页的工具名 / 描述 / 入参**逐字取自** `src-tauri/src/mcp/protocol.rs` 的 `tool_defs()`；\n';
 md += '> 「返回」列是对着**真实运行的服务**实调一遍抓下来的 `structuredContent` 结构，不是照记忆写的。\n';
 md += '> 上手步骤见 [MCP.md](./MCP.md)，设计与取舍见 [MCP_DESIGN.md](./MCP_DESIGN.md)。\n\n';
-md += '⚠️ 返回结构里**没有**的字段就是真的没有（例如串口项只有 `port_name / friendly_name / product_name`，没有 VID/PID）。\n\n';
+md += '> **字段命名**：参数与返回**一律 camelCase**（`portName` / `sinceSeq` / `maxLinesPerChannel`）。\n';
+md += '> 有四个参数历史上写成了蛇形，**旧拼写仍然认**（`since_seq` / `case_sensitive` / `max_lines_per_channel` / `ok_only`）——\n';
+md += '> 直接改名会让按旧写法调用的人**静默失效**，那比报错更危险。\n\n';
+md += '⚠️ 返回结构里**没有**的字段就是真的没有（例如串口项只有 `portName / friendlyName / productName`，没有 VID/PID）。\n';
+md += '⚠️ 很多客户端只把 `content[].text` 给模型看，所以**摘要必须把数据说出来**（`serial_list_ports` 的文本里就带着端口名）。\n\n';
 
 md += '## 1. 怎么连\n\n';
 md += '| | |\n|---|---|\n';

@@ -69,6 +69,18 @@ pub struct McpCore {
     pub calllog: calllog::CallLog,
     /// 前端上报的控件注册表（S6）：据此生成 `ctl_*` 工具
     pub registry: registry::RegistryCache,
+    /// **单测专用**：假的"前端"。
+    ///
+    /// 装进去之后 `ui_call` 就不再要求 `AppHandle`，而是直接把 `(op, payload)` 交给它、
+    /// 拿回一个"前端回执"。这样每个界面工具都能被**真的调用一遍**：参数怎么构造、
+    /// 回执怎么解析、最终返回什么 —— 而不是只调到"没有界面上下文"就结束
+    /// （那等于这 19 个工具一次都没被测过，用户就是这么指出的）。
+    ///
+    /// ⚠️ 它只覆盖 **Rust 这一半**。前端那一半（真实 handler 的行为）由
+    /// `.walkthrough/gen_ble_preview.js` 把 `mcpHandleUiCmd` / `mcpSerialOp` 丢进假 DOM 里跑。
+    /// **两边必须成对**：只测一边就是假的安心。
+    #[cfg(test)]
+    pub test_ui: Mutex<Option<Box<dyn Fn(&str, &Value) -> Value + Send + Sync>>>,
 }
 
 impl McpCore {
@@ -90,6 +102,8 @@ impl McpCore {
             last_change: Mutex::new(None),
             calllog: calllog::CallLog::default(),
             registry: registry::RegistryCache::default(),
+            #[cfg(test)]
+            test_ui: Mutex::new(None),
         }
     }
 
@@ -119,6 +133,16 @@ impl McpCore {
         op: &str,
         payload: Value,
     ) -> Result<Value, protocol::RpcError> {
+        // 单测：装了假前端就直接问它（否则"每个界面工具的调用"根本到不了）
+        #[cfg(test)]
+        {
+            let g = self.test_ui.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(fake) = g.as_ref() {
+                let reply = fake(op, &payload);
+                drop(g);
+                return bridge::unwrap_ui_result(reply);
+            }
+        }
         let app = self.app_handle().ok_or_else(|| {
             protocol::RpcError::new(
                 protocol::E_DEVICE_NOT_READY,

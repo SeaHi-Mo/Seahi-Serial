@@ -344,13 +344,13 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "log_tail",
-            "description": "取某个通道的尾部若干行。给了 since_seq 就只取它之后的（增量拉取：不重复也不丢）。返回里 mayBeIncomplete=true 表示这个通道曾丢掉过最旧的行。",
+            "description": "取某个通道的尾部若干行。给了 sinceSeq 就只取它之后的（增量拉取：不重复也不丢）。返回里 mayBeIncomplete=true 表示这个通道曾丢掉过最旧的行。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "channel": { "type": "string", "description": "通道名，如 app / error / mcp / serial:main:rx / ble:rx / ui:sys" },
                     "lines": { "type": "number", "description": "最多返回多少行，默认 100，上限 2000" },
-                    "since_seq": { "type": "number", "description": "只取 seq 大于它的行（用于增量跟进）" }
+                    "sinceSeq": { "type": "number", "description": "只取 seq 大于它的行（用于增量跟进）；也接受旧拼写 since_seq" }
                 },
                 "required": ["channel"],
                 "additionalProperties": false
@@ -365,7 +365,7 @@ pub fn tool_defs() -> Vec<Value> {
                     "pattern": { "type": "string" },
                     "channel": { "type": "string", "description": "限定通道；省略=全部" },
                     "regex": { "type": "boolean", "description": "true 时 pattern 按正则解释，默认 false" },
-                    "case_sensitive": { "type": "boolean", "default": false },
+                    "caseSensitive": { "type": "boolean", "default": false, "description": "区分大小写；也接受旧拼写 case_sensitive" },
                     "limit": { "type": "number", "description": "最多命中数，默认 100，上限 500" }
                 },
                 "required": ["pattern"],
@@ -393,7 +393,7 @@ pub fn tool_defs() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "channels": { "type": "array", "items": { "type": "string" }, "description": "要导出的通道名；省略=全部通道" },
-                    "max_lines_per_channel": { "type": "number", "description": "每个通道最多取多少行，默认 2000，上限 20000" }
+                    "maxLinesPerChannel": { "type": "number", "description": "每个通道最多取多少行，默认 2000，上限 20000；也接受旧拼写 max_lines_per_channel" }
                 },
                 "additionalProperties": false
             }
@@ -407,7 +407,7 @@ pub fn tool_defs() -> Vec<Value> {
                 "properties": {
                     "limit": { "type": "number", "description": "最多返回多少条，默认 50，上限 2000" },
                     "tool": { "type": "string", "description": "只看某个工具" },
-                    "ok_only": { "type": "boolean", "description": "true 只看成功，false 只看失败" },
+                    "okOnly": { "type": "boolean", "description": "true 只看成功，false 只看失败；也接受旧拼写 ok_only" },
                     "format": { "type": "string", "description": "jsonl（默认）或 md 表格", "enum": ["jsonl", "md"] }
                 },
                 "additionalProperties": false
@@ -498,6 +498,27 @@ fn opt_bool(args: &Value, key: &str, default: bool) -> bool {
     args.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
 }
 
+/// 取一个参数，**同时接受驼峰与蛇形两种拼写**（驼峰优先）。
+///
+/// 为什么需要：MCP 对外一律 camelCase（与其余工具一致），但有四个参数历史上写成了蛇形
+/// （`since_seq` / `case_sensitive` / `max_lines_per_channel` / `ok_only`）。
+/// **直接改名比不改名更危险**：多传/错拼的键会被静默忽略，AI 会拿到一个"看起来正常、
+/// 语义却不对"的结果（比如以为做了增量拉取，其实拉的是尾部 N 行）。所以新名字为准，
+/// 旧拼写继续认 —— 两边都不会静默失效。
+fn opt_alias<'a>(args: &'a Value, camel: &str, snake: &str) -> Option<&'a Value> {
+    args.get(camel).or_else(|| args.get(snake))
+}
+
+fn opt_u64_alias(args: &Value, camel: &str, snake: &str) -> Option<u64> {
+    opt_alias(args, camel, snake).and_then(|v| v.as_u64())
+}
+
+fn opt_bool_alias(args: &Value, camel: &str, snake: &str, default: bool) -> bool {
+    opt_alias(args, camel, snake)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(default)
+}
+
 /// 执行一个工具。参数是 MCP 传来的 `arguments` 对象。
 ///
 /// 注意：这里的工具都必须是**非阻塞**或自身已 `spawn_blocking` 的；
@@ -534,15 +555,27 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         "mcp_limits" => Ok(limits_json()),
         "serial_list_ports" => {
             let ports = crate::list_ports().await;
-            let arr = serde_json::to_value(ports)
-                .map_err(|e| RpcError::new(E_INTERNAL, format!("序列化串口列表失败: {}", e)))?;
+            // ⚠️ 字段名在**这里**转成 camelCase，而不是去改 `PortInfo`：
+            // 那个结构同时被前端用（`index.html` 里 6 处 `p.port_name` / `friendly_name` /
+            // `product_name`），给它加 `rename_all` 会把界面弄坏。
+            // 工具的对外契约由工具自己负责 —— 而 MCP 的对外字段一律 camelCase。
+            let items: Vec<Value> = ports
+                .iter()
+                .map(|p| {
+                    json!({
+                        "portName": p.port_name,
+                        "friendlyName": p.friendly_name,
+                        "productName": p.product_name,
+                    })
+                })
+                .collect();
             // **必须是对象**：MCP 规范要求 `structuredContent` 是 object，给数组会被
             // 严格客户端整条拒收 —— 官方 Python SDK 就是 pydantic 校验直接报
             // `Input should be a valid dictionary`，`serial_list_ports` 这个工具
             // 在标准客户端里等于废的（2026-09 由独立一致性检查发现，148 条单测没抓到）。
             Ok(json!({
-                "count": arr.as_array().map(|a| a.len()).unwrap_or(0),
-                "ports": arr,
+                "count": items.len(),
+                "ports": items,
             }))
         }
         // ===== 串口语义工具（S12）=====
@@ -756,7 +789,7 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
             let channel = require_str(args, "channel")?;
             let lines = opt_u64(args, "lines").unwrap_or(100) as usize;
             super::loghub::hub()
-                .tail(&channel, opt_u64(args, "since_seq"), lines)
+                .tail(&channel, opt_u64_alias(args, "sinceSeq", "since_seq"), lines)
                 .map_err(|e| RpcError::new(E_INVALID_PARAMS, e))
         }
         "log_search" => {
@@ -767,7 +800,7 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
                     ch.as_deref(),
                     &pattern,
                     opt_bool(args, "regex", false),
-                    opt_bool(args, "case_sensitive", false),
+                    opt_bool_alias(args, "caseSensitive", "case_sensitive", false),
                     opt_u64(args, "limit").unwrap_or(100) as usize,
                 )
                 .map_err(|e| RpcError::new(E_INVALID_PARAMS, e))
@@ -813,14 +846,14 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
                         .unwrap_or_default()
                 }
             };
-            let max = opt_u64(args, "max_lines_per_channel").unwrap_or(2000) as usize;
+            let max = opt_u64_alias(args, "maxLinesPerChannel", "max_lines_per_channel").unwrap_or(2000) as usize;
             Ok(super::loghub::hub().export(&channels, max))
         }
         // ===== AI 调用记录与配置（S8）=====
         "mcp_calls" => {
             let limit = opt_u64(args, "limit").unwrap_or(50) as usize;
             let tool = opt_str(args, "tool");
-            let ok_only = args.get("ok_only").and_then(|v| v.as_bool());
+            let ok_only = opt_alias(args, "okOnly", "ok_only").and_then(|v| v.as_bool());
             let format = opt_str(args, "format").unwrap_or_else(|| "jsonl".to_string());
             if format == "md" {
                 Ok(core.calllog.export(&format, limit))
@@ -1114,20 +1147,54 @@ fn tool_result_err(err: &RpcError) -> Value {
     })
 }
 
-/// 给只会读文本的客户端准备一句人话摘要
+/// 给只会读文本的客户端（以及直接看输出的用户）准备一句人话摘要。
+///
+/// **这不是"可有可无的美化"**：很多客户端只把 `content[].text` 给模型看，人也是先看这行。
+/// 原实现遇到数组只写 "N 项"，于是 `serial_list_ports` 的文本成了 `count=1, ports=1 项`
+/// —— **端口名一个字都没有**，看起来就像"这个工具不返回端口名"（用户就是这么报的）。
+/// 现在数组会真的展开内容（有界：最多 3 个元素 × 每个最多 4 个字段，整体限长），
+/// 让"摘要"真能替代结构化数据被读懂。
 fn summarize_for_text(v: &Value) -> String {
+    let s = render_brief(v, 0);
+    if s.chars().count() > TEXT_SUMMARY_MAX_CHARS {
+        let cut: String = s.chars().take(TEXT_SUMMARY_MAX_CHARS).collect();
+        format!("{}…（完整内容在 structuredContent）", cut)
+    } else {
+        s
+    }
+}
+
+/// 文本摘要的总长上限：它是**重复**信息（structuredContent 里都有），
+/// 太长会白占模型上下文，所以宁可截断并指路。
+const TEXT_SUMMARY_MAX_CHARS: usize = 600;
+
+fn render_brief(v: &Value, depth: usize) -> String {
     match v {
+        Value::String(s) => s.clone(),
         Value::Object(m) => {
-            let mut parts: Vec<String> = Vec::new();
-            for (k, val) in m.iter().take(8) {
-                let s = match val {
-                    Value::String(s) => s.clone(),
-                    Value::Array(a) => format!("{} 项", a.len()),
-                    other => other.to_string(),
-                };
-                parts.push(format!("{}={}", k, s));
+            let parts: Vec<String> = m
+                .iter()
+                .take(8)
+                .map(|(k, val)| format!("{}={}", k, render_brief(val, depth + 1)))
+                .collect();
+            if depth == 0 {
+                parts.join(", ")
+            } else {
+                format!("{{{}}}", parts.join(","))
             }
-            parts.join(", ")
+        }
+        Value::Array(a) => {
+            if a.is_empty() {
+                return "[]".to_string();
+            }
+            let shown: Vec<String> = a.iter().take(3).map(|x| render_brief(x, depth + 1)).collect();
+            let tail = if a.len() > shown.len() {
+                format!(" …共 {} 项", a.len())
+            } else {
+                String::new()
+            };
+            let body = shown.join(" | ");
+            format!("[{}]{}", body, tail)
         }
         other => other.to_string(),
     }
@@ -1764,6 +1831,520 @@ mod tests {
         });
     }
 
+    /// 组装一条 `tools/call` 报文
+    fn raw_call(name: &str, args: &Value) -> String {
+        json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": name, "arguments": args }
+        })
+        .to_string()
+    }
+
+    /// 递归找出返回里"像字段名却是蛇形"的键。
+    ///
+    /// 两类豁免（都不是我们的字段）：① 键正好是个工具名（`toolCalls.serial_send` 这类
+    /// map 键）；② `args` 子树（那是**回显调用方原样传的参数**，不是我们定义的字段，
+    /// 调用方用旧拼写也不该让契约测试红）。
+    fn snake_keys_in(v: &Value, tool_names: &[String], in_args: bool) -> Vec<String> {
+        let mut out = Vec::new();
+        match v {
+            Value::Object(m) => {
+                for (k, val) in m {
+                    let is_tool_name = tool_names.iter().any(|t| t == k);
+                    if !in_args && !is_tool_name && k.contains('_') {
+                        out.push(k.clone());
+                    }
+                    out.extend(snake_keys_in(val, tool_names, in_args || k == "args"));
+                }
+            }
+            Value::Array(a) => {
+                for x in a {
+                    out.extend(snake_keys_in(x, tool_names, in_args));
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+
+    /// 文本摘要**必须把数据说出来**，不能只有 "N 项"。
+    ///
+    /// 这条就是为了钉住用户报的那个现象：`serial_list_ports` 的文本曾经是
+    /// `count=1, ports=1 项` —— 端口名一个字都没有，只读文本的客户端等于没拿到数据。
+    /// 做法：找第一个非空数组，取第一个元素的叶子值，要求它出现在文本里。
+    fn assert_text_surfaces_data(tool: &str, sc: &Value, text: &str) {
+        let Some(arr) = sc
+            .as_object()
+            .and_then(|m| m.values().find(|v| v.as_array().map(|a| !a.is_empty()).unwrap_or(false)))
+            .and_then(|v| v.as_array())
+        else {
+            return; // 没有数组数据 → 这条不适用
+        };
+        let mut leaves: Vec<String> = Vec::new();
+        let mut walk = |v: &Value| match v {
+            Value::String(s) if s.chars().count() >= 2 => leaves.push(s.clone()),
+            Value::Number(n) => leaves.push(n.to_string()),
+            _ => {}
+        };
+        match &arr[0] {
+            Value::Object(m) => m.values().for_each(&mut walk),
+            other => walk(other),
+        }
+        assert!(
+            leaves.iter().any(|l| text.contains(l.as_str())),
+            "{} 的文本摘要没把数据说出来（数据里是 {:?}，文本却是 {:?}）—— \
+             只读文本的客户端会以为这个工具不返回内容",
+            tool,
+            leaves,
+            text
+        );
+    }
+
+    /// 每个工具的**返回值契约**（表驱动，覆盖全部内置工具）。
+    ///
+    /// 起因是用户的一句话："每一个工具的返回值都应该需要测试啊，不然预期的结果怎么确定
+    /// 是否已经完成？" —— 在这之前"返回结构"只写在文档里（手抄的），没有任何测试钉住。
+    /// 代价是两个问题一直活到真机、靠人眼看输出才发现：
+    ///   · `serial_list_ports` 的字段是 `port_name`（蛇形），而其余工具全是驼峰；
+    ///   · 它的文本摘要把数组写成 `ports=1 项`，**端口名一个字都没有**。
+    ///
+    /// 三条**全局不变量**（对所有工具生效，不靠人记）：
+    /// ① `structuredContent` 存在时**必须是对象**（规范要求；数组会被严格客户端整条拒收）；
+    /// ② 返回的键必须是 **camelCase**；
+    /// ③ 文本摘要必须真的把数据说出来（见 `assert_text_surfaces_data`）。
+    #[test]
+    fn every_tool_has_a_tested_return_contract() {
+        let _g = hub_lock();
+        block_on(async {
+            let c = core();
+            enum Expect {
+                /// 纯后端工具：实调成功。第一个是**必需**字段，第二个是**可能缺席**的
+                /// （例如 `urlMasked` 只在服务器跑起来、拿到端口与 token 后才出现）。
+                /// 两个列表之外的字段一律算违约 —— 改了返回值就要来改这里。
+                Backend(&'static [&'static str], &'static [&'static str]),
+                /// 依赖界面：没有 GUI 时必须 result + `isError:true` + `-32006`
+                NoGui,
+                /// 不实调（有副作用），只走"缺必填 → -32602"；注明谁在管它
+                NoCall(&'static str),
+            }
+            use Expect::*;
+            let table: Vec<(&str, Value, Expect)> = vec![
+                // ===== 纯后端（没有界面也该成功）=====
+                ("app_info", json!({}), Backend(&["arch", "name", "os", "pid", "profile", "uptimeSecs", "version"], &[])),
+                ("mcp_limits", json!({}), Backend(&[
+                    "heartbeatSecs", "idleTimeoutSecs", "logMaxChannels", "logMaxLineBytes",
+                    "logTotalCapBytes", "maxBodyBytes", "maxSendChars", "maxSessions",
+                    "maxUiSetItems", "protocolFallback", "protocolVersion", "rateLimitPerMin",
+                    "sessionQueue", "toolsPage",
+                ], &[])),
+                ("mcp_status", json!({}), Backend(&[
+                    "builtinToolCount", "callLog", "configFile", "dropped", "enabled", "endpointFile",
+                    "errorReports", "hasUi", "host", "lastError", "limits", "logHub", "maxSessions",
+                    "port", "registry", "requests", "running", "sessions", "stateChanges",
+                    "tokenMasked", "toolCalls", "toolCount", "uiInFlight", "uptimeSecs", "version",
+                ], &["urlMasked"])),
+                ("serial_list_ports", json!({}), Backend(&["count", "ports"], &[])),
+                ("log_channels", json!({}), Backend(&[
+                    "channelCount", "channelSkips", "channels", "enabled", "lockSkips",
+                    "maxChannels", "reclaimedBytes", "reclaims", "totalBytes", "totalCapBytes",
+                ], &[])),
+                ("log_stats", json!({}), Backend(&[
+                    "channelSkips", "channels", "enabled", "lockSkips", "maxChannels",
+                    "reclaimedBytes", "reclaims", "totalBytes", "totalCapBytes",
+                ], &[])),
+                ("log_tail", json!({ "channel": "app", "lines": 3 }), Backend(&[
+                    "channel", "dropped", "lines", "mayBeIncomplete", "returned", "seqTo", "truncated",
+                ], &[])),
+                ("log_search", json!({ "pattern": "mcp" }), Backend(&[
+                    "hits", "pattern", "regex", "scanned", "truncated",
+                ], &[])),
+                ("log_export", json!({ "maxLinesPerChannel": 3 }), Backend(&[
+                    "channels", "lines", "text", "truncated",
+                ], &[])),
+                ("mcp_calls", json!({ "limit": 2 }), Backend(&["calls", "enabled", "file", "note", "returned"], &[])),
+                ("mcp_stats", json!({}), Backend(&["callLog", "sessionToolCalls"], &[])),
+                ("mcp_config_get", json!({}), Backend(&["callLog", "expose", "server", "version"], &[])),
+                // ===== 依赖界面（单测里没有 AppHandle）=====
+                ("serial_get_state", json!({}), NoGui),
+                ("serial_select_port", json!({ "port": "COM1" }), NoGui),
+                ("serial_set_baud", json!({ "baud": 115200 }), NoGui),
+                ("serial_set_frame", json!({ "dataBits": 8 }), NoGui),
+                ("serial_set_lines", json!({ "dtr": true }), NoGui),
+                ("serial_set_display", json!({ "echo": true }), NoGui),
+                ("serial_open", json!({}), NoGui),
+                ("serial_close", json!({}), NoGui),
+                ("serial_send", json!({ "data": "AT" }), NoGui),
+                ("serial_clear", json!({}), NoGui),
+                ("serial_get_history", json!({}), NoGui),
+                ("serial_get_output", json!({}), NoGui),
+                ("serial_quick_cmd", json!({}), NoGui),
+                ("ui_list", json!({}), NoGui),
+                ("ui_describe", json!({ "path": "serial.conn.portSelect" }), NoGui),
+                ("ui_get", json!({ "path": "serial.conn.portSelect" }), NoGui),
+                ("ui_set", json!({ "path": "serial.conn.portSelect", "value": "COM1" }), NoGui),
+                ("ui_get_state", json!({}), NoGui),
+                ("ui_click", json!({ "path": "serial.toolbar.btnStart" }), NoGui),
+                // ===== 有副作用，故意不实调 =====
+                ("log_clear", json!({}), NoCall("会清空全局日志中心；由 clearing_an_unknown_channel_is_an_error_like_tailing_one 覆盖")),
+                ("mcp_config_set", json!({}), NoCall("会写用户的 ai-config.json；由缺 patch / patch 非对象的用例覆盖")),
+            ];
+
+            // ① 表必须覆盖**全部**内置工具（新增工具时必须一起想清契约）
+            let tool_names: Vec<String> = tool_defs()
+                .iter()
+                .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
+                .collect();
+            let listed: Vec<String> = table.iter().map(|(n, _, _)| n.to_string()).collect();
+            for n in &tool_names {
+                assert!(listed.contains(n), "工具 {} 没有返回值契约，请补进这张表", n);
+            }
+            for n in &listed {
+                assert!(tool_names.contains(n), "契约表里的 {} 已经不是内置工具了", n);
+            }
+
+            // ② 声明了 required 的工具，缺参必须是协议级 -32602（顺带验证"每个 required 真的被校验"）
+            for t in tool_defs() {
+                let name = t["name"].as_str().unwrap_or("");
+                let req = t["inputSchema"]["required"].as_array().cloned().unwrap_or_default();
+                if req.is_empty() {
+                    continue;
+                }
+                let r = call(&c, &raw_call(name, &json!({}))).await;
+                assert_eq!(
+                    r["error"]["code"], E_INVALID_PARAMS,
+                    "{} 声明了 required{:?}，缺参却没报 -32602: {}",
+                    name,
+                    req.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>(),
+                    r
+                );
+            }
+
+            // ③ 逐个工具核对契约 + 三条全局不变量
+            for (name, args, expect) in &table {
+                match expect {
+                    Backend(required_keys, optional_keys) => {
+                        let r = call(&c, &raw_call(name, args)).await;
+                        assert!(r.get("error").is_none(), "{} 不该是协议错误: {}", name, r);
+                        assert_eq!(r["result"]["isError"], false, "{} 不该失败: {}", name, r);
+                        let sc = &r["result"]["structuredContent"];
+                        assert!(sc.is_object(), "{} 的 structuredContent 必须是对象: {}", name, sc);
+                        let got: Vec<String> =
+                            sc.as_object().unwrap().keys().cloned().collect();
+                        for k in *required_keys {
+                            assert!(got.iter().any(|g| g == k), "{} 少了字段 {}（实际: {:?}）", name, k, got);
+                        }
+                        for g in &got {
+                            assert!(
+                                required_keys.contains(&g.as_str())
+                                    || optional_keys.contains(&g.as_str()),
+                                "{} 多出未登记的字段 {}：改了返回值就更新契约表（实际: {:?}）",
+                                name,
+                                g,
+                                got
+                            );
+                        }
+                        let bad = snake_keys_in(sc, &tool_names, false);
+                        assert!(bad.is_empty(), "{} 返回里混进了蛇形字段名 {:?}", name, bad);
+                        let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+                        assert_text_surfaces_data(name, sc, text);
+                    }
+                    NoGui => {
+                        let r = call(&c, &raw_call(name, args)).await;
+                        assert!(r.get("error").is_none(), "{} 无界面时不该是协议错误: {}", name, r);
+                        assert_eq!(r["result"]["isError"], true, "{} 无界面时应 isError:true: {}", name, r);
+                        let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+                        assert!(
+                            text.contains("-32006"),
+                            "{} 要说清是「没有界面上下文」(-32006)，而不是含糊失败: {}",
+                            name,
+                            text
+                        );
+                    }
+                    NoCall(_why) => {}
+                }
+            }
+        });
+    }
+
+    /// `want` 是否是 `got` 的子集（对象按键递归、数组按位置递归）——
+    /// 用来只断言"关心的那部分参数"，不必把整条 payload 抄一遍。
+    fn json_subset(got: &Value, want: &Value) -> bool {
+        match (got, want) {
+            (Value::Object(g), Value::Object(w)) => w
+                .iter()
+                .all(|(k, wv)| g.get(k).map(|gv| json_subset(gv, wv)).unwrap_or(false)),
+            (Value::Array(g), Value::Array(w)) => w
+                .iter()
+                .enumerate()
+                .all(|(i, wv)| g.get(i).map(|gv| json_subset(gv, wv)).unwrap_or(false)),
+            _ => got == want,
+        }
+    }
+
+    /// **每个界面工具的调用情况**（表驱动）：不只是"能调通"，而是钉住
+    /// **发给前端的 op / 参数** 与 **拿到回执后的最终返回**。
+    ///
+    /// 起因（用户两次追问）：在那之前这 19 个界面工具只被调到"没有界面上下文"（-32006）就结束，
+    /// 等于**一次调用路径都没跑过** —— 参数拼错了、回执解析错了，测试全绿。
+    /// 现在 `McpCore` 有单测专用的假前端（`test_ui`），这里把每个工具真的调一遍。
+    ///
+    /// ⚠️ 假前端只证明 **Rust 这一半**（参数构造 + 回执解析 + 返回值形状）。
+    /// 前端那一半由 `.walkthrough/gen_ble_preview.js` 用**真实 handler**跑（同一个 op 名）——
+    /// 只测一边就是假的安心。
+    #[test]
+    fn every_ui_tool_sends_the_expected_op_and_returns_expected_shape() {
+        let _g = hub_lock(); // serial_get_output 会读全局日志中心，跟着其他用例串行
+        block_on(async {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            let c = core();
+            let calls: std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let connected = std::sync::Arc::new(AtomicBool::new(false));
+            {
+                let calls = calls.clone();
+                let connected = connected.clone();
+                let mut slot = c.test_ui.lock().unwrap_or_else(|e| e.into_inner());
+                *slot = Some(Box::new(move |op: &str, payload: &Value| {
+                    calls
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push((op.to_string(), payload.clone()));
+                    // 假前端只做"够驱动各工具解析路径"的最小仿真
+                    match op {
+                        "serial" => {
+                            let action = payload["action"].as_str().unwrap_or("");
+                            match action {
+                                "state" => json!({ "ok": true, "value": {
+                                    "pane": payload["pane"].as_str().unwrap_or("main"),
+                                    "isConnected": connected.load(Ordering::Relaxed),
+                                    // 通道名由前端给出（serial_get_output 靠它去读日志中心）
+                                    "logChannels": { "rx": "serial:main:rx", "tx": "serial:main:tx" },
+                                }}),
+                                "apply" => {
+                                    let items = payload["items"].as_array().cloned().unwrap_or_default();
+                                    let applied: Vec<Value> = items
+                                        .iter()
+                                        .map(|it| json!({ "name": it["name"], "ok": true, "to": it["value"] }))
+                                        .collect();
+                                    json!({ "ok": true, "value": { "pane": "main", "applied": applied } })
+                                }
+                                "click" => {
+                                    // 真界面上「开始/停止监控」是**同一个按钮**（点一次切换一次），
+                                    // 所以这里必须 toggle 而不是"设为 true"——否则 close 永远等不到断开
+                                    // （第一版就写错了，被这条用例抓出来）。
+                                    let was = connected.load(Ordering::Relaxed);
+                                    connected.store(!was, Ordering::Relaxed);
+                                    json!({ "ok": true, "value": { "pane": "main", "clicked": payload["name"] } })
+                                }
+                                "send" => json!({ "ok": true, "value": {
+                                    "pane": "main", "sent": true, "mode": "text", "bytes": 2, "data": "AT",
+                                }}),
+                                "clear" => json!({ "ok": true, "value": { "pane": "main", "cleared": true, "outputLines": 0 } }),
+                                "history" => json!({ "ok": true, "value": { "pane": "main", "total": 1, "items": [{ "data": "AT" }] } }),
+                                "quickList" => json!({ "ok": true, "value": {
+                                    "pane": "main", "items": [{ "index": 0, "label": "AT", "value": "AT" }], "usable": 1,
+                                }}),
+                                "quickRun" => json!({ "ok": true, "value": { "pane": "main", "ran": 0, "label": "AT", "value": "AT" } }),
+                                "setSendAs" => json!({ "ok": true, "value": { "pane": "main", "sendAs": "hex" } }),
+                                _ => json!({ "ok": false, "error": format!("假前端不认识 action: {}", action) }),
+                            }
+                        }
+                        "list" => json!({ "ok": true, "value": { "controls": [], "total": 0 } }),
+                        "describe" | "get" => json!({ "ok": true, "value": { "path": "serial.conn.portSelect", "value": "COM1" } }),
+                        "getState" => json!({ "ok": true, "value": { "theme": "dark" } }),
+                        "set" | "click" => json!({ "ok": true, "value": { "results": [], "effects": [] } }),
+                        other => json!({ "ok": false, "error": format!("假前端不认识 op: {}", other) }),
+                    }
+                }));
+            }
+
+            // (工具, 调用参数, 调用前的连接状态, 期望发给前端的 (op, 参数子集) 序列, 期望返回的顶层字段)
+            struct Case {
+                tool: &'static str,
+                args: Value,
+                /// 调这个工具之前，假前端"本来"是连着的吗（`serial_open/close` 有幂等分支，
+                /// 两条分支都要测到，所以必须显式给状态，不能靠上一条用例留下的残留）
+                pre_connected: Option<bool>,
+                calls: Vec<(&'static str, Value)>,
+                keys: &'static [&'static str],
+            }
+            let cases = vec![
+                Case { tool: "serial_get_state", args: json!({}),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "state" }))],
+                    keys: &["pane", "isConnected"] },
+                Case { tool: "serial_select_port", args: json!({ "port": "COM3" }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "apply", "items": [{ "name": "port", "value": "COM3" }] }))],
+                    keys: &["pane", "applied"] },
+                Case { tool: "serial_set_baud", args: json!({ "baud": 57600 }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "apply", "items": [{ "name": "baud", "value": 57600 }] }))],
+                    keys: &["pane", "applied"] },
+                Case { tool: "serial_set_frame", args: json!({ "dataBits": 7, "stopBits": 2, "parity": "even" }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "apply", "items": [
+                        { "name": "dataBits", "value": 7 }, { "name": "stopBits", "value": 2 }, { "name": "parity", "value": "even" },
+                    ] }))],
+                    keys: &["pane", "applied"] },
+                Case { tool: "serial_set_lines", args: json!({ "dtr": true, "rts": false }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "apply", "items": [
+                        { "name": "dtr", "value": true }, { "name": "rts", "value": false },
+                    ] }))],
+                    keys: &["pane", "applied"] },
+                Case { tool: "serial_set_display", args: json!({ "echo": false, "lineNum": true }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "apply", "items": [
+                        { "name": "echo", "value": false }, { "name": "lineNum", "value": true },
+                    ] }))],
+                    keys: &["pane", "applied"] },
+                // 开监控：先落 port/baud → 读状态 → 点「开始监控」→ 轮询确认真连上
+                Case { tool: "serial_open", args: json!({ "port": "COM3", "baud": 9600 }),
+                    pre_connected: Some(false),
+                    calls: vec![
+                        ("serial", json!({ "action": "apply", "items": [
+                            { "name": "port", "value": "COM3" }, { "name": "baud", "value": 9600 },
+                        ] })),
+                        ("serial", json!({ "action": "state" })),
+                        ("serial", json!({ "action": "click", "name": "start" })),
+                        ("serial", json!({ "action": "state" })),
+                    ],
+                    keys: &["pane", "connected", "state"] },
+                // 已经在监控中 → 幂等，不该再点一次（点两次会先断后连）
+                Case { tool: "serial_open", args: json!({}),
+                    pre_connected: Some(true),
+                    calls: vec![("serial", json!({ "action": "state" }))],
+                    keys: &["pane", "connected", "note"] },
+                // 停监控：读状态 → 点「停止监控」→ 轮询确认断开（点完不代表断开）
+                Case { tool: "serial_close", args: json!({}),
+                    pre_connected: Some(true),
+                    calls: vec![
+                        ("serial", json!({ "action": "state" })),
+                        ("serial", json!({ "action": "click", "name": "start" })),
+                        ("serial", json!({ "action": "state" })),
+                    ],
+                    keys: &["pane", "connected", "state"] },
+                // 本来就没在监控 → 幂等
+                Case { tool: "serial_close", args: json!({}),
+                    pre_connected: Some(false),
+                    calls: vec![("serial", json!({ "action": "state" }))],
+                    keys: &["pane", "connected", "note"] },
+                // 带 mode 发数据：先切成 HEX（走它自己的 onclick），再发
+                Case { tool: "serial_send", args: json!({ "data": "01 03", "mode": "hex" }),
+                    pre_connected: None,
+                    calls: vec![
+                        ("serial", json!({ "action": "setSendAs", "mode": "hex" })),
+                        ("serial", json!({ "action": "send", "data": "01 03" })),
+                    ],
+                    keys: &["pane", "sent", "mode", "bytes", "data"] },
+                Case { tool: "serial_clear", args: json!({}),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "clear" }))],
+                    keys: &["pane", "cleared", "outputLines"] },
+                Case { tool: "serial_get_history", args: json!({ "limit": 5 }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "history", "limit": 5 }))],
+                    keys: &["pane", "total", "items"] },
+                // 读收发内容：先问前端要"分栏名 + 通道名"，再去日志中心取
+                Case { tool: "serial_get_output", args: json!({ "direction": "rx" }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "state" }))],
+                    keys: &["pane", "direction", "isConnected", "channels", "count", "items", "truncated"] },
+                Case { tool: "serial_quick_cmd", args: json!({}),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "quickList" }))],
+                    keys: &["pane", "items", "usable"] },
+                Case { tool: "serial_quick_cmd", args: json!({ "index": 0 }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "quickRun", "index": 0 }))],
+                    keys: &["pane", "ran", "label", "value"] },
+                Case { tool: "ui_list", args: json!({ "limit": 3 }),
+                    pre_connected: None,
+                    calls: vec![("list", json!({ "limit": 3 }))],
+                    keys: &["controls", "total"] },
+                Case { tool: "ui_describe", args: json!({ "path": "serial.conn.portSelect" }),
+                    pre_connected: None,
+                    calls: vec![("describe", json!({ "path": "serial.conn.portSelect" }))],
+                    keys: &["path", "value"] },
+                Case { tool: "ui_get", args: json!({ "path": "serial.conn.portSelect" }),
+                    pre_connected: None,
+                    calls: vec![("get", json!({ "path": "serial.conn.portSelect" }))],
+                    keys: &["path", "value"] },
+                Case { tool: "ui_set", args: json!({ "path": "serial.conn.portSelect", "value": "COM3" }),
+                    pre_connected: None,
+                    calls: vec![("set", json!({ "path": "serial.conn.portSelect", "value": "COM3" }))],
+                    keys: &["results", "effects"] },
+                Case { tool: "ui_click", args: json!({ "path": "serial.toolbar.btnStart" }),
+                    pre_connected: None,
+                    calls: vec![("click", json!({ "path": "serial.toolbar.btnStart" }))],
+                    keys: &["results", "effects"] },
+                Case { tool: "ui_get_state", args: json!({ "section": "theme" }),
+                    pre_connected: None,
+                    calls: vec![("getState", json!({ "section": "theme" }))],
+                    keys: &["theme"] },
+            ];
+
+            let mut seen: Vec<&str> = Vec::new();
+            for case in &cases {
+                if let Some(pc) = case.pre_connected {
+                    connected.store(pc, Ordering::Relaxed);
+                }
+                calls.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                let r = call(&c, &raw_call(case.tool, &case.args)).await;
+                assert!(r.get("error").is_none(), "{} 不该是协议错误: {}", case.tool, r);
+                assert_eq!(r["result"]["isError"], false, "{} 调用失败: {}", case.tool, r);
+
+                // ① 发给前端的调用序列（op + 关键参数）
+                let got = calls.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let got_desc: Vec<String> = got
+                    .iter()
+                    .map(|(op, p)| format!("{}:{}", op, p["action"].as_str().unwrap_or("-")))
+                    .collect();
+                assert_eq!(
+                    got.len(),
+                    case.calls.len(),
+                    "{} 发给前端的调用次数不对，实际: {:?}",
+                    case.tool,
+                    got_desc
+                );
+                for (i, (want_op, want_payload)) in case.calls.iter().enumerate() {
+                    assert_eq!(&got[i].0, want_op, "{} 第 {} 次调用的 op 不对", case.tool, i + 1);
+                    assert!(
+                        json_subset(&got[i].1, want_payload),
+                        "{} 第 {} 次调用的参数不对\n  实际: {}\n  期望包含: {}",
+                        case.tool,
+                        i + 1,
+                        got[i].1,
+                        want_payload
+                    );
+                }
+
+                // ② 最终返回的形状
+                let sc = &r["result"]["structuredContent"];
+                assert!(sc.is_object(), "{} 的 structuredContent 必须是对象: {}", case.tool, sc);
+                for k in case.keys {
+                    assert!(sc.get(k).is_some(), "{} 返回里少了 {}（实际: {}）", case.tool, k, sc);
+                }
+                seen.push(case.tool);
+            }
+
+            // 这两张表必须覆盖同一批界面工具（漏一个就等于没测）
+            seen.sort_unstable();
+            seen.dedup();
+            let mut want = vec![
+                "serial_clear", "serial_close", "serial_get_history", "serial_get_state",
+                "serial_open", "serial_quick_cmd", "serial_select_port", "serial_send",
+                "serial_set_baud", "serial_set_display", "serial_set_frame", "serial_set_lines",
+                "ui_click", "ui_describe", "ui_get", "ui_get_state", "ui_list", "ui_set",
+            ];
+            // serial_get_output 只读日志中心，但**先要过前端拿分栏名与通道名**，所以也算界面工具
+            want.push("serial_get_output");
+            want.sort_unstable();
+            assert_eq!(seen, want, "界面工具的调用测试列表与契约表不一致");
+        });
+    }
+
     #[test]
     fn serial_list_ports_tool_runs_without_opening_a_port() {        block_on(async {
             let c = core();
@@ -1879,8 +2460,13 @@ mod tests {
             let c = core();
             let hub = crate::mcp::loghub::hub();
             hub.set_enabled(true);
+            // ⚠️ 夹具串必须是**全测试集唯一**的：搜索断言用的是"恰好命中 N 条"，
+            // 而 `report.rs` 的用例会拿 `panic!("boom …")` 造夹具并写进 error 通道
+            // （它持的是 TEST_LOCK，不是 hub_lock，所以两者会并行）—— 曾经这里用 "boom"，
+            // 于是 5 次里偶发 1 次搜到 3 条 → 偶发失败。别再用大众词当搜索夹具。
+            const MARK: &str = "boom-4f21-only-this-test";
             hub.push("app", crate::mcp::loghub::LEVEL_INFO, 0, "hello-log-tool", 0);
-            hub.push("ui:sys", crate::mcp::loghub::LEVEL_ERROR, 0, "boom", 0);
+            hub.push("ui:sys", crate::mcp::loghub::LEVEL_ERROR, 0, MARK, 0);
 
             // log_channels
             let ch = call(
@@ -1913,13 +2499,21 @@ mod tests {
                 t
             );
 
-            // log_search（跨通道 + 级别）
+            // log_search（跨通道 + 级别）：用唯一夹具串，命中数才是确定的
             let s = call(
                 &c,
-                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"log_search","arguments":{"pattern":"boom"}}}"#,
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"log_search","arguments":{{"pattern":"{}"}}}}}}"#,
+                    MARK
+                ),
             )
             .await;
-            assert_eq!(s["result"]["structuredContent"]["hits"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                s["result"]["structuredContent"]["hits"].as_array().unwrap().len(),
+                1,
+                "唯一夹具串只该命中 1 条: {}",
+                s
+            );
             assert_eq!(s["result"]["structuredContent"]["hits"][0]["level"], "error");
 
             // log_stats
@@ -1937,7 +2531,7 @@ mod tests {
             )
             .await;
             let text = ex["result"]["structuredContent"]["text"].as_str().unwrap();
-            assert!(text.contains("boom"), "导出应包含各通道内容: {}", text);
+            assert!(text.contains(MARK), "导出应包含各通道内容: {}", text);
             assert!(text.contains("[app]"), "要标出通道名: {}", text);
 
             // log_clear

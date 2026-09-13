@@ -13,7 +13,7 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/从机属性/busid 白名单/MCP 协议与日志中心）
 ```
 
-无 lint 与类型检查；后端有单测（`main.rs` 里的 `#[cfg(test)]` 模块，153 条 + 4 条 `#[ignore]`
+无 lint 与类型检查；后端有单测（`main.rs` 里的 `#[cfg(test)]` 模块，155 条 + 4 条 `#[ignore]`
 真机/诊断）。BLE 从机相关的三条（需蓝牙硬件）：
 
 ```bash
@@ -25,7 +25,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_builds -- --ignored -
 cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
 ```
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 964 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 984 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，62 条）：直接从
 `src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，也有把渲染函数丢进假 DOM
 跑行为断言），改前端后应先跑
@@ -42,7 +42,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
 3. 后端连接有 **10 秒显式超时**（`BLE_CONNECT_TIMEOUT_MS`，比前端的 15s 略短），超时会主动
    `disconnect` —— 为的是不让"前端放弃了、后端稍后才连上"造成长期状态错位。
 
-## MCP 的十条关键约定（别改回去）
+## MCP 的十一条关键约定（别改回去）
 
 1. **MCP 服务器必须在应用进程内**：它要拿 `AppHandle` 才能访问托管状态、还要 `emit` 驱动 WebView 的 DOM。
    外部独立进程（含"做成 npm 包"）两样都做不到 —— 详见 `doc/MCP_DESIGN.md` §3.4。
@@ -85,6 +85,20 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
     `mcp_limits` 里有对应上限，且校验要发生在**碰主程序之前**。`MAX_UI_SET_ITEMS` 就是教训 ——
     `ui_set` 最终跑在 **WebView 主线程**上，请求体虽有 1 MiB 上限，但一条 item 才 40 多字节，
     1 MiB 能塞两万多条，等于"AI 一句请求把界面冻住几秒"。
+11. **每个工具都必须有"返回值契约"和"调用情况"测试**（用户的要求："不然预期的结果怎么确定
+    是否已经完成？"）。三条一起才叫测过：
+    ① **返回值契约**（`every_tool_has_a_tested_return_contract`）：33 个工具每个都要在表里交代
+    清楚 —— 纯后端工具断言**顶层字段**（多一个少一个都要改契约），界面工具断言无界面时
+    必须是 `isError` + `-32006`，有副作用的注明谁在管它。表里漏一个工具就 fail，
+    所以**新增工具时必须一起想清契约**。三条全局不变量对所有工具生效：
+    `structuredContent` 必须是对象、键必须 camelCase、**文本摘要必须真的把数据说出来**
+    （只写"N 项"就等于把数据藏起来 —— `serial_list_ports` 的端口名就是这么消失的）。
+    ② **调用情况**（`every_ui_tool_sends_the_expected_op_and_returns_expected_shape`）：
+    界面工具靠单测专用的假前端（`McpCore::test_ui`）真的调一遍，钉住**发给前端的 op/参数序列**
+    与**拿到回执后的返回**（包括 `serial_open/close` 的幂等分支与"点完轮询确认"那段）。
+    ③ **跨边界**：断言集里扫 protocol.rs 发出的每个 `op`/`action`，要求 index.html 真有对应分支 ——
+    "后端发了、前端没有"会静默失败，而两边各自测自己那一半时全是绿的。
+    ⚠️ 假前端只证明 Rust 这一半；前端那一半必须由 `.walkthrough` 用**真实 handler** 跑。两边成对，缺一边就是假的安心。
 
 
 

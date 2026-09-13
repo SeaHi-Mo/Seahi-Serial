@@ -4,7 +4,12 @@
 > 「返回」列是对着**真实运行的服务**实调一遍抓下来的 `structuredContent` 结构，不是照记忆写的。
 > 上手步骤见 [MCP.md](./MCP.md)，设计与取舍见 [MCP_DESIGN.md](./MCP_DESIGN.md)。
 
-⚠️ 返回结构里**没有**的字段就是真的没有（例如串口项只有 `port_name / friendly_name / product_name`，没有 VID/PID）。
+> **字段命名**：参数与返回**一律 camelCase**（`portName` / `sinceSeq` / `maxLinesPerChannel`）。
+> 有四个参数历史上写成了蛇形，**旧拼写仍然认**（`since_seq` / `case_sensitive` / `max_lines_per_channel` / `ok_only`）——
+> 直接改名会让按旧写法调用的人**静默失效**，那比报错更危险。
+
+⚠️ 返回结构里**没有**的字段就是真的没有（例如串口项只有 `portName / friendlyName / productName`，没有 VID/PID）。
+⚠️ 很多客户端只把 `content[].text` 给模型看，所以**摘要必须把数据说出来**（`serial_list_ports` 的文本里就带着端口名）。
 
 ## 1. 怎么连
 
@@ -51,7 +56,7 @@
 | [`ui_click`](#ui-click) | **写** | 点一个按钮/开关（等价于 ui_set 传 true，但语义更清楚）。 |
 | [`ui_get_state`](#ui-get-state) | 读 | 读整个界面状态的快照（就是随用户配置持久化的那份：各监视器的端口/波特率/行尾/显示模式/开关、主题、蓝牙选中项等）。可用 section 只取子树。 |
 | [`log_channels`](#log-channels) | 读 | 列出所有日志通道（条数 / 字节 / seq 区间 / 被丢弃条数 / 最后一条时间）。不确定去哪找日志时先调它。 |
-| [`log_tail`](#log-tail) | 读 | 取某个通道的尾部若干行。给了 since_seq 就只取它之后的（增量拉取：不重复也不丢）。返回里 mayBeIncomplete=true 表示这个通道曾丢掉过最旧的行。 |
+| [`log_tail`](#log-tail) | 读 | 取某个通道的尾部若干行。给了 sinceSeq 就只取它之后的（增量拉取：不重复也不丢）。返回里 mayBeIncomplete=true 表示这个通道曾丢掉过最旧的行。 |
 | [`log_search`](#log-search) | 读 | 在日志里检索（子串或正则）。不给 channel 就搜所有通道。返回命中行及其 channel/seq，便于继续 log_tail。 |
 | [`log_stats`](#log-stats) | 读 | 各通道的概览：条数、字节、被丢弃条数、告警/错误数、时间跨度与平均行/秒。用来判断"是不是在刷屏"。 |
 | [`log_clear`](#log-clear) | **写** | 清空某个通道，或省略 channel 清空全部。 |
@@ -71,8 +76,8 @@
 
 - **作用**：读某个串口分栏的完整状态：端口、波特率、帧格式(数据位/停止位/校验)、行尾、DTR/RTS、查看模式、行号/时间戳/回显/自动滚动/自动重连/终端模式、**是否正在监控**、输出行数与字节数、发送历史条数、以及全部分栏名。省略 pane 默认 main。**操作串口前先调它**。
 - **读/写**：只读，无副作用
-- **返回**：{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, advOpen, outputLines, outputBytes, historyCount, panes}
-- **注意**：**操作串口前先调它**；省略 pane 默认 main
+- **返回**：{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, advOpen, outputLines, outputBytes, historyCount, panes, logChannels:{rx,tx}}
+- **注意**：**操作串口前先调它**；省略 pane 默认 main；`logChannels` 是"收发内容去哪读"的通道名
 
 **入参**
 
@@ -298,8 +303,8 @@
 
 - **作用**：枚举本机可用串口（端口名 / 友好名称 / 产品名）。只读，不会打开端口。返回 {count, ports:[…]}。
 - **读/写**：只读，无副作用
-- **返回**：`{count, ports:[{port_name, friendly_name, product_name}]}`
-- **注意**：不会打开端口
+- **返回**：`{count, ports:[{portName, friendlyName, productName}]}`
+- **注意**：不会打开端口；**端口名在 `portName`**（字段一律驼峰，别去猜 `port_name`）
 
 **入参**
 
@@ -404,10 +409,10 @@
 
 #### `log_tail`
 
-- **作用**：取某个通道的尾部若干行。给了 since_seq 就只取它之后的（增量拉取：不重复也不丢）。返回里 mayBeIncomplete=true 表示这个通道曾丢掉过最旧的行。
+- **作用**：取某个通道的尾部若干行。给了 sinceSeq 就只取它之后的（增量拉取：不重复也不丢）。返回里 mayBeIncomplete=true 表示这个通道曾丢掉过最旧的行。
 - **读/写**：只读，无副作用
 - **返回**：`{channel, lines:[{seq, ts, level, dir, text, rawBytes}], returned, dropped, seqTo, mayBeIncomplete, truncated}`
-- **注意**：给了 `since_seq` 就是增量拉取；`mayBeIncomplete=true` 表示该通道丢过最旧的行
+- **注意**：给了 `sinceSeq` 就是增量拉取（旧拼写 `since_seq` 也认）；`mayBeIncomplete=true` 表示该通道丢过最旧的行
 
 **入参**
 
@@ -415,7 +420,7 @@
 |---|---|---|---|
 | `channel` | string | **是** | 通道名，如 app / error / mcp / serial:main:rx / ble:rx / ui:sys |
 | `lines` | number | 否 | 最多返回多少行，默认 100，上限 2000 |
-| `since_seq` | number | 否 | 只取 seq 大于它的行（用于增量跟进） |
+| `sinceSeq` | number | 否 | 只取 seq 大于它的行（用于增量跟进）；也接受旧拼写 since_seq |
 
 #### `log_search`
 
@@ -431,7 +436,7 @@
 | `pattern` | string | **是** |  |
 | `channel` | string | 否 | 限定通道；省略=全部 |
 | `regex` | boolean | 否 | true 时 pattern 按正则解释，默认 false |
-| `case_sensitive` | boolean | 否 | 默认 `false` |
+| `caseSensitive` | boolean | 否 | 默认 `false` 区分大小写；也接受旧拼写 case_sensitive |
 | `limit` | number | 否 | 最多命中数，默认 100，上限 500 |
 
 #### `log_stats`
@@ -470,7 +475,7 @@
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `channels` | array&lt;string&gt; | 否 | 要导出的通道名；省略=全部通道 |
-| `max_lines_per_channel` | number | 否 | 每个通道最多取多少行，默认 2000，上限 20000 |
+| `maxLinesPerChannel` | number | 否 | 每个通道最多取多少行，默认 2000，上限 20000；也接受旧拼写 max_lines_per_channel |
 
 ### 调用记录与配置
 
@@ -487,7 +492,7 @@
 |---|---|---|---|
 | `limit` | number | 否 | 最多返回多少条，默认 50，上限 2000 |
 | `tool` | string | 否 | 只看某个工具 |
-| `ok_only` | boolean | 否 | true 只看成功，false 只看失败 |
+| `okOnly` | boolean | 否 | true 只看成功，false 只看失败；也接受旧拼写 ok_only |
 | `format` | string | 否 | 枚举：`jsonl` / `md` jsonl（默认）或 md 表格 |
 
 #### `mcp_stats`
