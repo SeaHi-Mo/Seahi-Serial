@@ -78,12 +78,19 @@ npx seahi-serial-mcp uninstall  # 只移除它写的那一条
 
 | 类别 | 工具 |
 |---|---|
+| **串口语义（推荐优先用这些）** | `serial_get_state`、`serial_select_port`、`serial_set_baud`、`serial_set_frame`、`serial_set_lines`、`serial_set_display`、`serial_open`、`serial_close`、`serial_send`、`serial_clear`、`serial_get_history`、`serial_quick_cmd` |
 | 应用/服务器 | `app_info`、`mcp_status`、`mcp_limits`、`serial_list_ports` |
 | 界面操作 | `ui_list`、`ui_describe`、`ui_get`、`ui_set`、`ui_click`、`ui_get_state` |
 | 日志 | `log_channels`、`log_tail`、`log_search`、`log_stats`、`log_clear`、`log_export` |
 | 记录与配置 | `mcp_calls`、`mcp_stats`、`mcp_config_get`、`mcp_config_set` |
 
-推荐让 AI 的工作顺序是：`ui_list` 看有哪些控件 → `ui_describe` 看某个控件怎么填 → `ui_set`/`ui_click` 操作 → `log_tail` 看结果。
+**串口语义工具与通用界面桥的区别**：前者用"**分栏 + 语义字段**"寻址（`pane` = `main` / `extra-1` / …），
+后者用"控件路径"。多开监视器时控件路径会撞名，所以**能用语义工具就别拼控件路径**。
+推荐顺序：`serial_get_state` 看现状 → `serial_select_port` / `serial_set_baud` / `serial_set_frame` 设参数 →
+`serial_open` 开始监控（会确认真的连上）→ `serial_send` 发数据 → `serial_get_history` / `log_tail` 回看。
+
+通用的界面操作仍然留着兜长尾：`ui_list` 看有哪些控件 → `ui_describe` 看某个控件怎么填 → `ui_set`/`ui_click` 操作。
+每个工具的完整入参与返回结构见 [`MCP_TOOLS.md`](./MCP_TOOLS.md)。
 
 ### 想让"每个控件都是一个工具"？
 

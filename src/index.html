@@ -5175,7 +5175,278 @@ function mcpHandleUiCmd(op, payload) {
         if (changed.length) mcpNotifyState(changed);
         return { ok: true, value: { results: results, effects: effects } };
     }
+    if (op === 'serial') return mcpSerialOp(payload);
     return { ok: false, error: '未知的 ui 操作: ' + op };
+}
+
+/* ===== 串口语义层（给 MCP 的 serial_* 工具用）=====
+ *
+ * 它与 `ui_*`（通用控件桥）的关系：`ui_*` 用"控件路径"寻址，这里用"**分栏 + 语义字段**"寻址。
+ * 为什么需要它：
+ *   1. 多分栏时通用路径会撞名（两个监视器都算出 `serial.conn.portSelect`，只能靠 `_2` 后缀区分），
+ *      AI 分不清哪个是哪个分栏；这里用 `pane`（main / extra-1 / …）明确指向；
+ *   2. AI 想要的是"选串口 / 设波特率 / 开监控"，不是"改某个控件"；
+ *   3. 动作要能确认结果（开监控后到底连上没有）。
+ *
+ * 约定（守 AGENTS.md #3，**不写第二套逻辑**）：
+ *   - 改值：走 mcpWriteEl（与 ui_set 完全同一个函数：合成 input/change 或点下拉项）；
+ *   - 点按钮：el.click()，触发它自己的 inline onclick；
+ *   - 少数没有 id 的按钮（如"清除内容"）：调用**它 onclick 里那个函数**（白名单，见 MCP_SERIAL_FUNCS）。
+ *   所以界面必然跟着变，不存在"AI 改了但界面没动"。
+ */
+var MCP_SERIAL_FIELDS = {
+    // 语义字段 → [控件 id 后缀, 控件类型]；类型与 mcpKindOf 的口径一致
+    port:       ['portSelect', 'select'],
+    baud:       ['baudRate',   'number'],
+    viewMode:   ['viewMode',   'select'],
+    lineEnding: ['lineEnding', 'select'],
+    dataBits:   ['dataBits',   'select'],
+    stopBits:   ['stopBits',   'select'],
+    parity:     ['parity',     'select'],
+    dtr:        ['chkDTR',     'checkbox'],
+    rts:        ['chkRTS',     'checkbox'],
+};
+// 开关类（.ibtn，靠 `on` class 表示状态；toggleIbtn 只切 class，所以"不同才点"即幂等）
+var MCP_SERIAL_TOGGLES = {
+    autoScroll:    'btnScroll',
+    autoReconnect: 'btnAutoReconnect',
+    lineNum:       'btnLineNum',
+    timestamp:     'btnTs',
+    echo:          'btnEcho',
+    terminalMode:  'btnSendLE',
+    advOpen:       'btnAdv',
+};
+// 没有 id 的按钮 → 直接调用它 onclick 里的那个函数（不是另写一套）
+var MCP_SERIAL_FUNCS = {
+    clear:        function (mid) { clearLog(mid); },
+    refreshPorts: function (mid) { refreshPorts(mid); },
+    copyOutput:   function (mid) { copyOutput(mid); },
+};
+
+/// 可用的串口分栏（排除蓝牙页里那个内嵌临时监视器）
+function mcpSerialPanes() {
+    return Object.keys(monitors).filter(function (mid) {
+        return monitors[mid] && !monitors[mid].bleEmbedded;
+    });
+}
+
+function mcpSerialResolvePane(pane) {
+    var panes = mcpSerialPanes();
+    if (!pane) return panes.indexOf('main') >= 0 ? 'main' : panes[0];
+    if (panes.indexOf(pane) < 0) return null;
+    return pane;
+}
+
+function mcpSerialEl(mid, suffix) {
+    return document.getElementById(mid + '-' + suffix);
+}
+
+/// 某个 .sel 控件的可选值（给 AI 报错时列出来，省得它猜）
+function mcpSerialOptions(el) {
+    if (!el || !el.querySelectorAll) return [];
+    var out = [];
+    el.querySelectorAll('.sel-opt').forEach(function (o) {
+        var v = o.getAttribute('data-val');
+        if (v !== null && v !== undefined) out.push(v);
+    });
+    return out;
+}
+
+/// 汇总一个分栏的完整状态：持久化配置（复用 collectConfigForMonitor）+ 运行时 + 开关状态
+function mcpSerialState(mid) {
+    var m = monitors[mid];
+    var cfg = {};
+    try { cfg = collectConfigForMonitor(mid) || {}; } catch (e) { /* ignore */ }
+    var toggles = {};
+    Object.keys(MCP_SERIAL_TOGGLES).forEach(function (k) {
+        var el = mcpSerialEl(mid, MCP_SERIAL_TOGGLES[k]);
+        toggles[k] = el && el.classList ? el.classList.contains('on') : null;
+    });
+    return {
+        pane: mid,
+        isConnected: !!m.isConnected,
+        portName: m.portName || '',
+        port: cfg.port || '',
+        baud: cfg.baud ? parseInt(cfg.baud, 10) || cfg.baud : '',
+        viewMode: cfg.viewMode || 'text',
+        lineEnding: cfg.lineEnding || 'crlf',
+        sendAs: cfg.sendAs || 'text',
+        dataBits: cfg.dataBits || '8',
+        stopBits: cfg.stopBits || '1',
+        parity: cfg.parity || 'none',
+        dtr: cfg.dtr, rts: cfg.rts,
+        autoScroll: toggles.autoScroll,
+        autoReconnect: toggles.autoReconnect,
+        lineNum: toggles.lineNum,
+        timestamp: toggles.timestamp,
+        echo: toggles.echo,
+        terminalMode: toggles.terminalMode,
+        advOpen: toggles.advOpen,
+        outputLines: m._textCount || 0,
+        outputBytes: m._textDataLen || 0,
+        historyCount: (m.sendHistory || []).length,
+        panes: mcpSerialPanes(),
+    };
+}
+
+/// 应用一批改动：每项 {name, value}；name 命中字段表就写值，命中开关表就切 class。返回变更明细。
+function mcpSerialApply(mid, items) {
+    var changed = [], results = [];
+    _mcpUiOrigin++;
+    try {
+        for (var i = 0; i < items.length; i++) {
+            var it = items[i] || {};
+            var name = it.name;
+            var value = it.value;
+            if (!name) { results.push({ name: name, ok: false, error: '缺少 name' }); continue; }
+
+            if (MCP_SERIAL_FIELDS[name]) {
+                var spec = MCP_SERIAL_FIELDS[name];
+                var el = mcpSerialEl(mid, spec[0]);
+                if (!el) { results.push({ name: name, ok: false, notFound: true, error: '找不到控件 ' + mid + '-' + spec[0] }); continue; }
+                var before = mcpReadEl(el, spec[1]);
+                // 下拉：先校验选项真的存在，报错时把可选值列出来（AI 最需要这个）
+                if (spec[1] === 'select') {
+                    var opts = mcpSerialOptions(el);
+                    if (opts.length && opts.indexOf(String(value)) < 0) {
+                        results.push({ name: name, ok: false, error: '可选值只有: ' + opts.join(' / ') });
+                        continue;
+                    }
+                }
+                if (name === 'baud') {
+                    var b = parseInt(value, 10);
+                    if (!(b >= 110 && b <= 4000000)) {
+                        results.push({ name: name, ok: false, error: '波特率必须在 110..4000000 之间' });
+                        continue;
+                    }
+                }
+                mcpWriteEl(el, spec[1], value);
+                var after = mcpReadEl(el, spec[1]);
+                var ok = String(after) === String(value);
+                results.push({ name: name, ok: ok, from: before, to: after,
+                               error: ok ? undefined : '写入后读回不一致（控件可能拒绝了这个值）' });
+                if (ok && String(before) !== String(after)) changed.push(name);
+            } else if (MCP_SERIAL_TOGGLES[name]) {
+                var tel = mcpSerialEl(mid, MCP_SERIAL_TOGGLES[name]);
+                if (!tel) { results.push({ name: name, ok: false, notFound: true, error: '找不到开关 ' + mid + '-' + MCP_SERIAL_TOGGLES[name] }); continue; }
+                var was = tel.classList.contains('on');
+                var want = !!value;
+                if (was !== want) tel.click();          // 交给它自己的 onclick（toggleIbtn / toggleLineNum / …）
+                var now = tel.classList.contains('on');
+                results.push({ name: name, ok: now === want, from: was, to: now });
+                if (now !== was) changed.push(name);
+            } else {
+                results.push({ name: name, ok: false, error: '不认识的字段: ' + name + '（可用：' +
+                    Object.keys(MCP_SERIAL_FIELDS).concat(Object.keys(MCP_SERIAL_TOGGLES)).join(', ') + '）' });
+            }
+        }
+    } finally {
+        _mcpUiOrigin--;
+    }
+    try { scheduleConfigSave(); } catch (e) { /* ignore */ }
+    if (changed.length) mcpNotifyState(changed.map(function (n) { return mid + '.' + n; }));
+    var bad = results.filter(function (r) { return !r.ok; });
+    if (bad.length) return { ok: false, error: bad[0].error || ('字段 ' + bad[0].name + ' 设置失败'), detail: results };
+    return { ok: true, value: { pane: mid, applied: results } };
+}
+
+function mcpSerialOp(payload) {
+    payload = payload || {};
+    var action = payload.action;
+    var mid = mcpSerialResolvePane(payload.pane);
+    if (!mid) {
+        return { ok: false, notFound: true,
+                 error: '没有这个分栏: ' + (payload.pane || '(默认)') + '；可用分栏: ' + mcpSerialPanes().join(', ') };
+    }
+    var m = monitors[mid];
+
+    if (action === 'panes') return { ok: true, value: { panes: mcpSerialPanes(), defaultPane: mid } };
+    if (action === 'state') return { ok: true, value: mcpSerialState(mid) };
+    if (action === 'apply') {
+        var items = payload.items;
+        if (!items || !items.length) return { ok: false, error: '缺少 items（[{name,value}]）' };
+        return mcpSerialApply(mid, items);
+    }
+    if (action === 'click') {
+        // 有 id 的按钮：严格遵守它自己的 disabled 状态（禁用就点不动，和用户一样）
+        var target = MCP_SERIAL_TOGGLES[payload.name] || (MCP_SERIAL_FIELDS[payload.name] || [])[0];
+        var btn = payload.name === 'start' ? mcpSerialEl(mid, 'btnStart')
+                : payload.name === 'send' ? mcpSerialEl(mid, 'btnSend')
+                : target ? mcpSerialEl(mid, target) : null;
+        if (!btn) return { ok: false, notFound: true, error: '找不到按钮: ' + payload.name };
+        if (btn.disabled) return { ok: false, error: '按钮当前不可点（' + (btn.title || btn.textContent || '') .trim() + '）' };
+        btn.click();
+        return { ok: true, value: { pane: mid, clicked: payload.name } };
+    }
+    if (action === 'clear') {
+        if (!MCP_SERIAL_FUNCS.clear) return { ok: false, error: '内部错误：clear 未注册' };
+        MCP_SERIAL_FUNCS.clear(mid);
+        return { ok: true, value: { pane: mid, cleared: true, outputLines: m._textCount || 0 } };
+    }
+    if (action === 'refreshPorts') {
+        MCP_SERIAL_FUNCS.refreshPorts(mid);
+        return { ok: true, value: { pane: mid, refreshing: true } };
+    }
+    if (action === 'send') {
+        var inp = mcpSerialEl(mid, 'sendInput');
+        var sbtn = mcpSerialEl(mid, 'btnSend');
+        if (!inp || !sbtn) return { ok: false, notFound: true, error: '找不到发送框/发送按钮' };
+        if (!m.isConnected) return { ok: false, error: '这个分栏还没打开监控（先用 serial_open）' };
+        if (sbtn.disabled) return { ok: false, error: '发送按钮当前不可点' };
+        var data = payload.data == null ? '' : String(payload.data);
+        if (!data.length) return { ok: false, error: 'data 不能为空' };
+        // 与用户输入等价：改 value + 派发 input，让应用自己的监听更新状态
+        inp.value = data;
+        try {
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+        } catch (e) { /* ignore */ }
+        sbtn.click();   // → sendData(mid)
+        return { ok: true, value: { pane: mid, sent: true, mode: mcpSerialState(mid).sendAs,
+                                    bytes: data.length, data: data.slice(0, 200) } };
+    }
+    if (action === 'history') {
+        var limit = Math.max(1, Math.min(200, parseInt(payload.limit, 10) || 20));
+        var hist = (m.sendHistory || []).slice(-limit).reverse();
+        return { ok: true, value: { pane: mid, total: (m.sendHistory || []).length, items: hist } };
+    }
+    if (action === 'quickList') {
+        var qs = (m.quickCmds || []).map(function (q, i) {
+            return { index: i, label: q.label || ('指令' + (i + 1)), value: q.value || '' };
+        });
+        return { ok: true, value: { pane: mid, items: qs, usable: qs.filter(function (q) { return !!q.value; }).length } };
+    }
+    if (action === 'quickRun') {
+        var idx = parseInt(payload.index, 10);
+        var list = m.quickCmds || [];
+        if (!(idx >= 0 && idx < list.length)) {
+            return { ok: false, error: 'index 越界（0..' + (list.length - 1) + '）' };
+        }
+        if (!list[idx].value) return { ok: false, error: '第 ' + idx + ' 条快速指令还没配内容' };
+        if (!m.isConnected) return { ok: false, error: '这个分栏还没打开监控（先用 serial_open）' };
+        try { sendQcmdItem(mid, idx); } catch (e) { return { ok: false, error: '执行快速指令失败: ' + e }; }
+        return { ok: true, value: { pane: mid, ran: idx, label: list[idx].label, value: list[idx].value } };
+    }
+    if (action === 'setSendAs') {
+        // 发送模式（文本/HEX）：与用户点那个下拉项等价 —— 点选项 → 它自己的 onclick → setSendAs()
+        var mode = String(payload.mode || 'text').toLowerCase();
+        if (mode !== 'text' && mode !== 'hex') return { ok: false, error: 'mode 只能是 text 或 hex' };
+        var txtEl = mcpSerialEl(mid, 'sendAsText');
+        var cur = txtEl && txtEl.textContent === 'HEX' ? 'hex' : 'text';
+        if (cur === mode) return { ok: true, value: { pane: mid, sendAs: mode, note: '本来就是' } };
+        var drop = mcpSerialEl(mid, 'sendAsDrop');
+        var opt = null;
+        if (drop && drop.querySelectorAll) {
+            drop.querySelectorAll('.send-as-opt').forEach(function (o) {
+                if ((o.getAttribute('data-val') || '') === mode) opt = o;
+            });
+        }
+        if (!opt) return { ok: false, notFound: true, error: '找不到发送模式选项: ' + mode };
+        opt.click();
+        var after = mcpSerialEl(mid, 'sendAsText');
+        return { ok: true, value: { pane: mid, sendAs: after && after.textContent === 'HEX' ? 'hex' : 'text' } };
+    }
+    return { ok: false, error: '未知的 serial 操作: ' + action };
 }
 
 /// 界面状态变化通知（回声抑制：AI 自己造成的变更打 origin 标记）

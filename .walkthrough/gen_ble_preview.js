@@ -2627,10 +2627,13 @@ console.log('preview ->', out);
     const toolsDoc = fs.readFileSync(path.join(root, 'doc', 'MCP_TOOLS.md'), 'utf8');
     const srcTools = [...new Set(
       // 用带捕获组的 matchAll 一次拿干净；上一版先 match 再 exec，每次都抓到 "name" 这个键名
-      [...mcpSrc.slice(mcpSrc.indexOf('pub fn tool_defs()'), mcpSrc.indexOf('pub fn limits_json()'))
+      // 只扫 tool_defs() 函数体（到第一个 "    ]" 为止）。上一版扫到 limits_json()，
+      // 把中间的 call_tool 函数体也包含进来了 —— 那里的 {"name": "port"} 会被误当成工具名。
+      [...mcpSrc.slice(mcpSrc.indexOf('pub fn tool_defs()'),
+                       mcpSrc.indexOf('\n    ]', mcpSrc.indexOf('pub fn tool_defs()')))
         .matchAll(/"name":\s*"([a-z][a-z0-9_]*)"/g)].map((m) => m[1])
     )];
-    check(srcTools.length === 20, '源码里是 20 个内置工具', srcTools.length);
+    check(srcTools.length === 32, '源码里是 32 个内置工具（20 通用 + 12 串口语义）', srcTools.length);
     const missing = srcTools.filter((n) => toolsDoc.indexOf('#### `' + n + '`') < 0);
     check(missing.length === 0, '工具参考文档 doc/MCP_TOOLS.md 列出了全部内置工具', '缺：' + missing.join(','));
     check((toolsDoc.match(/^#### `/gm) || []).length === srcTools.length,
@@ -2726,6 +2729,186 @@ console.log('preview ->', out);
     '安装器不调用任何子进程（只读写 JSON 配置）');
   check(/function installFor/.test(npmCli) && /function uninstallFor/.test(npmCli),
     '有 install / uninstall 两条路径');
+
+  console.log('\n【MCP 串口语义工具（S12：选口 / 波特率 / 开监控 / 发数据…）】');
+
+  // ---- 源码：12 个工具齐全，且"开监控"必须确认状态而不是点完就返回 ----
+  const serialTools = ['serial_get_state', 'serial_select_port', 'serial_set_baud', 'serial_set_frame',
+    'serial_set_lines', 'serial_set_display', 'serial_open', 'serial_close', 'serial_send',
+    'serial_clear', 'serial_get_history', 'serial_quick_cmd'];
+  serialTools.forEach((n) => {
+    check(new RegExp('"name": "' + n + '"').test(mcpSrc), '串口语义工具已定义 ' + n);
+  });
+  check(/async fn serial_set_connected\(/.test(mcpSrc) && /tokio::time::sleep\(std::time::Duration::from_millis\(150\)\)/.test(mcpSrc),
+    'serial_open/close 会轮询确认状态（点完不代表连上）');
+  check(/E_DEVICE_NOT_READY,[\s\S]{0,200}?常见原因：端口被占用/.test(mcpSrc),
+    '连接失败给出可操作的原因，并用 -32006（→ isError:true 而不是 JSON-RPC 错误）');
+  check(/async fn serial_apply\(/.test(mcpSrc) && /core\.ui_call\("serial", payload\)/.test(mcpSrc),
+    '串口工具最终仍走前端 ui_call("serial")（不是后端另开一条控制路径）');
+  check(/action === 'apply'/.test(html) && /mcpWriteEl\(el, spec\[1\], value\)/.test(html),
+    '前端 apply 用 mcpWriteEl（与 ui_set 同一个写值函数）');
+  check(/for \(var i = 0; i < items.length; i\+\+\)/.test(html) && /tel\.click\(\)/.test(html),
+    '开关类走 el.click()（复用 toggleIbtn 等既有 handler）');
+
+  // ---- 行为：把真实函数丢进 vm，用假 DOM 跑 ----
+  {
+    const sfx = (id, opts) => {
+      opts = opts || {};
+      const s = new Set(String(opts.class || '').split(/\s+/).filter(Boolean));
+      const el = {
+        id: id, tagName: String(opts.tag || 'div').toUpperCase(),
+        attrs: Object.assign({}, opts.attrs || {}),
+        value: opts.value === undefined ? '' : opts.value,
+        textContent: opts.text || '',
+        disabled: !!opts.disabled, _clicks: 0, _opts: opts.opts || [],
+        getAttribute(k) { return this.attrs[k] === undefined ? null : this.attrs[k]; },
+        setAttribute(k, v) { this.attrs[k] = v; },
+        classList: { contains: (c) => s.has(c), add: (c) => s.add(c), remove: (c) => s.delete(c), toggle: (c) => (s.has(c) ? s.delete(c) : s.add(c)) },
+        querySelectorAll(sel) { return sel === '.sel-opt' || sel === '.send-as-opt' ? this._opts : []; },
+        dispatchEvent() { return true; },
+        click() { this._clicks++; if (this.tagName === 'INPUT' && this.attrs.type === 'checkbox') this.checked = !this.checked; },
+      };
+      return el;
+    };
+    const opt = (val, text) => ({ getAttribute: (k) => (k === 'data-val' ? val : null), textContent: text || val, _clicks: 0, click() { this._clicks++; } });
+
+    const els = {
+      'main-portSelect': sfx('main-portSelect', { attrs: { 'data-val': 'COM1' }, opts: [opt('COM1'), opt('COM3')] }),
+      'main-baudRate': sfx('main-baudRate', { tag: 'input', attrs: { type: 'number' }, value: '115200' }),
+      'main-lineEnding': sfx('main-lineEnding', { attrs: { 'data-val': 'crlf' }, opts: [opt('crlf'), opt('lf'), opt('none')] }),
+      'main-viewMode': sfx('main-viewMode', { attrs: { 'data-val': 'text' }, opts: [opt('text'), opt('hex')] }),
+      'main-dataBits': sfx('main-dataBits', { attrs: { 'data-val': '8' }, opts: [opt('8'), opt('7')] }),
+      'main-stopBits': sfx('main-stopBits', { attrs: { 'data-val': '1' }, opts: [opt('1'), opt('2')] }),
+      'main-parity': sfx('main-parity', { attrs: { 'data-val': 'none' }, opts: [opt('none'), opt('odd')] }),
+      'main-chkDTR': sfx('main-chkDTR', { tag: 'input', attrs: { type: 'checkbox' }, checked: false }),
+      'main-chkRTS': sfx('main-chkRTS', { tag: 'input', attrs: { type: 'checkbox' }, checked: true }),
+      'main-advRow': sfx('main-advRow'),
+      'main-sendAsText': sfx('main-sendAsText', { text: '文本' }),
+      'main-sendAsDrop': sfx('main-sendAsDrop', { opts: [opt('text', '文本'), opt('hex', 'HEX')] }),
+      'main-btnScroll': sfx('main-btnScroll', { class: 'ibtn on' }),
+      'main-btnLineNum': sfx('main-btnLineNum', { class: 'ibtn' }),
+      'main-btnStart': sfx('main-btnStart', { tag: 'button' }),
+      'main-btnSend': sfx('main-btnSend', { tag: 'button', disabled: true }),
+      'main-sendInput': sfx('main-sendInput', { tag: 'input' }),
+      'main-btnEcho': sfx('main-btnEcho', { class: 'ibtn' }),
+    };
+    const monitorMap = {
+      main: { isConnected: false, portName: '', sendHistory: ['AT', 'AT+GMR'], quickCmds: [{ label: '查版本', value: 'AT+GMR' }, { label: '空', value: '' }], _textCount: 12, _textDataLen: 345 },
+      'extra-1': { isConnected: true, portName: 'COM5', sendHistory: [], quickCmds: [], _textCount: 0, _textDataLen: 0 },
+      'ble-mon': { isConnected: false, bleEmbedded: true, sendHistory: [], quickCmds: [] },
+    };
+    const calls = { qcmd: [], cleared: 0, refreshed: 0 };
+    // 假 DOM 要模拟真实下拉的行为：点选项 → 应用自己的 setSel() 会把 data-val/sel-text 改掉。
+    // 不接这一步，"写入后读回"就会失败（那是测试替身的缺口，不是被测代码的问题）。
+    ['main-portSelect', 'main-lineEnding', 'main-viewMode', 'main-dataBits', 'main-stopBits', 'main-parity']
+      .forEach((selId) => {
+        const sel = els[selId];
+        sel._opts.forEach((o) => {
+          o.click = function () {
+            this._clicks++;
+            sel.attrs['data-val'] = this.getAttribute('data-val');
+          };
+        });
+      });
+    els['main-sendAsDrop']._opts.forEach((o) => {
+      o.click = function () {
+        this._clicks++;
+        els['main-sendAsText'].textContent = this.getAttribute('data-val') === 'hex' ? 'HEX' : '文本';
+      };
+    });
+    const sbSer = {
+      console,
+      document: { getElementById: (id) => els[id] || null },
+      monitors: monitorMap,
+      _mcpUiOrigin: 0,
+      scheduleConfigSave() {},
+      mcpNotifyState() {},
+      clearLog() { calls.cleared++; },
+      refreshPorts() { calls.refreshed++; },
+      copyOutput() {},
+      sendQcmdItem(mid, idx) { calls.qcmd.push([mid, idx]); },
+    };
+    vm.createContext(sbSer);
+    vm.runInContext([
+      'var _mcpUiOrigin = 0;',
+      // 三个映射表是模块级 var（不在函数里），必须单独抠出来注入，否则沙箱里 undefined
+      /var MCP_SERIAL_FIELDS = \{[\s\S]*?\n\};/.exec(html)[0],
+      /var MCP_SERIAL_TOGGLES = \{[\s\S]*?\n\};/.exec(html)[0],
+      /var MCP_SERIAL_FUNCS = \{[\s\S]*?\n\};/.exec(html)[0],
+      extractFunction('mcpReadEl'), extractFunction('mcpWriteEl'), extractFunction('_mcpDispatch'),
+      extractFunction('_mcpFindOption'), extractFunction('mcpKindOf'),
+      extractFunction('collectConfigForMonitor'),
+      extractFunction('mcpSerialPanes'), extractFunction('mcpSerialResolvePane'),
+      extractFunction('mcpSerialEl'), extractFunction('mcpSerialOptions'),
+      extractFunction('mcpSerialState'), extractFunction('mcpSerialApply'), extractFunction('mcpSerialOp'),
+    ].join('\n'), sbSer);
+
+    check(JSON.stringify(sbSer.mcpSerialPanes()) === '["main","extra-1"]',
+      '分栏列表排除了蓝牙页内嵌的临时监视器', JSON.stringify(sbSer.mcpSerialPanes()));
+    check(sbSer.mcpSerialResolvePane(undefined) === 'main', '省略 pane 默认 main');
+    check(sbSer.mcpSerialResolvePane('extra-9') === null, '未知分栏返回 null（上层转成"没有这个分栏"）');
+
+    const st = sbSer.mcpSerialOp({ action: 'state', pane: 'main' });
+    check(st.ok && st.value.port === 'COM1' && st.value.baud === 115200, '状态读出端口与波特率（数字）',
+      JSON.stringify({ port: st.value.port, baud: st.value.baud }));
+    check(st.value.isConnected === false && st.value.outputLines === 12 && st.value.historyCount === 2,
+      '状态带运行时信息：是否在监控 / 输出行数 / 历史条数');
+    check(st.value.autoScroll === true && st.value.lineNum === false, '状态里的开关取自 on class');
+
+    const okPort = sbSer.mcpSerialOp({ action: 'apply', items: [{ name: 'port', value: 'COM3' }] });
+    check(okPort.ok && okPort.value && okPort.value.applied[0].ok
+      && okPort.value.applied[0].from === 'COM1' && okPort.value.applied[0].to === 'COM3',
+      '选端口：写值并回报 from/to', JSON.stringify(okPort));
+
+    const badPort = sbSer.mcpSerialOp({ action: 'apply', items: [{ name: 'port', value: 'COM99' }] });
+    check(!badPort.ok && /可选值只有: COM1 \/ COM3/.test(badPort.error),
+      '端口给错要**回列真实可选值**（AI 最需要这个）', badPort.error);
+
+    const badBaud = sbSer.mcpSerialOp({ action: 'apply', items: [{ name: 'baud', value: 99999999 }] });
+    check(!badBaud.ok && /110\.\.4000000/.test(badBaud.error), '波特率越界被拒', badBaud.error);
+
+    const badField = sbSer.mcpSerialOp({ action: 'apply', items: [{ name: 'nope', value: 1 }] });
+    check(!badField.ok && /不认识的字段/.test(badField.error) && /autoScroll/.test(badField.error),
+      '未知字段要列出可用字段名', badField.error);
+
+    els['main-btnScroll']._clicks = 0;
+    sbSer.mcpSerialOp({ action: 'apply', items: [{ name: 'autoScroll', value: true }] });
+    check(els['main-btnScroll']._clicks === 0, '开关本来就是 on → 不重复点击（幂等）');
+    sbSer.mcpSerialOp({ action: 'apply', items: [{ name: 'autoScroll', value: false }] });
+    check(els['main-btnScroll']._clicks === 1, '开关需要变 → 点一次（走它自己的 onclick）');
+
+    const dis = sbSer.mcpSerialOp({ action: 'click', name: 'send' });
+    check(!dis.ok && /不可点/.test(dis.error), '按钮 disabled 时拒绝点击（和用户一样点不动）', dis.error);
+
+    const sendOff = sbSer.mcpSerialOp({ action: 'send', data: 'AT' });
+    check(!sendOff.ok && /还没打开监控/.test(sendOff.error), '未开监控时拒绝发数据', sendOff.error);
+
+    monitorMap.main.isConnected = true;
+    els['main-btnSend'].disabled = false;
+    els['main-btnSend']._clicks = 0;
+    const sent = sbSer.mcpSerialOp({ action: 'send', data: 'AT+GMR' });
+    check(sent.ok && sent.value.sent === true && els['main-sendInput'].value === 'AT+GMR' && els['main-btnSend']._clicks === 1,
+      '发数据：写发送框 + 点发送按钮（与用户操作同一条路）');
+
+    const hist = sbSer.mcpSerialOp({ action: 'history', limit: 5 });
+    check(hist.ok && hist.value.items[0] === 'AT+GMR' && hist.value.total === 2, '发送历史最新在前');
+
+    const ql = sbSer.mcpSerialOp({ action: 'quickList' });
+    check(ql.ok && ql.value.items.length === 2 && ql.value.usable === 1, '快速指令：列出全部并标出哪条可用', JSON.stringify(ql.value));
+    const qr = sbSer.mcpSerialOp({ action: 'quickRun', index: 1 });
+    check(!qr.ok && /还没配内容/.test(qr.error), '执行空内容的快速指令要拒绝', qr.error);
+    const qr2 = sbSer.mcpSerialOp({ action: 'quickRun', index: 0 });
+    check(qr2.ok && calls.qcmd.length === 1 && calls.qcmd[0][1] === 0, '执行快速指令走 sendQcmdItem（既有函数）');
+
+    sbSer.mcpSerialOp({ action: 'clear' });
+    check(calls.cleared === 1, '清空走 clearLog（那个按钮没有 id，只能调它 onclick 里的函数）');
+
+    const same = sbSer.mcpSerialOp({ action: 'setSendAs', mode: 'text' });
+    check(same.ok && same.value.note === '本来就是' && els['main-sendAsText'].textContent === '文本',
+      '发送模式本来就是 text → 不点下拉项');
+    sbSer.mcpSerialOp({ action: 'setSendAs', mode: 'hex' });
+    check(els['main-sendAsDrop']._opts[1]._clicks === 1, '切 HEX：点是真实下拉项（触发它自己的 onclick）');
+  }
 
   console.log(`\n结果: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

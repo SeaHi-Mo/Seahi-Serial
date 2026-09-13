@@ -10,7 +10,7 @@
 - **随程序启动、端口自动回退**：默认 `127.0.0.1:7777`，被占用会自动向后找（最多 20 个），实际端口在弹窗里显示。
 - **访问令牌**：首次启动自动生成；token 放在 URL 里（兼容不能自定义请求头的 SSE 客户端）。弹窗可「重置令牌」，旧令牌立即失效。
 - **端点发现文件** `%APPDATA%\seahi-serial\mcp-endpoint.json`，供下面的安装器与外部工具读取。
-- **20 个内置工具**，四类：
+- **32 个内置工具**：12 个**串口语义工具**（选端口/设波特率/帧格式/DTR-RTS/开监控/发数据/清空/发送历史/快速指令，还带分栏 `pane` 参数）+ 20 个通用工具，四类：
   - 应用/服务器：`app_info`、`mcp_status`、`mcp_limits`、`serial_list_ports`
   - **界面操作**：`ui_list`（枚举界面上所有可操控控件，含"为什么不可用"）、`ui_describe`、`ui_get`、`ui_set`、`ui_click`、`ui_get_state`
   - **日志**：`log_channels`、`log_tail`（可按序号增量拉取）、`log_search`（子串/正则、可跨通道）、`log_stats`、`log_clear`、`log_export`

@@ -1363,6 +1363,45 @@ ui_list / ui_get_state / ui_set / serial_* / ble_* / adb_* / wsl_* / log_* 等�
 
 ## 17. 实施记录
 
+### 2026-09-13 · S12 第一批：串口语义工具（12 个）✅ —— 补上"通用控件桥没有业务语义"这个根本缺口
+
+用户评估后指出：20 个工具里**只有 4 个是业务语义**，而"选串口 / 设波特率 / 开监控"这些**主流程没有专门工具**，
+只能靠 `ui_set`/`ui_click` 拼控件路径；ADB shell、BLE 设备列表与广播解析这类甚至**绕都绕不到**。
+重评后的方案是分四批补 ~58 个语义工具，**第一批 = 串口 12 个**。
+
+| 工具 | 作用 |
+|---|---|
+| `serial_get_state` | 一个分栏的完整状态：端口/波特率/帧格式/行尾/DTR-RTS/各显示开关/**是否在监控中**/输出行数与字节数/历史条数/全部分栏名 |
+| `serial_select_port`、`serial_set_baud`、`serial_set_frame`、`serial_set_lines`、`serial_set_display` | 选端口 / 波特率 / 帧格式 / DTR-RTS / 显示与行为开关 |
+| `serial_open`、`serial_close` | 开 / 停监控，**会轮询确认状态**（最多 6s / 3s），失败给可操作原因 |
+| `serial_send` | 发数据（`mode=hex` 按十六进制解析；`lineEnding` 可覆盖行尾） |
+| `serial_clear` | 清空输出区（**只清界面**，不动磁盘会话缓存） |
+| `serial_get_history` | 发送历史（最新在前） |
+| `serial_quick_cmd` | 快速指令：不带 `index` 列出、带 `index` 执行 |
+
+**两条关键设计**：
+
+1. **不写第二套逻辑**（守约定 #3）：前端只新增一个 `serial` 语义 op，它只做"**寻址 + 组装**"——
+   改值走 `mcpWriteEl`（与 `ui_set` **同一个函数**）、点按钮走 `el.click()`、
+   没有 id 的按钮（如"清除内容"）调用**它 onclick 里那个函数**（白名单 `clearLog`/`refreshPorts`/`copyOutput`/`sendQcmdItem`）。
+   所以界面必然跟着变，不存在"AI 改了但界面没动"。
+2. **`pane` 参数**：按分栏名（`main` / `extra-1` / …）寻址，绕开"多分栏路径撞名（`_2` 后缀、AI 分不清哪个分栏）"
+   这个已知缺陷；前端用应用自己的 id 约定 `<mid>-<控件后缀>` 定位控件。
+
+**动作必须确认结果**：`serial_open` 不是"点完就返回 true"，而是点完**轮询 `isConnected`**（150ms × 40 次）直到真连上；
+超时用 `E_DEVICE_NOT_READY`（按协议变成 result + `isError: true`，不是 JSON-RPC 错误）并给出常见原因
+（端口被占用 / 设备被拔出 / 驱动异常），指向 `log_tail(channel="error")`。
+
+**验证**：`cargo test` **150 过 / 0 失败**；前端断言 **951 过 / 0 失败**（本轮新增 43 条）——
+其中最有价值的是把 `mcpSerial*` **真实函数丢进 vm + 假 DOM 跑行为断言**：分栏过滤（排除蓝牙内嵌监视器）、
+默认 main、未知分栏、状态读取（含开关取自 `on` class）、选端口的 `from/to`、**端口给错要回列真实可选值**、
+波特率越界、未知字段列出可用字段、**开关幂等（同值不点）**、按钮 `disabled` 时拒绝、
+未开监控时拒绝发数据、发数据=写发送框+点发送按钮、历史最新在前、
+快速指令（列出/空内容拒绝/执行走 `sendQcmdItem`）、清空走 `clearLog`、发送模式切换点是**真实下拉项**。
+`doc/MCP_TOOLS.md` 已重新生成（20 → **32 个工具**，含每条的入参与实测返回结构）。
+
+**还没做**：BLE（第二批）、ADB/WSL（第三批）、全局（第四批），以及**危险动作的二次确认**（设计 §9 仍未实现）。
+
 ### 2026-09-13 · **用官方 Python SDK 当独立客户端做一致性检查 → 抓出 3 个真问题** ✅（这是回答"要不要装 mcp-bench"之后该做的事）
 
 **做法**：不装 mcp-bench（原因见下一条记录），改用 **Anthropic 官方 Python SDK**（`mcp` 2.2.0）

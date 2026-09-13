@@ -55,6 +55,19 @@ for (;;) {
 
 // 逐个工具的「读/写」+「返回结构」+ 备注（返回结构取自对真实服务实调抓的 structuredContent）
 const META = {
+  // ===== 串口语义工具（S12）=====
+  serial_get_state: ['读', '{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, advOpen, outputLines, outputBytes, historyCount, panes}', '**操作串口前先调它**；省略 pane 默认 main'],
+  serial_select_port: ['写', '{pane, applied:[{name,ok,from,to}]}', '值必须是 serial_list_ports 里的端口名；给错会回列可选值（来自界面下拉的真实选项）'],
+  serial_set_baud: ['写', '同上', '110..4000000；越界报 -32602'],
+  serial_set_frame: ['写', '同上', 'dataBits/stopBits/parity 至少给一个；**连接中改帧格式无效**，先 serial_close'],
+  serial_set_lines: ['写', '同上', 'dtr/rts 布尔；常用于让目标板复位或进下载模式'],
+  serial_set_display: ['写', '同上', 'viewMode/lineEnding/echo/lineNum/timestamp/autoScroll/autoReconnect/terminalMode'],
+  serial_open: ['写', '{pane, connected:true, state:{…}}', '**会等最多 6 秒确认真连上**；失败 → isError:true（-32006）并给出可能原因，不是乐观返回'],
+  serial_close: ['写', '{pane, connected:false, state:{…}}', '会等最多 3 秒确认已断开'],
+  serial_send: ['写', '{pane, sent:true, mode, bytes, data}', '需要该分栏已在监控中；mode=hex 时 data 按十六进制解析；lineEnding 会**留在界面上**（不是临时覆盖）'],
+  serial_clear: ['写', '{pane, cleared:true, outputLines}', '**只清界面**，不动磁盘会话日志缓存'],
+  serial_get_history: ['读', '{pane, total, items:[…]}', '最近的在前'],
+  serial_quick_cmd: ['读', '{pane, items:[{index,label,value}], usable}', '不带 index 只列；带 index 才执行（→ {pane, ran, label, value}）'],
   app_info: ['读', '`{name, version, profile, os, arch, pid, uptimeSecs}`', ''],
   mcp_status: ['读', '打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`', '**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）'],
   mcp_limits: ['读', '`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels}`', '用来判断会不会被限流/丢弃'],
@@ -78,6 +91,7 @@ const META = {
 };
 
 const GROUPS = [
+  ['串口语义工具（**优先用这些**，比 ui_* 通用桥更准）', ['serial_get_state', 'serial_select_port', 'serial_set_baud', 'serial_set_frame', 'serial_set_lines', 'serial_set_display', 'serial_open', 'serial_close', 'serial_send', 'serial_clear', 'serial_get_history', 'serial_quick_cmd']],
   ['应用与服务器', ['app_info', 'mcp_status', 'mcp_limits', 'serial_list_ports']],
   ['界面操作（走合成 DOM 事件，和用户点击同一条路径）', ['ui_list', 'ui_describe', 'ui_get', 'ui_set', 'ui_click', 'ui_get_state']],
   ['日志中心', ['log_channels', 'log_tail', 'log_search', 'log_stats', 'log_clear', 'log_export']],

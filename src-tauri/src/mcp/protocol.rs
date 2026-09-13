@@ -83,6 +83,168 @@ pub fn tool_defs() -> Vec<Value> {
             "description": "枚举本机可用串口（端口名 / 友好名称 / 产品名）。只读，不会打开端口。返回 {count, ports:[…]}。",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
+        // ===== 串口语义工具（S12）=====
+        // 为什么要有它们：通用控件桥（ui_*）用"控件路径"寻址，多分栏时会撞名、也读不懂意图；
+        // 而 AI 真正要表达的是"选 COM3 / 波特率 115200 / 开始监控 / 发这一帧"。
+        // 实现上**不另写一套逻辑**：改值走前端 mcpWriteEl（与 ui_set 同一函数）、点按钮走 el.click()，
+        // 所以界面必然跟着变。分栏用 pane（main / extra-1 / …）指定，省略即 main。
+        json!({
+            "name": "serial_get_state",
+            "description": "读某个串口分栏的完整状态：端口、波特率、帧格式(数据位/停止位/校验)、行尾、DTR/RTS、查看模式、行号/时间戳/回显/自动滚动/自动重连/终端模式、**是否正在监控**、输出行数与字节数、发送历史条数、以及全部分栏名。省略 pane 默认 main。**操作串口前先调它**。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pane": { "type": "string", "description": "分栏名：main / extra-1 / extra-2 …；省略=main" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "serial_select_port",
+            "description": "选串口分栏要用的端口（等价于在「端口」下拉里选一项）。值必须是 serial_list_ports 返回的端口名；给错会回列可选值。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "port": { "type": "string", "description": "端口名，如 COM3" },
+                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                },
+                "required": ["port"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "serial_set_baud",
+            "description": "设置波特率（110..4000000）。等价于在「波特率」输入框里填值。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "baud": { "type": "number", "description": "波特率，如 115200" },
+                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                },
+                "required": ["baud"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "serial_set_frame",
+            "description": "设置串口帧格式：dataBits(5|6|7|8) / stopBits(1|2) / parity(none|odd|even)。至少给一个（在「更多设置」里）。**改帧格式只在未连接时有意义**，连接中请先 serial_close。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "dataBits": { "type": "string", "enum": ["5", "6", "7", "8"] },
+                    "stopBits": { "type": "string", "enum": ["1", "2"] },
+                    "parity": { "type": "string", "enum": ["none", "odd", "even"] },
+                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "serial_set_lines",
+            "description": "设置 DTR / RTS 电平（布尔）。常用于让目标板复位（DTR 拉低）或进入下载模式。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "dtr": { "type": "boolean" },
+                    "rts": { "type": "boolean" },
+                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "serial_set_display",
+            "description": "设置显示与行为开关：viewMode(text|hex)、lineEnding(crlf|lf|cr|none)、echo(消息回显)、lineNum(行号)、timestamp(时间戳)、autoScroll(自动滚动)、autoReconnect(自动重连)、terminalMode(终端模式)。至少给一个。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "viewMode": { "type": "string", "enum": ["text", "hex"] },
+                    "lineEnding": { "type": "string", "enum": ["crlf", "lf", "cr", "none"] },
+                    "echo": { "type": "boolean" },
+                    "lineNum": { "type": "boolean" },
+                    "timestamp": { "type": "boolean" },
+                    "autoScroll": { "type": "boolean" },
+                    "autoReconnect": { "type": "boolean" },
+                    "terminalMode": { "type": "boolean" },
+                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "serial_open",
+            "description": "**开始监控**（等价于点「开始监控」按钮）。可以同时给 port/baud 一次设定，省两次调用。返回前会**确认真的连上**（最多等 6 秒）；失败会说明可能原因（端口被占用/设备拔出/驱动异常）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "port": { "type": "string", "description": "可选：先选端口再打开" },
+                    "baud": { "type": "number", "description": "可选：先设波特率再打开" },
+                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "serial_close",
+            "description": "停止监控（等价于点「停止监控」），返回前确认已断开。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "serial_send",
+            "description": "往串口发数据。mode=hex 时 data 按十六进制字节解析（如 \"01 03 00 00 00 02\"），否则按文本发。lineEnding 可临时覆盖该分栏的行尾设置。需要该分栏已在监控中。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "data": { "type": "string", "description": "要发送的内容（文本或 HEX 串）" },
+                    "mode": { "type": "string", "enum": ["text", "hex"], "description": "发送模式，默认沿用界面当前设置" },
+                    "lineEnding": { "type": "string", "enum": ["crlf", "lf", "cr", "none"], "description": "临时改行尾（改完会留在界面上）" },
+                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                },
+                "required": ["data"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "serial_clear",
+            "description": "清空该分栏的输出区内容（等价于点「清除内容」）。**只清界面显示，不动磁盘上的会话日志缓存文件。**",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "serial_get_history",
+            "description": "读该分栏的发送历史（最近的在前）。用来回看刚才发过什么，或复用上一条指令。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "number", "description": "最多返回多少条，默认 20，上限 200" },
+                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "serial_quick_cmd",
+            "description": "快速指令（发送栏右侧那个下拉）：不带 index 就**列出全部**（含每条是否已配内容）；给了 index 就**执行**第 index 条。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "index": { "type": "number", "description": "要执行的快速指令下标（从 0 开始）；省略=只列不执行" },
+                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                },
+                "additionalProperties": false
+            }
+        }),
         // ===== 通用界面桥（S5）：保证"没有任何控件够不到" =====
         json!({
             "name": "ui_list",
@@ -356,6 +518,130 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
                 "ports": arr,
             }))
         }
+        // ===== 串口语义工具（S12）=====
+        // 校验在后端做（报文级），真正的取控件与"改/点"在前端，走的还是 ui_set/ui_click 那条路。
+        "serial_get_state" => serial_call(core, "state", args, json!({})).await,
+        "serial_select_port" => {
+            let port = require_str(args, "port")?;
+            serial_apply(core, args, json!([{ "name": "port", "value": port }])).await
+        }
+        "serial_set_baud" => {
+            let baud = args
+                .get("baud")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| RpcError::new(E_INVALID_PARAMS, "baud 必须是整数（110..4000000）"))?;
+            if !(110..=4_000_000).contains(&baud) {
+                return Err(RpcError::new(
+                    E_INVALID_PARAMS,
+                    format!("波特率 {} 超出范围（110..4000000）", baud),
+                ));
+            }
+            serial_apply(core, args, json!([{ "name": "baud", "value": baud }])).await
+        }
+        "serial_set_frame" => {
+            let mut items: Vec<Value> = Vec::new();
+            for k in ["dataBits", "stopBits", "parity"] {
+                if let Some(v) = args.get(k) {
+                    items.push(json!({ "name": k, "value": v }));
+                }
+            }
+            if items.is_empty() {
+                return Err(RpcError::new(
+                    E_INVALID_PARAMS,
+                    "至少要给一个：dataBits / stopBits / parity",
+                ));
+            }
+            serial_apply(core, args, json!(items)).await
+        }
+        "serial_set_lines" => {
+            let mut items: Vec<Value> = Vec::new();
+            for k in ["dtr", "rts"] {
+                if let Some(v) = args.get(k) {
+                    if !v.is_boolean() {
+                        return Err(RpcError::new(E_INVALID_PARAMS, format!("{} 必须是布尔值", k)));
+                    }
+                    items.push(json!({ "name": k, "value": v }));
+                }
+            }
+            if items.is_empty() {
+                return Err(RpcError::new(E_INVALID_PARAMS, "至少要给一个：dtr / rts"));
+            }
+            serial_apply(core, args, json!(items)).await
+        }
+        "serial_set_display" => {
+            let mut items: Vec<Value> = Vec::new();
+            for k in [
+                "viewMode", "lineEnding", "echo", "lineNum", "timestamp",
+                "autoScroll", "autoReconnect", "terminalMode",
+            ] {
+                if let Some(v) = args.get(k) {
+                    items.push(json!({ "name": k, "value": v }));
+                }
+            }
+            if items.is_empty() {
+                return Err(RpcError::new(
+                    E_INVALID_PARAMS,
+                    "至少要给一个：viewMode / lineEnding / echo / lineNum / timestamp / autoScroll / autoReconnect / terminalMode",
+                ));
+            }
+            serial_apply(core, args, json!(items)).await
+        }
+        "serial_open" => {
+            // 先落可选的 port/baud（不合法会被 apply 那套挡住并回列可选值）
+            let mut pre: Vec<Value> = Vec::new();
+            if let Some(p) = args.get("port") {
+                pre.push(json!({ "name": "port", "value": p }));
+            }
+            if let Some(b) = args.get("baud") {
+                pre.push(json!({ "name": "baud", "value": b }));
+            }
+            if !pre.is_empty() {
+                serial_apply(core, args, json!(pre)).await?;
+            }
+            serial_set_connected(core, args, true).await
+        }
+        "serial_close" => serial_set_connected(core, args, false).await,
+        "serial_send" => {
+            let data = require_str(args, "data")?;
+            // mode / lineEnding 给了就先落到界面（与用户在界面上改是同一条路）
+            let mut pre: Vec<Value> = Vec::new();
+            if let Some(m) = opt_str(args, "mode") {
+                let m = m.to_ascii_lowercase();
+                if m != "text" && m != "hex" {
+                    return Err(RpcError::new(E_INVALID_PARAMS, "mode 只能是 text 或 hex"));
+                }
+                pre.push(json!({ "name": "sendAs", "value": m }));
+            }
+            if let Some(le) = opt_str(args, "lineEnding") {
+                pre.push(json!({ "name": "lineEnding", "value": le }));
+            }
+            if !pre.is_empty() {
+                // sendAs 不在"字段表"里（它是发送栏那个自定义控件），单独走一次点击式设置
+                for item in &pre {
+                    if item["name"] == "sendAs" {
+                        let mode = item["value"].as_str().unwrap_or("text");
+                        let mut p = json!({ "action": "setSendAs", "mode": mode });
+                        if let Some(pane) = opt_str(args, "pane") {
+                            p["pane"] = json!(pane);
+                        }
+                        core.ui_call("serial", p).await?;
+                    } else {
+                        serial_apply(core, args, json!([item.clone()])).await?;
+                    }
+                }
+            }
+            serial_call(core, "send", args, json!({ "data": data })).await
+        }
+        "serial_clear" => serial_call(core, "clear", args, json!({})).await,
+        "serial_get_history" => {
+            serial_call(core, "history", args, json!({ "limit": args.get("limit").cloned().unwrap_or(json!(20)) })).await
+        }
+        "serial_quick_cmd" => {
+            match args.get("index") {
+                Some(i) => serial_call(core, "quickRun", args, json!({ "index": i })).await,
+                None => serial_call(core, "quickList", args, json!({})).await,
+            }
+        }
         // ===== 界面桥：全部经 core.ui_call → 前端执行 → 回执 =====
         "ui_list" => core.ui_call("list", args.clone()).await,
         "ui_describe" => {
@@ -538,6 +824,83 @@ pub fn limits_json() -> Value {
 }
 
 // ===== 分派 =====
+
+/// 组装一次串口语义调用（把 pane 透传下去）
+async fn serial_call(
+    core: &Arc<McpCore>,
+    action: &str,
+    args: &Value,
+    extra: Value,
+) -> Result<Value, RpcError> {
+    let mut payload = extra;
+    payload["action"] = json!(action);
+    if let Some(pane) = opt_str(args, "pane") {
+        payload["pane"] = json!(pane);
+    }
+    core.ui_call("serial", payload).await
+}
+
+/// 批量改字段/开关（前端按"字段表 / 开关表"决定是写值还是切 class）
+async fn serial_apply(core: &Arc<McpCore>, args: &Value, items: Value) -> Result<Value, RpcError> {
+    serial_call(core, "apply", args, json!({ "items": items })).await
+}
+
+/// 开/关监控：点按钮 → **轮询确认状态** → 返回真实状态。
+///
+/// 为什么不能点完就返回：串口打开是异步的，点下去只代表"按钮被按下"。
+/// 让工具自己等状态变化，调用方（AI）拿到的才是事实，而不是一个乐观的猜测。
+/// 失败用 `E_DEVICE_NOT_READY`（按协议会变成 result + `isError: true`，不是 JSON-RPC 错误）。
+async fn serial_set_connected(
+    core: &Arc<McpCore>,
+    args: &Value,
+    open: bool,
+) -> Result<Value, RpcError> {
+    let st = serial_call(core, "state", args, json!({})).await?;
+    let connected = st["isConnected"].as_bool().unwrap_or(false);
+    let pane = st["pane"].as_str().unwrap_or("main").to_string();
+    if connected == open {
+        return Ok(json!({
+            "pane": pane,
+            "connected": connected,
+            "note": if open { "本来就在监控中，无需重复打开" } else { "本来就没在监控" },
+            "state": st,
+        }));
+    }
+
+    let mut click = json!({ "action": "click", "name": "start" });
+    if let Some(p) = opt_str(args, "pane") {
+        click["pane"] = json!(p);
+    }
+    core.ui_call("serial", click).await?;
+
+    let wait_ms = if open { 6000 } else { 3000 };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+    // 注意：`last` 每轮都会被赋值后才被读（超时分支与收尾都用的是本轮的值），
+    // 所以不要用 `st` 预初始化 —— 那样编译器会报"赋了没读"。
+    let mut last;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let now = serial_call(core, "state", args, json!({})).await?;
+        let reached = now["isConnected"].as_bool().unwrap_or(false) == open;
+        last = now;
+        if reached {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(RpcError::new(
+                E_DEVICE_NOT_READY,
+                format!(
+                    "点了「{}」，但 {} 秒内状态没变成 connected={}（当前 {}）。常见原因：端口被占用、设备被拔出、驱动异常、或波特率/流控不被设备接受。详情看界面报错或 log_tail(channel=\"error\")。",
+                    if open { "开始监控" } else { "停止监控" },
+                    wait_ms / 1000,
+                    open,
+                    if last["isConnected"].as_bool().unwrap_or(false) { "仍在监控中" } else { "仍未连接" }
+                ),
+            ));
+        }
+    }
+    Ok(json!({ "pane": pane, "connected": open, "state": last }))
+}
 
 fn ok_response(id: Value, result: Value) -> String {
     json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()

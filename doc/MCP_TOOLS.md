@@ -21,12 +21,24 @@
 
 - 运行时：`tools/list`（分页，每页 50，用 `nextCursor` 翻页）——这是**权威来源**，本页只是它的可读版本。
 - `mcp_limits` / `mcp_status` 里的 `toolCount` / `builtinToolCount` 能看到数量。
-- 内置工具 **20 个**；另有可选的 `ctl_*`（见 §4）。
+- 内置工具 **32 个**；另有可选的 `ctl_*`（见 §4）。
 
 ## 3. 一页速查
 
 | 工具 | 读/写 | 作用 |
 |---|---|---|
+| [`serial_get_state`](#serial-get-state) | 读 | 读某个串口分栏的完整状态：端口、波特率、帧格式(数据位/停止位/校验)、行尾、DTR/RTS、查看模式、行号/时间戳/回显/自动滚动/自动重连/终端模式、**是否正在监控**、输出行数与字节数、发送历史条数、以及全部分栏名。省略 pane 默认 main。**操作串口前先调它**。 |
+| [`serial_select_port`](#serial-select-port) | **写** | 选串口分栏要用的端口（等价于在「端口」下拉里选一项）。值必须是 serial_list_ports 返回的端口名；给错会回列可选值。 |
+| [`serial_set_baud`](#serial-set-baud) | **写** | 设置波特率（110..4000000）。等价于在「波特率」输入框里填值。 |
+| [`serial_set_frame`](#serial-set-frame) | **写** | 设置串口帧格式：dataBits(5|6|7|8) / stopBits(1|2) / parity(none|odd|even)。至少给一个（在「更多设置」里）。**改帧格式只在未连接时有意义**，连接中请先 serial_close。 |
+| [`serial_set_lines`](#serial-set-lines) | **写** | 设置 DTR / RTS 电平（布尔）。常用于让目标板复位（DTR 拉低）或进入下载模式。 |
+| [`serial_set_display`](#serial-set-display) | **写** | 设置显示与行为开关：viewMode(text|hex)、lineEnding(crlf|lf|cr|none)、echo(消息回显)、lineNum(行号)、timestamp(时间戳)、autoScroll(自动滚动)、autoReconnect(自动重连)、terminalMode(终端模式)。至少给一个。 |
+| [`serial_open`](#serial-open) | **写** | **开始监控**（等价于点「开始监控」按钮）。可以同时给 port/baud 一次设定，省两次调用。返回前会**确认真的连上**（最多等 6 秒）；失败会说明可能原因（端口被占用/设备拔出/驱动异常）。 |
+| [`serial_close`](#serial-close) | **写** | 停止监控（等价于点「停止监控」），返回前确认已断开。 |
+| [`serial_send`](#serial-send) | **写** | 往串口发数据。mode=hex 时 data 按十六进制字节解析（如 "01 03 00 00 00 02"），否则按文本发。lineEnding 可临时覆盖该分栏的行尾设置。需要该分栏已在监控中。 |
+| [`serial_clear`](#serial-clear) | **写** | 清空该分栏的输出区内容（等价于点「清除内容」）。**只清界面显示，不动磁盘上的会话日志缓存文件。** |
+| [`serial_get_history`](#serial-get-history) | 读 | 读该分栏的发送历史（最近的在前）。用来回看刚才发过什么，或复用上一条指令。 |
+| [`serial_quick_cmd`](#serial-quick-cmd) | 读 | 快速指令（发送栏右侧那个下拉）：不带 index 就**列出全部**（含每条是否已配内容）；给了 index 就**执行**第 index 条。 |
 | [`app_info`](#app-info) | 读 | 本机 SeaHi Serial 应用的基本信息（版本、平台、进程、运行时长）。只读，无副作用。 |
 | [`mcp_status`](#mcp-status) | 读 | MCP 服务器自身状态：是否运行、监听端点、会话数、请求数与限流/丢弃计数。只读。 |
 | [`mcp_limits`](#mcp-limits) | 读 | MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。 |
@@ -51,6 +63,186 @@
 > 「写」= 会改变程序状态（界面 / 日志缓存 / AI 配置）。AI 调用这些工具时请先确认意图。
 
 ## 4. 逐个工具
+
+### 串口语义工具（**优先用这些**，比 ui_* 通用桥更准）
+
+#### `serial_get_state`
+
+- **作用**：读某个串口分栏的完整状态：端口、波特率、帧格式(数据位/停止位/校验)、行尾、DTR/RTS、查看模式、行号/时间戳/回显/自动滚动/自动重连/终端模式、**是否正在监控**、输出行数与字节数、发送历史条数、以及全部分栏名。省略 pane 默认 main。**操作串口前先调它**。
+- **读/写**：只读，无副作用
+- **返回**：{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, advOpen, outputLines, outputBytes, historyCount, panes}
+- **注意**：**操作串口前先调它**；省略 pane 默认 main
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `pane` | string | 否 | 分栏名：main / extra-1 / extra-2 …；省略=main |
+
+#### `serial_select_port`
+
+- **作用**：选串口分栏要用的端口（等价于在「端口」下拉里选一项）。值必须是 serial_list_ports 返回的端口名；给错会回列可选值。
+- **读/写**：**写**（会改状态）
+- **返回**：{pane, applied:[{name,ok,from,to}]}
+- **注意**：值必须是 serial_list_ports 里的端口名；给错会回列可选值（来自界面下拉的真实选项）
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `port` | string | **是** | 端口名，如 COM3 |
+| `pane` | string | 否 | 分栏名，省略=main |
+
+#### `serial_set_baud`
+
+- **作用**：设置波特率（110..4000000）。等价于在「波特率」输入框里填值。
+- **读/写**：**写**（会改状态）
+- **返回**：同上
+- **注意**：110..4000000；越界报 -32602
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `baud` | number | **是** | 波特率，如 115200 |
+| `pane` | string | 否 | 分栏名，省略=main |
+
+#### `serial_set_frame`
+
+- **作用**：设置串口帧格式：dataBits(5|6|7|8) / stopBits(1|2) / parity(none|odd|even)。至少给一个（在「更多设置」里）。**改帧格式只在未连接时有意义**，连接中请先 serial_close。
+- **读/写**：**写**（会改状态）
+- **返回**：同上
+- **注意**：dataBits/stopBits/parity 至少给一个；**连接中改帧格式无效**，先 serial_close
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `dataBits` | string | 否 | 枚举：`5` / `6` / `7` / `8` |
+| `stopBits` | string | 否 | 枚举：`1` / `2` |
+| `parity` | string | 否 | 枚举：`none` / `odd` / `even` |
+| `pane` | string | 否 | 分栏名，省略=main |
+
+#### `serial_set_lines`
+
+- **作用**：设置 DTR / RTS 电平（布尔）。常用于让目标板复位（DTR 拉低）或进入下载模式。
+- **读/写**：**写**（会改状态）
+- **返回**：同上
+- **注意**：dtr/rts 布尔；常用于让目标板复位或进下载模式
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `dtr` | boolean | 否 |  |
+| `rts` | boolean | 否 |  |
+| `pane` | string | 否 | 分栏名，省略=main |
+
+#### `serial_set_display`
+
+- **作用**：设置显示与行为开关：viewMode(text|hex)、lineEnding(crlf|lf|cr|none)、echo(消息回显)、lineNum(行号)、timestamp(时间戳)、autoScroll(自动滚动)、autoReconnect(自动重连)、terminalMode(终端模式)。至少给一个。
+- **读/写**：**写**（会改状态）
+- **返回**：同上
+- **注意**：viewMode/lineEnding/echo/lineNum/timestamp/autoScroll/autoReconnect/terminalMode
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `viewMode` | string | 否 | 枚举：`text` / `hex` |
+| `lineEnding` | string | 否 | 枚举：`crlf` / `lf` / `cr` / `none` |
+| `echo` | boolean | 否 |  |
+| `lineNum` | boolean | 否 |  |
+| `timestamp` | boolean | 否 |  |
+| `autoScroll` | boolean | 否 |  |
+| `autoReconnect` | boolean | 否 |  |
+| `terminalMode` | boolean | 否 |  |
+| `pane` | string | 否 | 分栏名，省略=main |
+
+#### `serial_open`
+
+- **作用**：**开始监控**（等价于点「开始监控」按钮）。可以同时给 port/baud 一次设定，省两次调用。返回前会**确认真的连上**（最多等 6 秒）；失败会说明可能原因（端口被占用/设备拔出/驱动异常）。
+- **读/写**：**写**（会改状态）
+- **返回**：{pane, connected:true, state:{…}}
+- **注意**：**会等最多 6 秒确认真连上**；失败 → isError:true（-32006）并给出可能原因，不是乐观返回
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `port` | string | 否 | 可选：先选端口再打开 |
+| `baud` | number | 否 | 可选：先设波特率再打开 |
+| `pane` | string | 否 | 分栏名，省略=main |
+
+#### `serial_close`
+
+- **作用**：停止监控（等价于点「停止监控」），返回前确认已断开。
+- **读/写**：**写**（会改状态）
+- **返回**：{pane, connected:false, state:{…}}
+- **注意**：会等最多 3 秒确认已断开
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `pane` | string | 否 | 分栏名，省略=main |
+
+#### `serial_send`
+
+- **作用**：往串口发数据。mode=hex 时 data 按十六进制字节解析（如 "01 03 00 00 00 02"），否则按文本发。lineEnding 可临时覆盖该分栏的行尾设置。需要该分栏已在监控中。
+- **读/写**：**写**（会改状态）
+- **返回**：{pane, sent:true, mode, bytes, data}
+- **注意**：需要该分栏已在监控中；mode=hex 时 data 按十六进制解析；lineEnding 会**留在界面上**（不是临时覆盖）
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `data` | string | **是** | 要发送的内容（文本或 HEX 串） |
+| `mode` | string | 否 | 枚举：`text` / `hex` 发送模式，默认沿用界面当前设置 |
+| `lineEnding` | string | 否 | 枚举：`crlf` / `lf` / `cr` / `none` 临时改行尾（改完会留在界面上） |
+| `pane` | string | 否 | 分栏名，省略=main |
+
+#### `serial_clear`
+
+- **作用**：清空该分栏的输出区内容（等价于点「清除内容」）。**只清界面显示，不动磁盘上的会话日志缓存文件。**
+- **读/写**：**写**（会改状态）
+- **返回**：{pane, cleared:true, outputLines}
+- **注意**：**只清界面**，不动磁盘会话日志缓存
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `pane` | string | 否 | 分栏名，省略=main |
+
+#### `serial_get_history`
+
+- **作用**：读该分栏的发送历史（最近的在前）。用来回看刚才发过什么，或复用上一条指令。
+- **读/写**：只读，无副作用
+- **返回**：{pane, total, items:[…]}
+- **注意**：最近的在前
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `limit` | number | 否 | 最多返回多少条，默认 20，上限 200 |
+| `pane` | string | 否 | 分栏名，省略=main |
+
+#### `serial_quick_cmd`
+
+- **作用**：快速指令（发送栏右侧那个下拉）：不带 index 就**列出全部**（含每条是否已配内容）；给了 index 就**执行**第 index 条。
+- **读/写**：只读，无副作用
+- **返回**：{pane, items:[{index,label,value}], usable}
+- **注意**：不带 index 只列；带 index 才执行（→ {pane, ran, label, value}）
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `index` | number | 否 | 要执行的快速指令下标（从 0 开始）；省略=只列不执行 |
+| `pane` | string | 否 | 分栏名，省略=main |
 
 ### 应用与服务器
 
