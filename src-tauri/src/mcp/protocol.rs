@@ -1941,7 +1941,8 @@ mod tests {
                     "builtinToolCount", "callLog", "configFile", "dropped", "enabled", "endpointFile",
                     "errorReports", "hasUi", "host", "lastError", "limits", "logHub", "maxSessions",
                     "port", "registry", "requests", "running", "sessions", "stateChanges",
-                    "tokenMasked", "toolCalls", "toolCount", "uiInFlight", "uptimeSecs", "version",
+                    "statusEmits", "tokenMasked", "toolCalls", "toolCount", "uiInFlight",
+                    "uptimeSecs", "version",
                 ], &["urlMasked"])),
                 ("serial_list_ports", json!({}), Backend(&["count", "ports"], &[])),
                 ("log_channels", json!({}), Backend(&[

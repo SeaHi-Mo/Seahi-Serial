@@ -54,6 +54,9 @@ pub struct McpCore {
     pub requests: AtomicU64,
     /// 因慢消费者被丢弃的 SSE 报文数
     pub dropped: AtomicU64,
+    /// 往前端推过多少次状态。单测用它断言"会话增减真的推了"（推不动时也要计数，
+    /// 否则测试得有 AppHandle 才能验证）。
+    pub status_emits: AtomicU64,
     /// 各工具被调用次数
     pub tool_calls: Mutex<std::collections::HashMap<String, u64>>,
     /// 前端 AppHandle：只有在 Tauri 里启动时才有（单测里为 None，所以本类型仍可脱离 Tauri 构造）
@@ -95,6 +98,7 @@ impl McpCore {
             shutdown: AtomicBool::new(false),
             requests: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
+            status_emits: AtomicU64::new(0),
             tool_calls: Mutex::new(std::collections::HashMap::new()),
             app: Mutex::new(None),
             bridge: bridge::UiBridge::default(),
@@ -153,6 +157,23 @@ impl McpCore {
         bridge::unwrap_ui_result(v)
     }
 
+    /// 把状态推给前端（标题栏状态点 + 弹窗里的会话数都用它）。
+    ///
+    /// 为什么要有这个方法（而不是只在 `mod.rs` 里留个带 `AppHandle` 的自由函数）：
+    /// **会话是在 `transport` 里增删的**（连上一条 SSE / 断开时回收），那里只有 `Arc<McpCore>`、
+    /// 拿不到 `AppHandle`。以前只有"启动 / 启停 / 重置令牌"会推状态，于是**客户端明明连上了，
+    /// 界面还一直显示「0 个会话」**（用户 2026-09-13 报的）—— 而弹窗只在**打开那一瞬间**拉一次，
+    /// 先开着弹窗再连客户端就永远看不到变化。`status_emits` 让单测能断言"真的推了"。
+    pub fn emit_status(&self) {
+        self.status_emits.fetch_add(1, Ordering::Relaxed);
+        let Some(app) = self.app_handle() else {
+            return; // 单测 / 无界面：只计数，不推
+        };
+        use tauri::Emitter;
+        // 推失败（比如窗口已关）不该影响任何东西
+        let _ = app.emit("mcp-status-changed", self.status_json());
+    }
+
     /// 前端报来的界面状态变更
     pub fn notify_state(&self, paths: &[String], origin: &str) -> Value {
         self.state_changes.fetch_add(1, Ordering::Relaxed);
@@ -201,6 +222,10 @@ impl McpCore {
             "token": cfg.server.token,
             "tokenMasked": aiconfig::mask_token(&cfg.server.token),
             "sessions": self.sessions.len(),
+            // 往前端推过多少次状态。**故意暴露出来**：'客户端连上了界面还显示 0 会话'
+            // 这种 bug 以前完全不可观测（服务器侧一直是对的），有了它就能从线上直接判断
+            // "会话增减到底推没推"。
+            "statusEmits": self.status_emits.load(Ordering::Relaxed),
             "maxSessions": MAX_SESSIONS,
             "requests": self.requests.load(Ordering::Relaxed),
             "dropped": self.dropped.load(Ordering::Relaxed),
@@ -673,12 +698,12 @@ pub fn autostart(app: &tauri::AppHandle) {
     }
     match start(&core, Some(app)) {
         Ok(_) => {
-            emit_status(app, &core);
+            core.emit_status();
         }
         Err(e) => {
             // 硬性约束：MCP 起不来不能让应用出问题
             crate::dbg_log(&format!("mcp: autostart 失败（不影响主功能）: {}", e));
-            emit_status(app, &core);
+            core.emit_status();
         }
     }
 }
@@ -691,13 +716,6 @@ pub fn shutdown_on_exit(app: &tauri::AppHandle) {
             stop(&s.0);
         }
     }
-}
-
-/// 把状态推给前端（图标上的小圆点与弹窗用它更新）
-fn emit_status(app: &tauri::AppHandle, core: &Arc<McpCore>) {
-    use tauri::Emitter;
-    // 推事件失败（比如窗口已关）不该影响任何东西
-    let _ = app.emit("mcp-status-changed", core.status_json());
 }
 
 // ===== Tauri 命令 =====
@@ -732,7 +750,7 @@ pub fn mcp_set_enabled(
     } else {
         stop(&core);
     }
-    emit_status(&app, &core);
+    core.emit_status();
     core.status_json()
 }
 
@@ -754,7 +772,7 @@ pub fn mcp_reset_token(app: tauri::AppHandle, state: tauri::State<'_, McpState>)
     if was_running {
         let _ = start(&core, Some(&app));
     }
-    emit_status(&app, &core);
+    core.emit_status();
     core.status_json()
 }
 
@@ -1092,6 +1110,50 @@ mod tests {
             assert!(bad.starts_with("HTTP/1.1 404"), "未知会话应 404: {}", bad);
 
             core.shutdown.store(true, Ordering::Relaxed);
+        });
+    }
+
+    /// **会话增减必须推状态给界面**。
+    ///
+    /// 用户报的现象："明明已经有个客户端连接上了，界面一直显示 0 会话。"
+    /// 服务器侧是对的（`mcp_status.sessions` 确实是 1），错在**没人告诉界面**：
+    /// 会话是在 `transport` 里增删的、只有 `Arc<McpCore>`，而当时的推送只发生在
+    /// "启动/启停/重置令牌"三处 —— 弹窗又只在打开那一瞬间拉一次，先开着弹窗再连就永远是 0。
+    /// 这里钉住"连上推一次、断开推一次"。
+    #[test]
+    fn session_add_and_remove_push_status_to_the_ui() {
+        let rt = rt();
+        let core = test_core();
+        rt.block_on(async {
+            let port = serve(core.clone(), "127.0.0.1", 0).await.expect("起服务");
+            let before = core.status_emits.load(Ordering::Relaxed);
+            {
+                let mut sse = Sse {
+                    stream: connect(port).await,
+                    acc: String::new(),
+                };
+                sse.stream
+                    .write_all(get_req("/sse?token=testtoken").as_bytes())
+                    .await
+                    .unwrap();
+                assert!(sse.read_until("event: endpoint", 3000).await, "没收到 endpoint 帧");
+                assert!(
+                    core.status_emits.load(Ordering::Relaxed) > before,
+                    "会话建立后必须推一次状态（否则界面永远显示 0 会话）"
+                );
+            }
+            let after_connect = core.status_emits.load(Ordering::Relaxed);
+            for _ in 0..40 {
+                if core.sessions.len() == 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            assert_eq!(core.sessions.len(), 0, "会话应已回收");
+            assert!(
+                core.status_emits.load(Ordering::Relaxed) > after_connect,
+                "会话断开后也要推一次（否则界面上的会话数不会回落）"
+            );
         });
     }
 

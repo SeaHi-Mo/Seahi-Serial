@@ -281,8 +281,8 @@
 
 - **作用**：MCP 服务器自身状态：是否运行、监听端点、会话数、请求数与限流/丢弃计数。只读。
 - **读/写**：只读，无副作用
-- **返回**：打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`
-- **注意**：**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）
+- **返回**：打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/statusEmits/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`
+- **注意**：**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新
 
 **入参**
 

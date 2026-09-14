@@ -1986,6 +1986,13 @@ console.log('preview ->', out);
   check(/overflow-y:auto;/.test(html.split('id="mcpModal"')[1] || ''),
     '弹窗主体可滚动（窗口太矮时不会把内容裁掉）');
   check(/listen\('mcp-status-changed'/.test(html), '前端监听后端的状态变化事件');
+  // 会话增减现在会推状态（后端 transport 里调 core.emit_status）。钉住两端：
+  // 后端"连上/断开各推一次"由 Rust 测试 session_add_and_remove_push_status_to_the_ui 守着；
+  // 这里守前端——事件来了必须用 payload 重画，而不是拿旧缓存重画（那样等于没更新）。
+  check(/listen\('mcp-status-changed', function\(ev\) \{[\s\S]{0,160}?_mcpStatus = ev && ev\.payload;/.test(html),
+    '状态事件必须用 ev.payload 更新缓存再重画（不能用旧 _mcpStatus 重画，那样界面永远不变）');
+  check(/function openMcpModal\(\)[\s\S]{0,200}?refreshMcpStatus\(\);/.test(html),
+    '打开弹窗时主动拉一次状态（推送漏了也能纠正）');
 
   // ---- MCP 模块源码（命令实现与隔离性都在这里，不在 main.rs）----
   const mcpDir = path.join(root, 'src-tauri', 'src', 'mcp');

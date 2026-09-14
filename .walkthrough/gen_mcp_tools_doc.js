@@ -70,7 +70,7 @@ const META = {
   serial_get_output: ['读', '{pane, direction, isConnected, channels:{rx,tx}, count, items:[{seq,ts,dir,text,bytes}], truncated, note?}', '**串口监视器的核心：读设备回了什么**。默认收+发按时间归并；数据与 `log_tail` 同一份存储，但**不需要你知道通道名**，且"还没收到数据"返回空列表 + note 而不是报错'],
   serial_quick_cmd: ['读', '{pane, items:[{index,label,value}], usable}', '不带 index 只列；带 index 才执行（→ {pane, ran, label, value}）'],
   app_info: ['读', '`{name, version, profile, os, arch, pid, uptimeSecs}`', ''],
-  mcp_status: ['读', '打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`', '**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）'],
+  mcp_status: ['读', '打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/statusEmits/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`', '**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新'],
   mcp_limits: ['读', '`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels}`', '用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**'],
   serial_list_ports: ['读', '`{count, ports:[{portName, friendlyName, productName}]}`', '不会打开端口；**端口名在 `portName`**（字段一律驼峰，别去猜 `port_name`）'],
   ui_list: ['读', '`{total, controls:[{path, kind, panel, group, label, enabled, disabledReason, value?, options?}], nextCursor?}`', '`enabled=false` 时 `disabledReason` 会说明原因（如"串口未连接"）；建议先枚举再操作'],

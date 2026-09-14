@@ -313,6 +313,8 @@ fn open_sse(core: &Arc<McpCore>, query: &str, _port: u16) -> Response<RespBody> 
     );
     drop(map);
     crate::dbg_log(&format!("mcp: 会话 {} 已建立", &id[..8.min(id.len())]));
+    // 会话数变了要**立刻告诉界面**，否则弹窗里的"会话"数字会一直停在打开弹窗那一刻的值
+    core.emit_status();
     sse_response(core.clone(), id.clone(), rx)
 }
 
@@ -355,6 +357,8 @@ impl Drop for SseBody {
                 "mcp: 会话 {} 已断开（立刻回收，不等空闲超时）",
                 &self.sid[..8.min(self.sid.len())]
             ));
+            // 同理：会话少了也要推一次，界面上的数字/状态点才会回落
+            self.core.emit_status();
         }
     }
 }
