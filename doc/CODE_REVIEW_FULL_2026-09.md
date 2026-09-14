@@ -142,6 +142,8 @@ worker 版仅"配置了 key 才校验"（`wrangler.toml` 未配 → 默认放行
 | M25 | 版本号**四处**人工同步、CI 零校验；`package.json` 已漂移到 0.3.0；运行时版本源(Cargo) ≠ 打包版本源(tauri.conf) | 4 文件 + `build.yml` | ✅ 已修（v0.4.0 对齐 5 处，并加 CI 版本一致性断言 + tag 规则） |
 | M26 | 自动更新无签名（仅同源 sha256）、`%TEMP%` 落点可被同用户替换 | `main.rs:3487-3692` | ⏳ |
 | M27 | Sentry→Issue：签名验证可选、`!==` 非时间安全比较、正文原样拼进 Issue Markdown | `server/sentry-webhook.js` | ⏳ |
+| M28 | **重装/升级时 `platform-tools` 必然撞锁**：`adb` 服务器常驻（应用退出后仍在）并映射 `adb.exe`/`AdbWinApi.dll`/`AdbWinUsbApi.dll`；`ignoreversion` 又无条件重写全部 14 个文件 → Inno 重试 4 次后弹「尝试复制下列文件时出错」，同 AppId 升级时旧版卸载器删 `{app}` 同样失败、卸载留残骸 | `installer.iss` `[Files]` + `[Code]` | ✅ 已修（`StopAdbServer` 在 `PrepareToInstall`/`ssInstall`/`usUninstall` 停掉**镜像位于 `{app}\platform-tools` 下**的 adb，只杀自家那条；`ignoreversion` → `replacesameversion`，并补 `restartreplace`/`uninsrestartdelete`） |
+| M29 | `CurPageChanged` 用 `TasksList.Items.Count - 1` 取「最后一项」当 usbipd 任务；2026-09 追加 `add_adb_path` 后它指到了 ADB 任务 → 未装 usbipd 时自动勾错对象，usbipd 永远不被勾选 | `installer.iss` `[Code]` | ✅ 已修（显式 `TaskIndexInstallUsbipd` 常量 + 注释约束） |
 
 ---
 

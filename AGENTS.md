@@ -131,6 +131,12 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
 > 上述 5 处必须完全一致；tag 触发时还要求 tag == `v{版本号}`，否则构建直接失败。
 > 详见 `doc/CODE_REVIEW_FULL_2026-09.md` M25（状态：✅ 已修，v0.4.0 落地）。
 
+> ⚠️ **改完版本号必须重新编译发布产物**：主程序版本来自 `env!("CARGO_PKG_VERSION")`，是**编译期烘焙**进
+> exe 的 —— 只改文件、不重编，`src-tauri/target/release/seahi-serial.exe` 里仍是旧版本号（2026-09 真实
+> 事故：安装包文件名/产品版本 0.5.0，装出来的应用却是 0.4.0）。本地打安装包前先 `npm run build`
+> （或 `cargo build --release --manifest-path src-tauri/Cargo.toml`）；`installer.iss` 顶部已有 ISPP
+> 编译期守卫（主程序 exe 版本 ≠ `MyAppVersion` 直接 `#error`），并会用 `#pragma message` 打印实际版本。
+
 ## 关键约定
 
 - Release 构建通过 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` 隐藏控制台窗口
@@ -139,6 +145,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
 - CSP 设为 `null`，无内容安全限制
 - **release 构建不带 DevTools**（用户要求）。真正的开关是 **tauri 的 `devtools` cargo feature 必须保持关闭**：`tauri-runtime-wry` 里那段 `with_devtools(..)` 被 `#[cfg(any(debug_assertions, feature = "devtools"))]` 整个门控，所以 release（`debug_assertions` 关闭）只要不开这个 feature，那段代码根本不编译，落到 wry 自己的默认值 `false`。**debug 构建仍然有 DevTools**（内存分析要靠它）。⚠️ `tauri.conf.json` 里的 `devtools` 字段是**死配置** —— tauri 2.11.2 / codegen / build 里没有任何代码读它（逐个 crate 搜过），写了也不生效，只会让人误判，**别再加回去**（断言集里两条守着）
 - 磁盘上的程序名为 `seahi-serial.exe`（带连字符）；Rust 包名为 `seahi_serial`（带下划线）
+- **`platform-tools` 会被自家 adb 服务器锁住，安装器必须先停掉服务器**：`adb` 启动的服务是常驻后台进程（应用退出后依然活着，直到 `adb kill-server` 或注销），它把 `{app}\platform-tools` 下的 `adb.exe`、`AdbWinApi.dll`、`AdbWinUsbApi.dll` 全部映射住 —— 运行中的 .exe 无法就地覆写，已加载的 DLL 连删除都不允许。所以重复安装/升级会重试 4 次后弹「尝试复制下列文件时出错」，同 AppId 升级时旧版卸载器也删不掉 `{app}`。`installer.iss` 的 `StopAdbServer` 在 `PrepareToInstall` / `ssInstall` / `usUninstall` 三处**只结束镜像路径位于本应用 `platform-tools` 下**的 adb（别误伤 Android Studio 等其它来源）；`[Files]` 用 `replacesameversion`（不是 `ignoreversion`）+ `restartreplace`/`uninsrestartdelete` 兜底。注意 `adb.exe`/`fastboot.exe` **没有版本信息**，按 Inno 规则每次安装仍会覆写它们，靠的就是先停服务器
 - 设备插拔检测使用 `CM_Register_Notification`（windows-sys crate），触发 `device-changed` 事件
 - WSL 串口转发通过 Python bridge 脚本实现，使用持久化 shell 避免 fork 延迟
 - USB 设备映射到 WSL 依赖 `usbipd-win` 工具，需管理员权限

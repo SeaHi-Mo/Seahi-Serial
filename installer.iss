@@ -9,11 +9,25 @@
 #define UsbipdMsiName "usbipd-win.msi"
 #define WebView2BootstrapperUrl "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
 
+; ===== 版本守卫（2026-09 加，别删）=====
+; 事故：Cargo.toml 已改成 0.5.0，但 src-tauri\target\release\seahi-serial.exe 还是 0.4.0 的旧构建。
+; 主程序版本来自 env!("CARGO_PKG_VERSION")，是**编译期烘焙**进 exe 的 —— 只改版本号文件、
+; 不重新编译，exe 里的版本就不会变。于是安装包的文件名/产品版本是 0.5.0，装出来的应用却是 0.4.0。
+; 下面在编译安装包时就把这种不一致卡死，避免再把旧内核装进新外壳。
+; 注：GetVersionNumbersString 返回四段式（"0.5.0.0"），所以拿 MyAppVersion 比较时补一个 ".0"。
+#define BundledExeVersion GetVersionNumbersString("src-tauri\target\release\" + MyAppExeName)
+#pragma message "打包的主程序版本 = " + BundledExeVersion + " / MyAppVersion = " + MyAppVersion
+#if BundledExeVersion != MyAppVersion + ".0"
+  #error 打包的主程序版本与 MyAppVersion 不一致！请先重新编译发布产物（npm run build，或 cargo build --release --manifest-path src-tauri/Cargo.toml），再编译本安装脚本。
+#endif
+
 [Setup]
 ; 应用基本信息
 AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+; 让安装包自身的「文件版本」也有值（此前只有产品版本有值，文件版本一栏是空白，容易看错版本）
+VersionInfoVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL=https://github.com/SeaHi-Mo/Seahi-Serial
 AppSupportURL=https://github.com/SeaHi-Mo/Seahi-Serial/issues
@@ -60,7 +74,16 @@ Name: "add_adb_path"; Description: "将 ADB 工具(platform-tools)添加至系�
 ; 主程序 - 使用 Tauri 内嵌的 WebView2，无需额外 DLL
 Source: "src-tauri\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; ADB 工具(platform-tools) - 随安装包分发，运行时零下载
-Source: "platform-tools\*"; DestDir: "{app}\platform-tools"; Flags: recursesubdirs ignoreversion
+; ⚠️ 下面三个 flag 都与「重复安装 / 升级」直接相关，别删：
+;   replacesameversion —— 版本号相同时先比对内容，不同才覆写（替代原 ignoreversion）。
+;        adb 服务器常驻并锁住 platform-tools 下的文件，而无条件重写全部 14 个文件
+;        只会平白制造「文件被占用」的安装错误；内容相同就没必要重写。
+;   restartreplace     —— 万一文件仍被占用（如另一个用户会话里的 adb），登记到重启后替换，
+;        而不是 Inno 默认的「重试 4 次后弹错」。
+;   uninsrestartdelete —— 卸载时被占用的文件同样登记到重启后删除，避免 platform-tools 残留。
+; 注：adb.exe / fastboot.exe 等**没有版本信息**，按 Inno 规则每次安装仍会覆写它们 →
+;     所以安装/卸载前必须先把常驻的 adb 服务器停掉，见 [Code] 的 StopAdbServer。
+Source: "platform-tools\*"; DestDir: "{app}\platform-tools"; Flags: recursesubdirs replacesameversion restartreplace uninsrestartdelete
 
 [Icons]
 ; 开始菜单快捷方式
@@ -70,6 +93,14 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 
 [Code]
 // ===== usbipd-win 安装检查与自动安装 =====
+
+const
+  // [Tasks] 段中任务的声明顺序（0-based）：0=desktopicon，1=install_usbipd，2=add_adb_path。
+  // ⚠️ 调整或新增 [Tasks] 条目时必须同步这里的索引。CurPageChanged 里以前写的是
+  //    Items.Count - 1（取“最后一项”），那只在 install_usbipd 恰好是最后一项时成立；
+  //    2026-09 追加 add_adb_path 后它就指到了 ADB 的 PATH 任务上 —— 结果是未装 usbipd
+  //    时自动勾选勾错了对象，usbipd 反而永远不被勾选。
+  TaskIndexInstallUsbipd = 1;
 
 var
   UsbipdInstalled: Boolean;
@@ -138,8 +169,8 @@ end;
 procedure CurPageChanged(CurPageID: Integer);
 begin
   if (CurPageID = wpSelectTasks) and (not UsbipdInstalled) then begin
-    // 自动勾选安装 usbipd 任务
-    WizardForm.TasksList.CheckItem(WizardForm.TasksList.Items.Count - 1, coCheckWithChildren);
+    // 显式索引，别再用 Items.Count - 1（见 TaskIndexInstallUsbipd 的说明）
+    WizardForm.TasksList.CheckItem(TaskIndexInstallUsbipd, coCheckWithChildren);
   end;
 end;
 
@@ -258,36 +289,102 @@ begin
   end;
 end;
 
-/// 修改系统 PATH（安全）：add=追加 entry、remove=移除 entry，均保留 REG_EXPAND_SZ（含 %SystemRoot% 等表达式）
-procedure ModifyPathEntry(const Op, Entry: String);
+/// 把字符串安全地嵌入 PowerShell 单引号字符串（内部单引号翻倍）。
+/// 安装目录允许包含单引号，直接拼接会生成语法错误的脚本。
+function PsQuote(const S: String): String;
 var
-  Ps, PsPath: String;
+  T: String;
+begin
+  T := S;
+  // StringChangeEx 是就地修改：把每个单引号翻倍，再整体套上单引号
+  StringChangeEx(T, '''', '''''', True);
+  Result := '''' + T + '''';
+end;
+
+/// 以隐藏窗口同步执行一段 PowerShell 脚本；失败只写日志，不阻断安装/卸载流程。
+/// 用 -NoProfile：不加载用户 profile，避免慢或报错的 profile 拖累安装。
+procedure RunPowerShellHidden(const ScriptText, ScriptName, What: String);
+var
+  PsPath: String;
   ResultCode: Integer;
 begin
+  PsPath := ExpandConstant('{tmp}\') + ScriptName;
+  if not SaveStringToFile(PsPath, ScriptText, False) then begin
+    Log(What + ': 写入临时脚本失败 ' + PsPath);
+    Exit;
+  end;
+  if not Exec('powershell', '-NoProfile -ExecutionPolicy Bypass -NonInteractive -File "' + PsPath + '"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log(What + ': 无法启动 PowerShell')
+  else if ResultCode <> 0 then
+    Log(What + ': PowerShell 退出码 ' + IntToStr(ResultCode));
+end;
+
+/// 停掉本应用自带的常驻 ADB 服务器。
+///
+/// 为什么必须有这段：adb 启动的服务器是**常驻后台进程**（应用退出后依然活着，直到
+/// `adb kill-server` 或注销登录），并且它把 {app}\platform-tools 下的 adb.exe、
+/// AdbWinApi.dll、AdbWinUsbApi.dll 全部映射住 —— 运行中的 .exe 无法就地覆写，
+/// 已加载的 DLL 连删除都不允许。于是「重复安装 / 升级」必然撞出一连串失败：
+///   ① 新版安装包要覆写这三个文件 → Inno 重试 4 次后弹「尝试复制下列文件时出错」；
+///   ② 同 AppId 升级会先跑旧版卸载器，它要删掉整个 {app} → 同样删不掉，留下残骸；
+///   ③ 卸载后 platform-tools 删不干净。
+/// 只结束**镜像路径位于本应用 platform-tools 下**的 adb，避免误伤 Android Studio /
+/// 独立 platform-tools 等其它来源的 adb 服务器。
+procedure StopAdbServer;
+var
+  Ps: String;
+begin
   Ps :=
-    '$entry=' + '''' + Entry + '''' + #13#10 +
+    '$root = ' + PsQuote(ExpandConstant('{app}\platform-tools')) + #13#10 +
+    '$root = $root.TrimEnd(''\'')' + #13#10 +
+    'Get-Process -Name adb -ErrorAction SilentlyContinue | ForEach-Object {' + #13#10 +
+    '  $p = $null' + #13#10 +
+    '  try { $p = $_.Path } catch { }' + #13#10 +
+    '  if ($p -and ($p.TrimEnd(''\'')).ToLower().StartsWith($root.ToLower())) {' + #13#10 +
+    '    try {' + #13#10 +
+    '      Stop-Process -Id $_.Id -Force -ErrorAction Stop' + #13#10 +
+    '      Write-Host ("[SeaHi] stopped adb: " + $p)' + #13#10 +
+    '    } catch {' + #13#10 +
+    '      Write-Host ("[SeaHi] cannot stop adb: " + $_.Exception.Message)' + #13#10 +
+    '    }' + #13#10 +
+    '  }' + #13#10 +
+    '}';
+  RunPowerShellHidden(Ps, 'seahi_stop_adb.ps1', 'StopAdbServer');
+end;
+
+/// 修改系统 PATH（安全）：add=追加 entry、remove=移除 entry，均保留 REG_EXPAND_SZ（含 %SystemRoot% 等表达式）。
+/// 比较时去掉末尾反斜杠（PowerShell 的 -eq 对字符串不区分大小写），
+/// 避免「同一目录两种写法」在重复安装后堆出多条 PATH。
+procedure ModifyPathEntry(const Op, Entry: String);
+var
+  Ps: String;
+begin
+  Ps :=
+    '$entry=' + PsQuote(Entry) + #13#10 +
+    '$entry=$entry.Trim().TrimEnd(''\'')' + #13#10 +
     '$k=[Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(''SYSTEM\CurrentControlSet\Control\Session Manager\Environment'', $true)' + #13#10 +
     'if($k){' + #13#10 +
     '  $raw=$k.GetValue(''Path'','''',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)' + #13#10 +
     '  if($raw -is [string]){' + #13#10 +
     '    $parts=$raw -split '';''' + #13#10 +
-    '    $parts=@($parts | Where-Object { $_.Trim() -ne '''' })' + #13#10 +
-    '    if(' + '''' + Op + '''' + ' -eq ''add''){' + #13#10 +
-    '      if(-not ($parts | Where-Object { $_.Trim() -eq $entry })){' + #13#10 +
+    '    $parts=@($parts | Where-Object { $_.Trim() -ne '''' } | ForEach-Object { $_.Trim() })' + #13#10 +
+    '    if(' + PsQuote(Op) + ' -eq ''add''){' + #13#10 +
+    '      if(-not ($parts | Where-Object { $_.TrimEnd(''\'') -eq $entry })){' + #13#10 +
     '        $parts += $entry' + #13#10 +
     '        $k.SetValue(''Path'', ($parts -join '';''), [Microsoft.Win32.RegistryValueKind]::ExpandString)' + #13#10 +
     '      }' + #13#10 +
     '    } else {' + #13#10 +
-    '      $parts=@($parts | Where-Object { $_.Trim() -ne $entry })' + #13#10 +
-    '      $k.SetValue(''Path'', ($parts -join '';''), [Microsoft.Win32.RegistryValueKind]::ExpandString)' + #13#10 +
+    '      $before=$parts.Count' + #13#10 +
+    '      $parts=@($parts | Where-Object { $_.TrimEnd(''\'') -ne $entry })' + #13#10 +
+    '      if($parts.Count -ne $before){' + #13#10 +
+    '        $k.SetValue(''Path'', ($parts -join '';''), [Microsoft.Win32.RegistryValueKind]::ExpandString)' + #13#10 +
+    '      }' + #13#10 +
     '    }' + #13#10 +
     '  }' + #13#10 +
     '  $k.Close()' + #13#10 +
     '}';
-  PsPath := ExpandConstant('{tmp}\adb_path.ps1');
-  SaveStringToFile(PsPath, Ps, False);
-  // 以宿主身份运行，失败不阻断安装/卸载流程
-  Exec('powershell', '-ExecutionPolicy Bypass -NonInteractive -File "' + PsPath + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  RunPowerShellHidden(Ps, 'adb_path.ps1', 'ModifyPathEntry(' + Op + ')');
 end;
 
 procedure AddAdbToPath;
@@ -300,10 +397,23 @@ begin
   ModifyPathEntry('remove', ExpandConstant('{app}\platform-tools'));
 end;
 
+/// PrepareToInstall: 官方文档指定的「关掉即将被更新的应用」时机，且早于
+/// CloseApplications 的占用检查（也早于旧版卸载器）—— 必须在这里先停掉常驻 adb，
+/// 否则同 AppId 升级时旧版卸载器删 {app} 就会失败。
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  StopAdbServer;
+end;
+
 /// CurStepChanged: 在安装阶段执行 usbipd 安装、PATH 追加
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then begin
+    // 双保险：旧版卸载器在进入 ssInstall 之前已跑过，若它删 platform-tools 时把 adb
+    // 又带起来了（或被别的会话拉起），这里再停一次，确保 [Files] 覆写不会撞锁。
+    StopAdbServer;
+
     // 检查是否勾选了安装 usbipd 任务
     if WizardIsTaskSelected('install_usbipd') then begin
       if UsbipdInstalled then begin
@@ -332,11 +442,14 @@ begin
   end;
 end;
 
-/// CurUninstallStepChanged: 卸载时移除 ADB 的 PATH 条目
+/// CurUninstallStepChanged: 卸载时先停掉常驻 adb（否则 platform-tools 下的三个文件
+/// 删不掉、留下残骸），再移除 ADB 的 PATH 条目
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  if CurUninstallStep = usUninstall then
+  if CurUninstallStep = usUninstall then begin
+    StopAdbServer;
     RemoveAdbFromPath;
+  end;
 end;
 
 [Run]
