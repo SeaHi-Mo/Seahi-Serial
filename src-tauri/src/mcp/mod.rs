@@ -1113,6 +1113,69 @@ mod tests {
         });
     }
 
+    /// 限流回包**必须带上这次请求的 id**：否则客户端配不上号 → 那次调用挂到超时 →
+    /// Agent 以为失败又重试 → 越限流越糟。这就是"反复调用失败"的一个真实成因。
+    #[test]
+    fn rate_limited_reply_carries_the_request_id() {
+        let rt = rt();
+        let core = test_core();
+        rt.block_on(async {
+            let port = serve(core.clone(), "127.0.0.1", 0).await.expect("起服务");
+            let mut sse = Sse {
+                stream: connect(port).await,
+                acc: String::new(),
+            };
+            sse.stream
+                .write_all(get_req("/sse?token=testtoken").as_bytes())
+                .await
+                .unwrap();
+            assert!(sse.read_until("event: endpoint", 3000).await, "没收到 endpoint 帧");
+            let sid = session_id_of(&sse.acc);
+            let path = format!("/messages?sessionId={}&token=testtoken", sid);
+
+            // 连打超过限流上限的请求，最后一个必然被限流。
+            // ⚠️ 必须带 `Connection: close`：否则 HTTP/1.1 保持连接，`read_to_end` 会一直等到超时，
+            // 61 次就是两分钟 —— 直接把 60 秒的限流窗口拖过去，于是**永远触发不了限流**
+            // （我第一版就是这么写的：测试跑 127 秒还失败）。
+            let over = RATE_LIMIT_PER_MIN + 1;
+            for i in 1..=over {
+                let body = format!(r#"{{"jsonrpc":"2.0","id":{},"method":"ping"}}"#, i);
+                let req = format!(
+                    "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                    path,
+                    body.len(),
+                    body
+                );
+                let mut s = connect(port).await;
+                s.write_all(req.as_bytes()).await.unwrap();
+                let mut buf = Vec::new();
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    s.read_to_end(&mut buf),
+                )
+                .await;
+            }
+            // SSE 流里应出现一条 -32000，且 id 是**我们发过的那个**（不是 null）
+            assert!(
+                sse.read_until("-32000", 5000).await,
+                "被限流时应通过 SSE 回一条 -32000；实际累计: {}",
+                &sse.acc[..sse.acc.len().min(600)]
+            );
+            let tail = sse.acc.clone();
+            let mut hit = String::new();
+            for chunk in tail.split("data: ") {
+                if chunk.contains("-32000") {
+                    hit = chunk.to_string();
+                }
+            }
+            assert!(
+                !hit.contains(r#""id":null"#),
+                "限流回包的 id 不能是 null（客户端会配不上号而挂到超时）: {}",
+                hit
+            );
+        });
+    }
+
     /// **会话增减必须推状态给界面**。
     ///
     /// 用户报的现象："明明已经有个客户端连接上了，界面一直显示 0 会话。"

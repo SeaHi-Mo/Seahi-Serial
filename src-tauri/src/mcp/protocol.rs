@@ -60,6 +60,40 @@ impl RpcError {
 
 // ===== 工具定义 =====
 
+/// `initialize` 回给客户端的**工作指引**（MCP 规范里的可选字段 `instructions`）。
+///
+/// 为什么值得专门写：Agent 的效率基本取决于"**第一次就做对**"。没有这段说明，它只能靠撞墙去发现
+/// —— 本机没有界面时所有 `ui_*` 都会失败、串口要先 `serial_open` 才能发数据、错误信息里其实已经
+/// 给了可选值、单目标写失败就是整次失败……每一次撞墙都是一轮往返 + 一次失败，而这段文字是
+/// **一次性**告诉它（只在握手时传一次，代价几乎为零）。
+///
+/// 内容只写"能直接省掉一次失败"的东西，不写自我介绍。
+pub const SERVER_INSTRUCTIONS: &str = "\
+SeaHi Serial 的串口/蓝牙调试接口。按下面的顺序工作能省掉大部分来回：
+1) 先看状态再动手：mcp_status 看有没有界面（hasUi）与工具数；串口操作前先 serial_get_state 看端口、波特率、是否正在监控。
+2) 串口主流程：serial_get_state → serial_select_port → serial_set_baud → serial_open → serial_send → serial_get_output（读设备回了什么）→ serial_close。多分栏用 pane 参数（如 extra-1）。
+3) 出错就照错误信息做：它通常已经给出可选值（例如「可选值只有: COM1」）或下一个该调的工具，不要盲试。
+4) 错误码语义：-32602 表示参数或取值不对（改参数重试）；isError 且文本含 -32006 表示前置条件没满足（先做前置操作，例如 serial_open），或者本机没有界面/没有设备。
+5) 写操作只给一个目标时，失败即整次调用失败（不会假装成功）；给多个目标才会逐条回报。
+6) 上限先查 mcp_limits：例如 ui_set 一次最多 200 条、serial_send 单次最多 64K 字符；请求限流 60 次/分。
+7) 日志不要重复拉全量：log_tail 用 sinceSeq 增量跟进。";
+
+/// `serial_open` 的前置检查：本机一个串口都没有时**直接失败**。
+///
+/// 没有原来这么做的代价：没设备时（沙箱、或机器上还没插设备）会"点开始监控 → 轮询 6 秒 → 报超时"，
+/// Agent 白等 6 秒、拿到一个含糊原因，而且很可能再试一次。提前判定能把它变成一次**立刻的、可行动**的失败。
+fn no_serial_port_hint(port_count: usize) -> Option<String> {
+    if port_count == 0 {
+        Some(
+            "本机没有可用串口（serial_list_ports 为空）：插上设备、装好驱动后再试。\
+             已跳过「开始监控」，不会再去等轮询超时。"
+                .to_string(),
+        )
+    } else {
+        None
+    }
+}
+
 /// 本轮已实现的工具（后续按 §16 的 S6/S7 增补语义工具与 `ctl_*` 全量工具）
 pub fn tool_defs() -> Vec<Value> {
     vec![
@@ -652,6 +686,11 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
             serial_apply(core, args, json!(items)).await
         }
         "serial_open" => {
+            // 一个串口都没有就别去点按钮：否则要白等 6 秒轮询超时（Agent 还可能再试一次）
+            let ports = crate::list_ports().await;
+            if let Some(msg) = no_serial_port_hint(ports.len()) {
+                return Err(RpcError::new(E_DEVICE_NOT_READY, msg));
+            }
             // 先落可选的 port/baud（不合法会被 apply 那套挡住并回列可选值）
             let mut pre: Vec<Value> = Vec::new();
             if let Some(p) = args.get("port") {
@@ -1310,7 +1349,9 @@ pub async fn handle_raw_with_session(
                 "serverInfo": {
                     "name": SERVER_NAME,
                     "version": env!("CARGO_PKG_VERSION")
-                }
+                },
+                // 一次性告诉 Agent 怎么用我（省掉它靠失败去猜的几轮往返）
+                "instructions": SERVER_INSTRUCTIONS
             }))
         }
         "ping" => Ok(json!({})),
@@ -2397,6 +2438,41 @@ mod tests {
             want.sort_unstable();
             assert_eq!(seen, want, "界面工具的调用测试列表与契约表不一致");
         });
+    }
+
+    /// Agent 的效率取决于"第一次就做对"：`initialize.instructions` 一次性把工作方式告诉它，
+    /// 省掉它靠失败去发现（每次撞墙都是一轮往返）。这里钉住"确实给了、且内容真的能省掉失败"。
+    #[test]
+    fn initialize_gives_the_agent_working_instructions() {
+        block_on(async {
+            let c = core();
+            let r = call(
+                &c,
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"t","version":"1"}}}"#,
+            )
+            .await;
+            let ins = r["result"]["instructions"].as_str().unwrap_or("");
+            assert!(!ins.is_empty(), "initialize 必须带上工作指引: {}", r);
+            for key in [
+                "serial_get_state",   // 串口操作前先看状态
+                "serial_open",        // 发数据前必须先开监控
+                "-32602",             // 错误码语义（改参数 vs 做前置操作）
+                "-32006",
+                "mcp_limits",         // 上限先查，别撞墙
+                "sinceSeq",           // 日志增量拉取，别重复拉全量
+            ] {
+                assert!(ins.contains(key), "指引里应提到 {}: {}", key, ins);
+            }
+        });
+    }
+
+    /// 没有串口设备时**立刻**失败，而不是"点按钮 → 等 6 秒轮询超时"（Agent 会白等还拿到含糊原因）。
+    #[test]
+    fn serial_open_fails_fast_when_the_machine_has_no_port() {
+        assert!(no_serial_port_hint(0).is_some(), "0 个串口要给出明确原因");
+        let msg = no_serial_port_hint(0).unwrap();
+        assert!(msg.contains("serial_list_ports"), "要告诉 Agent 下一步: {}", msg);
+        assert!(no_serial_port_hint(1).is_none(), "有串口就不该拦");
     }
 
     #[test]

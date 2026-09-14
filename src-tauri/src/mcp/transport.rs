@@ -417,6 +417,15 @@ async fn post_message(
         );
     }
 
+    // 限流回包必须带上**这次请求的 id**：原实现写的是 `id: null`（注释却写着"让客户端能把它对应到
+    // 某个请求"），而客户端发的 id 是 X —— 配不上号的那条 error 会被丢掉，**那次调用一路挂到超时**，
+    // 客户端以为失败又重试，越限流越糟。这就是"反复调用失败"的一个真实成因。
+    let req_id = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("id").cloned())
+        .filter(|v| !v.is_null())
+        .unwrap_or(serde_json::Value::Null);
+
     // 限流 + 查找会话
     let now = Instant::now();
     let resp_json = {
@@ -438,9 +447,15 @@ async fn post_message(
                     );
                     Some(
                         serde_json::json!({
-                            "jsonrpc": "2.0", "id": serde_json::Value::Null,
-                            "error": { "code": super::protocol::E_RATE_LIMITED,
-                                       "message": format!("超过 {} 次/分 的限流", super::RATE_LIMIT_PER_MIN) }
+                            "jsonrpc": "2.0", "id": req_id,
+                            "error": {
+                                "code": super::protocol::E_RATE_LIMITED,
+                                // 说清"这次没执行"+怎么放慢，别让 Agent 以为是工具坏了而重试
+                                "message": format!(
+                                    "超过 {}/分 的请求上限，本次调用被拒（没有执行）。请放慢：日志用 log_tail 的 sinceSeq 增量拉取、减少轮询频率，几秒后重试即可。",
+                                    super::RATE_LIMIT_PER_MIN
+                                )
+                            }
                         })
                         .to_string(),
                     )

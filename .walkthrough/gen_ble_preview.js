@@ -2703,6 +2703,16 @@ console.log('preview ->', out);
       && !/Value::Array\(a\) => format!\("\{\} 项", a\.len\(\)\)/.test(mcpProd),
       '文本摘要会真的展开数组内容（曾经只写「N 项」，`serial_list_ports` 的端口名就此消失）');
     check(/TEXT_SUMMARY_MAX_CHARS/.test(mcpProd), '文本摘要仍有长度上限（它是重复信息，不能撑爆上下文）');
+
+    // ---- Agent 调用效率：三处"让它第一次就做对 / 别白等"的机制 ----
+    // （必须放在 mcpProd/mcpSrc 定义之后 —— 上面那处曾把它们引在定义前，直接 ReferenceError 崩掉。）
+    check(/pub const SERVER_INSTRUCTIONS/.test(mcpProd) && /"instructions": SERVER_INSTRUCTIONS/.test(mcpProd),
+      'initialize 下发工作指引（Agent 靠它一次做对，而不是靠失败去猜）');
+    check(/fn no_serial_port_hint\(/.test(mcpProd)
+      && /"serial_open" => \{[\s\S]{0,260}?no_serial_port_hint/.test(mcpSrc),
+      '没有串口设备时 serial_open 立刻失败，不去白等 6 秒轮询超时');
+    check(/"id": req_id/.test(mcpProd) && !/"id": serde_json::Value::Null/.test(mcpProd),
+      '限流回包带上本次请求的 id（用 null 的话客户端配不上号、那次调用会挂到超时）');
   }
 
   // 每个运行期错误点都要真的调用上报（漏一个就是一个盲区）
