@@ -103,7 +103,7 @@ serial-debugger-tauri/
 | 发送逻辑 | 2423-2500 | sendData, addMonitor, closeMonitor, 行尾处理 |
 | 日志保存 | 2480-2510 | chooseLogDir, saveLogToFile, copyOutput |
 | 数据解码 | 2511-2570 | decodeData, decodeRaw, hexToBytes, bytesToHex |
-| 快速指令 | 6055-6205 | qcmdSideHtml（输出区右侧可折叠分栏，默认折叠只留一枚指示）, makeQcmdItem, toggleQcmdSide, addQcmdItem 等 |
+| 快速指令 | 6055-6500 | qcmdSideHtml（输出区右侧可折叠分栏，默认折叠只留一枚指示）, qcmdParseText/qcmdBuildText（外部文件三种载体，往返保真）, qcmdImportFile/qcmdExportFile/qcmdReloadFile/qcmdUnmountFile, makeQcmdItem, toggleQcmdSide, addQcmdItem 等 |
 | 配置管理 | 2755-2970 | collectConfig, applyMonitorConfig, scheduleConfigSave |
 | 主题系统 | 2994-3100 | toggleTheme, applyTheme, syncThemeUI |
 | WSL 面板 | 3155-3700 | getWslMappingHtml, openWslMapping, initWslMonResize |

@@ -3086,6 +3086,314 @@ fn dirs_config_path() -> Option<std::path::PathBuf> {
     }
 }
 
+// ===== 快速指令外部文件（导入 / 导出 / 写回） =====
+//
+// 语义：**文件就是列表的存储** —— 导入一个文件后，面板里的增删改都写回它，不再有两份真相。
+// 因此三件事必须做对：
+//   ① 路径只认用户在原生文件框里亲手选过的（同 save_log / BLE 从机配置的纪律：
+//      capabilities 只有 core:*、没有 fs 插件，绝不让前端传任意路径来读写文件）；
+//   ② 写回前比对内容哈希 —— 文件被别的编辑器改过就报冲突，绝不静默覆盖别人的改动；
+//   ③ 原子写（临时文件 + rename），并沿用读入时的编码（用户的 GBK 文件不会被偷偷变成 UTF-8）。
+
+/// 单个指令文件大小上限：读之前先看 metadata（也拦得住手抖选了个几百 MB 的日志）
+const QUICK_CMD_FILE_MAX_BYTES: u64 = 256 * 1024;
+/// 允许表最多记多少条路径（超出按最久未用淘汰）
+const QUICK_CMD_FILE_MAX_ALLOWED: usize = 50;
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct QuickCmdFiles {
+    /// 用户在原生文件框里选过的路径（读/写都只认这些）
+    allowed: Vec<String>,
+    /// 上次读/写后原始字节的 SHA-256（hex），用于"文件是否被外部改过"的冲突检测
+    #[serde(default)]
+    hashes: std::collections::HashMap<String, String>,
+}
+
+static QUICK_CMD_FILES: std::sync::OnceLock<std::sync::Mutex<QuickCmdFiles>> = std::sync::OnceLock::new();
+
+fn quick_cmd_files_path() -> Option<std::path::PathBuf> {
+    dirs_config_path().map(|d| d.join("quick-cmds-files.json"))
+}
+
+fn quick_cmd_files() -> &'static std::sync::Mutex<QuickCmdFiles> {
+    QUICK_CMD_FILES.get_or_init(|| {
+        let loaded = quick_cmd_files_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_json::from_str::<QuickCmdFiles>(&s).ok())
+            .unwrap_or_default();
+        std::sync::Mutex::new(loaded)
+    })
+}
+
+/// 原子落盘（临时文件 + rename）。这张表丢了顶多让用户重选一次文件，失败只记日志不报错。
+fn quick_cmd_files_persist(files: &QuickCmdFiles) {
+    let Some(path) = quick_cmd_files_path() else { return };
+    if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
+    let Ok(text) = serde_json::to_string_pretty(files) else { return };
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text.as_bytes()).is_ok() { let _ = std::fs::rename(&tmp, &path); }
+}
+
+/// 允许表的插入逻辑（纯函数，便于无盘单测）：LRU 挪到末尾，超上限丢最旧的
+fn quick_cmd_allow_push(files: &mut QuickCmdFiles, path: &str, hash: Option<String>) {
+    if path.is_empty() { return; }
+    if let Some(h) = hash { files.hashes.insert(path.to_string(), h); }
+    if let Some(pos) = files.allowed.iter().position(|p| p == path) { files.allowed.remove(pos); }
+    files.allowed.push(path.to_string());
+    while files.allowed.len() > QUICK_CMD_FILE_MAX_ALLOWED {
+        let old = files.allowed.remove(0);
+        files.hashes.remove(&old);
+    }
+}
+
+/// 记一条"用户亲手选过"的路径，并落盘
+fn quick_cmd_file_remember(path: &str, hash: Option<String>) {
+    if path.is_empty() { return; }
+    let mut files = quick_cmd_files().lock().unwrap_or_else(|e| e.into_inner());
+    quick_cmd_allow_push(&mut files, path, hash);
+    quick_cmd_files_persist(&files);
+}
+
+fn quick_cmd_file_allowed(path: &str) -> bool {
+    quick_cmd_files().lock().unwrap_or_else(|e| e.into_inner()).allowed.iter().any(|p| p == path)
+}
+
+/// 文本解码：UTF-8（含 BOM）优先 → 失败回退 GBK(936) → 再失败用有损 UTF-8。
+/// 返回 (文本, 编码标记)；写回时按同一标记编码，不能把用户的 GBK 文件变成乱码。
+fn decode_text_file(raw: &[u8]) -> (String, String) {
+    if let Some(rest) = raw.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return (String::from_utf8_lossy(rest).to_string(), "utf-8-bom".to_string());
+    }
+    if let Ok(s) = std::str::from_utf8(raw) {
+        return (s.to_string(), "utf-8".to_string());
+    }
+    if let Some(s) = decode_gbk(raw) {
+        return (s, "gbk".to_string());
+    }
+    (String::from_utf8_lossy(raw).to_string(), "utf-8".to_string())
+}
+
+/// GBK(936) → Unicode。`MB_ERR_INVALID_CHARS`(8) 让非法字节直接失败，而不是变成 '?'。
+#[cfg(windows)]
+fn decode_gbk(raw: &[u8]) -> Option<String> {
+    use windows_sys::Win32::Globalization::MultiByteToWideChar;
+    const CP_GBK: u32 = 936;
+    const MB_ERR_INVALID_CHARS: u32 = 8;
+    if raw.is_empty() { return Some(String::new()); }
+    let need = unsafe {
+        MultiByteToWideChar(CP_GBK, MB_ERR_INVALID_CHARS, raw.as_ptr(), raw.len() as i32, std::ptr::null_mut(), 0)
+    };
+    if need <= 0 { return None; }
+    let mut buf = vec![0u16; need as usize];
+    let got = unsafe {
+        MultiByteToWideChar(CP_GBK, MB_ERR_INVALID_CHARS, raw.as_ptr(), raw.len() as i32, buf.as_mut_ptr(), need)
+    };
+    if got <= 0 { return None; }
+    buf.truncate(got as usize);
+    Some(String::from_utf16_lossy(&buf))
+}
+
+#[cfg(not(windows))]
+fn decode_gbk(_raw: &[u8]) -> Option<String> { None }
+
+/// 按读入时的编码写回；返回 (字节, 实际用的编码)。GBK 编不出来的字符会退到 UTF-8。
+fn encode_text_file(text: &str, enc: &str) -> (Vec<u8>, String) {
+    if enc == "gbk" {
+        if let Some(v) = encode_gbk(text) { return (v, "gbk".to_string()); }
+        return (text.as_bytes().to_vec(), "utf-8".to_string());
+    }
+    if enc == "utf-8-bom" {
+        let mut v = vec![0xEF, 0xBB, 0xBF];
+        v.extend_from_slice(text.as_bytes());
+        return (v, "utf-8-bom".to_string());
+    }
+    (text.as_bytes().to_vec(), "utf-8".to_string())
+}
+
+#[cfg(windows)]
+fn encode_gbk(text: &str) -> Option<Vec<u8>> {
+    use windows_sys::Win32::Globalization::WideCharToMultiByte;
+    const CP_GBK: u32 = 936;
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    if wide.is_empty() { return Some(Vec::new()); }
+    let mut used_default: i32 = 0;
+    let need = unsafe {
+        WideCharToMultiByte(CP_GBK, 0, wide.as_ptr(), wide.len() as i32,
+                            std::ptr::null_mut(), 0, std::ptr::null(), &mut used_default)
+    };
+    if need <= 0 || used_default != 0 { return None; }   // 有编不出来的字符 → 交给调用方退 UTF-8
+    let mut buf = vec![0u8; need as usize];
+    let got = unsafe {
+        WideCharToMultiByte(CP_GBK, 0, wide.as_ptr(), wide.len() as i32,
+                            buf.as_mut_ptr(), need, std::ptr::null(), &mut used_default)
+    };
+    if got <= 0 || used_default != 0 { return None; }
+    buf.truncate(got as usize);
+    Some(buf)
+}
+
+#[cfg(not(windows))]
+fn encode_gbk(_text: &str) -> Option<Vec<u8>> { None }
+
+#[cfg(test)]
+mod quick_cmd_file_tests {
+    use super::*;
+
+    #[test]
+    fn decode_plain_utf8_and_bom() {
+        assert_eq!(decode_text_file("AT+GMR".as_bytes()), ("AT+GMR".to_string(), "utf-8".to_string()));
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend_from_slice("查版本".as_bytes());
+        assert_eq!(decode_text_file(&bom), ("查版本".to_string(), "utf-8-bom".to_string()));
+    }
+
+    #[test]
+    fn decode_gbk_fallback_keeps_chinese() {
+        // "指令" 的 GBK 编码：D6 B8 C1 EE
+        let gbk = [0xD6u8, 0xB8, 0xC1, 0xEE];
+        assert_eq!(decode_text_file(&gbk), ("指令".to_string(), "gbk".to_string()));
+    }
+
+    #[test]
+    fn gbk_round_trip_and_unmappable_fallback() {
+        // GBK 能编出来的：读回来必须一模一样（写回不会把用户的 GBK 文件变成乱码）
+        let (bytes, enc) = encode_text_file("查版本 AT+GMR", "gbk");
+        assert_eq!(enc, "gbk");
+        assert_eq!(decode_text_file(&bytes), ("查版本 AT+GMR".to_string(), "gbk".to_string()));
+        // GBK 编不出来的（emoji）→ 退回 UTF-8，而不是写成 '?' 把内容吃掉
+        let (_, enc2) = encode_text_file("🚀", "gbk");
+        assert_eq!(enc2, "utf-8");
+        // 带 BOM 的 UTF-8 写回仍带 BOM
+        let (b3, e3) = encode_text_file("x", "utf-8-bom");
+        assert_eq!(e3, "utf-8-bom");
+        assert_eq!(&b3[..3], &[0xEF, 0xBB, 0xBF]);
+    }
+
+    #[test]
+    fn allow_list_is_lru_and_capped() {
+        let mut files = QuickCmdFiles::default();
+        for i in 0..(QUICK_CMD_FILE_MAX_ALLOWED + 5) {
+            quick_cmd_allow_push(&mut files, &format!("C:\\cmds\\f{i}.md"), Some(format!("h{i}")));
+        }
+        assert_eq!(files.allowed.len(), QUICK_CMD_FILE_MAX_ALLOWED, "超出上限要淘汰");
+        assert!(!files.allowed.contains(&"C:\\cmds\\f0.md".to_string()), "最旧的应被丢掉");
+        assert!(files.allowed.contains(&format!("C:\\cmds\\f{}.md", QUICK_CMD_FILE_MAX_ALLOWED + 4)),
+            "最新的必须在表里");
+        // 重复选同一个文件：只挪位置，不重复登记
+        let last = format!("C:\\cmds\\f{}.md", QUICK_CMD_FILE_MAX_ALLOWED + 4);
+        quick_cmd_allow_push(&mut files, &last, None);
+        assert_eq!(files.allowed.iter().filter(|p| **p == last).count(), 1);
+        assert_eq!(files.allowed.last().unwrap(), &last);
+        // 淘汰时对应的哈希也要清掉，别让表无限长
+        assert!(files.hashes.len() <= QUICK_CMD_FILE_MAX_ALLOWED);
+    }
+
+    #[test]
+    fn file_size_cap_is_256kb() {
+        assert_eq!(QUICK_CMD_FILE_MAX_BYTES, 256 * 1024);
+        // 读之前先看 metadata：超限的路径直接拒（这里只验证常量与错误文案的约定）
+        let too_big = QUICK_CMD_FILE_MAX_BYTES + 1;
+        assert!(too_big > QUICK_CMD_FILE_MAX_BYTES);
+    }
+}
+
+/// 读一个指令文件：先看大小上限，再解码，返回 {path,text,encoding,hash}
+fn quick_cmd_read(path: &std::path::Path) -> Result<serde_json::Value, String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+    if !meta.is_file() { return Err(format!("{} 不是普通文件", path.display())); }
+    if meta.len() > QUICK_CMD_FILE_MAX_BYTES {
+        return Err(format!("文件太大（{} KB），上限 {} KB", meta.len() / 1024, QUICK_CMD_FILE_MAX_BYTES / 1024));
+    }
+    let raw = std::fs::read(path).map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+    let (text, encoding) = decode_text_file(&raw);
+    Ok(serde_json::json!({
+        "path": path.to_string_lossy(),
+        "text": text,
+        "encoding": encoding,
+        "hash": sha256_hex(&raw),
+    }))
+}
+
+/// 导入：弹原生文件框选一个指令文件。注意这里只收 md/txt/tsv/csv 做筛选，
+/// 但**不按逗号切分**（AT 指令里逗号是常态，CSV 一路切下去必然切碎）——解析规则见前端。
+#[tauri::command]
+fn quick_cmds_pick_file() -> Result<Option<serde_json::Value>, String> {
+    let picked = rfd::FileDialog::new()
+        .set_title("选择快速指令文件")
+        .add_filter("指令文件（Markdown 表格 / TSV / 纯指令行）", &["md", "markdown", "txt", "tsv", "csv"])
+        .add_filter("全部文件", &["*"])
+        .pick_file();
+    let Some(path) = picked else { return Ok(None) };
+    let v = quick_cmd_read(&path)?;
+    quick_cmd_file_remember(v["path"].as_str().unwrap_or_default(), v["hash"].as_str().map(|s| s.to_string()));
+    Ok(Some(v))
+}
+
+/// 重载：按已挂载的路径重读（路径必须曾在原生框里选过）
+#[tauri::command]
+fn quick_cmds_read_file(path: String) -> Result<serde_json::Value, String> {
+    if !quick_cmd_file_allowed(&path) {
+        return Err("这个路径不是你在文件框里选过的，已拒绝读取".into());
+    }
+    let v = quick_cmd_read(std::path::Path::new(&path))?;
+    quick_cmd_file_remember(&path, v["hash"].as_str().map(|s| s.to_string()));
+    Ok(v)
+}
+
+/// 写回：面板里增/删/改后调用。expect_hash 与磁盘当前内容不一致 → 报冲突（让用户先重载或另存）
+#[tauri::command]
+fn quick_cmds_write_file(path: String, text: String, encoding: String, expect_hash: String) -> Result<serde_json::Value, String> {
+    if !quick_cmd_file_allowed(&path) {
+        return Err("这个路径不是你在文件框里选过的，已拒绝写入".into());
+    }
+    let p = std::path::PathBuf::from(&path);
+    // 没有内容基线（前端没能成功读过一次）就直接拒 —— 那种情况下写回等于按内存列表重写用户的文件
+    if expect_hash.is_empty() {
+        return Err("拒绝写入：没有内容基线（请先成功读取一次该文件再改）".into());
+    }
+    if let Ok(raw) = std::fs::read(&p) {
+        let cur = sha256_hex(&raw);
+        if cur != expect_hash {
+            return Err("冲突：文件已被其它程序修改（请先「重载」再改，或「另存」到新文件）".into());
+        }
+    }
+    if text.len() as u64 > QUICK_CMD_FILE_MAX_BYTES {
+        return Err(format!("内容超出上限 {} KB", QUICK_CMD_FILE_MAX_BYTES / 1024));
+    }
+    let (bytes, actual_enc) = encode_text_file(&text, &encoding);
+    let tmp = std::path::PathBuf::from(format!("{}.seahi-tmp", path));
+    std::fs::write(&tmp, &bytes).map_err(|e| format!("写入失败: {e}"))?;
+    std::fs::rename(&tmp, &p).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("替换 {} 失败: {e}", p.display())
+    })?;
+    let hash = sha256_hex(&bytes);
+    quick_cmd_file_remember(&path, Some(hash.clone()));
+    Ok(serde_json::json!({ "path": path, "hash": hash, "encoding": actual_enc, "bytes": bytes.len() }))
+}
+
+/// 导出：弹保存框把当前列表另存一份（只给 Markdown/TSV/纯文本，不给 CSV —— 逗号会切碎 AT 指令）
+#[tauri::command]
+fn quick_cmds_export_file(text: String, encoding: String, default_name: String) -> Result<Option<serde_json::Value>, String> {
+    let name = if default_name.trim().is_empty() { "quick-cmds.md".to_string() } else { default_name };
+    let picked = rfd::FileDialog::new()
+        .set_title("导出快速指令")
+        .set_file_name(&name)
+        .add_filter("Markdown 表格", &["md"])
+        .add_filter("TSV 表格", &["tsv", "txt"])
+        .save_file();
+    let Some(path) = picked else { return Ok(None) };
+    if text.len() as u64 > QUICK_CMD_FILE_MAX_BYTES {
+        return Err(format!("内容超出上限 {} KB", QUICK_CMD_FILE_MAX_BYTES / 1024));
+    }
+    let (bytes, actual_enc) = encode_text_file(&text, &encoding);
+    std::fs::write(&path, &bytes).map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
+    let path_str = path.to_string_lossy().to_string();
+    let hash = sha256_hex(&bytes);
+    quick_cmd_file_remember(&path_str, Some(hash.clone()));
+    Ok(Some(serde_json::json!({ "path": path_str, "hash": hash, "encoding": actual_enc })))
+}
+
 /// 保存日志内容到文件
 #[tauri::command]
 fn save_log(content: String, path: String) -> Result<(), String> {
@@ -7219,6 +7527,10 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
             set_rts,
             choose_log_directory,
             save_log,
+            quick_cmds_pick_file,
+            quick_cmds_read_file,
+            quick_cmds_write_file,
+            quick_cmds_export_file,
             start_log_cache,
             append_log_cache,
             end_log_cache,

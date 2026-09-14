@@ -974,11 +974,15 @@ console.log('preview ->', out);
   // 状态保留：纯数据采集函数 + 恢复 + 消费
   const sbBle = { console };
   vm.createContext(sbBle);
-  vm.runInContext(extractFunction('collectBleState'), sbBle);
+  // collectBleState 现在会读左栏宽度默认值 → 沙箱里也得有这个常量
+  vm.runInContext([/var BLE_LEFT_DEFAULT = \d+, BLE_LEFT_MIN = \d+;/.exec(html)[0],
+    extractFunction('collectBleState')].join('\n'), sbBle);
   const norm = sbBle.collectBleState({ monitor: 1, monitorWidth: 0, openSvcs: ['A'], filterText: 'x' });
   check(norm.monitor === true && norm.monitorWidth === 380 && norm.advOpen === false
      && norm.filterOpen === false && norm.selected === '' && norm.monitorCfg === null,
     'collectBleState 归一化并补默认值（宽度 0 → 380，缺省字段给安全值）', JSON.stringify(norm));
+  check(norm.leftWidth === 288 && sbBle.collectBleState({ leftWidth: 320 }).leftWidth === 320,
+    '左栏宽度进配置：缺省 288，给了就照用', JSON.stringify([norm.leftWidth, sbBle.collectBleState({ leftWidth: 320 }).leftWidth]));
   check(Array.isArray(norm.openSvcs) && norm.openSvcs[0] === 'A' && norm.filterText === 'x',
     'collectBleState 保留展开服务与过滤词');
   check(JSON.stringify(sbBle.collectBleState()) === JSON.stringify(sbBle.collectBleState({})),
@@ -1342,8 +1346,8 @@ console.log('preview ->', out);
     '从机面板与逻辑整体保留（隐藏入口 ≠ 删功能）');
   check(/async fn ble_periph_start\(/.test(mainRs) && /ble_periph_start,/.test(mainRs),
     '后端从机命令仍然注册着（换机器时改一个常量即可启用）');
-  // 主机 / 从机 左栏宽度必须一致
-  check(/\.ble-left, \.ble-pf-left \{/.test(html) && /flex:0 0 400px; min-width:320px; max-width:46%;/.test(html),
+  // 主机 / 从机 左栏宽度必须一致（宽度值本身由上面的 BLE 左栏那一组断言守着）
+  check(/\.ble-left, \.ble-pf-left \{/.test(html) && /flex:0 0 288px; min-width:240px; max-width:38%;/.test(html),
     '两种模式的左栏共用同一套宽度（切模式布局不跳）');
   const pfLeftRule = /^\.ble-pf-left \{[^}]*\}/m.exec(html);
   check(!!pfLeftRule && !/width:/.test(pfLeftRule[0]),
@@ -3130,11 +3134,21 @@ console.log('preview ->', out);
       // 宽度上下限与拖动状态：直接从源码取那一行，改动值也会被这些断言看到
       srcLine(/var QCMD_SIDE_DEFAULT[^\n]*/),
       srcLine(/var _qcmdDrag = null[^\n]*/),
+      // 外部文件的上限与写回去抖表同样是模块级 var
+      /var QCMD_FILE_MAX_ITEMS[\s\S]*?var QCMD_FILE_MAX_VALUE = \d+;/.exec(html)[0],
+      srcLine(/var QCMD_FRONT_UNSUPPORTED[^\n]*/),
+      srcLine(/var _qcmdFileSaveTimers[^\n]*/),
       // createMonitorPane 后段会调这几个命令；本次只验证它拼出来的 HTML，命令本身不执行
       'function scheduleConfigSave() {}', 'function refreshPorts() {}', 'function initTerminalMode() {}',
       ['qcmdSideHtml', 'qcmdSideOpen', 'setQcmdSideOpen', 'toggleQcmdSide',
        'qcmdSideWidth', 'setQcmdSideWidth', 'startQcmdSideDrag', 'onQcmdSideDragMove', 'endQcmdSideDrag',
-       'makeQcmdItem', 'createMonitorPane', 'getWslMonitorHtml'].map(extractFunction).join('\n'),
+       'qcmdMdCells', 'qcmdIsStructureRow', 'qcmdParseText', 'qcmdBuildText', 'qcmdBaseName',
+       'qcmdApplyParsed', 'renderQcmdSource', 'qcmdImportFile', 'qcmdReloadFile', 'qcmdUnmountFile',
+       'qcmdExportFile', 'qcmdCurrentText', 'scheduleQcmdFileSave', 'qcmdFileSaveNow',
+       'qcmdFlushPendingFileSaves', 'qcmdFileMountedBy', 'collectConfigForMonitor',
+       'makeQcmdItem', 'addQcmdItem', 'removeQcmdItem', 'rebuildQcmdList',
+       'qcmdBlockIndexOf', 'qcmdInsertItemBlock', 'qcmdRemoveItemBlock',
+       'createMonitorPane', 'getWslMonitorHtml'].map(extractFunction).join('\n'),
     ].join('\n'), sbSide);
     // 用 try 兜住：真正的 HTML 在函数前段就赋好了，后段的命令不在验证范围
     let paneCreateErr = null;
@@ -3292,6 +3306,310 @@ console.log('preview ->', out);
       '列表容器搬到侧栏后，默认 5 条指令仍然建得出来',
       String(sideById['main-qcmdList'].children.length));
     check(!/qcmd-dropdown|qcmd-trigger/.test(html), '整个前端已无旧下拉的类名/引用残留');
+
+  // ---------- 快速指令外部文件：导入 / 导出 / 写回（文件即存储） ----------
+  {
+    // 复用上面的沙箱（同一个 monitors / DOM / 函数实例），把缺的东西补齐。
+    // invoke 用"同步 thenable"替身：真 Promise 的微任务会让断言跑在回调之前，测不到结果。
+    const invokeCalls = [];
+    let invokeHandler = () => null;
+    const okThen = v => ({ then: f => okThen(f ? f(v) : v), catch: () => okThen(v) });
+    const errThen = e => ({ then: () => errThen(e), catch: f => { f(e); return okThen(undefined); } });
+    const toasts = [];
+    const timers = {};
+    let timerSeq = 0;
+    sbSide.invoke = (cmd, args) => {
+      invokeCalls.push({ cmd: cmd, args: args });
+      const r = invokeHandler(cmd, args);
+      return (r && r.__err) ? errThen(r.__err) : okThen(r);
+    };
+    sbSide.showToast = (msg, type) => { toasts.push({ msg: String(msg), type: type }); };
+    sbSide.setTimeout = fn => { const id = ++timerSeq; timers[id] = fn; return id; };
+    sbSide.clearTimeout = id => { delete timers[id]; };
+    const runTimers = () => Object.keys(timers).forEach(id => { const fn = timers[id]; delete timers[id]; fn(); });
+    const pendingTimers = () => Object.keys(timers).length;
+    const lastInvoke = cmd => {
+      for (let i = invokeCalls.length - 1; i >= 0; i--) if (invokeCalls[i].cmd === cmd) return invokeCalls[i];
+      return null;
+    };
+
+    // ---- 解析：Markdown 表格（注释/空行/表头/分隔行都要原样留着） ----
+    const mdText = [
+      '# Ai-WB2 出厂检查（固件 2.3.1）',
+      '',
+      '| 名称 | 指令 |',
+      '|---|---|',
+      '| 查版本 | AT+GMR |',
+      '| 连接 AP | AT+CWJAP="ssid","pass" |',
+      '',
+      '# 只发指令的一列写法',
+      '| AT+RST |',
+    ].join('\r\n');
+    const md = sbSide.qcmdParseText(mdText);
+    check(md.style === 'md', 'Markdown 表格识别为 md 载体', md.style);
+    check(md.items.length === 3 && md.items[0].label === '查版本' && md.items[0].value === 'AT+GMR',
+      '表格行解析成 名称/指令', JSON.stringify(md.items[0]));
+    check(md.items[1].value === 'AT+CWJAP="ssid","pass"',
+      '⚠️ 逗号不当分隔符：AT+CWJAP="ssid","pass" 保持完整一条', md.items[1].value);
+    check(md.items[2].label === 'AT+RST' && md.items[2].value === 'AT+RST',
+      '只有一列时名称取指令本身', JSON.stringify(md.items[2]));
+    check(md.skipped.length === 0, '正常文件不该有跳过行', JSON.stringify(md.skipped));
+    check(sbSide.qcmdBuildText(md.blocks, md.style) === mdText,
+      '往返保真：build(parse(x)) === x（注释/空行/表头/分隔行都在原位）');
+    const md2 = sbSide.qcmdParseText('| 重启 | AT+RST | 备注甲 |\r\n| 竖线 | A\\|B |');
+    const md2Items = md2.blocks.filter(b => b.kind === 'item');
+    check(md2Items[0].rest[0] === '备注甲' && sbSide.qcmdBuildText(md2.blocks, 'md').indexOf('备注甲') >= 0,
+      '第三个列（备注等额外列）原样保留并写回');
+    check(md2.items[1].value === 'A|B' && sbSide.qcmdBuildText(md2.blocks, 'md').indexOf('A\\|B') >= 0,
+      '单元格内的竖线按 Markdown 规范转义（读回来是 A|B）');
+    check(sbSide.qcmdBuildText(md2.blocks, 'md').indexOf('| AT+RST | AT+RST |') < 0,
+      '原本只写了一列的行不会被写回时复制成两列');
+
+    // ---- YAML / TOML 文件头（front matter）：原样保留，且**不能**被当成指令 ----
+    const fmText = [
+      '---',
+      'title: Ai-WB2 出厂检查',
+      'baud: 115200',
+      '---',
+      '| 名称 | 指令 |',
+      '|---|---|',
+      '| 查版本 | AT+GMR |',
+    ].join('\r\n');
+    const fm = sbSide.qcmdParseText(fmText);
+    check(fm.items.length === 1 && fm.items[0].value === 'AT+GMR',
+      'YAML front matter 不会被误读成指令（曾经会多出 "baud: 115200" 这种假指令）',
+      fm.items.length + ' 条: ' + fm.items.map(i => i.value).join(' | '));
+    check(fm.frontKeys.join(',') === 'title,baud', '文件头的 key 被读出来（用于"暂不生效"提示）', fm.frontKeys.join(','));
+    check(sbSide.qcmdBuildText(fm.blocks, fm.style) === fmText, '文件头往返保真（写回时一字不动）');
+    const fmT = sbSide.qcmdParseText('+++\r\ntitle = "x"\r\n+++\r\nAT+GMR');
+    check(fmT.items.length === 1 && fmT.items[0].value === 'AT+GMR' && fmT.frontKeys.indexOf('title') >= 0,
+      'TOML 风格 +++ 文件头同样支持（key 也认 = 号）', fmT.frontKeys.join(','));
+    const fmOpen = sbSide.qcmdParseText('---\r\nAT+GMR');
+    check(fmOpen.frontUnclosed === true && fmOpen.items.length === 1 && fmOpen.items[0].value === 'AT+GMR',
+      '文件头没收尾时只吃掉第一行（不能把整份文件当头部吞掉）',
+      JSON.stringify({ unclosed: fmOpen.frontUnclosed, items: fmOpen.items.length }));
+
+    // ---- 解析：TSV 与纯指令行 ----
+    const tsv = sbSide.qcmdParseText('名称\t指令\r\n查版本\tAT+GMR');
+    check(tsv.style === 'tsv' && tsv.items.length === 1 && tsv.items[0].label === '查版本',
+      'TSV 识别为 tsv 载体（表头行跳过）', tsv.style);
+    const linesText = 'AT\r\nAT+GMR\r\n# 注释\r\nAT+RST';
+    const lines = sbSide.qcmdParseText(linesText);
+    check(lines.style === 'lines' && lines.items.length === 3 && lines.items[1].label === 'AT+GMR',
+      '纯指令行识别为 lines 载体，名称取指令本身', lines.style);
+    check(sbSide.qcmdBuildText(lines.blocks, 'lines') === linesText, '纯指令行文件往返保真');
+
+    // ---- 上限：条目数、名称、指令长度都要"跳过并说清楚" ----
+    const many = [];
+    for (let i = 0; i < sbSide.QCMD_FILE_MAX_ITEMS + 3; i++) many.push('AT+' + i);
+    const bigParsed = sbSide.qcmdParseText(many.join('\r\n'));
+    check(bigParsed.items.length === sbSide.QCMD_FILE_MAX_ITEMS && bigParsed.skipped.length === 3,
+      '超过条目上限的部分被跳过并计数（不静默丢弃）',
+      bigParsed.items.length + '/' + bigParsed.skipped.length);
+    const longParsed = sbSide.qcmdParseText(
+      '| ' + 'L'.repeat(sbSide.QCMD_FILE_MAX_LABEL + 10) + ' | ' + 'V'.repeat(sbSide.QCMD_FILE_MAX_VALUE + 10) + ' |');
+    check(longParsed.items[0].label.length === sbSide.QCMD_FILE_MAX_LABEL &&
+          longParsed.items[0].value.length === sbSide.QCMD_FILE_MAX_VALUE && longParsed.skipped.length === 2,
+      '超长名称/指令被截断，并各记一条跳过原因', JSON.stringify(longParsed.skipped));
+
+    // ---- 跨端一致：前端上限必须与 Rust 侧常量一致 ----
+    const protoSrc = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');
+    const usizeOf = name => {
+      const m = new RegExp(name + '\\s*:\\s*usize\\s*=\\s*([0-9_]+)').exec(protoSrc);
+      return m ? Number(m[1].replace(/_/g, '')) : -1;
+    };
+    check(sbSide.QCMD_FILE_MAX_ITEMS === usizeOf('MAX_QUICK_CMD_ITEMS') &&
+          sbSide.QCMD_FILE_MAX_LABEL === usizeOf('MAX_QUICK_CMD_LABEL_CHARS') &&
+          sbSide.QCMD_FILE_MAX_VALUE === usizeOf('MAX_QUICK_CMD_VALUE_CHARS'),
+      '前端 QCMD_FILE_* 与 mcp 侧 MAX_QUICK_CMD_* 数值一致（跨端漂移当场红）',
+      [sbSide.QCMD_FILE_MAX_ITEMS, sbSide.QCMD_FILE_MAX_LABEL, sbSide.QCMD_FILE_MAX_VALUE].join(','));
+
+    // ---- 导入：走真实 qcmdImportFile ----
+    const baseHandler = cmd => {
+      if (cmd === 'quick_cmds_pick_file') return { path: 'C:\\cmds\\wb2.md', text: mdText, encoding: 'gbk', hash: 'h1' };
+      if (cmd === 'quick_cmds_write_file') return { path: 'C:\\cmds\\wb2.md', hash: 'h2', encoding: 'gbk' };
+      if (cmd === 'quick_cmds_read_file') {
+        return { path: 'C:\\cmds\\wb2.md', text: mdText + '\r\n# 外部新增注释\r\n| 查 IP | AT+CIFSR |', encoding: 'gbk', hash: 'h3' };
+      }
+      if (cmd === 'quick_cmds_export_file') return { path: 'C:\\cmds\\out.md', hash: 'h4', encoding: 'utf-8' };
+      return null;
+    };
+    invokeHandler = baseHandler;
+    sbSide.qcmdImportFile('main');
+    const m = sbSide.monitors['main'];
+    check(m.quickCmdsFile === 'C:\\cmds\\wb2.md' && m.quickCmdsFileEnc === 'gbk' && m.quickCmdsFileStyle === 'md',
+      '导入后记住 路径/编码/载体（编码沿用读入时的，写回不会把 GBK 变乱码）',
+      [m.quickCmdsFile, m.quickCmdsFileEnc, m.quickCmdsFileStyle].join('|'));
+    check(m.quickCmds.length === 3 && m.quickCmds[0].label === '查版本', '导入后列表来自文件');
+    check(sideById['main-qcmdSrc'].children.length === 3 && sideById['main-qcmdSrc'].style.display === 'flex',
+      '来源行显示 文件名 + 重载 + 断开', String(sideById['main-qcmdSrc'].children.length));
+    // 来源行是 DOM API 造的，不在 sideById 里 —— 从 created 里按 id 找
+    const createdIds = created.map(el => el.id).filter(Boolean);
+    check(createdIds.indexOf('main-btnQcmdReload') >= 0 && createdIds.indexOf('main-btnQcmdUnmount') >= 0,
+      '重载/断开按钮带 id（MCP 控件注册表按 id 枚举，少了 AI 就点不到）', createdIds.join(','));
+
+    // ---- 核心需求：点「＋ 添加」，新条目必须写进目标文件 ----
+    invokeCalls.length = 0;
+    sbSide.addQcmdItem('main');
+    check(pendingTimers() === 1, '添加后登记了一次"写回文件"（带 600ms 去抖）', String(pendingTimers()));
+    runTimers();
+    const w = lastInvoke('quick_cmds_write_file');
+    check(!!w && w.args.path === 'C:\\cmds\\wb2.md', '写回的目标就是挂载的那个文件', w && w.args.path);
+    check(!!w && w.args.text.indexOf('指令4') >= 0,
+      '新增的那条出现在写回内容里（不是只改内存/配置）', w && w.args.text);
+    check(!!w && w.args.expectHash === 'h1', '写回带上读入时的哈希（供后端做冲突检测）', w && w.args.expectHash);
+    check(!!w && w.args.text.indexOf('# Ai-WB2 出厂检查') >= 0,
+      '写回保留原文件的注释（不是拿列表重新生成一份）');
+    check(m.quickCmdsFileHash === 'h2', '写回成功后更新哈希（下一次写回用新哈希）', m.quickCmdsFileHash);
+
+    // ---- 冲突：后端拒绝时只提示，不动列表 ----
+    invokeHandler = cmd => (cmd === 'quick_cmds_write_file'
+      ? { __err: '冲突：文件已被其它程序修改（请先「重载」再改，或「另存」到新文件）' }
+      : baseHandler(cmd));
+    toasts.length = 0;
+    const beforeCount = m.quickCmds.length;
+    sbSide.addQcmdItem('main');
+    runTimers();
+    check(toasts.length === 1 && toasts[0].msg.indexOf('冲突') >= 0,
+      '写回冲突要提示用户（而不是静默失败）', toasts.length ? toasts[0].msg : '(无提示)');
+    check(m.quickCmds.length === beforeCount + 1, '冲突不影响界面里的列表（用户改的东西还在）');
+    invokeHandler = baseHandler;
+
+    // ---- 重载：按文件为准，外部新增的行与注释都要进来 ----
+    sbSide.qcmdReloadFile('main', true);
+    check(m.quickCmds.length === 4 && m.quickCmds[3].value === 'AT+CIFSR', '重载后列表来自文件（含外部新增行）');
+    check(sbSide.qcmdCurrentText('main').indexOf('# 外部新增注释') >= 0, '重载后新注释也会被保留');
+
+    // ---- 导出：另存副本（不改当前目标），按挂载载体给扩展名 ----
+    invokeCalls.length = 0;
+    sbSide.qcmdExportFile('main');
+    const ex = lastInvoke('quick_cmds_export_file');
+    check(!!ex && /\.md$/.test(ex.args.defaultName) && ex.args.encoding === 'gbk' &&
+          ex.args.text.indexOf('AT+CIFSR') >= 0,
+      '导出：Markdown 扩展名 + 沿用挂载编码 + 内容是当前列表', ex && ex.args.defaultName);
+
+    // ---- 断开：不再写文件（核心安全阀） ----
+    sbSide.qcmdUnmountFile('main');
+    check(m.quickCmdsFile === '' && sideById['main-qcmdSrc'].style.display === 'none',
+      '断开后清掉路径并隐藏来源行');
+    invokeCalls.length = 0;
+    sbSide.addQcmdItem('main');
+    check(pendingTimers() === 0 && lastInvoke('quick_cmds_write_file') === null,
+      '断开后新增只写配置，不再碰文件');
+
+    // ---- 没成功读过就不许写回（否则会拿内存列表把用户文件重写一遍、丢注释） ----
+    m.quickCmdsFile = 'C:\\cmds\\wb2.md';
+    m.quickCmdsFileEnc = 'gbk';
+    m.quickCmdsFileStyle = 'md';
+    m.quickCmdsFileHash = '';
+    m.quickCmdsFileVerified = false;      // 模拟"启动时读不到文件、退回配置缓存"
+    invokeCalls.length = 0;
+    toasts.length = 0;
+    sbSide.addQcmdItem('main');
+    runTimers();
+    check(lastInvoke('quick_cmds_write_file') === null && toasts.length === 1 &&
+          toasts[0].msg.indexOf('还没成功读过') >= 0,
+      '文件没成功读过时拒绝写回（没有内容基线，写了就丢注释）',
+      toasts.length ? toasts[0].msg : '(无提示)');
+    invokeHandler = cmd => (cmd === 'quick_cmds_read_file' ? { __err: '读取失败: 文件不存在' } : baseHandler(cmd));
+    const keepCount = m.quickCmds.length;
+    toasts.length = 0;
+    sbSide.qcmdReloadFile('main', true);
+    check(m.quickCmds.length === keepCount && m.quickCmdsFileVerified === false &&
+          toasts.length === 1 && toasts[0].msg.indexOf('重载失败') >= 0,
+      '重载失败保留现有列表并提示（绝不清空）', toasts.length ? toasts[0].msg : '(无提示)');
+    invokeHandler = baseHandler;
+    check(/if expect_hash\.is_empty\(\)\s*\{[\s\S]{0,160}拒绝写入/.test(
+      fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8')),
+      '后端也拦一道：没有内容基线就拒绝写入（前端漏判也不至于毁用户文件）');
+
+    // ---- 同一个文件不能被两个监视器挂载（否则互相写回打架） ----
+    sbSide.monitors['extra-1'] = { quickCmds: [], quickCmdsFile: 'D:\\share\\x.md' };
+    check(sbSide.qcmdFileMountedBy('D:\\share\\x.md', 'main') === 'extra-1' &&
+          sbSide.qcmdFileMountedBy('D:\\share\\x.md', 'extra-1') === null,
+      '挂载冲突检查能定位"另一个监视器"（排除自己）');
+    delete sbSide.monitors['extra-1'];
+
+    // ---- 配置链路：三个字段要进采集，且复制配置时必须剔除（否则两个监视器共用一份文件） ----
+    const mcfg = sbSide.collectConfigForMonitor('main');
+    check(mcfg && 'quickCmdsFile' in mcfg && 'quickCmdsFileEnc' in mcfg && 'quickCmdsFileStyle' in mcfg,
+      'collectConfigForMonitor 带上外部文件三字段', Object.keys(mcfg || {}).filter(k => k.indexOf('quickCmdsFile') === 0).join(','));
+    check(/delete cfg\.quickCmdsFile;\s*\r?\n\s*delete cfg\.quickCmdsFileEnc;\s*\r?\n\s*delete cfg\.quickCmdsFileStyle;/.test(html),
+      'copyMonitorConfig 会剔除外部文件字段（两个监视器不能共用一个文件）');
+    check(/if \(mc\.quickCmdsFile && monitors\[mid\]\)/.test(html) &&
+          /qcmdReloadFile\(mid, true\)/.test(html),
+      'applyMonitorConfig 恢复挂载并按文件重读（读不到就保留配置里的缓存）');
+    check(/function qcmdFlushPendingFileSaves\(\)/.test(html) && /qcmdFlushPendingFileSaves\(\);\s*\/\/ 去抖中的/.test(html),
+      '关闭窗口前会把去抖中的写回刷掉');
+
+    // ---- 按钮位置：＋添加 / 导入 / 导出 依次排在标题行右侧 ----
+    const iAdd = sideHtml.indexOf('＋ 添加'), iImp = sideHtml.indexOf('>导入<'), iExp = sideHtml.indexOf('>导出<');
+    check(iAdd >= 0 && iImp > iAdd && iExp > iImp,
+      '「＋添加 → 导入 → 导出」按顺序排在标题行右侧', [iAdd, iImp, iExp].join(','));
+    check(sideHtml.includes("qcmdImportFile('main')") && sideHtml.includes("qcmdExportFile('main')"),
+      '两个按钮各自接到 qcmdImportFile / qcmdExportFile');
+
+    // ---- 文件头里"看起来该生效"的字段要明说暂不生效（静默 no-op 比报错更坑） ----
+    toasts.length = 0;
+    invokeHandler = cmd => (cmd === 'quick_cmds_pick_file'
+      ? { path: 'C:\\cmds\\fm.md', text: fmText, encoding: 'utf-8', hash: 'hf' } : baseHandler(cmd));
+    sbSide.qcmdImportFile('main');
+    check(toasts.some(t => t.msg.indexOf('baud') >= 0 && t.msg.indexOf('暂不生效') >= 0),
+      '文件头里的 baud 明确提示"暂不生效"', toasts.map(t => t.msg).join(' / '));
+    toasts.length = 0;
+    invokeHandler = cmd => (cmd === 'quick_cmds_pick_file'
+      ? { path: 'C:\\cmds\\fm2.md', text: '---\r\ntitle: x\r\nnote: y\r\n---\r\nAT+GMR', encoding: 'utf-8', hash: 'hg' }
+      : baseHandler(cmd));
+    sbSide.qcmdImportFile('main');
+    check(!toasts.some(t => t.msg.indexOf('暂不生效') >= 0),
+      '纯描述性文件头（title/note）不瞎提示', toasts.map(t => t.msg).join(' / ') || '(无提示)');
+    check(/QCMD_FRONT_UNSUPPORTED/.test(html), '不可解释的 key 清单是常量（改口径只改一处）');
+    invokeHandler = baseHandler;
+  }
+  }   // 外部文件这一段与上面的分栏断言共用同一个沙箱（sbSide 是块内 const）
+
+  // ---------- BLE 页左栏（设备列表 / 从机配置）宽度：改窄 + 可拖 ----------
+  {
+    const sbBle = { console };
+    vm.createContext(sbBle);
+    vm.runInContext([
+      /var BLE_LEFT_DEFAULT = \d+, BLE_LEFT_MIN = \d+;/.exec(html)[0],
+      extractFunction('clampBleLeftWidth'),
+      extractFunction('applyBleLeftWidth'),
+    ].join('\n'), sbBle);
+    check(sbBle.BLE_LEFT_DEFAULT === 288 && sbBle.BLE_LEFT_MIN === 240,
+      '左栏默认 288px / 下限 240px（原来固定 400px，占默认窗口 38%，详情被挤太窄）',
+      sbBle.BLE_LEFT_DEFAULT + '/' + sbBle.BLE_LEFT_MIN);
+    check(sbBle.clampBleLeftWidth(288, 100, 200, 1047) === 388, '向右拖 = 变宽', String(sbBle.clampBleLeftWidth(288, 100, 200, 1047)));
+    check(sbBle.clampBleLeftWidth(288, 100, -900, 1047) === 240, '拖到最左收到下限 240px', String(sbBle.clampBleLeftWidth(288, 100, -900, 1047)));
+    check(sbBle.clampBleLeftWidth(288, 100, 5000, 1200) === 456, '上限 = 视口 38%（1200×0.38=456）', String(sbBle.clampBleLeftWidth(288, 100, 5000, 1200)));
+    check(sbBle.clampBleLeftWidth(288, 0, 9999, 400) === 240, '窄视口下上限不会低于下限（Math.min/max 不打架）', String(sbBle.clampBleLeftWidth(288, 0, 9999, 400)));
+
+    // CSS：默认宽度改了、手柄样式在、旧值不留
+    check(/\.ble-left, \.ble-pf-left \{[^}]*flex:0 0 288px;[^}]*min-width:240px;[^}]*max-width:38%/.test(html),
+      '主机/从机左栏共用同一条宽度规则（切模式不横向跳动）且已收窄');
+    check(!/flex:0 0 400px/.test(html), '旧的 400px 固定宽度已不存在');
+    check(/\.ble-left-resize \{[^}]*cursor:col-resize/.test(html) &&
+          /\.ble-left-resize:hover, \.ble-left-resize\.dragging \{ background:var\(--split-line\)/.test(html),
+      '左栏拖拽手柄的样式与既有两个手柄一致（col-resize + --split-line）');
+    // 手柄必须是**行容器里的兄弟节点**：左栏是纵向 flex，塞进去会变成一条横线
+    check(/class="ble-left-resize" id="ble-leftResize"[\s\S]{0,60}class="ble-right"/.test(html) &&
+          /class="ble-left-resize" id="ble-pfResize"[\s\S]{0,60}class="ble-pf-right"/.test(html),
+      '两个模式各有一个手柄，且都紧贴在左栏右边（是行容器的兄弟，不是列内子元素）');
+    check(/col = handle\.previousElementSibling;/.test(html) &&
+          /document\.removeEventListener\('mousemove', onMouseMove\)/.test(html) &&
+          /document\.removeEventListener\('mouseup', onMouseUp\)/.test(html),
+      '拖动时取左栏、松手卸掉 document 监听（不泄漏）');
+    check(/applyBleLeftWidth\(\);\s*\r?\n\s*initBleLeftResize\(\);/.test(html),
+      'openBle 里先套宽度再绑手柄');
+    check(/leftWidth: s\.leftWidth \|\| BLE_LEFT_DEFAULT/.test(html) &&
+          /_bleLeftWidth = \(typeof b\.leftWidth === 'number'/.test(html),
+      '宽度进配置链路（采集 + 恢复），重启沿用');
+
+    // MAC 直连输入框的占位符（用户要求改成这九个字）
+    check(html.indexOf('placeholder="输入目标设备 MAC 直接连接"') >= 0,
+      'MAC 直连输入框占位符已改为「输入目标设备 MAC 直接连接」');
+    check(html.indexOf('按 MAC 直连（如 A4:C1:38:11:14:2B）') < 0, '旧的占位符文案已不存在');
   }
 
   console.log(`\n结果: ${pass} passed, ${fail} failed`);

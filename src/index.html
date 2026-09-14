@@ -1036,12 +1036,19 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .adb-dev-card.active { background:var(--accent-focus) !important; color:#fff !important; border-color:var(--accent-focus) !important; }
 /* ===== 蓝牙(BLE) 调试面板 ===== */
 .ble-body { flex:1; display:flex; min-height:0; }
-/* 主机 / 从机 两种模式的左栏**宽度必须完全一致**：切换模式时布局不该横向跳动 */
+/* 主机 / 从机 两种模式的左栏**宽度必须完全一致**：切换模式时布局不该横向跳动。
+   默认 288px：原来 400px 在默认窗口（1047 宽）里占掉 38%，把 GATT 详情挤得太窄；
+   现在给"够放下扫描按钮 + 两行设备名/地址"的最小舒服宽度，右边还可拖手柄继续调
+   （见 .ble-left-resize / initBleLeftResize，宽度随配置保留）。 */
 .ble-left, .ble-pf-left {
-    flex:0 0 400px; min-width:320px; max-width:46%;
+    flex:0 0 288px; min-width:240px; max-width:38%;
     display:flex; flex-direction:column;
     border-right:1px solid var(--border); background:var(--editor-bg);
 }
+/* 左栏宽度拖拽手柄：在 .ble-body / #blePeriph 这一行里、紧贴左栏右边（向右拖 = 变宽）。
+   注意不能像 .ble-mon-resize 那样塞进容器内部 —— 左栏是纵向 flex，塞进去会变成一条横线。 */
+.ble-left-resize { flex:0 0 5px; cursor:col-resize; background:var(--border); z-index:10; }
+.ble-left-resize:hover, .ble-left-resize.dragging { background:var(--split-line); }
 .ble-left-head { display:flex; align-items:center; gap:10px; padding:8px 12px; border-bottom:1px solid var(--border); background:var(--toolbar-bg); flex-shrink:0; min-height:44px; }
 .ble-left-title { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--text-b); white-space:nowrap; min-width:0; }
 .ble-left-title svg { color:var(--link); }
@@ -1800,9 +1807,21 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .qcmd-side-body { flex:1; display:none; flex-direction:column; min-width:0; min-height:0; }
 .qcmd-side.open .qcmd-side-body { display:flex; }
 .qcmd-side-hd {
-    display:flex; align-items:center; justify-content:space-between; flex-shrink:0;
-    padding:5px 8px; background:var(--surface-3); border-bottom:1px solid var(--border);
-    font-size:11px; color:var(--text-d); user-select:none; letter-spacing:.5px;
+    display:flex; align-items:center; justify-content:space-between; gap:6px; flex-shrink:0;
+    padding:5px 6px 5px 8px; background:var(--surface-3); border-bottom:1px solid var(--border);
+    font-size:11px; color:var(--text-d); user-select:none;
+}
+.qcmd-hd-title { letter-spacing:.5px; }
+.qcmd-hd-acts { display:inline-flex; align-items:center; gap:2px; flex-shrink:0; }
+/* 来源行：只在挂了外部文件时出现（文件名 + 重载/断开） */
+.qcmd-side-src {
+    display:flex; align-items:center; gap:2px; flex-shrink:0;
+    padding:3px 6px; border-bottom:1px solid var(--border);
+    background:var(--surface-2); font-size:10px; color:var(--text-d);
+}
+.qcmd-src-name {
+    flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    font-family:var(--font-mono); color:var(--link);
 }
 .qcmd-dh-add {
     background:transparent; border:none; color:var(--link); font-size:11px;
@@ -4077,12 +4096,70 @@ var _bleExtraMon = null;   // 内嵌监视器的 mid（'ble-mon'），未打开�
 var _bleMonWidth = 380;    // 内嵌监视器宽度（拖动时更新，随用户配置文件保留）
 var _bleRestoreMon = null; // 启动时从配置读到的监视器状态；蓝牙页 DOM 建立后消费（见 openBle）
 
+// 蓝牙页左栏（设备列表 / 从机配置）宽度：默认 288px，可拖手柄调，随配置保留。
+// 夹取到 [240, 视口 38%] —— 上限与 CSS 的 max-width 一致，免得拖出来的宽度下次被 CSS 拉回去。
+var BLE_LEFT_DEFAULT = 288, BLE_LEFT_MIN = 240;
+// 当前左栏宽度（拖动时更新，随用户配置文件保留）。必须声明在默认值之后 ——
+// 否则 `var x = BLE_LEFT_DEFAULT` 会在常量赋值前求值，拿到 undefined。
+var _bleLeftWidth = BLE_LEFT_DEFAULT;
+
+// 拖拽后的宽度（纯函数，便于无头断言）：手柄在左栏右边 → 向右拖（curX > startX）变宽
+function clampBleLeftWidth(startW, startX, curX, viewportW) {
+    var w = startW + (curX - startX);
+    var max = Math.max(BLE_LEFT_MIN, Math.round((viewportW || 0) * 0.38));
+    return Math.max(BLE_LEFT_MIN, Math.min(max, Math.round(w)));
+}
+
+/// 把记住的宽度套到两种模式的左栏上（主机 .ble-left / 从机 .ble-pf-left 必须同宽）
+function applyBleLeftWidth() {
+    var w = _bleLeftWidth || BLE_LEFT_DEFAULT;
+    document.querySelectorAll('.ble-left, .ble-pf-left').forEach(function(col) {
+        col.style.flex = '0 0 ' + w + 'px';
+    });
+}
+
+/// 绑左栏宽度拖拽手柄（两个模式各一个，按 class 绑定）
+function initBleLeftResize() {
+    document.querySelectorAll('.ble-left-resize').forEach(function(handle) {
+        if (handle._bound) return;
+        handle._bound = true;
+        var startX = 0, startW = 0, col = null;
+        function onMouseMove(e) {
+            if (!col) return;
+            col.style.flex = '0 0 ' + clampBleLeftWidth(startW, startX, e.clientX, window.innerWidth) + 'px';
+        }
+        function onMouseUp() {
+            handle.classList.remove('dragging');
+            if (col) {
+                _bleLeftWidth = col.offsetWidth;          // 宽度随用户配置保留
+                col.style.flex = '0 0 ' + _bleLeftWidth + 'px';
+            }
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            document.body.style.cursor = '';
+            scheduleConfigSave();
+        }
+        handle.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            col = handle.previousElementSibling;          // .ble-left / .ble-pf-left
+            if (!col) return;
+            startX = e.clientX;
+            startW = col.offsetWidth;
+            handle.classList.add('dragging');
+            document.body.style.cursor = 'col-resize';
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+        });
+    });
+}
+
 // 采集蓝牙页状态（纯数据函数，便于随配置持久化与无头断言）
 function collectBleState(s) {
     s = s || {};
     return {
         monitor: !!s.monitor,
         monitorWidth: s.monitorWidth || 380,
+        leftWidth: s.leftWidth || BLE_LEFT_DEFAULT,
         monitorCfg: s.monitorCfg || null,
         openSvcs: s.openSvcs || [],
         advOpen: !!s.advOpen,
@@ -4111,6 +4188,8 @@ function restoreBleState(b) {
     _bleFilterOpen = !!b.filterOpen;
     _bleMonWidth = b.monitorWidth || 380;
     _bleRestoreMon = b.monitor ? { width: _bleMonWidth, cfg: b.monitorCfg || null } : null;
+    // 左栏宽度：纯数据，DOM 建好后由 openBle → applyBleLeftWidth 套上去
+    _bleLeftWidth = (typeof b.leftWidth === 'number' && b.leftWidth > 0) ? b.leftWidth : BLE_LEFT_DEFAULT;
     // 从机模式同样是纯数据，DOM 建好后由 openBle → setBleMode 渲染。
     // 入口关闭时强制主机模式：配置里残留的 "periph" 不能让启动落在隐藏模式里
     _bleMode = (BLE_PERIPH_MODE_ENABLED && b.mode === 'periph') ? 'periph' : 'host';
@@ -5483,7 +5562,10 @@ function mcpSerialOp(payload) {
         var qs = (m.quickCmds || []).map(function (q, i) {
             return { index: i, label: q.label || ('指令' + (i + 1)), value: q.value || '' };
         });
-        return { ok: true, value: { pane: mid, items: qs, usable: qs.filter(function (q) { return !!q.value; }).length } };
+        // 列表可能来自外部文件（文件即存储，见 qcmdSideHtml/quick_cmds_* 命令）：
+        // 把来源一起给 AI —— 否则它会以为"改配置就能保住这条指令"，而面板里改的其实会写回文件
+        return { ok: true, value: { pane: mid, items: qs, usable: qs.filter(function (q) { return !!q.value; }).length,
+                                    file: m.quickCmdsFile || null, source: m.quickCmdsFile ? 'file' : 'config' } };
     }
     if (action === 'quickRun') {
         var idx = parseInt(payload.index, 10);
@@ -6091,9 +6173,14 @@ function qcmdSideHtml(mid) {
             ' title="展开快速指令"></button>' +
         '<div class="qcmd-side-body">' +
             '<div class="qcmd-side-hd">' +
-                '<span>快速指令</span>' +
-                '<button class="qcmd-dh-add" onclick="addQcmdItem(\'' + mid + '\')">＋ 添加</button>' +
+                '<span class="qcmd-hd-title">快速指令</span>' +
+                '<span class="qcmd-hd-acts">' +
+                    '<button class="qcmd-dh-add" onclick="addQcmdItem(\'' + mid + '\')" title="新增一条指令（已挂载文件时同时写进文件）">＋ 添加</button>' +
+                    '<button class="qcmd-dh-add" id="' + mid + '-btnQcmdImport" onclick="qcmdImportFile(\'' + mid + '\')" title="从文件加载指令列表（加载后增删改都会写回该文件）">导入</button>' +
+                    '<button class="qcmd-dh-add" id="' + mid + '-btnQcmdExport" onclick="qcmdExportFile(\'' + mid + '\')" title="把当前列表另存为一份文件（Markdown 表格 / TSV）">导出</button>' +
+                '</span>' +
             '</div>' +
+            '<div class="qcmd-side-src" id="' + mid + '-qcmdSrc" style="display:none;"></div>' +
             '<div class="qcmd-list" id="' + mid + '-qcmdList"></div>' +
         '</div>' +
     '</div>';
@@ -6184,6 +6271,350 @@ function toggleQcmdSide(mid) {
     setQcmdSideOpen(mid, !qcmdSideOpen(mid));
 }
 
+/* ===== 快速指令外部文件：解析 / 生成（纯函数，便于无头断言） =====
+   语义：**文件就是列表的存储** —— 导入后面板里的增删改都写回它，不再有两份真相。
+   支持三种载体（读取时自动识别，写回时保持原样）：
+     · Markdown 表格： | 名称 | 指令 |        （单元格内的竖线按规范写 \|）
+     · TSV：          名称 <TAB> 指令
+     · 纯指令行：      一行一条指令（没有名称列，名称取指令本身）
+   ⚠️ 刻意**不按逗号切分**：AT 指令里逗号是常态（AT+CWJAP="ssid","pass"），
+      按 CSV 切必然把一条指令切碎。文件名可以叫 .csv，读进来也是"整行一条指令"。
+   注释（# / // 开头）与空行**按原位置原样保留**：文件在内存里是块序列（raw / item），
+   增删改只动 item 块 —— 手写文件里的说明、分节、额外列都不会被写回时抹掉。 */
+
+var QCMD_FILE_MAX_ITEMS = 500;     // 与后端/文档一致的条目上限
+var QCMD_FILE_MAX_LABEL = 64;      // 名称上限（字符）
+var QCMD_FILE_MAX_VALUE = 4096;    // 单条指令上限（字符）
+
+/// Markdown 表格行 → 单元格数组（单元格内的 \| 先藏起来再切分）
+function qcmdMdCells(line) {
+    var t = String(line == null ? '' : line).trim();
+    if (t.charAt(0) === '|') t = t.slice(1);
+    if (t.charAt(t.length - 1) === '|') t = t.slice(0, -1);
+    var PH = '\u0000';
+    t = t.replace(/\\\|/g, PH);
+    return t.split('|').map(function(c) { return c.split(PH).join('|').trim(); });
+}
+
+/// 该跳过的"结构行"：Markdown 分隔行 |---|---| 与表头行（写回时原样保留）
+function qcmdIsStructureRow(cells) {
+    if (!cells.length) return true;
+    if (cells.every(function(c) { return /^:?-{2,}:?$/.test(c) || c === ''; })) return true;
+    var first = String(cells[0] || '').toLowerCase();
+    return first === '名称' || first === '指令' || first === 'name' || first === 'label' || first === 'cmd' || first === 'command';
+}
+
+/// front matter 里这些 key 看起来"应该改变发送行为"，但本版只在面板上生效 ——
+/// 明确告知用户，别让他以为写了 baud/mode 就生效了（文档里的格式说明也用同一套口径）
+var QCMD_FRONT_UNSUPPORTED = ['baud', 'mode', 'lineending', 'line-ending', 'line_ending', 'delay', 'expect', 'timeout', 'hex'];
+
+/// 文本 → {blocks, items, skipped, style, frontKeys, frontUnclosed}
+///   blocks：raw（注释/空行/表头/坏行/文件头，原样保留）与 item（指向 items 里的同一个对象）
+///   skipped：[{line, reason}]，行号从 1 开始（坏行跳过但**不丢**：仍以 raw 保留在文件里）
+function qcmdParseText(text) {
+    var src = String(text == null ? '' : text);
+    var lines = src.split(/\r?\n/);
+    var blocks = [], items = [], skipped = [], style = '';
+    var frontKeys = [], frontUnclosed = false, frontEnd = -1;
+    // 文件头（YAML / TOML 风格的 front matter）：首行是 --- 或 +++ 时，直到配对收尾行都原样保留。
+    // 不做这一步，`baud: 115200` 这种没有分隔符的行会被当成一条"指令"混进列表（2026-09 实测踩到）。
+    var head = lines.length ? lines[0].trim() : '';
+    if (head === '---' || head === '+++') {
+        var closers = head === '---' ? ['---', '...'] : ['+++'];
+        for (var k = 1; k < lines.length; k++) {
+            if (closers.indexOf(lines[k].trim()) >= 0) { frontEnd = k; break; }
+        }
+        if (frontEnd < 0) {
+            // 没有配对的收尾：**只当第一行是头部**，正文照常解析
+            // （不能整份吞掉 —— 以 --- 开头的普通 Markdown 也可能只是条水平线）
+            frontEnd = 0;
+            frontUnclosed = true;
+        }
+        for (var j = 1; j < frontEnd; j++) {
+            var mk = /^\s*([A-Za-z_][\w.-]*)\s*[:=]/.exec(lines[j]);
+            if (mk) frontKeys.push(mk[1].toLowerCase());
+        }
+    }
+    for (var i = 0; i < lines.length; i++) {
+        var raw = lines[i], t = raw.trim();
+        if (i <= frontEnd) { blocks.push({ kind: 'raw', text: raw }); continue; }
+        if (t === '' || t.charAt(0) === '#' || t.slice(0, 2) === '//') { blocks.push({ kind: 'raw', text: raw }); continue; }
+        var cells, thisStyle;
+        if (t.charAt(0) === '|') { cells = qcmdMdCells(t); thisStyle = 'md'; }
+        else if (t.indexOf('\t') >= 0) { cells = t.split('\t').map(function(c) { return c.trim(); }); thisStyle = 'tsv'; }
+        else { cells = [t]; thisStyle = 'lines'; }
+        if (qcmdIsStructureRow(cells)) { blocks.push({ kind: 'raw', text: raw }); continue; }
+        var label = cells.length >= 2 ? (cells[0] || '') : '';
+        var value = cells.length >= 2 ? (cells[1] || '') : (cells[0] || '');
+        var rest = cells.length >= 2 ? cells.slice(2) : [];
+        if (!label && !value) { blocks.push({ kind: 'raw', text: raw }); continue; }
+        if (items.length >= QCMD_FILE_MAX_ITEMS) {
+            skipped.push({ line: i + 1, reason: '超过 ' + QCMD_FILE_MAX_ITEMS + ' 条上限' });
+            blocks.push({ kind: 'raw', text: raw }); continue;
+        }
+        if (label.length > QCMD_FILE_MAX_LABEL) {
+            skipped.push({ line: i + 1, reason: '名称超长已截断（上限 ' + QCMD_FILE_MAX_LABEL + ' 字符）' });
+            label = label.slice(0, QCMD_FILE_MAX_LABEL);
+        }
+        if (value.length > QCMD_FILE_MAX_VALUE) {
+            skipped.push({ line: i + 1, reason: '指令超长已截断（上限 ' + QCMD_FILE_MAX_VALUE + ' 字符）' });
+            value = value.slice(0, QCMD_FILE_MAX_VALUE);
+        }
+        if (!style) style = thisStyle;
+        // 名称可省：只有指令时用指令本身当名称（与面板"名称/内容"两栏一致）
+        // rest（第 3 列起的额外列）与 oneCol（原本只有一列）记在**块**上，不污染 item/config
+        var item = { label: label || value, value: value };
+        items.push(item);
+        blocks.push({ kind: 'item', item: item, rest: rest, oneCol: cells.length < 2 });
+    }
+    return { blocks: blocks, items: items, skipped: skipped, style: style || 'md',
+             frontKeys: frontKeys, frontUnclosed: frontUnclosed };
+}
+
+/// {blocks} + 载体风格 → 文本（raw 原样回吐，item 按风格重新拼）
+function qcmdBuildText(blocks, style) {
+    style = style || 'md';
+    var cleanLine = function(s) { return String(s == null ? '' : s).replace(/[\r\n]+/g, ' '); };
+    var out = [];
+    (blocks || []).forEach(function(b) {
+        if (!b || b.kind !== 'item') { out.push(b && typeof b.text === 'string' ? b.text : ''); return; }
+        var it = b.item || {};
+        var label = cleanLine(it.label), value = cleanLine(it.value);
+        var rest = (b.rest || []).map(cleanLine);
+        var noTab = function(s) { return s.replace(/\t/g, ' '); };
+        // 原本只有一列、且名称没被改过 → 仍然只写一列（不改动用户文件的写法）
+        var oneCol = !!b.oneCol && label === value;
+        if (style === 'tsv') {
+            var cells = oneCol ? [cleanLine(noTab(value))] : [noTab(label), noTab(value)];
+            out.push(cells.concat(rest.map(noTab)).join('\t'));
+        } else if (style === 'lines') {
+            if (label && label !== value) {
+                // 纯指令行文件没有名称列：用户在面板改了名称 → 这一行升级成 TSV（解析端照样认）
+                out.push([noTab(label), noTab(value)].join('\t'));
+            } else {
+                out.push(value);
+            }
+        } else {
+            var esc = function(s) { return s.replace(/\|/g, '\\|'); };
+            var cols = oneCol ? [esc(value)] : [esc(label), esc(value)];
+            out.push('| ' + cols.concat(rest.map(esc)).join(' | ') + ' |');
+        }
+    });
+    return out.join('\r\n');
+}
+
+/* ===== 挂载：导入 / 重载 / 导出 / 断开 / 写回 ===== */
+
+function qcmdBaseName(p) {
+    var s = String(p == null ? '' : p);
+    var parts = s.split(/[\\/]/);
+    return parts[parts.length - 1] || s;
+}
+
+/// 把解析结果套到某个监视器上（items 与 blocks 里的对象是同一批引用，编辑即改到文件）
+function qcmdApplyParsed(mid, parsed, res) {
+    if (!monitors[mid]) return;
+    monitors[mid].quickCmds = parsed.items;
+    monitors[mid]._qcmdBlocks = parsed.blocks;
+    monitors[mid].quickCmdsFileStyle = parsed.style;
+    if (res) {
+        monitors[mid].quickCmdsFile = res.path || '';
+        monitors[mid].quickCmdsFileEnc = res.encoding || 'utf-8';
+        monitors[mid].quickCmdsFileHash = res.hash || '';
+        // 只有"成功读过一次"的挂载才允许写回 —— 否则（文件读不到/被删/超限）写回会拿不到
+        // 内容基线，等于把用户文件按内存里的列表重写一遍（注释就没了），这是数据丢失路径
+        monitors[mid].quickCmdsFileVerified = !!res.hash;
+    }
+    rebuildQcmdList(mid);
+    renderQcmdSource(mid);
+    scheduleConfigSave();
+    if (parsed.skipped.length) {
+        showToast('已跳过 ' + parsed.skipped.length + ' 行（首个：第 ' + parsed.skipped[0].line + ' 行 ' + parsed.skipped[0].reason + '）', 'error');
+    }
+    // 文件头（YAML/TOML front matter）：能原样保留，但**本版不解释**那些字段 ——
+    // 必须说出来，否则用户会以为 `baud: 9600` 生效了（静默 no-op 比报错更坑）
+    if (parsed.frontUnclosed) {
+        showToast('文件头没有配对的收尾行（--- / +++），已按正文处理', 'error');
+    }
+    var risky = (parsed.frontKeys || []).filter(function(k) { return QCMD_FRONT_UNSUPPORTED.indexOf(k) >= 0; });
+    if (risky.length) {
+        showToast('文件头里的 ' + risky.join(' / ') + ' 暂不生效：发送沿用面板的行尾与文本/HEX 设置', 'error');
+    }
+}
+
+/// 来源行：只显示文件名 + 重载/断开（**全部用 DOM API + textContent**：
+/// 路径是用户文件，可能含引号/尖括号，绝不能拼进 HTML）
+function renderQcmdSource(mid) {
+    var el = document.getElementById(mid + '-qcmdSrc');
+    if (!el) return;
+    var m = monitors[mid];
+    var f = m && m.quickCmdsFile;
+    if (!f) { el.style.display = 'none'; el.textContent = ''; return; }
+    el.style.display = 'flex';
+    el.textContent = '';
+    var name = document.createElement('span');
+    name.className = 'qcmd-src-name';
+    name.textContent = qcmdBaseName(f);
+    name.title = f + '（增删改都会写回这个文件）';
+    var reload = document.createElement('button');
+    reload.className = 'qcmd-dh-add';
+    reload.id = mid + '-btnQcmdReload';
+    reload.textContent = '重载';
+    reload.title = '从文件重新读取（文件被外部改过时用）';
+    reload.onclick = function() { qcmdReloadFile(mid, false); };
+    var off = document.createElement('button');
+    off.className = 'qcmd-dh-add';
+    off.id = mid + '-btnQcmdUnmount';
+    off.textContent = '断开';
+    off.title = '不再写回这个文件（列表保留在配置里）';
+    off.onclick = function() { qcmdUnmountFile(mid); };
+    el.appendChild(name);
+    el.appendChild(reload);
+    el.appendChild(off);
+}
+
+/// 同一个文件被两个监视器挂载会互相写回打架（后写的撞冲突哈希）→ 挂载前先查
+function qcmdFileMountedBy(path, exceptMid) {
+    var found = null;
+    Object.keys(monitors).forEach(function(mid) {
+        if (mid === exceptMid) return;
+        if (monitors[mid] && monitors[mid].quickCmdsFile === path) found = mid;
+    });
+    return found;
+}
+
+function qcmdImportFile(mid) {
+    invoke('quick_cmds_pick_file').then(function(res) {
+        if (!res) return;                                   // 用户取消
+        var other = qcmdFileMountedBy(res.path, mid);
+        if (other) {
+            showToast('这个文件已经被「' + other + '」挂载了：先在那里点「断开」，否则两边写回会互相覆盖', 'error');
+            return;
+        }
+        qcmdApplyParsed(mid, qcmdParseText(res.text), res);
+        showToast('已加载 ' + qcmdBaseName(res.path) + '（' + (monitors[mid] ? monitors[mid].quickCmds.length : 0) + ' 条）', 'success');
+    }).catch(function(e) { showToast('导入失败: ' + e, 'error'); });
+}
+
+function qcmdReloadFile(mid, silent) {
+    var m = monitors[mid];
+    if (!m || !m.quickCmdsFile) return;
+    var path = m.quickCmdsFile;
+    invoke('quick_cmds_read_file', { path: path }).then(function(res) {
+        qcmdApplyParsed(mid, qcmdParseText(res.text), res);
+        if (!silent) showToast('已重载 ' + qcmdBaseName(path), 'success');
+    }).catch(function(e) {
+        // 文件没了/读不动：**保留现有列表**并提示，绝不静默清空（那是最伤的体验）
+        showToast('重载失败（保留当前列表）: ' + e, 'error');
+    });
+}
+
+function qcmdUnmountFile(mid) {
+    if (!monitors[mid]) return;
+    monitors[mid].quickCmdsFile = '';
+    monitors[mid].quickCmdsFileHash = '';
+    monitors[mid].quickCmdsFileVerified = false;
+    monitors[mid]._qcmdBlocks = null;                       // 回到"只有指令、没有原始行"的状态
+    renderQcmdSource(mid);
+    scheduleConfigSave();
+    showToast('已断开文件（列表保留在配置里）', 'success');
+}
+
+/// 导出：只给 Markdown / TSV，**不给 CSV**（逗号会切碎 AT 指令）；导出的是副本，不改变当前目标
+function qcmdExportFile(mid) {
+    var m = monitors[mid];
+    if (!m) return;
+    var style = m.quickCmdsFileStyle || 'md';
+    var text = qcmdBuildText((m.quickCmds || []).map(function(it) { return { kind: 'item', item: it }; }), style);
+    var defName = 'quick-cmds.' + (style === 'tsv' ? 'tsv' : 'md');
+    invoke('quick_cmds_export_file', { text: text, encoding: m.quickCmdsFileEnc || 'utf-8', defaultName: defName })
+        .then(function(res) {
+            if (!res) return;
+            showToast('已导出：' + res.path + '（点「导入」可把它设为当前目标）', 'success');
+        }).catch(function(e) { showToast('导出失败: ' + e, 'error'); });
+}
+
+/// 当前列表 → 文件文本（挂了文件就沿用它的块序列与载体，注释/额外列都在）
+function qcmdCurrentText(mid) {
+    var m = monitors[mid];
+    if (!m) return '';
+    var blocks = m._qcmdBlocks;
+    if (!blocks) blocks = (m.quickCmds || []).map(function(it) { return { kind: 'item', item: it }; });
+    return qcmdBuildText(blocks, m.quickCmdsFileStyle || 'md');
+}
+
+/// 写回（去抖 600ms）：增/删/改都走这里 —— 这就是"添加的新项要落在目标文件里"
+var _qcmdFileSaveTimers = {};
+function scheduleQcmdFileSave(mid) {
+    if (!monitors[mid] || !monitors[mid].quickCmdsFile) return;
+    if (_qcmdFileSaveTimers[mid]) clearTimeout(_qcmdFileSaveTimers[mid]);
+    _qcmdFileSaveTimers[mid] = setTimeout(function() {
+        _qcmdFileSaveTimers[mid] = null;
+        qcmdFileSaveNow(mid);
+    }, 600);
+}
+
+function qcmdFileSaveNow(mid) {
+    var m = monitors[mid];
+    if (!m || !m.quickCmdsFile) return;
+    if (_qcmdFileSaveTimers[mid]) { clearTimeout(_qcmdFileSaveTimers[mid]); _qcmdFileSaveTimers[mid] = null; }
+    // 没成功读过就没有内容基线：宁可不写，也不能把用户的文件按内存列表重写（会丢注释/额外列）
+    if (!m.quickCmdsFileVerified || !m.quickCmdsFileHash) {
+        showToast('「' + qcmdBaseName(m.quickCmdsFile) + '」还没成功读过，这次改动暂未写回（点「重载」或重新「导入」）', 'error');
+        return;
+    }
+    var path = m.quickCmdsFile;
+    invoke('quick_cmds_write_file', {
+        path: path,
+        text: qcmdCurrentText(mid),
+        encoding: m.quickCmdsFileEnc || 'utf-8',
+        expectHash: m.quickCmdsFileHash || ''
+    }).then(function(res) {
+        if (monitors[mid] && monitors[mid].quickCmdsFile === path) {
+            monitors[mid].quickCmdsFileHash = res.hash || '';
+            monitors[mid].quickCmdsFileEnc = res.encoding || monitors[mid].quickCmdsFileEnc;
+        }
+    }).catch(function(e) {
+        var msg = String(e && e.message ? e.message : e);
+        showToast('未能写回 ' + qcmdBaseName(path) + '：' + msg, 'error');
+    });
+}
+
+/// 关闭窗口前把还没落盘的去抖写回刷掉（与 config 的 beforeunload 处理同一套路）
+function qcmdFlushPendingFileSaves() {
+    Object.keys(_qcmdFileSaveTimers).forEach(function(mid) {
+        if (_qcmdFileSaveTimers[mid]) qcmdFileSaveNow(mid);
+    });
+}
+
+/// 挂载了文件时，面板里的增删必须同步到块序列 —— 否则改了根本写不进文件
+function qcmdBlockIndexOf(mid, item) {
+    var blocks = monitors[mid] && monitors[mid]._qcmdBlocks;
+    if (!blocks) return -1;
+    for (var i = 0; i < blocks.length; i++) {
+        if (blocks[i] && blocks[i].kind === 'item' && blocks[i].item === item) return i;
+    }
+    return -1;
+}
+
+/// 新条目插到最后一个数据行之后（保持表格连续），没有数据行就追加到末尾
+function qcmdInsertItemBlock(mid, item) {
+    var blocks = monitors[mid] && monitors[mid]._qcmdBlocks;
+    if (!blocks) return false;
+    var at = -1;
+    for (var i = 0; i < blocks.length; i++) if (blocks[i] && blocks[i].kind === 'item') at = i;
+    blocks.splice(at < 0 ? blocks.length : at + 1, 0, { kind: 'item', item: item });
+    return true;
+}
+
+function qcmdRemoveItemBlock(mid, item) {
+    var idx = qcmdBlockIndexOf(mid, item);
+    var blocks = monitors[mid] && monitors[mid]._qcmdBlocks;
+    if (idx < 0 || !blocks) return false;
+    blocks.splice(idx, 1);
+    return true;
+}
+
 function makeQcmdItem(mid, idx, label, value) {
     var item = document.createElement('div');
     item.className = 'qcmd-item';
@@ -6199,6 +6630,7 @@ function makeQcmdItem(mid, idx, label, value) {
     labelInp.addEventListener('input', function() {
         monitors[mid].quickCmds[idx].label = this.value;
         scheduleConfigSave();
+        scheduleQcmdFileSave(mid);      // 挂了文件就写回文件（文件即存储）
     });
 
     var valInp = document.createElement('input');
@@ -6212,6 +6644,7 @@ function makeQcmdItem(mid, idx, label, value) {
     valInp.addEventListener('input', function() {
         monitors[mid].quickCmds[idx].value = this.value;
         scheduleConfigSave();
+        scheduleQcmdFileSave(mid);      // 挂了文件就写回文件（文件即存储）
     });
     valInp.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); sendQcmdItem(mid, idx); }
@@ -6245,13 +6678,18 @@ function addQcmdItem(mid) {
     var qlist = document.getElementById(mid + '-qcmdList');
     var item = makeQcmdItem(mid, idx, cmds[idx].label, cmds[idx].value);
     qlist.appendChild(item);
+    qcmdInsertItemBlock(mid, cmds[idx]);   // 挂了文件：块的插入点要跟上，否则写回时漏掉这条
     scheduleConfigSave();
+    scheduleQcmdFileSave(mid);             // 新增的这条也要落在目标文件里
 }
 
 function removeQcmdItem(mid, idx) {
+    var removed = monitors[mid].quickCmds[idx];
     monitors[mid].quickCmds.splice(idx, 1);
+    qcmdRemoveItemBlock(mid, removed);     // 块也要删，否则写回时这条又冒出来
     rebuildQcmdList(mid);
     scheduleConfigSave();
+    scheduleQcmdFileSave(mid);
 }
 
 function rebuildQcmdList(mid) {
@@ -6724,6 +7162,7 @@ function collectConfig() {
     cfg.ble = collectBleState({
         monitor: !!(_bleExtraMon && monitors[_bleExtraMon]),
         monitorWidth: _bleMonWidth,
+        leftWidth: _bleLeftWidth,
         monitorCfg: (_bleExtraMon && monitors[_bleExtraMon]) ? collectConfigForMonitor(_bleExtraMon) : null,
         openSvcs: Object.keys(_bleOpenSvcs).filter(function(k) { return _bleOpenSvcs[k]; }),
         advOpen: _bleAdvOpen,
@@ -6773,6 +7212,10 @@ function collectConfig() {
             btnLineNum:   btnOn(mid + '-btnLineNum'),
             quickCmds:    m.quickCmds ? JSON.parse(JSON.stringify(m.quickCmds)) : [],
             qcmdSideWidth: qcmdSideWidth(mid),
+            // 外部文件挂载（文件即存储）：路径 + 编码 + 载体风格；quickCmds 只是它的缓存
+            quickCmdsFile:      m.quickCmdsFile || '',
+            quickCmdsFileEnc:   m.quickCmdsFileEnc || '',
+            quickCmdsFileStyle: m.quickCmdsFileStyle || '',
             sendHistory:  m.sendHistory ? m.sendHistory.slice(0, 20) : [],
             panelHeight:  saved.panelHeight || 0,
             workflows:    m.workflows ? JSON.parse(JSON.stringify(m.workflows)) : [],
@@ -6821,6 +7264,9 @@ function collectConfigForMonitor(mid) {
         btnLineNum:   btnOn(mid + '-btnLineNum'),
         quickCmds:    m.quickCmds ? JSON.parse(JSON.stringify(m.quickCmds)) : [],
         qcmdSideWidth: qcmdSideWidth(mid),
+        quickCmdsFile:      m.quickCmdsFile || '',
+        quickCmdsFileEnc:   m.quickCmdsFileEnc || '',
+        quickCmdsFileStyle: m.quickCmdsFileStyle || '',
         sendHistory:  m.sendHistory ? m.sendHistory.slice(0, 20) : [],
         workflows:    m.workflows ? JSON.parse(JSON.stringify(m.workflows)) : [],
     };
@@ -6836,6 +7282,10 @@ function copyMonitorConfig(srcMid, dstMid, opts) {
     // 终端模式需要额外的初始化状态，暂不复制；发送历史是运行时数据，不复制
     delete cfg.btnSendLE;
     delete cfg.sendHistory;
+    // 外部指令文件**不复制**：两个监视器挂同一个文件会互相写回打架（后写的会撞冲突哈希）
+    delete cfg.quickCmdsFile;
+    delete cfg.quickCmdsFileEnc;
+    delete cfg.quickCmdsFileStyle;
     applyMonitorConfig(dstMid, cfg);
     // 复制的工作流规则需要重新渲染列表
     if (cfg.workflows && cfg.workflows.length > 0 && monitors[dstMid]) {
@@ -6971,6 +7421,15 @@ function applyMonitorConfig(mid, mc) {
     }
     // 快速指令分栏宽度（拖动折叠条调过就沿用；没调过保持缺省 240px）
     if (mc.qcmdSideWidth) setQcmdSideWidth(mid, mc.qcmdSideWidth);
+    // 快速指令外部文件：记下路径与编码/风格，并按文件重读一遍（文件才是存储）
+    if (mc.quickCmdsFile && monitors[mid]) {
+        monitors[mid].quickCmdsFile = mc.quickCmdsFile;
+        monitors[mid].quickCmdsFileEnc = mc.quickCmdsFileEnc || 'utf-8';
+        monitors[mid].quickCmdsFileStyle = mc.quickCmdsFileStyle || 'md';
+        monitors[mid].quickCmdsFileVerified = false;   // 读完之前不许写回
+        renderQcmdSource(mid);
+        qcmdReloadFile(mid, true);   // 读不到就保留配置里的缓存并提示，绝不清空
+    }
     // 发送历史
     if (mc.sendHistory && mc.sendHistory.length > 0 && monitors[mid]) {
         monitors[mid].sendHistory = mc.sendHistory;
@@ -8955,7 +9414,7 @@ function openBle() {
                     // 于是永远进不了扫描列表 —— 这种情况下只能按地址直接连
                     '<div class="ble-direct-row">' +
                         '<input class="ble-direct-input" id="bleDirectAddr" spellcheck="false" autocomplete="off" ' +
-                            'placeholder="按 MAC 直连（如 A4:C1:38:11:14:2B）：设备不广播时用这个" ' +
+                            'placeholder="输入目标设备 MAC 直接连接" ' +
                             'onkeydown="if(event.key===\'Enter\'){event.preventDefault();connectBleDirect();}">' +
                         '<button class="ble-direct-btn" id="bleDirectBtn" onclick="connectBleDirect()" title="不依赖广播，直接按地址连接">直连</button>' +
                     '</div>' +
@@ -8968,6 +9427,7 @@ function openBle() {
                     '</div>' +
                     '<div class="ble-devList no-scrollbar" id="ble-devList"></div>' +
                 '</div>' +
+                '<div class="ble-left-resize" id="ble-leftResize" title="拖动调节设备栏宽度"></div>' +
                 '<div class="ble-right">' +
                     '<div class="ble-detail" id="ble-detail"></div>' +
                 '</div>' +
@@ -9040,6 +9500,7 @@ function openBle() {
                         '<div id="blePfWarn"></div>' +
                     '</div>' +
                 '</div>' +
+                '<div class="ble-left-resize" id="ble-pfResize" title="拖动调节配置栏宽度"></div>' +
                 '<div class="ble-pf-right">' +
                     '<div class="ble-pf-label" style="margin-bottom:0;">特征状态 <span class="ble-pf-sub" id="blePfSvcLabel"></span></div>' +
                     '<div class="ble-pf-chars" id="blePfChars"></div>' +
@@ -9054,6 +9515,9 @@ function openBle() {
         blePane._initialized = true;
         // 监视器区（含宽度拖拽手柄）已就位：绑一次拖拽
         initBleMonResize();
+        // 左栏（设备列表 / 从机配置）宽度：先套上记住的宽度，再绑拖拽手柄
+        applyBleLeftWidth();
+        initBleLeftResize();
         initBlePfForm();
     }
     // 从用户配置恢复的蓝牙页状态：DOM 就绪后再应用（过滤框内容、上次打开的内嵌监视器）
@@ -11802,6 +12266,7 @@ document.addEventListener('DOMContentLoaded', function() {
         // 窗口关闭前强制保存配置，防止未提交的编辑丢失
         window.addEventListener('beforeunload', function() {
             if (_saveConfigTimer) { clearTimeout(_saveConfigTimer); _saveConfigTimer = null; }
+            qcmdFlushPendingFileSaves();   // 去抖中的"写回指令文件"也一并刷掉
             Object.keys(monitors).forEach(function(mid) { logCacheEnd(mid); }); // 关闭前 flush 并结束所有会话缓存
             var cfg = collectConfig();
             invoke('save_config', { configJson: JSON.stringify(cfg) }).catch(function(e) { console.warn('关闭前保存配置失败:', e); reportError(e, 'beforeunload'); });

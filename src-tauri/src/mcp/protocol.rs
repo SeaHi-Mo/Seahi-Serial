@@ -323,7 +323,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "serial_quick_cmd",
-            "description": "快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）：不带 index 就**列出全部**（含每条是否已配内容）；给了 index 就**执行**第 index 条。",
+            "description": "快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）：不带 index 就**列出全部**（含每条是否已配内容，以及列表是否来自外部文件）；给了 index 就**执行**第 index 条。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1001,6 +1001,13 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
 
 /// 硬性上限（单一来源，便于审计；`doc/MCP_DESIGN.md` §4.8）
 ///
+/// 快速指令外部文件的相关上限（值必须与前端 `QCMD_FILE_*`、`main.rs` 的
+/// `QUICK_CMD_FILE_MAX_BYTES` 一致 —— 断言集里有跨端一致性检查守着）。
+pub const MAX_QUICK_CMD_ITEMS: usize = 500;
+pub const MAX_QUICK_CMD_LABEL_CHARS: usize = 64;
+pub const MAX_QUICK_CMD_VALUE_CHARS: usize = 4096;
+pub const MAX_QUICK_CMD_FILE_BYTES: u64 = 256 * 1024;
+
 /// 这里的每一项都是"**别让 MCP 伤到主程序**"的具体手段：限制外部输入的大小/频率，
 /// 而不是靠"客户端应该守规矩"。新增任何接受外部数组/字符串的工具时，都该在这里有一条。
 pub fn limits_json() -> Value {
@@ -1014,6 +1021,11 @@ pub fn limits_json() -> Value {
         "toolsPage": super::TOOLS_PAGE,
         "idleTimeoutSecs": super::IDLE_TIMEOUT_SECS,
         "rateLimitPerMin": super::RATE_LIMIT_PER_MIN,
+        // 快速指令外部文件：文件字节数在 Rust 侧拦，条目/名称/内容长度在解析时截断
+        "maxQuickCmdItems": MAX_QUICK_CMD_ITEMS,
+        "maxQuickCmdLabelChars": MAX_QUICK_CMD_LABEL_CHARS,
+        "maxQuickCmdValueChars": MAX_QUICK_CMD_VALUE_CHARS,
+        "maxQuickCmdFileBytes": MAX_QUICK_CMD_FILE_BYTES,
         // 日志中心的内存边界（这几个数**是被执行的**，不只是报告值）
         "logMaxLineBytes": loghub::MAX_LINE_BYTES,
         "logTotalCapBytes": loghub::TOTAL_CAP_BYTES,
@@ -1759,6 +1771,11 @@ mod tests {
             assert_eq!(sc["maxSessions"], crate::mcp::MAX_SESSIONS);
             assert_eq!(sc["sessionQueue"], crate::mcp::SESSION_QUEUE);
             assert_eq!(sc["rateLimitPerMin"], crate::mcp::RATE_LIMIT_PER_MIN);
+            // 快速指令外部文件的上限也要能被客户端查到（否则对方只能靠撞墙发现）
+            assert_eq!(sc["maxQuickCmdItems"], MAX_QUICK_CMD_ITEMS);
+            assert_eq!(sc["maxQuickCmdLabelChars"], MAX_QUICK_CMD_LABEL_CHARS);
+            assert_eq!(sc["maxQuickCmdValueChars"], MAX_QUICK_CMD_VALUE_CHARS);
+            assert_eq!(sc["maxQuickCmdFileBytes"], MAX_QUICK_CMD_FILE_BYTES);
         });
     }
 
@@ -2089,6 +2106,9 @@ mod tests {
                     "logTotalCapBytes", "maxBodyBytes", "maxSendChars", "maxSessions",
                     "maxUiSetItems", "protocolFallback", "protocolVersion", "rateLimitPerMin",
                     "sessionQueue", "toolsPage",
+                    // 快速指令外部文件的上限（加字段就要一起改这里，契约测试会拦）
+                    "maxQuickCmdItems", "maxQuickCmdLabelChars", "maxQuickCmdValueChars",
+                    "maxQuickCmdFileBytes",
                 ], &[])),
                 ("mcp_status", json!({}), Backend(&[
                     "builtinToolCount", "callLog", "configFile", "dropped", "enabled", "endpointFile",

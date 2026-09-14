@@ -25,7 +25,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_builds -- --ignored -
 cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
 ```
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 984 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1102 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，62 条）：直接从
 `src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，也有把渲染函数丢进假 DOM
 跑行为断言），改前端后应先跑
@@ -108,7 +108,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
 - `src-tauri/src/mcp/` — **MCP 服务器**（模块级，约 5700 行）：`transport.rs`（hyper + SSE + 会话/鉴权/限流/广播）、`protocol.rs`（JSON-RPC + 工具定义与分派）、`bridge.rs`（前端桥：emit + 回执 + 超时回收）、`registry.rs`（控件注册表 → `ctl_*` 工具）、`loghub.rs`（日志中心）、`calllog.rs`（`ai-calls.jsonl`）、`aiconfig.rs`（`ai-config.json`）、`report.rs`（运行期错误 → 程序既有的错误上报通道）、`mod.rs`（启停/生命周期 + 8 个命令）
 - `npm/seahi-serial-mcp/` — **MCP 客户端配置安装器**（零依赖 CLI + 62 条自测；`npx seahi-serial-mcp install`）
 - `doc/MCP.md` — MCP 使用说明（面向使用者）｜`doc/MCP_TOOLS.md` — **33 个工具的参考手册**（工具名/描述/入参由 `.walkthrough/gen_mcp_tools_doc.js` 从 `protocol.rs` 生成，返回结构是实调抓的）｜`doc/MCP_DESIGN.md` — MCP 设计文档（含每步的实施记录）
-- `src-tauri/src/main.rs` — 整个 Rust 后端（约 7400 行，89 个 `#[tauri::command]`）：串口枚举（SetupAPI）、多串口连接/断开、DTR/RTS 切换、收发数据、WSL 端口映射、USB 设备管理、ADB 会话、**BLE 主机（btleplug，代码在 `fn main()` 内）与 BLE 从机（WinRT `GattServiceProvider`，代码在模块级）**
+- `src-tauri/src/main.rs` — 整个 Rust 后端（约 7700 行，91 个 `#[tauri::command]`）：串口枚举（SetupAPI）、多串口连接/断开、DTR/RTS 切换、收发数据、WSL 端口映射、USB 设备管理、ADB 会话、**快速指令外部文件（导入/导出/写回，见 `quick_cmds_*`）**、**BLE 主机（btleplug，代码在 `fn main()` 内）与 BLE 从机（WinRT `GattServiceProvider`，代码在模块级）**
 - `src-tauri/Cargo.toml` — Rust 依赖（serialport 3.3, rfd 0.15, winapi 0.3, windows-sys 0.59, **windows 0.62 + windows-future 0.3（BLE 配对与 BLE 从机用 WinRT）**, **tokio（`time::timeout` + MCP 的 `rt/net/sync/io-util`，刻意不开 `macros`）**, reqwest 0.12, base64 0.22, btleplug 0.13, **hyper 1 + hyper-util + http-body-util + bytes（MCP 的 SSE 服务器；都已由 reqwest 带入依赖树，无新增下载）**）
 - `src-tauri/vendor/btleplug/` — **btleplug 的 vendored fork**（`[patch.crates-io]` 指向此处），共 4 处本地补丁；**升级依赖时必须按 `vendor/btleplug/VENDOR.md` 重新打**
 - `src-tauri/tauri.conf.json` — Tauri 窗口配置，CSP 设为 `null`；**不要擅自设 CSP**：Tauri 会注入 nonce，按规范 `'unsafe-inline'` 即失效，本应用的内联样式与 172 处内联 onclick 会全被拦（界面掉样式）。要设 CSP 必须先做「内联外置」重构
@@ -147,6 +147,18 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
 - 磁盘上的程序名为 `seahi-serial.exe`（带连字符）；Rust 包名为 `seahi_serial`（带下划线）
 - **`platform-tools` 会被自家 adb 服务器锁住，安装器必须先停掉服务器**：`adb` 启动的服务是常驻后台进程（应用退出后依然活着，直到 `adb kill-server` 或注销），它把 `{app}\platform-tools` 下的 `adb.exe`、`AdbWinApi.dll`、`AdbWinUsbApi.dll` 全部映射住 —— 运行中的 .exe 无法就地覆写，已加载的 DLL 连删除都不允许。所以重复安装/升级会重试 4 次后弹「尝试复制下列文件时出错」，同 AppId 升级时旧版卸载器也删不掉 `{app}`。`installer.iss` 的 `StopAdbServer` 在 `PrepareToInstall` / `ssInstall` / `usUninstall` 三处**只结束镜像路径位于本应用 `platform-tools` 下**的 adb（别误伤 Android Studio 等其它来源）；`[Files]` 用 `replacesameversion`（不是 `ignoreversion`）+ `restartreplace`/`uninsrestartdelete` 兜底。注意 `adb.exe`/`fastboot.exe` **没有版本信息**，按 Inno 规则每次安装仍会覆写它们，靠的就是先停服务器
 - 设备插拔检测使用 `CM_Register_Notification`（windows-sys crate），触发 `device-changed` 事件
+- **快速指令的外部文件：路径只认"用户在原生框里亲手选过"的**（`save_log` / BLE 从机配置同一套纪律）。
+  `quick_cmds_pick_file` / `quick_cmds_export_file` 弹原生框并把路径记进**后端自己的**
+  `%APPDATA%\seahi-serial\quick-cmds-files.json`（LRU 上限 50，前端碰不到这张表）；`quick_cmds_read_file` /
+  `quick_cmds_write_file` **只接受表里的路径** —— 绝不能让前端传任意路径进来，那等于给本机任意进程一个
+  文件读写原语（MCP 工具也不接受路径，只操作界面）。另外三条同样别改回去：**写回是原子的**（临时文件 +
+  rename）、**写回前比对内容哈希**（文件被别的编辑器改过就报冲突，不静默覆盖；**只有成功读过一次、
+  手里有哈希的挂载才允许写回** —— 没有基线就拒写，两端各拦一道）、**沿用读入时的编码**
+  （UTF-8/BOM → 失败回退 GBK，别把用户的 GBK 文件写成乱码）。前端一侧：文件即存储，增删改都写回
+  （去抖 600ms）；解析**绝不按逗号切分**（AT 指令里逗号是常态）；注释与额外列按原位置保留（块序列），
+  别用"读进列表再重新生成一份"的做法；**文件头（YAML `---` / TOML `+++` front matter）原样保留但不解释**
+  —— 不识别它的话 `baud: 115200` 会被当成一条指令读进来、写回时还会被转成表格行（实测踩过）；
+  `baud`/`mode`/`lineEnding`/`delay`/`expect`/`timeout`/`hex` 这些 key 要提示"暂不生效"，别做静默 no-op
 - WSL 串口转发通过 Python bridge 脚本实现，使用持久化 shell 避免 fork 延迟
 - USB 设备映射到 WSL 依赖 `usbipd-win` 工具，需管理员权限
 

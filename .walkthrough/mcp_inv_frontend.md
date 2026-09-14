@@ -167,6 +167,10 @@
 | M55 | input[text] | `input[name="wf-act-data"]` | 动作数据 | `oninput`→`updateWfAction` 5005 | 改+持久化 | 无 |
 | M56 | input[number] | `input[name="wf-act-delay"]` | 动作前延时(ms) | `oninput`→`updateWfAction` | 改+持久化 | 无 |
 | M57 | button.wf-row-btn / .wf-row-btn.del | 动作行 `+ 添加动作` / `×`（无 id） | 加/删动作 | `addWfAction` 5010 / `removeWfAction` 5018 | 改+持久化 | 删到只剩 1 条时拒绝（5020） |
+| M58 | button.qcmd-dh-add（导入） | `#{mid}-btnQcmdImport` | 从文件加载指令列表（原生文件框；**加载后增删改都写回该文件**） | `qcmdImportFile(mid)` | 改+挂载 | 无（文件框需人工选） |
+| M59 | button.qcmd-dh-add（导出） | `#{mid}-btnQcmdExport` | 把当前列表另存为一份文件（对话框；不改变当前挂载目标） | `qcmdExportFile(mid)` | 只写副本 | 无（文件框需人工选） |
+| M60 | button.qcmd-dh-add（重载） | `#{mid}-btnQcmdReload`（来源行，仅挂载后存在） | 从文件重新读取（文件被外部改过时用） | `qcmdReloadFile(mid,false)` | 改 | 仅挂载后存在 |
+| M61 | button.qcmd-dh-add（断开） | `#{mid}-btnQcmdUnmount`（来源行，仅挂载后存在） | 不再写回文件（列表留在配置里） | `qcmdUnmountFile(mid)` | 改 | 仅挂载后存在 |
 
 > **无 id 的高频重复控件**：M13（clearLog）、M6（刷新端口）、M8（波特率箭头）、M26/M27/M28、M30、M40、M50/M52/M53/M54/M57 —— 在每个监视器窗格里都出现一次，只能靠 `#pane-{mid} ` 前缀 + class/序号 定位。
 
