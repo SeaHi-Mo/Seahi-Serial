@@ -103,7 +103,7 @@ serial-debugger-tauri/
 | 发送逻辑 | 2423-2500 | sendData, addMonitor, closeMonitor, 行尾处理 |
 | 日志保存 | 2480-2510 | chooseLogDir, saveLogToFile, copyOutput |
 | 数据解码 | 2511-2570 | decodeData, decodeRaw, hexToBytes, bytesToHex |
-| 快速指令 | 6055-6500 | qcmdSideHtml（输出区右侧可折叠分栏，默认折叠只留一枚指示）, qcmdParseText/qcmdBuildText（外部文件三种载体，往返保真）, qcmdImportFile/qcmdExportFile/qcmdReloadFile/qcmdUnmountFile, makeQcmdItem, toggleQcmdSide, addQcmdItem 等 |
+| 快速指令 | 6166-7050 | qcmdSideHtml（输出区右侧可折叠分栏，默认折叠只留一枚指示；标题行 = 循环发送开关 + ＋添加/导入/导出）, qcmdParseText/qcmdBuildText（外部文件三种载体，往返保真；`seq/delay/hex` 不写进用户文件）, qcmdImportFile/qcmdExportFile/qcmdReloadFile/qcmdUnmountFile, qcmdCarryItemPrefs（重载时按内容带回三条发送参数）, makeQcmdItem（一行六格：顺序号·内容·延时·HEX·发送·删除）, sendQcmdItem/sendQcmdPayload（手动与循环共用一条发送路径）, qcmdLoopPlan/setQcmdLoop/qcmdLoopStep/stopQcmdLoop（循环发送）, toggleQcmdSide, addQcmdItem 等 |
 | 配置管理 | 2755-2970 | collectConfig, applyMonitorConfig, scheduleConfigSave |
 | 主题系统 | 2994-3100 | toggleTheme, applyTheme, syncThemeUI |
 | WSL 面板 | 3155-3700 | getWslMappingHtml, openWslMapping, initWslMonResize |

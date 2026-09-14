@@ -323,7 +323,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "serial_quick_cmd",
-            "description": "快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）：不带 index 就**列出全部**（含每条是否已配内容，以及列表是否来自外部文件）；给了 index 就**执行**第 index 条。",
+            "description": "快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）：不带 index 就**列出全部**（每条含 index/label/value 与它自己的发送参数 seq 顺序号、delayMs 延时、hex 是否按 HEX 发；以及列表是否来自外部文件）；给了 index 就**执行**第 index 条（按该条自己的 hex 决定文本还是 HEX）。顺序号 > 0 的条目会被面板上的「循环发送」按序号依次发出。",
             "inputSchema": {
                 "type": "object",
                 "properties": {

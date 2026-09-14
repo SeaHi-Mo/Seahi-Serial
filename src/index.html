@@ -95,7 +95,6 @@
 [data-theme="default-light"] .send-hist-item.selected { background: rgba(106,149,184,.1); }
 [data-theme="default-light"] .qcmd-item { border-bottom-color: rgba(0,0,0,.04); }
 [data-theme="default-light"] .qcmd-item:hover { background: rgba(0,0,0,.03); }
-[data-theme="default-light"] .qcmd-item-label:focus { background: rgba(0,0,0,.04); }
 [data-theme="default-light"] .ibtn:hover,
 [data-theme="default-light"] .btn-ref:hover { background: rgba(0,0,0,.05); }
 [data-theme="default-light"] .btn-logdir:hover { background: rgba(106,149,184,.08); }
@@ -264,7 +263,6 @@
 [data-theme="japanese-light"] .send-hist-item.selected { background: rgba(184,76,44,.1); }
 [data-theme="japanese-light"] .qcmd-item { border-bottom-color: rgba(0,0,0,.04); }
 [data-theme="japanese-light"] .qcmd-item:hover { background: rgba(0,0,0,.03); }
-[data-theme="japanese-light"] .qcmd-item-label:focus { background: rgba(0,0,0,.04); }
 [data-theme="japanese-light"] .ibtn:hover,
 [data-theme="japanese-light"] .btn-ref:hover { background: rgba(0,0,0,.05); }
 [data-theme="japanese-light"] .btn-logdir:hover { background: rgba(184,76,44,.08); }
@@ -360,7 +358,6 @@
 [data-theme="poetic"] .send-hist-item.selected { background: rgba(104,88,160,.12); }
 [data-theme="poetic"] .qcmd-item { border-bottom-color: rgba(0,0,0,.05); }
 [data-theme="poetic"] .qcmd-item:hover { background: rgba(0,0,0,.04); }
-[data-theme="poetic"] .qcmd-item-label:focus { background: rgba(0,0,0,.05); }
 [data-theme="poetic"] .ibtn:hover,
 [data-theme="poetic"] .btn-ref:hover { background: rgba(0,0,0,.06); }
 [data-theme="poetic"] .btn-logdir:hover { background: rgba(104,88,160,.1); }
@@ -529,7 +526,6 @@
 [data-theme="ink"] .send-hist-item.selected { background: rgba(26,136,128,.12); }
 [data-theme="ink"] .qcmd-item { border-bottom-color: rgba(0,0,0,.05); }
 [data-theme="ink"] .qcmd-item:hover { background: rgba(0,0,0,.04); }
-[data-theme="ink"] .qcmd-item-label:focus { background: rgba(0,0,0,.05); }
 [data-theme="ink"] .ibtn:hover,
 [data-theme="ink"] .btn-ref:hover { background: rgba(0,0,0,.06); }
 [data-theme="ink"] .btn-logdir:hover { background: rgba(26,136,128,.1); }
@@ -699,7 +695,6 @@
 [data-theme="peach"] .send-hist-item.selected { background: rgba(184,88,112,.12); }
 [data-theme="peach"] .qcmd-item { border-bottom-color: rgba(0,0,0,.05); }
 [data-theme="peach"] .qcmd-item:hover { background: rgba(0,0,0,.04); }
-[data-theme="peach"] .qcmd-item-label:focus { background: rgba(0,0,0,.05); }
 [data-theme="peach"] .ibtn:hover,
 [data-theme="peach"] .btn-ref:hover { background: rgba(0,0,0,.06); }
 [data-theme="peach"] .btn-logdir:hover { background: rgba(184,88,112,.1); }
@@ -870,7 +865,6 @@
 [data-theme="autumn"] .send-hist-item.selected { background: rgba(168,120,24,.12); }
 [data-theme="autumn"] .qcmd-item { border-bottom-color: rgba(0,0,0,.05); }
 [data-theme="autumn"] .qcmd-item:hover { background: rgba(0,0,0,.04); }
-[data-theme="autumn"] .qcmd-item-label:focus { background: rgba(0,0,0,.05); }
 [data-theme="autumn"] .ibtn:hover,
 [data-theme="autumn"] .btn-ref:hover { background: rgba(0,0,0,.06); }
 [data-theme="autumn"] .btn-logdir:hover { background: rgba(168,120,24,.1); }
@@ -1773,8 +1767,8 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     transition: width .22s cubic-bezier(.4, 0, .2, 1), background .22s ease;
     overflow:hidden;
 }
-/* 展开后整栏才算一块独立面板；宽度可由用户拖折叠条调节（--qcmd-side-w，缺省 240px） */
-.qcmd-side.open { width:var(--qcmd-side-w, 240px); background:var(--toolbar-bg); }
+/* 展开后整栏才算一块独立面板；宽度可由用户拖折叠条调节（--qcmd-side-w，缺省 300px） */
+.qcmd-side.open { width:var(--qcmd-side-w, 300px); background:var(--toolbar-bg); }
 /* 拖动调宽中：去掉过渡让宽度跟手，折叠条点亮（同 .ble-mon-resize.dragging 的处理） */
 .qcmd-side.dragging { transition:none; }
 .qcmd-side.dragging .qcmd-side-tab { background:var(--btn-ph); }
@@ -1802,17 +1796,40 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .qcmd-side-tab.on { background:var(--btn-p); cursor:col-resize; }
 .qcmd-side-tab.on::before { background:rgba(255,255,255,.85); opacity:1; }
 .qcmd-side-tab.on:hover { background:var(--btn-ph); }
+/* 循环发送进行中：折叠条底部点一颗会闪的小点。分栏折叠起来时循环**照样在跑**，
+   没有这个标记用户就完全看不出"它还在往设备发数据"（颜色仍走主题色，不引入新的语义色）。 */
+.qcmd-side-tab.loop::after {
+    content:''; position:absolute; left:50%; bottom:7px; width:5px; height:5px;
+    margin-left:-2.5px; border-radius:50%; background:var(--link);
+    animation:blink 1s step-end infinite;
+}
+.qcmd-side-tab.on.loop::after { background:rgba(255,255,255,.9); }
 .qcmd-side-tab:focus-visible { outline:2px solid var(--link); outline-offset:-2px; }
 /* 展开态：列表区 */
 .qcmd-side-body { flex:1; display:none; flex-direction:column; min-width:0; min-height:0; }
 .qcmd-side.open .qcmd-side-body { display:flex; }
 .qcmd-side-hd {
-    display:flex; align-items:center; justify-content:space-between; gap:6px; flex-shrink:0;
+    display:flex; align-items:center; justify-content:space-between; gap:6px; flex-shrink:0; flex-wrap:wrap;
     padding:5px 6px 5px 8px; background:var(--surface-3); border-bottom:1px solid var(--border);
     font-size:11px; color:var(--text-d); user-select:none;
 }
-.qcmd-hd-title { letter-spacing:.5px; }
 .qcmd-hd-acts { display:inline-flex; align-items:center; gap:2px; flex-shrink:0; }
+/* 循环发送开关（「＋ 添加」左侧）：关闭态只有描边，开启态填主题色 + 一个会亮的小圆点。
+   开着的循环是"持续有副作用"的状态，必须一眼看出来（同 .ibtn.on 的语义）。 */
+.qcmd-dh-loop {
+    display:inline-flex; align-items:center; gap:4px; flex-shrink:0;
+    background:transparent; border:1px solid var(--border); color:var(--text-d);
+    font-size:11px; font-family:inherit; letter-spacing:0; cursor:pointer;
+    padding:1px 6px; border-radius:4px;
+}
+.qcmd-dh-loop::before {
+    content:''; width:5px; height:5px; border-radius:50%;
+    background:currentColor; opacity:.45; flex-shrink:0;
+}
+.qcmd-dh-loop:hover { border-color:var(--link); color:var(--link); }
+.qcmd-dh-loop.on { background:var(--btn-p); border-color:var(--btn-p); color:#fff; }
+.qcmd-dh-loop.on::before { opacity:1; }
+.qcmd-dh-loop.on:hover { background:var(--btn-ph); border-color:var(--btn-ph); color:#fff; }
 /* 来源行：只在挂了外部文件时出现（文件名 + 重载/断开） */
 .qcmd-side-src {
     display:flex; align-items:center; gap:2px; flex-shrink:0;
@@ -1837,30 +1854,53 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     border:2px solid transparent; background-clip:content-box;
 }
 .qcmd-list::-webkit-scrollbar-thumb:hover { background:rgba(100,106,118,.55); background-clip:content-box; }
-/* 每一条：窄栏里排成两行 —— 名称行（右端发送/删除）+ 指令内容独占一行，
-   比挤在一行里更能看清长指令，也更像"排过版"的样子 */
+/* 每一条：一行排布 —— 顺序号 · 指令内容 · 延时 · HEX · 发送 · 删除。
+   名称那一行已按用户要求删掉（名称仍留在数据与外部文件里，只是不再占界面）；
+   栏宽不够时由「指令内容」那一列缩（minmax(0,1fr)），其余列不许被挤变形。
+   顺序号 24px 是为了"方形"（高度 22px），不是一个细长条。 */
 .qcmd-item {
-    display:grid; grid-template-columns:1fr auto auto;
-    grid-template-areas:'label send del' 'val val val';
-    align-items:center; gap:2px 4px; padding:5px 6px;
+    display:grid; grid-template-columns:24px minmax(0,1fr) 44px auto 22px 18px;
+    grid-template-areas:'seq val delay hex send del';
+    align-items:center; gap:3px; padding:5px 6px;
     border-bottom:1px solid rgba(60,60,60,.5);
     cursor:pointer;
 }
 .qcmd-item:last-child { border-bottom:none; }
 .qcmd-item:hover { background:rgba(255,255,255,.03); }
-.qcmd-item-label {
-    grid-area:label; width:auto; min-width:0; font-size:11px; color:var(--text-d);
-    background:transparent; border:none; outline:none; padding:1px 3px;
-    font-family:inherit; cursor:text; border-radius:3px;
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+/* 顺序号（方形小框，默认 0）：0 = 不参与循环发送；>0 参与，按数字从小到大依次发。
+   参与的那几条点亮描边 —— 否则用户只能一个个读数字才知道循环会发哪几条 */
+.qcmd-item-seq {
+    grid-area:seq; width:100%; height:22px; box-sizing:border-box;
+    background:var(--input-bg); border:1px solid transparent; border-radius:4px;
+    color:var(--text-d); font-family:var(--font-mono); font-size:11px;
+    text-align:center; padding:0 2px; outline:none; cursor:text;
 }
-.qcmd-item-label:focus { color:var(--text); background:rgba(255,255,255,.05); outline:1px solid var(--accent-focus); }
+.qcmd-item-seq:focus { border-color:var(--accent-focus); }
+.qcmd-item-seq.on { color:var(--link); border-color:var(--btn-p); }
 .qcmd-item-val {
     grid-area:val; width:100%; height:22px; background:var(--input-bg); border:1px solid transparent;
     border-radius:4px; color:var(--text); font-family:var(--font-mono); font-size:12px;
     padding:0 5px; outline:none; min-width:0;
 }
 .qcmd-item-val:focus { border-color:var(--accent-focus); }
+/* 延时发送时间（毫秒）：本条发完到下发下一条的间隔 */
+.qcmd-item-delay {
+    grid-area:delay; width:100%; height:22px; box-sizing:border-box;
+    background:var(--input-bg); border:1px solid transparent; border-radius:4px;
+    color:var(--text); font-family:var(--font-mono); font-size:11px;
+    text-align:center; padding:0 2px; outline:none; cursor:text;
+}
+.qcmd-item-delay:focus { border-color:var(--accent-focus); }
+/* HEX 使能（每条独立，默认关）：开启 = 本条按 HEX 解析后发送，与主发送栏的文本/HEX 无关 */
+.qcmd-item-hex {
+    grid-area:hex; height:22px; box-sizing:border-box; padding:0 4px;
+    background:transparent; border:1px solid var(--border); border-radius:4px;
+    color:var(--text-d); font-family:inherit; font-size:9px; letter-spacing:.5px;
+    cursor:pointer; flex-shrink:0;
+}
+.qcmd-item-hex:hover { border-color:var(--link); color:var(--link); }
+.qcmd-item-hex.on { background:var(--btn-p); border-color:var(--btn-p); color:#fff; }
+.qcmd-item-hex.on:hover { background:var(--btn-ph); border-color:var(--btn-ph); color:#fff; }
 .qcmd-item-send {
     grid-area:send; width:22px; height:22px; border:none; border-radius:4px;
     background:transparent; color:var(--btn-p); cursor:pointer; flex-shrink:0;
@@ -2803,8 +2843,12 @@ function createMonitorPane(mid, title, closable) {
 
     document.getElementById('paneContainer').appendChild(pane);
     monitors[mid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, _editing: false, quickCmds: [
-        {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
-        {label:'指令4', value:''}, {label:'指令5', value:''}
+        // 名称已退出界面（label 留空），每条只剩：顺序号(seq) / 指令(value) / 延时(delay) / HEX(hex)
+        {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false},
+        {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false},
+        {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false},
+        {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false},
+        {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false}
     ], workflows: [], _bufferStart: 0,
     // 紧凑存储：TypedArray 替代对象数组
     _textData: new Uint8Array(TEXT_BUF_INIT),  // 起步 64 KB，按需翻倍（原来固定 1 MB）
@@ -3839,6 +3883,11 @@ function updateMonitorUI(mid, connected, waiting) {
         ps.disabled = false;
     }
     updateQcmdSendBtns(mid, connected);
+    // 连接掉线就**立刻**停掉循环发送：留着一个还在倒计时的定时器最坑 ——
+    // 用户把延时调到几分钟时，开关还亮着，却早已发不出去
+    if (!connected && monitors[mid] && monitors[mid].qcmdLoop) {
+        stopQcmdLoop(mid, '监控已断开，循环发送已停止');
+    }
 }
 
 // ===== 自动化工作流 =====
@@ -4277,8 +4326,11 @@ function addWslMonitor() {
     area.appendChild(pane);
 
     monitors[wmid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, _editing: false, quickCmds: [
-        {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
-        {label:'指令4', value:''}, {label:'指令5', value:''}
+        {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false},
+        {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false},
+        {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false},
+        {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false},
+        {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false}
     ], isWsl: true, workflows: [], _bufferStart: 0,
     _textData: new Uint8Array(TEXT_BUF_INIT), _textDataLen: 0,
     _textDataMaxBytes: 8 * 1024 * 1024,
@@ -4297,6 +4349,7 @@ function addWslMonitor() {
 // 关闭 WSL 额外串口监视器
 function closeWslMonitor(wmid) {
     stopReading(wmid);
+    stopQcmdLoop(wmid);   // 同 closeMonitor：定时器不能跟着监视器一起被 delete 掉还继续跑
     logCacheEnd(wmid); // 删除监视器：结束会话缓存
     var wasConnected = !!(monitors[wmid] && monitors[wmid].isConnected);
     var cleanup = function() {
@@ -4318,6 +4371,7 @@ function closeWslMonitor(wmid) {
 
 function closeMonitor(mid) {
     stopReading(mid);
+    stopQcmdLoop(mid);   // 监视器没了，那个还在倒计时的循环定时器必须一起收掉
     logCacheEnd(mid); // 删除监视器：结束会话缓存
     var wasConnected = !!(monitors[mid] && monitors[mid].isConnected);
     var cleanup = function() {
@@ -5564,10 +5618,14 @@ function mcpSerialOp(payload) {
     }
     if (action === 'quickList') {
         var qs = (m.quickCmds || []).map(function (q, i) {
-            return { index: i, label: q.label || ('指令' + (i + 1)), value: q.value || '' };
+            // seq/delayMs/hex 是**每条自己的发送参数**（名称已退出界面，label 可能为空）：
+            // AI 要能一眼看出"哪几条会被循环发出去、隔多久、按文本还是 HEX"
+            return { index: i, label: q.label || ('指令' + (i + 1)), value: q.value || '',
+                     seq: qcmdItemSeq(q), delayMs: qcmdItemDelay(q), hex: qcmdItemHex(q) };
         });
         // 列表可能来自外部文件（文件即存储，见 qcmdSideHtml/quick_cmds_* 命令）：
         // 把来源一起给 AI —— 否则它会以为"改配置就能保住这条指令"，而面板里改的其实会写回文件
+        // ⚠️ seq/delayMs/hex 只存在 config.json 里（不写进用户文件），重载时按指令内容带回来
         return { ok: true, value: { pane: mid, items: qs, usable: qs.filter(function (q) { return !!q.value; }).length,
                                     file: m.quickCmdsFile || null, source: m.quickCmdsFile ? 'file' : 'config' } };
     }
@@ -5580,7 +5638,8 @@ function mcpSerialOp(payload) {
         if (!list[idx].value) return { ok: false, error: '第 ' + idx + ' 条快速指令还没配内容' };
         if (!m.isConnected) return { ok: false, error: '这个分栏还没打开监控（先用 serial_open）' };
         try { sendQcmdItem(mid, idx); } catch (e) { return { ok: false, error: '执行快速指令失败: ' + e }; }
-        return { ok: true, value: { pane: mid, ran: idx, label: list[idx].label, value: list[idx].value } };
+        return { ok: true, value: { pane: mid, ran: idx, label: list[idx].label, value: list[idx].value,
+                                    hex: qcmdItemHex(list[idx]) } };
     }
     if (action === 'setSendAs') {
         // 发送模式（文本/HEX）：与用户点那个下拉项等价 —— 点选项 → 它自己的 onclick → setSendAs()
@@ -6167,6 +6226,11 @@ function bytesToHex(arr) {
    只占输出区那一行的高度（.mon-body），不跨越上方工具栏与下方发送栏。
    折叠态按用户要求不放图标、文字，也不放小三角：整条只有一根主题色细握把
    （悬停点亮、展开态常亮），方向靠"这栏是开还是关"本身表达；可发现性靠 title 提示。 */
+
+/// 循环发送开关的两个提示（HTML 初态与 JS 切换态共用，避免两处文案漂移）
+var QCMD_LOOP_TITLE_OFF = '循环发送已关闭：点击开启（顺序号大于 0 的指令按数字从小到大依次发送）';
+var QCMD_LOOP_TITLE_ON  = '循环发送进行中：点击停止';
+
 function qcmdSideHtml(mid) {
     // 监视器窗格与 WSL 监视器共用这一份，避免两处 HTML 漂移。
     // 折叠条同时是"展开/收起"的按钮和"调宽"的拖拽手柄（mousedown 起拖，位移 <3px 仍算点击）。
@@ -6177,7 +6241,11 @@ function qcmdSideHtml(mid) {
             ' title="展开快速指令"></button>' +
         '<div class="qcmd-side-body">' +
             '<div class="qcmd-side-hd">' +
-                '<span class="qcmd-hd-title">快速指令</span>' +
+                // 「循环发送」开关在「＋ 添加」左侧；标题文字「快速指令」按用户要求删掉了
+                // （这一栏本来就是输出区右侧那条窄条，占位文字只挤按钮）
+                '<button class="qcmd-dh-loop" id="' + mid + '-btnQcmdLoop"' +
+                    ' onclick="toggleQcmdLoop(\'' + mid + '\')"' +
+                    ' title="' + QCMD_LOOP_TITLE_OFF + '">循环发送</button>' +
                 '<span class="qcmd-hd-acts">' +
                     '<button class="qcmd-dh-add" onclick="addQcmdItem(\'' + mid + '\')" title="新增一条指令（已挂载文件时同时写进文件）">＋ 添加</button>' +
                     '<button class="qcmd-dh-add" id="' + mid + '-btnQcmdImport" onclick="qcmdImportFile(\'' + mid + '\')" title="从文件加载指令列表（加载后增删改都会写回该文件）">导入</button>' +
@@ -6196,9 +6264,9 @@ function qcmdSideOpen(mid) {
     return !!(side && side.classList.contains('open'));
 }
 
-/* 分栏宽度：拖折叠条调节，按监视器各记一份，随配置持久化（缺省 240px）。
+/* 分栏宽度：拖折叠条调节，按监视器各记一份，随配置持久化（缺省 300px：一条六格要放得下）。
    上限还要看窗格实际宽度 —— 至少给输出区留 160px，否则能把输出区挤没。 */
-var QCMD_SIDE_DEFAULT = 240, QCMD_SIDE_MIN = 120, QCMD_SIDE_MAX = 640;
+var QCMD_SIDE_DEFAULT = 300, QCMD_SIDE_MIN = 120, QCMD_SIDE_MAX = 640;
 
 function qcmdSideWidth(mid) {
     var m = monitors[mid];
@@ -6214,7 +6282,7 @@ function setQcmdSideWidth(mid, w) {
     if (avail > 0) max = Math.min(max, avail - 160);
     max = Math.max(QCMD_SIDE_MIN, max);
     w = Math.max(QCMD_SIDE_MIN, Math.min(max, Math.round(w || 0)));
-    side.style.setProperty('--qcmd-side-w', w + 'px');  // CSS：.qcmd-side.open { width: var(--qcmd-side-w, 240px) }
+    side.style.setProperty('--qcmd-side-w', w + 'px');  // CSS：.qcmd-side.open { width: var(--qcmd-side-w, 300px) }
     if (monitors[mid]) monitors[mid].qcmdSideWidth = w;
     return w;
 }
@@ -6229,7 +6297,7 @@ function setQcmdSideOpen(mid, open) {
     var tab = document.getElementById(mid + '-btnQcmdSide');
     if (!tab) return;
     tab.classList.toggle('on', open);                 // 展开态：整条填主题蓝（CSS .on）
-    tab.title = open ? '收起快速指令（左右拖动可调宽）' : '展开快速指令';
+    tab.title = qcmdSideTabTitle(mid, open);
 }
 
 /* 拖折叠条调宽：往左拖 = 变宽（分栏贴在右边缘）。
@@ -6384,6 +6452,10 @@ function qcmdBuildText(blocks, style) {
         if (!b || b.kind !== 'item') { out.push(b && typeof b.text === 'string' ? b.text : ''); return; }
         var it = b.item || {};
         var label = cleanLine(it.label), value = cleanLine(it.value);
+        // 名称已退出界面、内容还没填的空条目：不往用户文件里写空行 ——
+        // 写进去也活不过一次重载（解析端把空行当结构行丢掉），只会白留一行垃圾
+        // （label 只有在"新加的条目"上才可能为空，所以不会误删用户在文件里写的行）
+        if (!label && !value) return;
         var rest = (b.rest || []).map(cleanLine);
         var noTab = function(s) { return s.replace(/\t/g, ' '); };
         // 原本只有一列、且名称没被改过 → 仍然只写一列（不改动用户文件的写法）
@@ -6415,9 +6487,27 @@ function qcmdBaseName(p) {
     return parts[parts.length - 1] || s;
 }
 
+/// 从文件（重新）读入时，把"面板侧的发送参数"按指令内容带回来。
+/// 外部文件里只有 名称 + 指令 两列 —— 不能往里塞私有列（那是用户的文件，注释与额外列都要原样保留），
+/// 所以顺序号/延时/HEX 只随 config.json 走；重载/导入时按内容对齐，
+/// 内容改过就对不上（回到默认 0 / 1000 / 关），这比"整体丢失"或"按行号乱配"都好解释。
+function qcmdCarryItemPrefs(mid, items) {
+    var old = (monitors[mid] && monitors[mid].quickCmds) ? monitors[mid].quickCmds : [];
+    var byVal = {};
+    old.forEach(function(o) { if (o && o.value && !byVal[o.value]) byVal[o.value] = o; });
+    (items || []).forEach(function(it) {
+        var o = (it && it.value) ? byVal[it.value] : null;
+        if (!o) return;
+        if (qcmdItemSeq(o) > 0) it.seq = qcmdItemSeq(o);
+        if (o.delay !== undefined) it.delay = qcmdItemDelay(o);
+        if (o.hex) it.hex = true;
+    });
+}
+
 /// 把解析结果套到某个监视器上（items 与 blocks 里的对象是同一批引用，编辑即改到文件）
 function qcmdApplyParsed(mid, parsed, res) {
     if (!monitors[mid]) return;
+    qcmdCarryItemPrefs(mid, parsed.items);
     monitors[mid].quickCmds = parsed.items;
     monitors[mid]._qcmdBlocks = parsed.blocks;
     monitors[mid].quickCmdsFileStyle = parsed.style;
@@ -6601,13 +6691,17 @@ function qcmdBlockIndexOf(mid, item) {
     return -1;
 }
 
-/// 新条目插到最后一个数据行之后（保持表格连续），没有数据行就追加到末尾
+/// 新条目插到最后一个数据行之后（保持表格连续），没有数据行就追加到末尾。
+/// 载体形状跟着文件里已有的数据行走（原本只写一列的文件，新行也只写一列）——
+/// 名称输入框删掉后新条目的 label 是空的，不继承就会给一列表格塞出一个空名称列。
 function qcmdInsertItemBlock(mid, item) {
     var blocks = monitors[mid] && monitors[mid]._qcmdBlocks;
     if (!blocks) return false;
-    var at = -1;
-    for (var i = 0; i < blocks.length; i++) if (blocks[i] && blocks[i].kind === 'item') at = i;
-    blocks.splice(at < 0 ? blocks.length : at + 1, 0, { kind: 'item', item: item });
+    var at = -1, oneCol = false;
+    for (var i = 0; i < blocks.length; i++) {
+        if (blocks[i] && blocks[i].kind === 'item') { at = i; oneCol = !!blocks[i].oneCol; }
+    }
+    blocks.splice(at < 0 ? blocks.length : at + 1, 0, { kind: 'item', item: item, oneCol: oneCol });
     return true;
 }
 
@@ -6619,22 +6713,83 @@ function qcmdRemoveItemBlock(mid, item) {
     return true;
 }
 
+/* ===== 每条指令自己的发送参数：顺序号 / 延时 / HEX =====
+   顺序号（方形框，默认 0）：0 = 不参与循环发送，>0 参与并按数字从小到大发；
+   延时（默认 1000ms）：本条发完到下发下一条的间隔；
+   HEX（默认关）：本条按 HEX 解析后发送，与主发送栏的文本/HEX 模式彼此独立
+   （同一轮循环里"一条文本 + 一条 HEX"是常见需求，跟着全局模式走就做不到）。
+   ⚠️ 这三项**不写进用户的外部文件**（那文件只有名称/指令两列，塞私有列会污染用户文件），
+   只随 config.json 走；从文件重载时按"指令内容"尽量带回来（见 qcmdCarryItemPrefs）。 */
+var QCMD_SEQ_MAX = 9999;              // 顺序号上限（4 位）
+var QCMD_DELAY_DEFAULT = 1000;        // 延时缺省值（毫秒）
+var QCMD_DELAY_MAX = 600000;          // 延时上限 10 分钟（防手滑打出天文数字把循环挂死）
+
+/// 只留数字并去掉多余前导零（顺序号/延时输入框用 text 而不是 number：
+/// number 框在深色主题下带上下箭头，还接受 'e' / '-' / '.'，得再拦一道）
+function qcmdDigits(s, maxLen) {
+    var d = String(s == null ? '' : s).replace(/[^0-9]/g, '');
+    if (maxLen && d.length > maxLen) d = d.slice(0, maxLen);
+    return d.replace(/^0+(?=\d)/, '');
+}
+
+/// 某条的顺序号（读不到/非法/负数都算 0 = 不参与）
+function qcmdItemSeq(it) {
+    var n = parseInt((it && it.seq) || 0, 10);
+    if (!isFinite(n) || n < 0) return 0;
+    return Math.min(n, QCMD_SEQ_MAX);
+}
+
+/// 某条的延时（毫秒）：缺省 1000，越界夹到 [0, QCMD_DELAY_MAX]
+function qcmdItemDelay(it) {
+    var raw = it ? it.delay : undefined;
+    var n = (raw === undefined || raw === null || raw === '') ? QCMD_DELAY_DEFAULT : parseInt(raw, 10);
+    if (!isFinite(n) || n < 0) return QCMD_DELAY_DEFAULT;
+    return Math.min(n, QCMD_DELAY_MAX);
+}
+
+function qcmdItemHex(it) { return !!(it && it.hex); }
+
+/// 参与循环发送的条目（顺序号 > 0），按顺序号从小到大；同号按列表先后
+function qcmdLoopPlan(mid) {
+    var m = monitors[mid];
+    var list = (m && m.quickCmds) ? m.quickCmds : [];
+    var plan = [];
+    list.forEach(function(it, idx) {
+        var seq = qcmdItemSeq(it);
+        if (seq > 0) plan.push({ idx: idx, seq: seq });
+    });
+    plan.sort(function(a, b) { return (a.seq - b.seq) || (a.idx - b.idx); });
+    return plan;
+}
+
 function makeQcmdItem(mid, idx, label, value) {
+    // label/value 只是模板参数（createMonitorPane 里按默认列表建 5 条）；
+    // 顺序号/延时/HEX 都从监视器模型里读，避免再多两个形参
+    var model = monitors[mid] && monitors[mid].quickCmds ? monitors[mid].quickCmds[idx] : null;
+    var hexOn = qcmdItemHex(model);
+
     var item = document.createElement('div');
     item.className = 'qcmd-item';
     item.id = mid + '-qcmdi-' + idx;
 
-    var labelInp = document.createElement('input');
-    labelInp.className = 'qcmd-item-label';
-    labelInp.type = 'text';
-    labelInp.value = label;
-    labelInp.placeholder = '名称';
-    labelInp.title = '点击编辑名称';
-    labelInp.addEventListener('click', function(e) { e.stopPropagation(); });
-    labelInp.addEventListener('input', function() {
-        monitors[mid].quickCmds[idx].label = this.value;
+    // 顺序号：方形小框，默认 0（= 不参与循环发送）
+    var seqInp = document.createElement('input');
+    seqInp.className = 'qcmd-item-seq' + (qcmdItemSeq(model) > 0 ? ' on' : '');
+    seqInp.id = mid + '-qcmdi-' + idx + '-seq';
+    seqInp.type = 'text';
+    seqInp.setAttribute('inputmode', 'numeric');
+    seqInp.setAttribute('autocomplete', 'off');
+    seqInp.value = String(qcmdItemSeq(model));
+    seqInp.title = '循环发送顺序号：0 = 不参与；大于 0 的按数字从小到大依次发送';
+    seqInp.addEventListener('click', function(e) { e.stopPropagation(); });
+    seqInp.addEventListener('input', function() {
+        var v = qcmdDigits(this.value, 4);
+        if (this.value !== v) this.value = v;
+        var n = v ? parseInt(v, 10) : 0;
+        var it = monitors[mid] && monitors[mid].quickCmds ? monitors[mid].quickCmds[idx] : null;
+        if (it) it.seq = n;
+        this.classList.toggle('on', n > 0);
         scheduleConfigSave();
-        scheduleQcmdFileSave(mid);      // 挂了文件就写回文件（文件即存储）
     });
 
     var valInp = document.createElement('input');
@@ -6646,12 +6801,53 @@ function makeQcmdItem(mid, idx, label, value) {
     valInp.setAttribute('spellcheck', 'false');
     valInp.addEventListener('click', function(e) { e.stopPropagation(); });
     valInp.addEventListener('input', function() {
-        monitors[mid].quickCmds[idx].value = this.value;
+        var it = monitors[mid] && monitors[mid].quickCmds ? monitors[mid].quickCmds[idx] : null;
+        // 名称不再有界面入口，但 label 仍原样留在数据/文件里（写回时那一列不会被抹掉）
+        if (it) it.value = this.value;
         scheduleConfigSave();
         scheduleQcmdFileSave(mid);      // 挂了文件就写回文件（文件即存储）
     });
     valInp.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); sendQcmdItem(mid, idx); }
+    });
+
+    // 延时发送时间（毫秒）：本条发完到下发下一条的间隔
+    var delayInp = document.createElement('input');
+    delayInp.className = 'qcmd-item-delay';
+    delayInp.id = mid + '-qcmdi-' + idx + '-delay';
+    delayInp.type = 'text';
+    delayInp.setAttribute('inputmode', 'numeric');
+    delayInp.setAttribute('autocomplete', 'off');
+    delayInp.value = String(qcmdItemDelay(model));
+    delayInp.title = '延时发送时间（毫秒）：本条发完到下发下一条的间隔';
+    delayInp.addEventListener('click', function(e) { e.stopPropagation(); });
+    delayInp.addEventListener('input', function() {
+        var v = qcmdDigits(this.value, 6);
+        if (this.value !== v) this.value = v;
+    });
+    delayInp.addEventListener('change', function() {
+        var it = monitors[mid] && monitors[mid].quickCmds ? monitors[mid].quickCmds[idx] : null;
+        // 留空 = 回到缺省 1000（别让"清空输入框"变成 0 毫秒的疯跑）
+        var n = this.value === '' ? QCMD_DELAY_DEFAULT : parseInt(this.value, 10);
+        n = qcmdItemDelay({ delay: n });
+        if (it) it.delay = n;
+        this.value = String(n);
+        scheduleConfigSave();
+    });
+
+    // HEX 使能（每条独立，默认关）
+    var hexBtn = document.createElement('button');
+    hexBtn.className = 'qcmd-item-hex' + (hexOn ? ' on' : '');
+    hexBtn.id = mid + '-qcmdi-' + idx + '-hex';
+    hexBtn.textContent = 'HEX';
+    hexBtn.title = '本条按 HEX 格式发送（默认关闭；与主发送栏的文本/HEX 模式互不影响）';
+    hexBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var it = monitors[mid] && monitors[mid].quickCmds ? monitors[mid].quickCmds[idx] : null;
+        var on = !qcmdItemHex(it);
+        if (it) it.hex = on;
+        this.classList.toggle('on', on);
+        scheduleConfigSave();
     });
 
     var sendBtn = document.createElement('button');
@@ -6668,8 +6864,10 @@ function makeQcmdItem(mid, idx, label, value) {
     delBtn.innerHTML = '&#xd7;';
     delBtn.addEventListener('click', function(e) { e.stopPropagation(); removeQcmdItem(mid, idx); });
 
-    item.appendChild(labelInp);
+    item.appendChild(seqInp);
     item.appendChild(valInp);
+    item.appendChild(delayInp);
+    item.appendChild(hexBtn);
     item.appendChild(sendBtn);
     item.appendChild(delBtn);
     return item;
@@ -6678,7 +6876,8 @@ function makeQcmdItem(mid, idx, label, value) {
 function addQcmdItem(mid) {
     var cmds = monitors[mid].quickCmds;
     var idx = cmds.length;
-    cmds.push({label: '指令' + (idx + 1), value: ''});
+    // 名称按用户要求退出界面：新条目不再取「指令N」这种占位名，label 留空
+    cmds.push({label: '', value: '', seq: 0, delay: QCMD_DELAY_DEFAULT, hex: false});
     var qlist = document.getElementById(mid + '-qcmdList');
     var item = makeQcmdItem(mid, idx, cmds[idx].label, cmds[idx].value);
     qlist.appendChild(item);
@@ -6705,20 +6904,24 @@ function rebuildQcmdList(mid) {
     });
 }
 
-async function sendQcmdItem(mid, idx) {
-    if (!monitors[mid] || !monitors[mid].isConnected) return;
+/// 取某条的指令内容：优先读输入框（可能刚敲完还没触发 input/失焦）
+function qcmdItemText(mid, idx) {
     var item = document.getElementById(mid + '-qcmdi-' + idx);
     var valInp = item ? item.querySelector('.qcmd-item-val') : null;
-    var text = '';
-    if (valInp) { text = valInp.value; }
-    else if (monitors[mid].quickCmds && monitors[mid].quickCmds[idx]) { text = monitors[mid].quickCmds[idx].value; }
-    if (!text) return;
-    var hexMode = document.getElementById(mid + '-sendAsText').textContent === 'HEX';
+    if (valInp) return valInp.value;
+    var m = monitors[mid];
+    return (m && m.quickCmds && m.quickCmds[idx]) ? (m.quickCmds[idx].value || '') : '';
+}
+
+/// 按文本/HEX 两种格式之一发一条 —— 手动点发、Enter、循环发送**共用这一条路径**
+/// （绝不为循环发送另写一套，否则两条路迟早漂移）
+async function sendQcmdPayload(mid, text, hexMode) {
+    if (!monitors[mid] || !monitors[mid].isConnected) return false;
     var bytes;
     try {
         if (hexMode) { bytes = hexToBytes(text); }
         else { text = parseEscapes(text); text += leStr(mid); bytes = new TextEncoder().encode(text); }
-    } catch (e) { appendOutput(mid, 'err', '格式错误: ' + e); return; }
+    } catch (e) { appendOutput(mid, 'err', '格式错误: ' + e); return false; }
     try {
         // 先显示 echo，再发送数据
         var echoBtn = document.getElementById(mid + '-btnEcho');
@@ -6730,8 +6933,103 @@ async function sendQcmdItem(mid, idx) {
         else { await invokeTimeout('send_data', { monitorId: mid, data: Array.from(bytes) }, 5000); }
         monitors[mid].histNavIdx = -1;
         scheduleConfigSave();
-    } catch (e) { appendOutput(mid, 'err', '发送失败: ' + e); }
+        return true;
+    } catch (e) { appendOutput(mid, 'err', '发送失败: ' + e); return false; }
 }
+
+async function sendQcmdItem(mid, idx) {
+    if (!monitors[mid] || !monitors[mid].isConnected) return false;
+    var text = qcmdItemText(mid, idx);
+    if (!text) return false;
+    // 格式由**本条自己的 HEX 使能按钮**决定（见 makeQcmdItem 上方的说明）
+    var it = monitors[mid].quickCmds ? monitors[mid].quickCmds[idx] : null;
+    return sendQcmdPayload(mid, text, qcmdItemHex(it));
+}
+
+/* ===== 循环发送（按顺序号依次发，发完一条等它自己的延时再发下一条） =====
+   参与条件：顺序号 > 0。开启前置条件：串口已连接 + 至少有一条顺序号 > 0 ——
+   不满足就当场拒绝并说明原因，绝不"悄悄开着但什么都不发"。
+   自愈：跑的过程中断开连接 / 列表里再没有可发的条目 → 自动停止并说明（不留下一个还在跑的定时器）。 */
+var _qcmdLoopTimers = {};   // mid → 待执行的 setTimeout id（按监视器各一份）
+
+function qcmdLoopRunning(mid) { return !!(monitors[mid] && monitors[mid].qcmdLoop); }
+
+/// 折叠条的提示文案：把"循环发送在跑"这件事也说出去 —— 折叠时分栏里发生什么完全看不见
+function qcmdSideTabTitle(mid, open) {
+    var running = qcmdLoopRunning(mid);
+    if (open) return '收起快速指令（左右拖动可调宽）' + (running ? '；循环发送进行中' : '');
+    return '展开快速指令' + (running ? '（循环发送进行中，展开可停止）' : '');
+}
+
+/// 把开关按钮刷成当前状态（开启态填主题色 + 亮圆点，文案也跟着换）。
+/// 折叠条同时挂一个 `loop` 标记（CSS 画一颗一闪一闪的小点）：分栏折起来时循环**不会停**，
+/// 那颗小点是唯一的可见信号，少它就是"界面看起来什么都没发生，设备却一直在收指令"。
+function syncQcmdLoopBtn(mid) {
+    var on = qcmdLoopRunning(mid);
+    var btn = document.getElementById(mid + '-btnQcmdLoop');
+    if (btn) {
+        btn.classList.toggle('on', on);
+        btn.title = on ? QCMD_LOOP_TITLE_ON : QCMD_LOOP_TITLE_OFF;
+    }
+    var tab = document.getElementById(mid + '-btnQcmdSide');
+    if (tab) {
+        tab.classList.toggle('loop', on);
+        tab.title = qcmdSideTabTitle(mid, qcmdSideOpen(mid));
+    }
+}
+
+/// 停掉循环（toast 只在"自愈停止"时给，用户主动关不给）
+function stopQcmdLoop(mid, reason) {
+    if (_qcmdLoopTimers[mid]) { clearTimeout(_qcmdLoopTimers[mid]); delete _qcmdLoopTimers[mid]; }
+    var m = monitors[mid];
+    if (m) { m.qcmdLoop = false; m._qcmdLoopPos = 0; }
+    syncQcmdLoopBtn(mid);
+    if (reason) showToast(reason, 'error');
+}
+
+/// 一步：发当前这条，然后按它的延时排下一步。每步都重新取一遍计划 ——
+/// 用户中途改顺序号/删条目/改延时会立刻生效，不用重启循环。
+function qcmdLoopStep(mid) {
+    var m = monitors[mid];
+    if (!m || !m.qcmdLoop) return;
+    if (!m.isConnected) { stopQcmdLoop(mid, '监控已断开，循环发送已停止'); return; }
+    var plan = qcmdLoopPlan(mid);
+    if (!plan.length) { stopQcmdLoop(mid, '已经没有顺序号大于 0 的指令，循环发送已停止'); return; }
+    if (!(m._qcmdLoopPos >= 0) || m._qcmdLoopPos >= plan.length) m._qcmdLoopPos = 0;
+    var step = plan[m._qcmdLoopPos];
+    m._qcmdLoopPos = m._qcmdLoopPos + 1;
+    var wait = qcmdItemDelay((m.quickCmds || [])[step.idx]);
+    sendQcmdItem(mid, step.idx);
+    _qcmdLoopTimers[mid] = setTimeout(function() {
+        delete _qcmdLoopTimers[mid];
+        qcmdLoopStep(mid);
+    }, wait);
+}
+
+/// 开/关循环发送（on=true 的三种拒绝路径都会把开关留在关闭态）
+function setQcmdLoop(mid, on) {
+    var m = monitors[mid];
+    if (!m) return false;
+    if (!on) { stopQcmdLoop(mid); return false; }
+    if (!m.isConnected) {
+        showToast('还没打开监控：先连上串口，再开循环发送', 'error');
+        syncQcmdLoopBtn(mid);
+        return false;
+    }
+    if (!qcmdLoopPlan(mid).length) {
+        showToast('没有顺序号大于 0 的指令：先在每条左侧的方框里填 1、2、3…（0 = 不参与）', 'error');
+        syncQcmdLoopBtn(mid);
+        return false;
+    }
+    if (m.qcmdLoop) return true;                   // 已经在跑：不重开（免得把轮次位置重置）
+    m.qcmdLoop = true;
+    m._qcmdLoopPos = 0;
+    syncQcmdLoopBtn(mid);
+    qcmdLoopStep(mid);
+    return true;
+}
+
+function toggleQcmdLoop(mid) { return setQcmdLoop(mid, !qcmdLoopRunning(mid)); }
 
 function updateQcmdSendBtns(mid, connected) {
     var qlist = document.getElementById(mid + '-qcmdList');
@@ -7427,7 +7725,7 @@ function applyMonitorConfig(mid, mc) {
         monitors[mid].quickCmds = mc.quickCmds;
         rebuildQcmdList(mid);
     }
-    // 快速指令分栏宽度（拖动折叠条调过就沿用；没调过保持缺省 240px）
+    // 快速指令分栏宽度（拖动折叠条调过就沿用；没调过保持缺省 300px）
     if (mc.qcmdSideWidth) setQcmdSideWidth(mid, mc.qcmdSideWidth);
     // 快速指令外部文件：记下路径与编码/风格，并按文件重读一遍（文件才是存储）
     if (mc.quickCmdsFile && monitors[mid]) {
@@ -8000,8 +8298,11 @@ function initWslMonitor(wmid) {
     wmid = wmid || 'wsl';
     if (!monitors[wmid]) {
         monitors[wmid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, _editing: false, quickCmds: [
-            {label:'指令1', value:''}, {label:'指令2', value:''}, {label:'指令3', value:''},
-            {label:'指令4', value:''}, {label:'指令5', value:''}
+            {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false},
+            {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false},
+            {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false},
+            {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false},
+            {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false}
         ], isWsl: true, workflows: [], _bufferStart: 0,
         _textData: new Uint8Array(TEXT_BUF_INIT), _textDataLen: 0,
         _textDataMaxBytes: 8 * 1024 * 1024,
@@ -12350,7 +12651,7 @@ var _onboardSteps = [
         target: '#main-btnQcmdSide',
         pos: 'top',
         title: '7 / 9 — 快速指令',
-        desc: '监控输出区最右侧那条窄条就是快速指令分栏（默认折叠）：点一下展开，可添加常用指令一键发送，支持自定义标签。'
+        desc: '监控输出区最右侧那条窄条就是快速指令分栏（默认折叠）：点一下展开，可添加常用指令一键发送；每条能设自己的顺序号、延时与 HEX，顺序号大于 0 的会按序号循环发送。'
     },
     {
         target: '#main-btnAdv',

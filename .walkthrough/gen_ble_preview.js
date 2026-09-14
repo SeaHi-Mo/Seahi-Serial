@@ -2975,6 +2975,9 @@ console.log('preview ->', out);
       // collectConfigForMonitor 现在会读分栏宽度 → 沙箱也得有 qcmdSideWidth 和它的上下限常量
       /var QCMD_SIDE_DEFAULT[^\n]*/.exec(html)[0],
       extractFunction('qcmdSideWidth'),
+      // quickList 现在带出每条的发送参数（顺序号/延时/HEX）→ 三个读法与它们的上下限常量
+      /var QCMD_SEQ_MAX[\s\S]*?var QCMD_DELAY_MAX = \d+;/.exec(html)[0],
+      extractFunction('qcmdItemSeq'), extractFunction('qcmdItemDelay'), extractFunction('qcmdItemHex'),
       extractFunction('collectConfigForMonitor'),
       extractFunction('mcpSerialPanes'), extractFunction('mcpSerialResolvePane'),
       extractFunction('mcpSerialEl'), extractFunction('mcpSerialOptions'),
@@ -3100,6 +3103,9 @@ console.log('preview ->', out);
           getPropertyValue: k => props[k] || '',
         },
         dataset: {}, attrs: {}, children: [], title: '',
+        // 记下 addEventListener 的回调：快指令每条自己那几个输入框（顺序号/延时/HEX）
+        // 只有真触发一次它的处理器，才能证明"改了会进模型"，光看源码正则证明不了
+        _handlers: {},
         classList: {
           add: c => cls.add(c),
           remove: c => cls.delete(c),
@@ -3110,7 +3116,7 @@ console.log('preview ->', out);
             return want;
           },
         },
-        addEventListener() {},
+        addEventListener(t, fn) { (el._handlers[t] = el._handlers[t] || []).push(fn); },
         appendChild(c) { el.children.push(c); },
         setAttribute(k, v) { el.attrs[k] = v; },
         getAttribute(k) { return el.attrs[k]; },
@@ -3122,6 +3128,9 @@ console.log('preview ->', out);
     const sideById = {};
     const created = [];   // createMonitorPane 用 createElement 造窗格，按顺序留痕（[0] 就是窗格）
     const docListeners = {};   // 拖动用的 document 级监听，登记下来好模拟鼠标事件
+    // 触发某个元素上登记过的处理器（this 绑到元素上，和浏览器一致）
+    const fire = (el, type, ev) => ((el && el._handlers && el._handlers[type]) || [])
+      .forEach(fn => fn.call(el, Object.assign({ stopPropagation() {}, preventDefault() {} }, ev || {})));
     const numConst = name => ((new RegExp('(?:var|const) ' + name + ' = ([0-9*\\s]+);')).exec(html) || [])[1];
     const srcLine = re => { const m = re.exec(html); return m ? m[0] : ''; };
     const sbSide = {
@@ -3151,16 +3160,23 @@ console.log('preview ->', out);
       /var QCMD_FILE_MAX_ITEMS[\s\S]*?var QCMD_FILE_MAX_VALUE = \d+;/.exec(html)[0],
       srcLine(/var QCMD_FRONT_UNSUPPORTED[^\n]*/),
       srcLine(/var _qcmdFileSaveTimers[^\n]*/),
+      // 每条的发送参数（顺序号/延时/HEX）与循环发送的上下限、开关文案、定时器表
+      /var QCMD_SEQ_MAX[\s\S]*?var QCMD_DELAY_MAX = \d+;/.exec(html)[0],
+      srcLine(/var QCMD_LOOP_TITLE_OFF[^\n]*/),
+      srcLine(/var QCMD_LOOP_TITLE_ON[^\n]*/),
+      srcLine(/var _qcmdLoopTimers = \{\}[^\n]*/),
       // createMonitorPane 后段会调这几个命令；本次只验证它拼出来的 HTML，命令本身不执行
       'function scheduleConfigSave() {}', 'function refreshPorts() {}', 'function initTerminalMode() {}',
       ['qcmdSideHtml', 'qcmdSideOpen', 'setQcmdSideOpen', 'toggleQcmdSide',
        'qcmdSideWidth', 'setQcmdSideWidth', 'startQcmdSideDrag', 'onQcmdSideDragMove', 'endQcmdSideDrag',
        'qcmdMdCells', 'qcmdIsStructureRow', 'qcmdParseText', 'qcmdBuildText', 'qcmdBaseName',
-       'qcmdApplyParsed', 'renderQcmdSource', 'qcmdImportFile', 'qcmdReloadFile', 'qcmdUnmountFile',
+       'qcmdApplyParsed', 'qcmdCarryItemPrefs', 'renderQcmdSource', 'qcmdImportFile', 'qcmdReloadFile', 'qcmdUnmountFile',
        'qcmdExportFile', 'qcmdCurrentText', 'scheduleQcmdFileSave', 'qcmdFileSaveNow',
        'qcmdFlushPendingFileSaves', 'qcmdFileMountedBy', 'collectConfigForMonitor',
        'makeQcmdItem', 'addQcmdItem', 'removeQcmdItem', 'rebuildQcmdList',
        'qcmdBlockIndexOf', 'qcmdInsertItemBlock', 'qcmdRemoveItemBlock',
+       'qcmdDigits', 'qcmdItemSeq', 'qcmdItemDelay', 'qcmdItemHex', 'qcmdLoopPlan', 'qcmdItemText',
+       'qcmdLoopRunning', 'qcmdSideTabTitle', 'syncQcmdLoopBtn', 'stopQcmdLoop', 'qcmdLoopStep', 'setQcmdLoop', 'toggleQcmdLoop',
        'createMonitorPane', 'getWslMonitorHtml'].map(extractFunction).join('\n'),
     ].join('\n'), sbSide);
     // 用 try 兜住：真正的 HTML 在函数前段就赋好了，后段的命令不在验证范围
@@ -3196,8 +3212,8 @@ console.log('preview ->', out);
         '展开态悬停再亮一档（--btn-p → --btn-ph，与 .btn-send 同一套语义）');
       check(!/accent-green/.test(sideCss),
         '折叠条不用别的语义色（绿/红等），只用主题强调色 + 蓝底上的白握把');
-      check(/\.qcmd-side\.open\s*\{[^}]*width:var\(--qcmd-side-w,\s*240px\)/.test(sideCss),
-        '展开态宽度走 --qcmd-side-w（缺省 240px）：拖动只改这个变量，不写死内联宽度');
+      check(/\.qcmd-side\.open\s*\{[^}]*width:var\(--qcmd-side-w,\s*300px\)/.test(sideCss),
+        '展开态宽度走 --qcmd-side-w（缺省 300px：一条六格要放得下）：拖动只改这个变量，不写死内联宽度');
       check(/\.qcmd-side\.dragging\s*\{[^}]*transition:none/.test(sideCss),
         '拖动时去掉宽度过渡（跟手，而不是追着动画跑）');
       check(/\.qcmd-side-tab\s*\{[^}]*cursor:pointer/.test(sideCss) &&
@@ -3251,7 +3267,7 @@ console.log('preview ->', out);
       const tab = sideById['main-btnQcmdSide'];
       side.offsetWidth = 240;
       side.parentElement = { clientWidth: 900 };     // .mon-body 宽度 → 上限受 MAX 与"留 160px"约束
-      check(sbSide.qcmdSideWidth('main') === 240, '分栏缺省宽度 240px', String(sbSide.qcmdSideWidth('main')));
+      check(sbSide.qcmdSideWidth('main') === 300, '分栏缺省宽度 300px', String(sbSide.qcmdSideWidth('main')));
       sbSide.startQcmdSideDrag({ button: 0, clientX: 500, preventDefault() {} }, 'main');
       check(side.classList.contains('dragging') && (docListeners.mousemove || []).length === 1,
         '按下折叠条进入拖动（加 dragging 样式 + 挂 document 监听）');
@@ -3319,6 +3335,212 @@ console.log('preview ->', out);
       '列表容器搬到侧栏后，默认 5 条指令仍然建得出来',
       String(sideById['main-qcmdList'].children.length));
     check(!/qcmd-dropdown|qcmd-trigger/.test(html), '整个前端已无旧下拉的类名/引用残留');
+
+    // ---------- 标题文字 / 循环发送开关 ----------
+    {
+      check(!/qcmd-hd-title/.test(html) && !/>快速指令</.test(sideHtml),
+        '标题文字「快速指令」已删掉（HTML 与 CSS 都不再有它）');
+      check(!/qcmd-item-label/.test(html),
+        '名称输入框（.qcmd-item-label）已彻底删除：HTML / CSS / 主题覆盖里都没有残留');
+      const iLoop = sideHtml.indexOf('id="main-btnQcmdLoop"');
+      const iAdd = sideHtml.indexOf("addQcmdItem('main')");
+      check(iLoop >= 0 && iAdd > iLoop, '「循环发送」开关在「＋ 添加」的左侧', [iLoop, iAdd].join(','));
+      check(/onclick="toggleQcmdLoop\('main'\)"/.test(sideHtml) && sideHtml.indexOf('循环发送</button>') > 0,
+        '开关点一下走 toggleQcmdLoop（点一次开、再点一次关）');
+      check(/title="循环发送已关闭/.test(sideHtml), '开关初态是「关闭」（文案与 QCMD_LOOP_TITLE_OFF 一致）');
+      check(/\.qcmd-dh-loop\.on\s*\{[^}]*background:var\(--btn-p\)/.test(html),
+        '开启态填主题色（循环发送是持续有副作用的状态，必须一眼看出来）');
+      check(/\.qcmd-side-tab\.loop::after\s*\{[^}]*var\(--link\)/.test(html) && /animation:blink/.test(html),
+        '折叠条在循环发送时也有可见信号（同主题色 + 一闪一闪的小点，不引入新的语义色）');
+    }
+
+    // ---------- 每条指令自己那一行：顺序号 · 内容 · 延时 · HEX · 发送 · 删除 ----------
+    {
+      const first = sideById['main-qcmdList'].children[0];
+      const cls = first.children.map(c => c.className);
+      check(JSON.stringify(cls) === JSON.stringify([
+        'qcmd-item-seq', 'qcmd-item-val', 'qcmd-item-delay', 'qcmd-item-hex', 'qcmd-item-send', 'qcmd-item-del',
+      ]), '每条的排列固定为：顺序号 · 内容 · 延时 · HEX · 发送 · 删除', JSON.stringify(cls));
+      const [seqInp, valInp, delayInp, hexBtn] = first.children;
+      check(seqInp.value === '0' && !seqInp.classList.contains('on'),
+        '顺序号默认 0 且不高亮（0 = 不参与循环发送）', seqInp.value);
+      check(delayInp.value === '1000', '延时默认 1000ms', delayInp.value);
+      check(hexBtn.textContent === 'HEX' && !hexBtn.classList.contains('on'), 'HEX 使能默认关闭');
+      check(seqInp.id === 'main-qcmdi-0-seq' && delayInp.id === 'main-qcmdi-0-delay' && hexBtn.id === 'main-qcmdi-0-hex',
+        '三个新控件都带 id（MCP 控件注册表按 id 枚举，少了 AI 就摸不到）');
+      check(/grid-template-areas:'seq val delay hex send del'/.test(html),
+        'CSS 的九宫格区域与上面的排列一一对应（列名对不上就会错位）');
+      check(/\.qcmd-item\s*\{[^}]*grid-template-columns:24px minmax\(0,1fr\) 44px auto 22px 18px/.test(html),
+        '六列宽度固定：内容列 minmax(0,1fr) 是唯一会缩的列（其余列被挤变形就没法用了）');
+
+      // 行为：真触发一次处理器，证明"改了会进模型"
+      const m = sbSide.monitors.main;
+      fire(seqInp, 'input');
+      check(seqInp.value === '0' && !seqInp.classList.contains('on'), '顺序号 0 时输入处理器不改动它');
+      seqInp.value = 'a01b2';
+      fire(seqInp, 'input');
+      check(seqInp.value === '12' && m.quickCmds[0].seq === 12 && seqInp.classList.contains('on'),
+        '顺序号只收数字（去前导零），>0 时点亮并写进模型', seqInp.value + '/' + m.quickCmds[0].seq);
+      seqInp.value = '';
+      fire(seqInp, 'input');
+      check(m.quickCmds[0].seq === 0 && !seqInp.classList.contains('on'), '清空顺序号 = 退出循环发送列表');
+
+      delayInp.value = '2500';
+      fire(delayInp, 'input');
+      fire(delayInp, 'change');
+      check(m.quickCmds[0].delay === 2500 && delayInp.value === '2500', '延时改动落到模型（毫秒）',
+        String(m.quickCmds[0].delay));
+      delayInp.value = '';
+      fire(delayInp, 'change');
+      check(m.quickCmds[0].delay === 1000 && delayInp.value === '1000',
+        '延时被清空 → 回到缺省 1000（不是 0 毫秒疯跑）', delayInp.value);
+      delayInp.value = '99999999';
+      fire(delayInp, 'change');
+      check(m.quickCmds[0].delay === 600000 && delayInp.value === '600000', '延时被夹到上限 10 分钟',
+        delayInp.value);
+
+      fire(hexBtn, 'click');
+      check(m.quickCmds[0].hex === true && hexBtn.classList.contains('on'), '点一下 HEX：本条按 HEX 发送');
+      fire(hexBtn, 'click');
+      check(m.quickCmds[0].hex === false && !hexBtn.classList.contains('on'), '再点一下关闭');
+      // 格式只看本条自己的开关：sendQcmdItem 里不许再出现主发送栏的 sendAsText
+      const sqSrc = extractFunction('sendQcmdItem');
+      check(sqSrc.indexOf('sendAsText') < 0 && /qcmdItemHex\(it\)/.test(sqSrc),
+        '快速指令的格式由**本条自己的 HEX 开关**决定，不再看主发送栏的文本/HEX', sqSrc);
+    }
+
+    // ---------- 辅助读法（脏配置不许把循环带崩） ----------
+    {
+      check(sbSide.qcmdItemSeq({}) === 0 && sbSide.qcmdItemSeq({ seq: -5 }) === 0 && sbSide.qcmdItemSeq({ seq: '7' }) === 7,
+        '顺序号读法：缺省/负数 = 0，字符串也认');
+      check(sbSide.qcmdItemSeq({ seq: 999999 }) === 9999, '顺序号越界夹到上限');
+      check(sbSide.qcmdItemDelay({}) === 1000 && sbSide.qcmdItemDelay({ delay: 0 }) === 0
+        && sbSide.qcmdItemDelay({ delay: 99999999 }) === 600000 && sbSide.qcmdItemDelay({ delay: 'abc' }) === 1000,
+        '延时读法：缺省 1000 / 0 合法 / 超限夹住 / 非数字回缺省');
+      check(sbSide.qcmdItemHex({}) === false && sbSide.qcmdItemHex({ hex: 1 }) === true, 'HEX 读法：非真值一律当关');
+      check(sbSide.qcmdDigits('a01b2', 4) === '12' && sbSide.qcmdDigits('000') === '0' && sbSide.qcmdDigits(null) === '',
+        '输入框只留数字（并去掉多余前导零，全 0 收敛成一个 0）');
+    }
+
+    // ---------- 循环发送：按顺序号依次发，发完一条等它自己的延时 ----------
+    {
+      const sent = [];
+      const loopToasts = [];
+      const loopTimers = {};
+      let loopTimerSeq = 0;
+      sbSide.showToast = msg => loopToasts.push(String(msg));
+      sbSide.sendQcmdItem = (mid, idx) => { sent.push(idx); return { then() {} }; };
+      sbSide.setTimeout = (fn, ms) => { const id = ++loopTimerSeq; loopTimers[id] = { fn, ms }; return id; };
+      sbSide.clearTimeout = id => { delete loopTimers[id]; };
+      const pendingCount = () => Object.keys(loopTimers).length;
+      const runNextTimer = () => {
+        const id = Object.keys(loopTimers)[0];
+        if (id === undefined) return null;
+        const t = loopTimers[id];
+        delete loopTimers[id];
+        t.fn();
+        return t.ms;
+      };
+      const m = sbSide.monitors.main;
+
+      m.quickCmds = [
+        { label: '', value: 'AT+A', seq: 3 },
+        { label: '', value: 'AT+B', seq: 0 },
+        { label: '', value: 'AT+C', seq: 1 },
+        { label: '', value: 'AT+D', seq: 2, delay: 500 },
+      ];
+      check(JSON.stringify(sbSide.qcmdLoopPlan('main').map(s => s.idx)) === '[2,3,0]',
+        '计划 = 顺序号 > 0 的条目，按顺序号从小到大（顺序号 0 的不进列表）',
+        JSON.stringify(sbSide.qcmdLoopPlan('main').map(s => s.idx)));
+
+      // 前置条件不满足 → 当场拒绝，且开关留在关闭态
+      m.isConnected = false;
+      check(sbSide.toggleQcmdLoop('main') === false && !sbSide.qcmdLoopRunning('main')
+        && /还没打开监控/.test(loopToasts[0] || ''),
+        '没开监控时拒绝开循环发送，并说明原因', loopToasts.join('|'));
+      m.isConnected = true;
+      m.quickCmds.forEach(q => { q.seq = 0; });
+      loopToasts.length = 0;
+      check(sbSide.toggleQcmdLoop('main') === false && /顺序号大于 0/.test(loopToasts[0] || ''),
+        '一条顺序号 > 0 的都没有时拒绝开启（不是"开着但什么都不发"）', loopToasts.join('|'));
+      check(pendingCount() === 0, '被拒绝时不留定时器');
+
+      // 正常跑：按 1 → 2 → 3 发，顺序号 0 那条永远不参与
+      m.quickCmds[2].seq = 1; m.quickCmds[3].seq = 2; m.quickCmds[0].seq = 3;
+      loopToasts.length = 0;
+      check(sbSide.toggleQcmdLoop('main') === true && sbSide.qcmdLoopRunning('main'), '点一下打开循环发送');
+      check(sideById['main-btnQcmdLoop'].classList.contains('on')
+        && sideById['main-btnQcmdLoop'].title === sbSide.QCMD_LOOP_TITLE_ON,
+        '开启后开关填色，提示改成「进行中：点击停止」');
+      check(sideById['main-btnQcmdSide'].classList.contains('loop')
+        && sideById['main-btnQcmdSide'].title.indexOf('循环发送进行中') >= 0,
+        '折叠条也挂上运行标记与提示（分栏折起来时循环不会停，得有可见信号）',
+        sideById['main-btnQcmdSide'].title);
+      check(JSON.stringify(sent) === '[2]', '开启后立刻发顺序号最小的那条', JSON.stringify(sent));
+      check(runNextTimer() === 1000, '按**本条自己的**延时排下一步（没配过 → 缺省 1000ms）');
+      check(JSON.stringify(sent) === '[2,3]', '第二发 = 顺序号 2 的那条', JSON.stringify(sent));
+      check(runNextTimer() === 500, '延时逐条读（这条配了 500ms）');
+      check(JSON.stringify(sent) === '[2,3,0]', '第三发 = 顺序号 3 的那条（顺序号 0 的始终不参与）', JSON.stringify(sent));
+      check(m.quickCmds[1].seq === 0 && sent.indexOf(1) < 0, '顺序号 0 的那条从头到尾没被发过');
+      runNextTimer();
+      check(JSON.stringify(sent) === '[2,3,0,2]', '一轮发完从头再来（是循环，不是只跑一遍）', JSON.stringify(sent));
+
+      // 用户主动关：定时器立刻清掉，不再有下一发
+      check(sbSide.toggleQcmdLoop('main') === false && !sbSide.qcmdLoopRunning('main') && pendingCount() === 0,
+        '再点一下关闭：定时器立刻清掉');
+      check(!sideById['main-btnQcmdLoop'].classList.contains('on')
+        && sideById['main-btnQcmdLoop'].title === sbSide.QCMD_LOOP_TITLE_OFF,
+        '关闭后开关恢复常态，提示改回「已关闭」');
+      check(!sideById['main-btnQcmdSide'].classList.contains('loop')
+        && sideById['main-btnQcmdSide'].title.indexOf('循环发送进行中') < 0,
+        '停止后折叠条标记与提示都清掉', sideById['main-btnQcmdSide'].title);
+      sent.length = 0;
+      check(runNextTimer() === null && sent.length === 0, '关掉之后不会再冒出下一发');
+
+      // 跑着的时候掉线：自愈停止（不留还在倒计时的定时器）
+      sbSide.setQcmdLoop('main', true);
+      sent.length = 0; loopToasts.length = 0;
+      m.isConnected = false;
+      runNextTimer();
+      check(!sbSide.qcmdLoopRunning('main') && pendingCount() === 0 && /已断开/.test(loopToasts[0] || ''),
+        '跑着的时候掉线 → 立刻自愈停止并说明（不留一个还在倒计时的定时器）', loopToasts.join('|'));
+
+      // 跑到一半，用户把顺序号全改回 0 → 下一拍自愈停止
+      m.isConnected = true;
+      m.quickCmds[0].seq = 1;
+      sbSide.setQcmdLoop('main', true);
+      check(sbSide.qcmdLoopRunning('main') && pendingCount() === 1, '（前置）有可发的条目就能开起来');
+      m.quickCmds.forEach(q => { q.seq = 0; });
+      loopToasts.length = 0;
+      runNextTimer();
+      check(!sbSide.qcmdLoopRunning('main') && pendingCount() === 0
+        && /已经没有顺序号大于 0/.test(loopToasts[0] || ''),
+        '跑到一半列表里再没有可发的条目 → 自愈停止并说明', loopToasts.join('|'));
+
+      // 从文件重载：三条发送参数按"指令内容"带回来（外部文件里没有这三列）
+      m.quickCmds = [{ label: '', value: 'AT+GMR', seq: 2, delay: 250, hex: true }, { label: '', value: 'AT+RST' }];
+      const parsed = sbSide.qcmdParseText('| AT+GMR |\r\n| AT+RST |\r\n| AT+NEW |');
+      sbSide.qcmdCarryItemPrefs('main', parsed.items);
+      check(parsed.items[0].seq === 2 && parsed.items[0].delay === 250 && parsed.items[0].hex === true,
+        '重载时按指令内容带回顺序号/延时/HEX（三项只存在 config.json，不污染用户文件）',
+        JSON.stringify(parsed.items[0]));
+      check(parsed.items[1].seq === undefined && parsed.items[1].hex === undefined,
+        '没配过的条目保持干净（不写脏字段进模型）');
+      check(parsed.items[2].seq === undefined, '文件里新出现的指令没有历史设置，回到默认');
+
+      // 反过来：这三项绝不能混进写回用户文件的内容里（文件里只有名称/指令 + 原本的额外列）
+      m.quickCmds = [{ label: '查版本', value: 'AT+GMR', seq: 2, delay: 250, hex: true }];
+      m._qcmdBlocks = null;
+      const fileText = sbSide.qcmdCurrentText('main');
+      check(fileText.indexOf('250') < 0 && fileText.indexOf('hex') < 0 && fileText.indexOf('| 2 |') < 0,
+        '顺序号/延时/HEX 不会写进用户的指令文件（改文件格式会毁掉手写的备注列）', fileText);
+
+      // 收尾：恢复成"默认 5 条"，后面的导入/写回断言依赖它
+      m.quickCmds = [];
+      for (let i = 0; i < 5; i++) m.quickCmds.push({ label: '', value: '', seq: 0, delay: 1000, hex: false });
+      m._qcmdBlocks = null;
+      m.isConnected = false;
+    }
 
   // ---------- 快速指令外部文件：导入 / 导出 / 写回（文件即存储） ----------
   {
@@ -3468,12 +3690,25 @@ console.log('preview ->', out);
     runTimers();
     const w = lastInvoke('quick_cmds_write_file');
     check(!!w && w.args.path === 'C:\\cmds\\wb2.md', '写回的目标就是挂载的那个文件', w && w.args.path);
-    check(!!w && w.args.text.indexOf('指令4') >= 0,
-      '新增的那条出现在写回内容里（不是只改内存/配置）', w && w.args.text);
+    // 名称已退出界面 → 刚加的空条目没有名称也没有内容：不许往用户文件里写一行空行
+    check(!!w && !/\|\s*\|\s*\|/.test(w.args.text) && w.args.text.indexOf('|  |') < 0,
+      '刚添加的空条目不会往用户文件里塞空行（写进去也活不过一次重载）', w && w.args.text);
     check(!!w && w.args.expectHash === 'h1', '写回带上读入时的哈希（供后端做冲突检测）', w && w.args.expectHash);
     check(!!w && w.args.text.indexOf('# Ai-WB2 出厂检查') >= 0,
       '写回保留原文件的注释（不是拿列表重新生成一份）');
     check(m.quickCmdsFileHash === 'h2', '写回成功后更新哈希（下一次写回用新哈希）', m.quickCmdsFileHash);
+
+    // 填上内容之后，这一行才真的落进文件（"文件即存储"对**有内容**的条目依然成立）
+    {
+      const list = sideById['main-qcmdList'];
+      const newVal = list.children[list.children.length - 1].children[1];
+      newVal.value = 'AT+NEW';
+      fire(newVal, 'input');
+      runTimers();
+      const w2 = lastInvoke('quick_cmds_write_file');
+      check(!!w2 && w2.args.text.indexOf('AT+NEW') >= 0,
+        '新条目填上内容后立刻写进文件（不是只改内存/配置）', w2 && w2.args.text);
+    }
 
     // ---- 冲突：后端拒绝时只提示，不动列表 ----
     invokeHandler = cmd => (cmd === 'quick_cmds_write_file'

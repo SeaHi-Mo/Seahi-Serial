@@ -132,7 +132,8 @@ serial-debugger-tauri/
 - **输出区**: `.output` 使用 `flex:1; min-height:0` 允许收缩
 - **下拉框**: 使用 `position:absolute` + `z-index` 弹出，点击外部关闭
 - **发送历史**: 每个监视器独立维护，最多 50 条
-- **快速指令**: 每个监视器独立维护，支持动态增删
+- **快速指令**: 每个监视器独立维护，支持动态增删；每条有 `{label, value, seq, delay, hex}`
+  （`label` 只保留在数据/外部文件里，界面上没有入口）；`seq > 0` 的按序号循环发送，格式按本条自己的 HEX 开关
 - **引导系统**: 9 步聚光灯引导，目标元素通过 CSS 选择器定位
 
 ---
@@ -210,7 +211,7 @@ WSL 功能通过 Python bridge 脚本实现串口转发：
 | WSL 映射 | `openWslMapping()` | `list_wsl_devices` / `attach_port_to_wsl` | 依赖 usbipd-win |
 | WSL 串口 | `initWslMonitor()` | `open_wsl_serial` / `read_wsl_serial` / `send_wsl_serial` | 通过 Python bridge |
 | 主题切换 | `toggleTheme()` / `toggleThemeStyleDrop()` | 无 | 纯前端 |
-| 快速指令 | `toggleQcmdSide(mid)` | 无 | 纯前端；输出区右侧的可折叠分栏（默认折叠、只占输出区高度），配置写入 config.json（scheduleConfigSave） |
+| 快速指令 | `toggleQcmdSide(mid)` / `toggleQcmdLoop(mid)` | 无 | 纯前端；输出区右侧的可折叠分栏（默认折叠、只占输出区高度），每条可设顺序号/延时/HEX；配置写入 config.json（scheduleConfigSave），**循环发送开关本身不持久化** |
 | 首次引导 | `showOnboarding()` | 无 | 纯前端，localStorage 记录状态 |
 | 自动更新 | `checkForUpdate()` | 无 | 前端直接请求 GitHub API |
 

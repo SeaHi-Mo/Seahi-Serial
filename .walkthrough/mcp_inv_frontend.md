@@ -148,12 +148,22 @@
 | M36 | div.send-as | `#{mid}-sendAs` | 展开 文本/HEX | `toggleSendAsDrop(mid)` 2894 | 改 | 无 |
 | M37 | div.send-as-opt ×2 | `#{mid}-sendAsDrop .send-as-opt[data-val=text/hex]` | 选发送格式 | `setSendAs(mid,val,this,event)` 2897 | 改+持久化 | 无 |
 | M38 | button.btn-send | `#{mid}-btnSend` | 发送 | `sendData(mid)` 4108 | **副作用**（发送） | 模板里写死 `disabled`，由 `updateMonitorUI` 3637 切换 |
-| M39 | button.qcmd-side-tab | `#{mid}-btnQcmdSide` | 展开/收起快速指令分栏；**展开后**拖动它调宽（折叠态不启用拖动，光标 pointer；展开态 col-resize） | `toggleQcmdSide(mid)` 6179 / `startQcmdSideDrag`+`onQcmdSideDragMove`+`endQcmdSideDrag` | 改+持久化（宽度 `qcmdSideWidth`；展开态本身不持久化） | 无 |
-| M40 | button.qcmd-dh-add | `#{mid}-qcmdSide .qcmd-dh-add`（无 id） | 添加指令行 | `addQcmdItem(mid)` 6152 | 改+持久化 | 无 |
-| M41 | input.qcmd-item-label（JS 建） | `#{mid}-qcmdi-{i} .qcmd-item-label`（父 `.qcmd-item` 有 id） | 指令名 | `input` 4803 | 改+持久化 | 无 |
-| M42 | input.qcmd-item-val（JS 建） | `#{mid}-qcmdi-{i} .qcmd-item-val` | 指令内容 | `input` 4816；`keydown` Enter→发送 4820 | **副作用**（Enter 即发） | 无 |
+| M39 | button.qcmd-side-tab | `#{mid}-btnQcmdSide` | 展开/收起快速指令分栏；**展开后**拖动它调宽（折叠态不启用拖动，光标 pointer；展开态 col-resize）。循环发送进行中时这里会点一颗一闪一闪的小点（`.qcmd-side-tab.loop`） | `toggleQcmdSide(mid)` / `startQcmdSideDrag`+`onQcmdSideDragMove`+`endQcmdSideDrag` | 改+持久化（宽度 `qcmdSideWidth`；展开态本身不持久化） | 无 |
+| M40 | button.qcmd-dh-add | `#{mid}-qcmdSide .qcmd-dh-add`（无 id） | 添加指令行 | `addQcmdItem(mid)` | 改+持久化 | 无 |
+| M41 | button.qcmd-dh-loop | `#{mid}-btnQcmdLoop` | **开/关循环发送**（按顺序号从小到大依次发，发完一条等它自己的延时再发下一条） | `toggleQcmdLoop(mid)` → `setQcmdLoop` / `stopQcmdLoop` | **副作用**（会持续发数据）+改 | 未连串口 / 没有顺序号 > 0 的条目时函数内拒绝并 toast；掉线或列表空了则自愈停止 |
+| M41a | input.qcmd-item-seq（JS 建） | `#{mid}-qcmdi-{i}-seq` | **循环发送顺序号**：0 = 不参与；>0 参与，按数字升序发 | `input`（只收数字，去前导零） | 改+持久化 | 无 |
+| M41b | input.qcmd-item-delay（JS 建） | `#{mid}-qcmdi-{i}-delay` | **延时发送时间(ms)**：本条发完到下发一条的间隔，默认 1000 | `input`（只收数字）+ `change`（规范化：空→1000，超 600000 夹住） | 改+持久化 | 无 |
+| M41c | button.qcmd-item-hex（JS 建） | `#{mid}-qcmdi-{i}-hex` | **本条的 HEX 使能**（默认关，与主发送栏的文本/HEX 无关） | `click` | 改+持久化 | 无 |
+| M42 | input.qcmd-item-val（JS 建） | `#{mid}-qcmdi-{i} .qcmd-item-val` | 指令内容 | `input`；`keydown` Enter→发送 | **副作用**（Enter 即发）；发送格式取本条自己的 HEX 开关 | 无 |
 | M43 | button.qcmd-item-send（JS 建） | `#{mid}-qcmdList [data-qsend]` | 发送该指令 | `click` 4830→`sendQcmdItem` 4890 | **副作用** | `!isConnected` → `disabled`（4828、`updateQcmdSendBtns` 4918） |
-| M44 | button.qcmd-item-del（JS 建） | `#{mid}-qcmdList .qcmd-item-del` | 删除指令 | `click` 4836→`removeQcmdItem` 4875 | 改+持久化 | 无 |
+| M44 | button.qcmd-item-del（JS 建） | `#{mid}-qcmdList .qcmd-item-del` | 删除指令 | `click`→`removeQcmdItem` | 改+持久化 | 无 |
+
+> 快速指令一栏的近期变更（与 `.walkthrough/gen_ble_preview.js` 的断言一一对应）：
+> ① 指令名称输入框 `input.qcmd-item-label` **已删除** —— `label` 字段仍在数据与外部文件里原样保留/写回，
+>    只是界面上不再有入口；② 标题文字「快速指令」（`.qcmd-hd-title`）已删除，标题行只剩控件；
+> ③ 每条现在是**一行六格**：顺序号 · 内容 · 延时 · HEX · 发送 · 删除；④ 新增「循环发送」开关
+>    （`#{mid}-btnQcmdLoop`，在「＋ 添加」左侧）。以上四项都随 `config.json` 的 `quickCmds` 持久化，
+>    **循环发送的开关状态不持久化**（开机自动发指令太危险）。
 | M45 | input[checkbox] | `#{mid}-wfList input[name="wf-enabled"]` | 启用/禁用规则 | `onchange`→`toggleWorkflowEnabled` 4958 | 改+持久化 | 无 |
 | M46 | input[text] | `#{mid}-wfList input[name="wf-rule-name"]` | 规则重命名 | `onchange`→`renameWorkflowRule` 4963 | 改+持久化 | 无 |
 | M47 | button.wf-run-btn | `#{mid}-wfRule-{ruleId} .wf-run-btn` | 运行/停止规则 | `toggleWorkflowRun` 5033 | **副作用**（后端跑规则） | 无 |
@@ -398,18 +408,27 @@
 ```
 配套标记：`data-ci`/`data-field`/`data-del`/`data-prop`/`data-act`/`data-uuid`/`data-reply`/`data-accept`。
 
-### 片段 5 —— JS 造元素后逐个 `addEventListener`（下拉项/卡片/终端）
+### 片段 5 —— JS 造元素后逐个 `addEventListener`（下拉项/卡片/终端/快速指令每一条）
 
 ```js
-4791: function makeQcmdItem(mid, idx, label, value) {
-4796:     var labelInp = document.createElement('input');   labelInp.className = 'qcmd-item-label';
-4803:     labelInp.addEventListener('input', function() { monitors[mid].quickCmds[idx].label = this.value; scheduleConfigSave(); });
-4824:     var sendBtn = document.createElement('button');    sendBtn.className = 'qcmd-item-send';
-4829:     sendBtn.setAttribute('data-qsend', '1');
-4830:     sendBtn.addEventListener('click', function(e) { e.stopPropagation(); sendQcmdItem(mid, idx); });
-8277:     var card = document.createElement('div');          card.className = 'ble-dev-card';
-8279:     card.setAttribute('data-addr', dev.address);
-8304:     card.addEventListener('click', function() { ... });
+function makeQcmdItem(mid, idx, label, value) {
+    var seqInp = document.createElement('input');     seqInp.className = 'qcmd-item-seq';
+    seqInp.addEventListener('input', function() { /* 只收数字 → quickCmds[idx].seq，>0 时点亮 */ });
+    var delayInp = document.createElement('input');   delayInp.className = 'qcmd-item-delay';
+    delayInp.addEventListener('change', function() { /* 空→1000，超 600000 夹住 */ });
+    var hexBtn = document.createElement('button');    hexBtn.className = 'qcmd-item-hex';
+    hexBtn.addEventListener('click', function() { /* 翻转 quickCmds[idx].hex */ });
+    var sendBtn = document.createElement('button');    sendBtn.className = 'qcmd-item-send';
+    sendBtn.setAttribute('data-qsend', '1');
+    sendBtn.addEventListener('click', function(e) { e.stopPropagation(); sendQcmdItem(mid, idx); });
+```
+（名称输入框 `qcmd-item-label` 已删除；这一行的顺序号/延时/HEX 是 `.walkthrough` 里**真触发处理器**断言过的，
+不是只扫源码正则。）
+
+```js
+    var card = document.createElement('div');          card.className = 'ble-dev-card';
+    card.setAttribute('data-addr', dev.address);
+    card.addEventListener('click', function() { ... });
 ```
 
 ### 片段 6（补充）—— 运行时换绑：同一个 DOM 按钮在不同页面是不同功能
