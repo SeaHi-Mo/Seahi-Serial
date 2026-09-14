@@ -57,6 +57,13 @@ pub struct ExposeCfg {
     pub auto_control_tools: bool,
     /// 只暴露这些面板的控件工具；空数组 = 全部面板
     pub namespaces: Vec<String>,
+    /// **只读（沙箱）模式**：打开后所有写操作（`ui_set`/`ui_click`/`serial_open`/`serial_send`/
+    /// `log_clear`/`mcp_config_set`/带 index 的 `serial_quick_cmd`/`ctl_*`）**一律拒绝执行**，
+    /// 界面与配置一个字都不改。给"让 AI 先自由探索、确认无误再放开"用。
+    ///
+    /// `#[serde(default)]`：老配置文件里没有这个字段也能直接升级（默认关）。
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 impl Default for ExposeCfg {
@@ -64,6 +71,9 @@ impl Default for ExposeCfg {
         Self {
             auto_control_tools: false,
             namespaces: Vec::new(),
+            // 默认**关**：默认拒绝一切写操作会让"开箱即用"变成"怎么都改不动"，
+            // 而它本来是为了安全/探索才手动打开的开关。
+            read_only: false,
         }
     }
 }

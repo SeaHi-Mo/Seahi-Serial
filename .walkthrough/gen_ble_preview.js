@@ -2713,6 +2713,38 @@ console.log('preview ->', out);
       '没有串口设备时 serial_open 立刻失败，不去白等 6 秒轮询超时');
     check(/"id": req_id/.test(mcpProd) && !/"id": serde_json::Value::Null/.test(mcpProd),
       '限流回包带上本次请求的 id（用 null 的话客户端配不上号、那次调用会挂到超时）');
+
+    // ---- 只读（沙箱）模式：AI 能自由探索，但一个字都改不到用户的东西 ----
+    check(/pub const E_POLICY_DENIED: i64 = -32007;/.test(mcpProd), '被策略拒绝有独立错误码 -32007');
+    check(/pub const WRITE_TOOLS: &\[&str\] = &\[/.test(mcpProd) && /fn is_write_call\(/.test(mcpProd),
+      '写操作有唯一定义（WRITE_TOOLS + is_write_call）');
+    check(/pub async fn call_tool\([\s\S]{0,900}?core\.read_only\(\) && is_write_call\(name, args\)/.test(mcpProd),
+      '只读模式在 call_tool **最前面**拦截（不是改完再回滚）');
+    check(/pub fn read_only\(&self\)/.test(mcpProd) && /"readOnly": cfg\.expose\.read_only/.test(mcpProd),
+      'mcp_status 里带 readOnly（Agent 必须先看它，才不会一路撞墙）');
+    check(/read_only: bool/.test(mcpProd) && /read_only: false/.test(mcpProd),
+      'expose.readOnly 默认关（默认拒绝一切写会让「开箱即用」变成「怎么都改不动」）');
+
+    // 界面开关：只读模式下 AI 连 mcp_config_set 都会被拒（故意的），所以**关它的唯一入口是界面**
+    check(/id="mcpReadOnlyBtn"[^>]*onclick="mcpToggleReadOnly\(\)"/.test(html),
+      '弹窗里有只读模式开关（否则打开后 AI 关不掉、用户也只能手改配置文件）');
+    check(/function mcpToggleReadOnly\(\)[\s\S]{0,400}?invoke\('mcp_set_read_only'/.test(html),
+      '开关调用 mcp_set_read_only');
+    check(/id="mcpReadOnlyBtn"[\s\S]{0,120}?readOnly/.test(html) || /ro\.textContent = on \?/.test(html),
+      '开关文案跟着 readOnly 状态更新');
+
+    // 文档的「读/写」列必须与 Rust 的 WRITE_TOOLS 一致（那列以前是手写的，没人核过）
+    const genMeta = fs.readFileSync(path.join(root, '.walkthrough', 'gen_mcp_tools_doc.js'), 'utf8');
+    const rustWrites = [...(/pub const WRITE_TOOLS: &\[&str\] = &\[([\s\S]*?)\];/.exec(mcpProd) || ['', ''])[1]
+      .matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort();
+    const docWrites = [...genMeta.matchAll(/^\s{2}([a-z_]+): \['写'/gm)].map((m) => m[1]).sort();
+    check(rustWrites.length >= 10, '扫到了 Rust 的写工具表（不是空扫）', rustWrites.join(','));
+    check(JSON.stringify(rustWrites.filter((n) => n !== 'serial_quick_cmd'))
+        === JSON.stringify(docWrites.filter((n) => n !== 'serial_quick_cmd')),
+      '文档「读/写」列与 Rust 的 WRITE_TOOLS 一致',
+      'Rust=' + rustWrites.join(',') + ' / 文档=' + docWrites.join(','));
+    check(/if name == "serial_quick_cmd"[\s\S]{0,120}?args\.get\("index"\)\.is_some\(\)/.test(mcpProd),
+      'serial_quick_cmd 按**调用**判定（不带 index 是只读列举，带 index 才是真的发出去）');
   }
 
   // 每个运行期错误点都要真的调用上报（漏一个就是一个盲区）

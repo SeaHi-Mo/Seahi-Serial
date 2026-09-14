@@ -67,6 +67,8 @@
 | [`mcp_config_set`](#mcp-config-set) | **写** | 改 MCP 自己的配置。只支持 server 与 callLog 两类键（未知键会报错）。改 server.* 只保存、不立刻重启（需在界面里关闭再启用才生效）；不接受改 token。 |
 
 > 「写」= 会改变程序状态（界面 / 日志缓存 / AI 配置）。AI 调用这些工具时请先确认意图。
+> **只读（沙箱）模式**：用户在弹窗里打开后，上表所有「写」工具一律被拒（错误码 `-32007`，且**没有执行** —— 界面与配置文件一个字都不变）。
+> 注意这个不对称是故意的：`mcp_config_set` 自己也是写工具，所以 **AI 只能打开只读模式、关不掉它**，要关必须由用户在弹窗里点。
 
 ## 4. 逐个工具
 
@@ -281,8 +283,8 @@
 
 - **作用**：MCP 服务器自身状态：是否运行、监听端点、会话数、请求数与限流/丢弃计数。只读。
 - **读/写**：只读，无副作用
-- **返回**：打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/statusEmits/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`
-- **注意**：**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新
+- **返回**：打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/statusEmits/readOnly/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`
+- **注意**：**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新；**`readOnly` 必须先看** —— 为 true 时所有写操作会被拒（-32007）
 
 **入参**
 
@@ -509,8 +511,8 @@
 
 - **作用**：读 MCP 自己的配置（服务器开关/端口/记录设置等）。token 只回打码值。
 - **读/写**：只读，无副作用
-- **返回**：`{server:{host, port, tokenMasked, …}, callLog:{…}, expose:{autoControlTools, namespaces}, version}`
-- **注意**：token 打码
+- **返回**：`{server:{host, port, tokenMasked, …}, callLog:{…}, expose:{autoControlTools, namespaces, readOnly}, version}`
+- **注意**：token 打码；`expose.readOnly` 是只读（沙箱）模式的开关状态
 
 **入参**
 

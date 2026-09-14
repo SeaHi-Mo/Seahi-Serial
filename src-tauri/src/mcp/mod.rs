@@ -126,6 +126,16 @@ impl McpCore {
             .clone()
     }
 
+    /// 是否处于**只读（沙箱）模式**：所有写操作会被拒（`E_POLICY_DENIED`）。
+    /// 每次调用都读一次配置（一把锁 + 一个 bool），比缓存一份状态再同步更不容易出错。
+    pub fn read_only(&self) -> bool {
+        self.cfg
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .expose
+            .read_only
+    }
+
     /// 需要界面的操作都从这里拿 AppHandle（没有就是没有 GUI 上下文）
     pub fn app_handle(&self) -> Option<tauri::AppHandle> {
         self.app.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -257,6 +267,8 @@ impl McpCore {
                 "namespaces": cfg.expose.namespaces,
             },
             "version": env!("CARGO_PKG_VERSION"),
+            // 只读（沙箱）模式：**Agent 必须先看这个**，否则它会一路撞墙（写操作全被 -32007 拒）
+            "readOnly": cfg.expose.read_only,
             "lastError": last_error,
             "uptimeSecs": self.uptime_secs(),
             "callLog": self.calllog.stats(),
@@ -428,6 +440,14 @@ pub fn apply_config_patch_with(
                             cfg.expose.auto_control_tools = ev
                                 .as_bool()
                                 .ok_or_else(|| "expose.autoControlTools 必须是布尔".to_string())?;
+                        }
+                        // 只读（沙箱）模式。注意：这个工具本身是**写**工具，所以在只读模式下
+                        // 它会被拒 —— 也就是 **AI 只能把它打开、打不开它**（想关必须由用户在弹窗里操作）。
+                        // 这个不对称是故意的：否则"让 AI 别改东西"就成了摆设。
+                        "readOnly" => {
+                            cfg.expose.read_only = ev
+                                .as_bool()
+                                .ok_or_else(|| "expose.readOnly 必须是布尔".to_string())?;
                         }
                         "namespaces" => {
                             let arr = ev
@@ -750,6 +770,30 @@ pub fn mcp_set_enabled(
     } else {
         stop(&core);
     }
+    core.emit_status();
+    core.status_json()
+}
+
+/// 开关**只读（沙箱）模式**：打开后所有写操作被拒（`-32007`），界面与配置一个字都不改。
+///
+/// 只给界面用。AI 侧通过 `mcp_config_set` **只能打开它、关不掉**（那个工具自己也是写操作，
+/// 在只读模式下会被拒）—— 这个不对称是故意的，否则"让 AI 别改东西"就成了摆设。
+#[tauri::command]
+pub fn mcp_set_read_only(state: tauri::State<'_, McpState>, enabled: bool) -> Value {
+    let core = state.core();
+    {
+        let mut cfg = core.cfg.lock().unwrap_or_else(|e| e.into_inner());
+        cfg.expose.read_only = enabled;
+        let snapshot = cfg.clone();
+        drop(cfg);
+        if let Err(e) = aiconfig::save(&snapshot) {
+            core.set_error(Some(format!("保存 AI 配置失败: {}", e)));
+        }
+    }
+    crate::dbg_log(&format!(
+        "mcp: 只读（沙箱）模式{}",
+        if enabled { "已开启" } else { "已关闭" }
+    ));
     core.emit_status();
     core.status_json()
 }

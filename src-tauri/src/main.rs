@@ -7294,6 +7294,7 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
             ble_periph_poll_events,
             mcp::mcp_status,
             mcp::mcp_set_enabled,
+            mcp::mcp_set_read_only,
             mcp::mcp_reset_token,
             mcp::mcp_client_config,
             mcp::mcp_ui_ack,

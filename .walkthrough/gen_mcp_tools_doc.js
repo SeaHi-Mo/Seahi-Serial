@@ -70,7 +70,7 @@ const META = {
   serial_get_output: ['读', '{pane, direction, isConnected, channels:{rx,tx}, count, items:[{seq,ts,dir,text,bytes}], truncated, note?}', '**串口监视器的核心：读设备回了什么**。默认收+发按时间归并；数据与 `log_tail` 同一份存储，但**不需要你知道通道名**，且"还没收到数据"返回空列表 + note 而不是报错'],
   serial_quick_cmd: ['读', '{pane, items:[{index,label,value}], usable}', '不带 index 只列；带 index 才执行（→ {pane, ran, label, value}）'],
   app_info: ['读', '`{name, version, profile, os, arch, pid, uptimeSecs}`', ''],
-  mcp_status: ['读', '打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/statusEmits/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`', '**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新'],
+  mcp_status: ['读', '打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/statusEmits/readOnly/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`', '**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新；**`readOnly` 必须先看** —— 为 true 时所有写操作会被拒（-32007）'],
   mcp_limits: ['读', '`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels}`', '用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**'],
   serial_list_ports: ['读', '`{count, ports:[{portName, friendlyName, productName}]}`', '不会打开端口；**端口名在 `portName`**（字段一律驼峰，别去猜 `port_name`）'],
   ui_list: ['读', '`{total, controls:[{path, kind, panel, group, label, enabled, disabledReason, value?, options?}], nextCursor?}`', '`enabled=false` 时 `disabledReason` 会说明原因（如"串口未连接"）；建议先枚举再操作'],
@@ -87,7 +87,7 @@ const META = {
   log_export: ['读', '`{channels, lines, text, truncated}`', '只返回文本，不写文件'],
   mcp_calls: ['读', '`{calls:[{seq, ts, session, tool, args, ok, error, durationMs, effects}], returned, file, enabled, note}`', '返回值默认不记（`includeResults` 打开才记）；只读文件尾部窗口'],
   mcp_stats: ['读', '`{callLog:{totalCalls, seq, dropped, byTool, firstAt, lastAt, settings, enabled, file, fileBytes}, sessionToolCalls:{工具名: 次数}}`', ''],
-  mcp_config_get: ['读', '`{server:{host, port, tokenMasked, …}, callLog:{…}, expose:{autoControlTools, namespaces}, version}`', 'token 打码'],
+  mcp_config_get: ['读', '`{server:{host, port, tokenMasked, …}, callLog:{…}, expose:{autoControlTools, namespaces, readOnly}, version}`', 'token 打码；`expose.readOnly` 是只读（沙箱）模式的开关状态'],
   mcp_config_set: ['写', '`{applied:[生效的键路径], needRestart:bool}`', '只接受 `server` / `callLog` 两类键；**不接受改 token**；`host` 只允许回环；改 `server.*` 只保存，需在界面关闭再启用才生效'],
 };
 
@@ -153,7 +153,9 @@ for (const [, names] of GROUPS) {
     md += '| [`' + n + '`](#' + n.replace(/_/g, '-') + ') | ' + (rw === '写' ? '**写**' : '读') + ' | ' + t.desc + ' |\n';
   }
 }
-md += '\n> 「写」= 会改变程序状态（界面 / 日志缓存 / AI 配置）。AI 调用这些工具时请先确认意图。\n\n';
+md += '\n> 「写」= 会改变程序状态（界面 / 日志缓存 / AI 配置）。AI 调用这些工具时请先确认意图。\n';
+md += '> **只读（沙箱）模式**：用户在弹窗里打开后，上表所有「写」工具一律被拒（错误码 `-32007`，且**没有执行** —— 界面与配置文件一个字都不变）。\n';
+md += '> 注意这个不对称是故意的：`mcp_config_set` 自己也是写工具，所以 **AI 只能打开只读模式、关不掉它**，要关必须由用户在弹窗里点。\n\n';
 
 md += '## 4. 逐个工具\n\n';
 for (const [groupName, names] of GROUPS) {

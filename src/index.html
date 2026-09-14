@@ -2279,6 +2279,11 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
                 <span style="flex:1;"></span>
                 <button class="ble-modal-btn" onclick="mcpResetToken()" title="重新生成访问令牌：旧令牌立即失效，客户端需重新复制配置">重置令牌</button>
             </div>
+            <div class="mcp-row">
+                <button class="ble-modal-btn" id="mcpReadOnlyBtn" onclick="mcpToggleReadOnly()">只读模式：关</button>
+                <span class="mcp-hint" id="mcpReadOnlyHint"></span>
+                <span style="flex:1;"></span>
+            </div>
             <div id="mcpOnBox" style="display:none;">
                 <div class="mcp-field">
                     <span class="mcp-label" title="AI 客户端要连接的地址（已含访问令牌，等同于密码，别外发）">连接 URL</span>
@@ -4628,6 +4633,21 @@ function renderMcpStatus(st) {
     var box = document.getElementById('mcpOnBox');
     if (box) box.style.display = running ? 'block' : 'none';
 
+    // 只读（沙箱）模式：文案写"当前处于哪一端 + 打开会发生什么"。
+    // 这个开关**必须在界面上**：只读模式下 AI 连 mcp_config_set 都会被拒（故意的，
+    // 否则它自己能把自己放出来），所以关掉它的唯一入口就是这里。
+    var ro = document.getElementById('mcpReadOnlyBtn');
+    if (ro) {
+        var on = !!(st && st.readOnly);
+        ro.textContent = on ? '只读模式：开（AI 只能看）' : '只读模式：关';
+        ro.title = on ? '当前 AI 只能读、不能改（写操作一律被拒，界面与配置不变）。点一下放开设限'
+                      : '打开后 AI 只能读、不能改：所有写操作被拒（错误码 -32007），界面与配置文件一个字都不变。适合"先让 AI 自由探索、确认无误再放开"';
+    }
+    var roh = document.getElementById('mcpReadOnlyHint');
+    if (roh) {
+        roh.textContent = (st && st.readOnly) ? '写操作全被拒（-32007）' : '关上＝AI 可改界面/发串口';
+    }
+
     // 原来底部那行"版本 · 工具 · 请求 · 丢弃 · 发现文件"按用户要求删掉了；
     // 这些数字仍然有用（排查时想知道丢了多少条），所以挪到状态文案的悬停提示里，
     // 界面上不再占一行。
@@ -4675,6 +4695,20 @@ function refreshMcpStatus() {
         }
     }).catch(function(e) {
         renderMcpStatus({ running: false, lastError: String(e) });
+    });
+}
+
+function mcpToggleReadOnly() {
+    var next = !(_mcpStatus && _mcpStatus.readOnly);
+    var btn = document.getElementById('mcpReadOnlyBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '只读模式：处理中…'; }
+    invoke('mcp_set_read_only', { enabled: next }).then(function(st) {
+        _mcpStatus = st;
+        renderMcpStatus(st);
+        showToast(next ? '已开启只读模式：AI 只能读，写操作会被拒' : '已关闭只读模式：AI 可以改界面/发串口了', 'info');
+    }).catch(function(e) {
+        showToast('只读模式切换失败: ' + e, 'error');
+        refreshMcpStatus();
     });
 }
 

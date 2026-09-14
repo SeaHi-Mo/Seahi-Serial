@@ -41,6 +41,10 @@ pub const E_UI_TIMEOUT: i64 = -32004;
 pub const E_UI_BUSY: i64 = -32005;
 #[allow(dead_code)]
 pub const E_DEVICE_NOT_READY: i64 = -32006;
+/// 被**策略**拒绝（只读/沙箱模式）。刻意与"参数错误""执行失败"分开：
+/// 它既不是调用方参数的问题（改参数也没用），也不是工具跑了失败（根本没跑），
+/// 所以不能混进 -32602 / -32006 —— Agent 该做的是**别再重试**，而是告诉用户去关掉只读模式。
+pub const E_POLICY_DENIED: i64 = -32007;
 
 /// JSON-RPC 错误
 #[derive(Debug, Clone)]
@@ -76,7 +80,43 @@ SeaHi Serial 的串口/蓝牙调试接口。按下面的顺序工作能省掉大
 4) 错误码语义：-32602 表示参数或取值不对（改参数重试）；isError 且文本含 -32006 表示前置条件没满足（先做前置操作，例如 serial_open），或者本机没有界面/没有设备。
 5) 写操作只给一个目标时，失败即整次调用失败（不会假装成功）；给多个目标才会逐条回报。
 6) 上限先查 mcp_limits：例如 ui_set 一次最多 200 条、serial_send 单次最多 64K 字符；请求限流 60 次/分。
-7) 日志不要重复拉全量：log_tail 用 sinceSeq 增量跟进。";
+7) 日志不要重复拉全量：log_tail 用 sinceSeq 增量跟进。
+8) 若 mcp_status 的 readOnly 为 true，说明用户开了**只读（沙箱）模式**：所有写操作会被拒（错误码 -32007，且**没有执行**）。这不是参数问题，别重试、也别绕路，直接告诉用户「请到 MCP 弹窗里关掉只读模式」即可。";
+
+/// 会被**只读（沙箱）模式**拦下的写工具。
+///
+/// 这里是**唯一来源** —— `.walkthrough` 里有一条断言拿它去和 `doc/MCP_TOOLS.md` 的「读/写」列
+/// 对账（那一列以前是手写的，没人核过）。
+pub const WRITE_TOOLS: &[&str] = &[
+    "serial_select_port",
+    "serial_set_baud",
+    "serial_set_frame",
+    "serial_set_lines",
+    "serial_set_display",
+    "serial_open",
+    "serial_close",
+    "serial_send",
+    "serial_clear",
+    "ui_set",
+    "ui_click",
+    "log_clear",
+    "mcp_config_set",
+];
+
+/// 判断**这一次调用**算不算写操作。
+///
+/// 为什么不能只看工具名：`serial_quick_cmd` 不带 `index` 是"列出快速指令"（只读），
+/// 带 `index` 就是"真的把那条指令发出去"（写）。**只读模式必须按调用判，不能按工具判** ——
+/// 否则要么漏放一个真写操作进来，要么把只读的列举也一起禁掉。
+pub fn is_write_call(name: &str, args: &Value) -> bool {
+    if name.starts_with("ctl_") {
+        return true; // 每个 ctl_* 都是"改某个控件"
+    }
+    if name == "serial_quick_cmd" {
+        return args.get("index").is_some();
+    }
+    WRITE_TOOLS.contains(&name)
+}
 
 /// `serial_open` 的前置检查：本机一个串口都没有时**直接失败**。
 ///
@@ -563,6 +603,20 @@ fn opt_bool_alias(args: &Value, camel: &str, snake: &str, default: bool) -> bool
 /// 注意：这里的工具都必须是**非阻塞**或自身已 `spawn_blocking` 的；
 /// 后续接入 `open_port` 一类会阻塞的命令时，一律走 `spawn_blocking` + 超时（§4.7 铁律 2）。
 pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<Value, RpcError> {
+    // 只读（沙箱）模式：**在碰任何东西之前**拦下写操作。
+    // 这里刻意放在最前面（连计数器/日志都不写之前就返回错误）——"一个字都没改"要包括
+    // "没去动界面、没去动串口、没去写配置文件"，而不是"改完再回滚"。
+    if core.read_only() && is_write_call(name, args) {
+        return Err(RpcError::new(
+            E_POLICY_DENIED,
+            format!(
+                "只读模式（沙箱）已开启：「{}」这次调用**没有执行**，界面与配置一个字都没改。\
+                 这不是参数问题，改参数重试也没用 —— 要么只做只读操作（如 serial_get_state / ui_get / log_tail），\
+                 要么请用户在弹窗里关掉「只读模式」。",
+                name
+            ),
+        ));
+    }
     {
         let mut calls = core.tool_calls.lock().unwrap_or_else(|e| e.into_inner());
         *calls.entry(name.to_string()).or_insert(0) += 1;
@@ -2034,7 +2088,7 @@ mod tests {
                 ("mcp_status", json!({}), Backend(&[
                     "builtinToolCount", "callLog", "configFile", "dropped", "enabled", "endpointFile",
                     "errorReports", "hasUi", "host", "lastError", "limits", "logHub", "maxSessions",
-                    "port", "registry", "requests", "running", "sessions", "stateChanges",
+                    "port", "readOnly", "registry", "requests", "running", "sessions", "stateChanges",
                     "statusEmits", "tokenMasked", "toolCalls", "toolCount", "uiInFlight",
                     "uptimeSecs", "version",
                 ], &["urlMasked"])),
@@ -2473,6 +2527,99 @@ mod tests {
         let msg = no_serial_port_hint(0).unwrap();
         assert!(msg.contains("serial_list_ports"), "要告诉 Agent 下一步: {}", msg);
         assert!(no_serial_port_hint(1).is_none(), "有串口就不该拦");
+    }
+
+    /// 只读（沙箱）模式：写操作**一个字都不许改**。
+    ///
+    /// 关键断言不是"返回了错误"，而是**假前端一次都没被调用** —— 界面没动、串口没动、
+    /// 配置文件没写。只回错误但偷偷改了东西，比不拦更糟。
+    #[test]
+    fn read_only_mode_blocks_writes_without_touching_anything() {
+        block_on(async {
+            use std::sync::atomic::Ordering;
+            let c = core();
+            let touched = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            {
+                let touched = touched.clone();
+                let mut slot = c.test_ui.lock().unwrap_or_else(|e| e.into_inner());
+                *slot = Some(Box::new(move |_op: &str, _p: &Value| {
+                    touched.fetch_add(1, Ordering::Relaxed);
+                    json!({ "ok": true, "value": {} })
+                }));
+            }
+
+            // ① 只读工具照常能用（否则就等于"AI 什么都做不了"）
+            let r = call(&c, &raw_call("ui_list", &json!({}))).await;
+            assert_eq!(r["result"]["isError"], false, "只读工具不该被拦: {}", r);
+            assert_eq!(touched.load(Ordering::Relaxed), 1, "只读工具应当真的走了界面桥");
+
+            // ② 写工具：全部被 -32007 拦下，且**没有碰界面**
+            c.cfg.lock().unwrap_or_else(|e| e.into_inner()).expose.read_only = true;
+            let writes = [
+                ("ui_set", json!({ "path": "x.y", "value": 1 })),
+                ("ui_click", json!({ "path": "x.y" })),
+                ("serial_open", json!({})),
+                ("serial_close", json!({})),
+                ("serial_send", json!({ "data": "AT" })),
+                ("serial_set_baud", json!({ "baud": 115200 })),
+                ("serial_select_port", json!({ "port": "COM1" })),
+                ("serial_set_frame", json!({ "dataBits": 8 })),
+                ("serial_set_lines", json!({ "dtr": true })),
+                ("serial_set_display", json!({ "echo": true })),
+                ("serial_clear", json!({})),
+                ("log_clear", json!({ "channel": "app" })),
+                ("mcp_config_set", json!({ "patch": { "expose": { "readOnly": false } } })),
+                // ⚠️ 带 index 的快速指令是"真的发出去"，必须拦；不带 index 的列举是只读，不能拦
+                ("serial_quick_cmd", json!({ "index": 0 })),
+            ];
+            let before = touched.load(Ordering::Relaxed);
+            for (name, args) in &writes {
+                let r = call(&c, &raw_call(name, args)).await;
+                assert!(r.get("error").is_none(), "{} 应是 result+isError 而不是协议错误: {}", name, r);
+                assert_eq!(r["result"]["isError"], true, "{} 在只读模式下必须失败: {}", name, r);
+                let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+                assert!(
+                    text.contains("-32007"),
+                    "{} 要用 -32007 表明「被策略拒绝」: {}",
+                    name,
+                    text
+                );
+                assert!(text.contains("没有执行"), "{} 要说清没执行: {}", name, text);
+            }
+            assert_eq!(
+                touched.load(Ordering::Relaxed),
+                before,
+                "写操作被拦时**不许碰界面**（变了东西就是假拦截）"
+            );
+
+            // ③ 只读模式下"能不能自己关掉它"：不能（mcp_config_set 已在上面的写列表里被拦）
+            assert!(
+                c.read_only(),
+                "AI 不该有办法在只读模式下把自己放出来（必须由用户在弹窗里关）"
+            );
+
+            // ④ 关掉之后写操作立刻恢复
+            c.cfg.lock().unwrap_or_else(|e| e.into_inner()).expose.read_only = false;
+            let r = call(&c, &raw_call("ui_set", &json!({ "path": "x.y", "value": 1 }))).await;
+            assert_eq!(r["result"]["isError"], false, "关掉只读后写操作应恢复: {}", r);
+        });
+    }
+
+    /// `is_write_call` 的边界：同名工具按**调用**判定，而不是按工具名一刀切。
+    #[test]
+    fn write_classification_is_per_call() {
+        assert!(is_write_call("serial_quick_cmd", &json!({ "index": 0 })), "带 index = 真的执行");
+        assert!(!is_write_call("serial_quick_cmd", &json!({})), "不带 index = 只列举");
+        assert!(is_write_call("ctl_serial_conn_portselect", &json!({})), "ctl_* 一律算写");
+        assert!(is_write_call("ui_set", &json!({})) && !is_write_call("ui_get", &json!({})));
+        // 写工具表里不能有"不存在的工具"这种笔误
+        let names: Vec<String> = tool_defs()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
+            .collect();
+        for w in WRITE_TOOLS {
+            assert!(names.iter().any(|n| n == w), "WRITE_TOOLS 里的 {} 不是内置工具", w);
+        }
     }
 
     #[test]
