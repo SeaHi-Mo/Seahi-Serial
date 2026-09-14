@@ -41,7 +41,8 @@ server/errors.db-*
 # AI 会话记忆（不再跟踪）
 .workbuddy/
 SESSION_MEMORY.md
-TODO.md
+# 注：TODO.md **已入库**（2026-09-14）。它承载"哪些验证受阻、卡在哪"这类状态，
+# 只存本地曾经导致"脚本改坏后无法恢复"，所以不再忽略。
 
 # ADB platform-tools（本地开发用，不纳入版本库；安装包由 CI 单独下载）
 platform-tools/
