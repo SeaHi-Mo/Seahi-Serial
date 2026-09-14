@@ -2982,7 +2982,7 @@ console.log('preview ->', out);
       // 快速指令现在是组：quickList/quickRun 靠 qcmdAllItems 摊平（组序 = 循环行走顺序）
       /var QCMD_GROUP_DEFAULT_NAME[^\n]*/.exec(html)[0],
       extractFunction('qcmdNewGroupId'), extractFunction('qcmdGroups'), extractFunction('qcmdGroupById'),
-      extractFunction('qcmdGroupIndex'), extractFunction('qcmdAllItems'),
+      extractFunction('qcmdGroupIndex'), extractFunction('qcmdAllItems'), extractFunction('qcmdGroupOn'),
       extractFunction('collectConfigForMonitor'),
       extractFunction('mcpSerialPanes'), extractFunction('mcpSerialResolvePane'),
       extractFunction('mcpSerialEl'), extractFunction('mcpSerialOptions'),
@@ -3177,7 +3177,7 @@ console.log('preview ->', out);
       extractObject('QCMD_COL_ALIASES'),
       srcLine(/var QCMD_HEX_TRUE[^\n]*/),
       // createMonitorPane 后段会调这几个命令；本次只验证它拼出来的 HTML，命令本身不执行
-      'function scheduleConfigSave() {}', 'function showToast() {}', 'function refreshPorts() {}', 'function initTerminalMode() {}',
+      'function scheduleConfigSave() {}', 'function showToast() {}', 'function mcpNotifyState() {}', 'function refreshPorts() {}', 'function initTerminalMode() {}',
       ['qcmdSideHtml', 'qcmdColsHtml', 'qcmdColsInnerHtml', 'qcmdSideOpen', 'setQcmdSideOpen', 'toggleQcmdSide',
        'qcmdSideWidth', 'setQcmdSideWidth', 'startQcmdSideDrag', 'onQcmdSideDragMove', 'endQcmdSideDrag',
        'qcmdMdCells', 'qcmdColKey', 'qcmdHeaderMap', 'qcmdIsSeparatorRow', 'qcmdIsStructureRow',
@@ -3187,6 +3187,7 @@ console.log('preview ->', out);
        'qcmdCurrentText', 'scheduleQcmdFileSave', 'qcmdFileSaveNow',
        'qcmdFlushPendingFileSaves', 'qcmdFileMountedBy', 'collectConfigForMonitor',
        'qcmdNewGroupId', 'qcmdGroups', 'qcmdGroupById', 'qcmdGroupIndex', 'qcmdAllItems', 'qcmdItemAt',
+       'qcmdGroupOn', 'setQcmdGroupOn',
        'makeQcmdItem', 'makeQcmdGroupBand', 'addQcmdItem', 'removeQcmdItem', 'rebuildQcmdList',
        'addQcmdGroup', 'removeQcmdGroup', 'renameQcmdGroup', 'toggleQcmdGroupFold',
        'startQcmdGroupDrag', 'onQcmdGroupDragMove', 'endQcmdGroupDrag', 'qcmdReorderBoxes',
@@ -3446,10 +3447,21 @@ console.log('preview ->', out);
       check(cls.length === 3 && cls[0] === 'qcmd-group-hd' && cls[1] === 'qcmd-cols' && cls[2] === 'qcmd-group-items',
         '组盒子里依次是：抬头 → 列标题 → 数据行（跟文件里"一组一张表"同形）', JSON.stringify(cls));
       const hdCls = box.children[0].children.map(c => c.className);
-      check(JSON.stringify(hdCls) === JSON.stringify(['qcmd-group-grip', 'qcmd-group-name', 'qcmd-group-fold',
-        'qcmd-group-count', 'qcmd-dep-del']),
-        '抬头里依次是：**拖动握把（最左）** · 组名(可改) · **折叠（紧挨条数左边）** · 条数 · 删组（「＋添加」不在这里）',
+      check(JSON.stringify(hdCls) === JSON.stringify(['qcmd-group-grip', 'qcmd-group-sw on', 'qcmd-group-name',
+        'qcmd-group-fold', 'qcmd-group-count', 'qcmd-dep-del']),
+        '抬头里依次是：拖动握把（最左） · **参与开关（握把与组名之间）** · 组名(可改) · **折叠（紧挨条数左边）** · 条数 · 删组',
         JSON.stringify(hdCls));
+      // 参与循环的滑动开关：在握把与组名之间，默认开（class 带 on），是 role=switch
+      const swEl = box.children[0].children[1];
+      check(swEl.id === 'main-qcmdSw-' + g0id() && swEl.attrs['role'] === 'switch' && swEl.attrs['aria-checked'] === 'true',
+        '参与开关带 id 与 aria（默认开）', swEl.id + ' / ' + JSON.stringify(swEl.attrs));
+      check(/\.qcmd-group-sw\s*\{[^}]*width:32px; height:16px[^}]*background:#525a64/.test(html)
+        && /\.qcmd-group-sw::after\s*\{[^}]*width:10px; height:10px[^}]*background:#fff/.test(html)
+        && /\.qcmd-group-sw\.on\s*\{[^}]*background:var\(--btn-p\)/.test(html)
+        && /\.qcmd-group-sw\.on::after\s*\{[^}]*left:19px/.test(html),
+        '参与开关：32×16 轨道 + **10px 白圆钮**；关闭态轨道用中性灰（浅色主题下白点才看得见）、开启态填主题色');
+      check(/\.qcmd-group\.off \.qcmd-group-items/.test(html),
+        '关掉的组：内容压暗（一眼看出这组不参与循环）');
       // 「＋ 添加」挂在**本组表头行的最右**（用户 2026-09 要求："应该放在 顺序、指令那一栏最右侧"）
       // 跨"发送/删除"两条轨道 + 右对齐 → 正好落在数据行那两个图标的上方
       check(box.children[1].children.length === 1
@@ -3479,7 +3491,7 @@ console.log('preview ->', out);
       check(sbSide.qcmdGroupById('main', g0id()).folded === true, '点折叠箭头：组的 folded 状态翻成 true（CSS 据此连列标题一起藏）');
       sbSide.toggleQcmdGroupFold('main', g0id());
       check(sbSide.qcmdGroupById('main', g0id()).folded === false, '再点一下展开');
-      check(box.children[0].children[1].value === '循环 1' && box.children[1].id === 'main-qcmdCols-' + g0id(),
+      check(box.children[0].children[2].value === '循环 1' && box.children[1].id === 'main-qcmdCols-' + g0id(),
         '组名填进输入框（抬头第 2 个孩子）、列标题 id 带组号（两组时不会撞）',
         box.children[0].children[1].value + ' / ' + box.children[1].id);
       // 「＋ 添加」用主题色（与工具栏那三个动作按钮同一套语义色），不是一个灰字
@@ -3627,7 +3639,18 @@ console.log('preview ->', out);
       check(JSON.stringify(plan.map(s => s.gi + ':' + s.ii)) === '["0:2","0:0","1:0","1:1"]',
         '循环计划 = **组从上到下** → 组内按顺序号从小到大（那个 0 的不参与）',
         JSON.stringify(plan.map(s => s.gi + ':' + s.ii)));
-      // 拖动排序：指针越过邻组中线 → 两组换位（组序就是循环顺序）
+      // 参与开关：关掉的组**整组不进循环计划**（顺序号原样留着，只是不发了）
+      sbSide.setQcmdGroupOn('main', 'gA', false);
+      check(sbSide.qcmdGroupOn(sbSide.qcmdGroupById('main', 'gA')) === false, '点开关：这一组标记为"不参与"');
+      check(JSON.stringify(sbSide.qcmdLoopPlan('main').map(s => s.gi)) === '[1,1]',
+        '关掉的组整组跳过 —— 计划里只剩第二组的两条',
+        JSON.stringify(sbSide.qcmdLoopPlan('main').map(s => s.gi)));
+      const cfgOn = sbSide.collectConfigForMonitor('main');
+      check(cfgOn.quickGroups[0].on === false && cfgOn.quickGroups[1].on === true,
+        '参与开关进配置（组级开关跟 folded 一样存 config.json —— 用户文件里没有这一列）',
+        JSON.stringify(cfgOn.quickGroups.map(g => g.on)));
+      sbSide.setQcmdGroupOn('main', 'gA', true);
+      check(sbSide.qcmdLoopPlan('main').length === 4, '再点回来：整条链又完整了');      // 拖动排序：指针越过邻组中线 → 两组换位（组序就是循环顺序）
       const list = sideById['main-qcmdList'];
       // rebuild 之后才拿得到新组盒子的抬头；这里先手动重建一次
       sbSide.rebuildQcmdList('main');

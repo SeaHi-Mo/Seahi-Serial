@@ -1905,6 +1905,27 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .qcmd-group-hd.dragging { background:var(--btn-p); color:#fff; }   /* 正在拖：整条点亮，一眼看出在搬哪一组 */
 .qcmd-group.dragging { box-shadow:0 4px 14px rgba(0,0,0,.35); position:relative; z-index:2; }  /* 搬起来的那组浮一档 */
 .qcmd-group-hd.dragging .qcmd-group-name, .qcmd-group-hd.dragging .qcmd-group-count { color:#fff; }
+/* **参与循环的滑动开关**（放在拖动握把与组名**中间**）：32×16 轨道 + 10px 白圆钮。
+   关闭态轨道用中性灰（`#525a64`，app 里「自动映射使能」用的同一个灰）——
+   ⚠️ 不能用 `--border`：浅色主题下轨道与白钮都接近白，整个开关会"消失"（用户 2026-09 反馈过）。
+   开启态轨道填主题色、钮滑到右边。圆钮比早先小一号（用户要求"中间的白色圆点小一点"）。 */
+.qcmd-group-sw {
+    position:relative; flex-shrink:0; width:32px; height:16px; padding:0; box-sizing:border-box;
+    border:none; border-radius:10px; background:#525a64; cursor:pointer;
+    transition:background .2s ease;
+}
+.qcmd-group-sw::after {
+    content:''; position:absolute; top:3px; left:3px; width:10px; height:10px; border-radius:50%;
+    background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.28);
+    transition:left .2s ease;
+}
+.qcmd-group-sw:hover { background:#616a75; }
+.qcmd-group-sw.on { background:var(--btn-p); }
+.qcmd-group-sw.on:hover { background:var(--btn-ph); }
+.qcmd-group-sw.on::after { left:19px; }
+.qcmd-group.off .qcmd-group-items,
+.qcmd-group.off .qcmd-cols { opacity:.45; }
+.qcmd-group.off .qcmd-group-name { color:var(--text-d); }
 /* 折叠箭头与拖动握把都**用 CSS 画**，不用 `▾` / `⠿` 字形：那两个字符在 10–12px 下又细又灰
    （用户 2026-09 反馈"折叠 icon 太小了，几乎不可见"），而且字体不同渲染尺寸还不一样。
    CSS 画的线宽/尺寸都是确定的，任意 DPI 都清晰。 */
@@ -6441,6 +6462,10 @@ function qcmdGroupIndex(mid, gid) {
     return -1;
 }
 
+/// 某一组是否参与循环发送（缺省参与）。关掉 = 整组跳过，**不动文件里的顺序号**
+/// （开关状态跟 `folded` 一样存在 config.json 里；文件里没有"组级开关"这一列，硬塞会破坏表结构）
+function qcmdGroupOn(g) { return !(g && g.on === false); }
+
 /// 摊平所有组的条目（组序 = 上下顺序；组内保持原下标）。TAB 补全 / MCP 列表 / 循环计划都用它
 function qcmdAllItems(mid) {
     var out = [];
@@ -7333,9 +7358,11 @@ function qcmdItemAt(mid, gid, idx) {
 
 /// 循环计划：**按组的上下顺序**逐组收集（组内仍是顺序号从小到大，同号按列表先后），
 /// 摊平成一条链 —— 走完最后一组回到最上面那组。每组只在它自己的条目里排序。
+/// ⚠️ 抬头开关关掉的组**整组跳过**（`qcmdGroupOn`）。
 function qcmdLoopPlan(mid) {
     var plan = [];
     qcmdGroups(mid).forEach(function(g) {
+        if (!qcmdGroupOn(g)) return;
         var picked = [];
         (g.items || []).forEach(function(it, ii) {
             var seq = qcmdItemSeq(it);
@@ -7350,9 +7377,21 @@ function qcmdLoopPlan(mid) {
 /* ===== 组抬头（可重命名 / 拖动排序 / 折叠 / 加条 / 删组） =====
    抬头用 DOM API 造，**不拼 HTML**：组名来自用户文件，可能含引号/尖括号（同 renderQcmdSource 的纪律）。 */
 function makeQcmdGroupBand(mid, g) {
+    var on = qcmdGroupOn(g);
     var band = document.createElement('div');
     band.className = 'qcmd-group-hd' + (g.folded ? ' folded' : '');
     band.id = mid + '-qcmdG-' + g.id;
+
+    // **参与循环的滑动开关（放在抬头最前面）**：关掉 = 整组跳过（顺序号原样保留在文件里）。
+    // 用 app 里既有的那套滑动开关外观（与主题开关 / WSL 自动映射同款：轨道 + 圆钮）。
+    var sw = document.createElement('button');
+    sw.className = 'qcmd-group-sw' + (on ? ' on' : '');
+    sw.id = mid + '-qcmdSw-' + g.id;
+    sw.setAttribute('role', 'switch');
+    sw.setAttribute('aria-checked', on ? 'true' : 'false');
+    sw.title = on ? '这一组参与循环发送（点一下 = 跳过这一组）'
+                  : '这一组不参与循环发送（点一下 = 恢复参与）';
+    sw.addEventListener('click', function(e) { e.stopPropagation(); setQcmdGroupOn(mid, g.id, !qcmdGroupOn(g)); });
 
     var fold = document.createElement('button');
     fold.className = 'qcmd-group-fold';
@@ -7389,15 +7428,34 @@ function makeQcmdGroupBand(mid, g) {
     del.title = '删除这一组（连同组里的指令）';
     del.addEventListener('click', function(e) { e.stopPropagation(); removeQcmdGroup(mid, g.id); });
 
-    // 顺序：**拖动握把在最左**（用户 2026-09 要求 —— 它是最常用的操作，放最左边一伸手就够到），
-    // 中间是组名（flex:1 撑开），**折叠箭头紧挨在"N 条"左边**（用户 2026-09 要求），最后是删组。
-    // 「＋ 添加」不在这里：它在表头行的最右（见 rebuildQcmdList）。
+    // 顺序：拖动握把（最左的可拖区）· **参与开关（握把与组名之间）** · 组名 ·
+    // 折叠箭头（紧挨"N 条"左边）· 条数 · 删组。「＋ 添加」不在这里：它在表头行的最右。
     band.appendChild(grip);
+    band.appendChild(sw);
     band.appendChild(name);
     band.appendChild(fold);
     band.appendChild(count);
     band.appendChild(del);
     return band;
+}
+
+/// 开关某一组是否参与循环：改模型 + 重算循环计划（跑着的时候立刻生效）
+function setQcmdGroupOn(mid, gid, on) {
+    var g = qcmdGroupById(mid, gid);
+    if (!g) return;
+    g.on = !!on;
+    var box = document.getElementById(mid + '-qcmdGbox-' + gid);
+    if (box) box.classList.toggle('off', !g.on);
+    var sw = document.getElementById(mid + '-qcmdSw-' + gid);
+    if (sw) {
+        sw.classList.toggle('on', g.on);
+        sw.setAttribute('aria-checked', g.on ? 'true' : 'false');
+        sw.title = g.on ? '这一组参与循环发送（点一下 = 跳过这一组）'
+                        : '这一组不参与循环发送（点一下 = 恢复参与）';
+    }
+    scheduleConfigSave();
+    if (monitors[mid] && monitors[mid].qcmdLoop) qcmdLoopSyncPlan(mid);   // 跑着的时候立刻按新计划走
+    mcpNotifyState([mid + '.quickGroups']);
 }
 
 /// 重建一个监视器下所有组。**每组自成一张表**：抬头（组名/拖动/折叠/加条/删组）→ 列标题 → 数据行。
@@ -7410,7 +7468,7 @@ function rebuildQcmdList(mid) {
     qlist.innerHTML = '';
     qcmdGroups(mid).forEach(function(g) {
         var box = document.createElement('div');
-        box.className = 'qcmd-group' + (g.folded ? ' folded' : '');
+        box.className = 'qcmd-group' + (g.folded ? ' folded' : '') + (qcmdGroupOn(g) ? '' : ' off');
         box.id = mid + '-qcmdGbox-' + g.id;
         box.appendChild(makeQcmdGroupBand(mid, g));
         // 列标题：自己建元素（不用 innerHTML 套壳 —— 假 DOM 里 innerHTML 不解析）
@@ -8355,7 +8413,7 @@ function collectConfig() {
             btnTs:        btnOn(mid + '-btnTs'),
             btnEcho:      btnOn(mid + '-btnEcho'),
             btnLineNum:   btnOn(mid + '-btnLineNum'),
-            quickGroups:  qcmdGroups(mid).map(function(g) { return { id: g.id, name: g.name, folded: !!g.folded, items: JSON.parse(JSON.stringify(g.items || [])) }; }),
+            quickGroups:  qcmdGroups(mid).map(function(g) { return { id: g.id, name: g.name, folded: !!g.folded, on: qcmdGroupOn(g), items: JSON.parse(JSON.stringify(g.items || [])) }; }),
             qcmdSideWidth: qcmdSideWidth(mid),
             // 外部文件挂载（文件即存储）：路径 + 编码 + 载体风格；quickCmds 只是它的缓存
             quickCmdsFile:      m.quickCmdsFile || '',
@@ -8407,7 +8465,7 @@ function collectConfigForMonitor(mid) {
         btnTs:        btnOn(mid + '-btnTs'),
         btnEcho:      btnOn(mid + '-btnEcho'),
         btnLineNum:   btnOn(mid + '-btnLineNum'),
-        quickGroups:  qcmdGroups(mid).map(function(g) { return { id: g.id, name: g.name, folded: !!g.folded, items: JSON.parse(JSON.stringify(g.items || [])) }; }),
+        quickGroups:  qcmdGroups(mid).map(function(g) { return { id: g.id, name: g.name, folded: !!g.folded, on: qcmdGroupOn(g), items: JSON.parse(JSON.stringify(g.items || [])) }; }),
         qcmdSideWidth: qcmdSideWidth(mid),
         quickCmdsFile:      m.quickCmdsFile || '',
         quickCmdsFileEnc:   m.quickCmdsFileEnc || '',
