@@ -228,7 +228,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "serial_set_display",
-            "description": "设置显示与行为开关：viewMode(text|hex)、lineEnding(crlf|lf|cr|none)、echo(消息回显)、lineNum(行号)、timestamp(时间戳)、autoScroll(自动滚动)、autoReconnect(自动重连)、terminalMode(终端模式)。至少给一个。",
+            "description": "设置显示与行为开关：viewMode(text|hex)、lineEnding(crlf|lf|cr|none)、echo(消息回显)、lineNum(行号)、timestamp(时间戳)、autoScroll(自动滚动)、autoReconnect(自动重连)、terminalMode(终端模式)、advOpen(更多设置栏展开)。至少给一个。**serial_get_state 报出来的每个开关这里都能设**。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -240,6 +240,7 @@ pub fn tool_defs() -> Vec<Value> {
                     "autoScroll": { "type": "boolean" },
                     "autoReconnect": { "type": "boolean" },
                     "terminalMode": { "type": "boolean" },
+                    "advOpen": { "type": "boolean", "description": "「更多设置」栏是否展开（真串口面板才有）" },
                     "pane": { "type": "string", "description": "分栏名，省略=main" }
                 },
                 "additionalProperties": false
@@ -722,10 +723,14 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
             serial_apply(core, args, json!(items)).await
         }
         "serial_set_display" => {
+            // ⚠️ 这份名单必须覆盖 `serial_get_state` 报出来的**每一个开关**：
+            // "报得出来的开关就该设得了"。`advOpen`（更多设置栏是否展开）曾经只报不设 ——
+            // 真机实测：状态里 `advOpen: true`，但设它会回「至少要给一个：…」，
+            // 因为那个错误信息本身就是旧名单（连提示都没提到它）。
             let mut items: Vec<Value> = Vec::new();
             for k in [
                 "viewMode", "lineEnding", "echo", "lineNum", "timestamp",
-                "autoScroll", "autoReconnect", "terminalMode",
+                "autoScroll", "autoReconnect", "terminalMode", "advOpen",
             ] {
                 if let Some(v) = args.get(k) {
                     items.push(json!({ "name": k, "value": v }));
@@ -734,7 +739,7 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
             if items.is_empty() {
                 return Err(RpcError::new(
                     E_INVALID_PARAMS,
-                    "至少要给一个：viewMode / lineEnding / echo / lineNum / timestamp / autoScroll / autoReconnect / terminalMode",
+                    "至少要给一个：viewMode / lineEnding / echo / lineNum / timestamp / autoScroll / autoReconnect / terminalMode / advOpen",
                 ));
             }
             serial_apply(core, args, json!(items)).await

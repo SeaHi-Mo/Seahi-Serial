@@ -135,6 +135,9 @@ BLE 设备列表/广播解析、WSL 映射状态这类**连绕都绕不到**（�
 + `initialize.instructions` 让 Agent 一开始就知道；弹窗里有开关（**AI 只能打开、关不掉** —— 故意的，
 否则等于没拦）。Rust 侧测试断言"被拦时假前端一次都没被调用"。
 
+**开关覆盖补齐**：`serial_get_state` 报出来的每个开关（含 `advOpen`）现在都能用
+`serial_set_display` 设 —— 并加了断言守这条对称性（自动滚动本来就有：`serial_set_display {autoScroll}`）。
+
 **已真机验证过的（别再重复怀疑）**：33 个工具在线且与源码一致；`serial_get_state`（含 `logChannels`）、
 `serial_list_ports`（驼峰 `portName`，**文本摘要里也带端口名**）、`serial_get_history`、
 `serial_quick_cmd`、`serial_get_output`（没数据时返回空 + note 而非报错）；`ui_list` 182 个真实控件、

@@ -2745,6 +2745,19 @@ console.log('preview ->', out);
       'Rust=' + rustWrites.join(',') + ' / 文档=' + docWrites.join(','));
     check(/if name == "serial_quick_cmd"[\s\S]{0,120}?args\.get\("index"\)\.is_some\(\)/.test(mcpProd),
       'serial_quick_cmd 按**调用**判定（不带 index 是只读列举，带 index 才是真的发出去）');
+
+    // ---- 「报得出来的开关，就必须设得了」----
+    // 真机发现过的不对称：serial_get_state 报了 advOpen（更多设置栏展开），但 serial_set_display
+    // 的字段名单里没有它 → 设它会回「至少要给一个：…」（连提示都没提它）。这类漏项以前只能靠人眼比对。
+    const toggleKeys = [...(/var MCP_SERIAL_TOGGLES = \{([\s\S]*?)\n\};/.exec(html) || ['', ''])[1]
+      .matchAll(/([a-zA-Z]+):\s*'/g)].map((m) => m[1]);
+    const setDisplayList = (/for k in \[([\s\S]{0,400}?)\]\s*\{[\s\S]{0,200}?"serial_set_display"/.exec(mcpProd)
+      || /"serial_set_display" => \{[\s\S]{0,400}?for k in \[([\s\S]{0,400}?)\]/.exec(mcpProd) || ['', ''])[1];
+    check(toggleKeys.length >= 6, '扫到了前端的开关表（不是空扫）', toggleKeys.join(','));
+    const missingToggles = toggleKeys.filter((k) => !new RegExp('"' + k + '"').test(setDisplayList));
+    check(missingToggles.length === 0,
+      'serial_get_state 报出来的每个开关，serial_set_display 都能设（否则"看得到改不了"）',
+      '少：' + missingToggles.join(',') + ' / set_display 名单=' + setDisplayList.replace(/\s+/g, ' ').trim());
   }
 
   // 每个运行期错误点都要真的调用上报（漏一个就是一个盲区）

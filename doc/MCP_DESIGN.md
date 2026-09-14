@@ -1363,6 +1363,26 @@ ui_list / ui_get_state / ui_set / serial_* / ble_* / adb_* / wsl_* / log_* 等�
 
 ## 17. 实施记录
 
+### 2026-09-14 · 「报得出来的开关就得设得了」—— 补上 `advOpen` 的"看得到改不了" ✅
+
+用户问的是**自动滚动**有没有对应工具。答案：**有** —— `serial_set_display { autoScroll: true|false }`，
+读它用 `serial_get_state.autoScroll`（真机实测翻转 + 恢复都成功，`applied: [{from:true,to:false,ok:true}]`）。
+
+查证过程中顺手发现一个**不对称**：`serial_get_state` 会把 `advOpen`（"更多设置"栏是否展开）报出来，
+但 `serial_set_display` 的字段名单里没有它 —— 设它会回「至少要给一个：viewMode / …」，
+而**那条错误信息本身就是旧名单**（连 `advOpen` 都没提），所以调用方既改不了、也看不出为什么。
+
+处置：
+
+- 把 `advOpen` 补进 `serial_set_display`（字段名单 + schema + 工具描述 + 错误提示）；
+- 加一条**通用守卫**（断言集）：拿前端 `MCP_SERIAL_TOGGLES` 的 7 个开关逐个去对
+  `serial_set_display` 的字段名单，少一个就 fail。这类"看得到改不了"的漏项，以前只能靠人眼比对，
+  而且很容易在新加开关时重犯。
+
+真机验证：`advOpen` true → 设 false（`ok:true`）→ 读回 false → 改回 true ✔。
+
+测试：Rust 161、前端 **1002**（+2）。
+
 ### 2026-09-14 · 只读（沙箱）模式：AI 能自由探索，但**一个字都改不到用户的东西** ✅
 
 动机（承接上一问）：Agent 在探索期会反复试错，而 `ui_set` 之后前端会 `scheduleConfigSave()`

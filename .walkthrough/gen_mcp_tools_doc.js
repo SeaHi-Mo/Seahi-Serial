@@ -61,7 +61,7 @@ const META = {
   serial_set_baud: ['写', '同上', '110..4000000；越界报 -32602'],
   serial_set_frame: ['写', '同上', 'dataBits/stopBits/parity 至少给一个；**连接中改帧格式无效**，先 serial_close'],
   serial_set_lines: ['写', '同上', 'dtr/rts 布尔；常用于让目标板复位或进下载模式'],
-  serial_set_display: ['写', '同上', 'viewMode/lineEnding/echo/lineNum/timestamp/autoScroll/autoReconnect/terminalMode'],
+  serial_set_display: ['写', '同上', 'viewMode/lineEnding/echo/lineNum/timestamp/**autoScroll(自动滚动)**/autoReconnect/terminalMode/advOpen；**serial_get_state 报出来的每个开关这里都能设**（断言集里有一条守着这条对称性）'],
   serial_open: ['写', '{pane, connected:true, state:{…}}', '**会等最多 6 秒确认真连上**；失败 → isError:true（-32006）并给出可能原因，不是乐观返回'],
   serial_close: ['写', '{pane, connected:false, state:{…}}', '会等最多 3 秒确认已断开'],
   serial_send: ['写', '{pane, sent:true, mode, bytes, data}', '需要该分栏已在监控中；mode=hex 时 data 按十六进制解析；lineEnding 会**留在界面上**（不是临时覆盖）'],

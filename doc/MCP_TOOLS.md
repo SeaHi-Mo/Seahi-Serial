@@ -37,7 +37,7 @@
 | [`serial_set_baud`](#serial-set-baud) | **写** | 设置波特率（110..4000000）。等价于在「波特率」输入框里填值。 |
 | [`serial_set_frame`](#serial-set-frame) | **写** | 设置串口帧格式：dataBits(5|6|7|8) / stopBits(1|2) / parity(none|odd|even)。至少给一个（在「更多设置」里）。**改帧格式只在未连接时有意义**，连接中请先 serial_close。 |
 | [`serial_set_lines`](#serial-set-lines) | **写** | 设置 DTR / RTS 电平（布尔）。常用于让目标板复位（DTR 拉低）或进入下载模式。 |
-| [`serial_set_display`](#serial-set-display) | **写** | 设置显示与行为开关：viewMode(text|hex)、lineEnding(crlf|lf|cr|none)、echo(消息回显)、lineNum(行号)、timestamp(时间戳)、autoScroll(自动滚动)、autoReconnect(自动重连)、terminalMode(终端模式)。至少给一个。 |
+| [`serial_set_display`](#serial-set-display) | **写** | 设置显示与行为开关：viewMode(text|hex)、lineEnding(crlf|lf|cr|none)、echo(消息回显)、lineNum(行号)、timestamp(时间戳)、autoScroll(自动滚动)、autoReconnect(自动重连)、terminalMode(终端模式)、advOpen(更多设置栏展开)。至少给一个。**serial_get_state 报出来的每个开关这里都能设**。 |
 | [`serial_open`](#serial-open) | **写** | **开始监控**（等价于点「开始监控」按钮）。可以同时给 port/baud 一次设定，省两次调用。返回前会**确认真的连上**（最多等 6 秒）；失败会说明可能原因（端口被占用/设备拔出/驱动异常）。 |
 | [`serial_close`](#serial-close) | **写** | 停止监控（等价于点「停止监控」），返回前确认已断开。 |
 | [`serial_send`](#serial-send) | **写** | 往串口发数据。mode=hex 时 data 按十六进制字节解析（如 "01 03 00 00 00 02"），否则按文本发。lineEnding 可临时覆盖该分栏的行尾设置。需要该分栏已在监控中。 |
@@ -148,10 +148,10 @@
 
 #### `serial_set_display`
 
-- **作用**：设置显示与行为开关：viewMode(text|hex)、lineEnding(crlf|lf|cr|none)、echo(消息回显)、lineNum(行号)、timestamp(时间戳)、autoScroll(自动滚动)、autoReconnect(自动重连)、terminalMode(终端模式)。至少给一个。
+- **作用**：设置显示与行为开关：viewMode(text|hex)、lineEnding(crlf|lf|cr|none)、echo(消息回显)、lineNum(行号)、timestamp(时间戳)、autoScroll(自动滚动)、autoReconnect(自动重连)、terminalMode(终端模式)、advOpen(更多设置栏展开)。至少给一个。**serial_get_state 报出来的每个开关这里都能设**。
 - **读/写**：**写**（会改状态）
 - **返回**：同上
-- **注意**：viewMode/lineEnding/echo/lineNum/timestamp/autoScroll/autoReconnect/terminalMode
+- **注意**：viewMode/lineEnding/echo/lineNum/timestamp/**autoScroll(自动滚动)**/autoReconnect/terminalMode/advOpen；**serial_get_state 报出来的每个开关这里都能设**（断言集里有一条守着这条对称性）
 
 **入参**
 
@@ -165,6 +165,7 @@
 | `autoScroll` | boolean | 否 |  |
 | `autoReconnect` | boolean | 否 |  |
 | `terminalMode` | boolean | 否 |  |
+| `advOpen` | boolean | 否 | 「更多设置」栏是否展开（真串口面板才有） |
 | `pane` | string | 否 | 分栏名，省略=main |
 
 #### `serial_open`
