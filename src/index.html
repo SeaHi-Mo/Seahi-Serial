@@ -5794,15 +5794,97 @@ function mcpSerialOp(payload) {
             var q = x.it || {};
             return { index: i, group: x.group.name || '', groupIndex: x.gi, itemIndex: x.ii,
                      label: q.label || ('指令' + (i + 1)), value: q.value || '',
-                     seq: qcmdItemSeq(q), delayMs: qcmdItemDelay(q), hex: qcmdItemHex(q) };
+                     seq: qcmdItemSeq(q), delayMs: qcmdItemDelay(q), hex: qcmdItemHex(q),
+                     // 想把某个格子交给 ui_set 改时不用猜 id（组变化时前缀也会变）
+                     domIds: { value: qcmdItemElId(mid, x.gid, x.ii, 'val'),
+                               seq: qcmdItemElId(mid, x.gid, x.ii, 'seq'),
+                               delay: qcmdItemElId(mid, x.gid, x.ii, 'delay'),
+                               hex: qcmdItemElId(mid, x.gid, x.ii, 'hex') } };
         });
+        // 组：名字/条数/是否参与循环/是否折叠 —— AI 得知道"哪几组现在根本不发"
+        var groups = qcmdGroups(mid).map(function (g, gi) {
+            return { index: gi, name: g.name || '', count: (g.items || []).length,
+                     on: qcmdGroupOn(g), folded: !!g.folded, id: g.id };
+        });
+        var planLen = qcmdLoopPlan(mid).length;
         // 列表可能来自外部文件（文件即存储，见 qcmdSideHtml/quick_cmds_* 命令）：
         // 把来源一起给 AI —— 否则它会以为"改配置就能保住这条指令"，而面板里改的其实会写回文件
         // ⚠️ seq/delayMs/hex 只有文件表头声明了那几列时才在文件里，否则随 config.json 走
-        var groups = qcmdGroups(mid).map(function (g) { return { name: g.name || '', count: (g.items || []).length }; });
         return { ok: true, value: { pane: mid, items: qs, groups: groups, groupCount: groups.length,
+                                    loop: { on: qcmdLoopRunning(mid), planLength: planLen },
                                     usable: qs.filter(function (q) { return !!q.value; }).length,
                                     file: m.quickCmdsFile || null, source: m.quickCmdsFile ? 'file' : 'config' } };
+    }
+    if (action === 'quickLoop') {
+        // 循环发送开关：**复用面板那颗开关走的同一条路**（qcmdLoopRefusal 判前置、setQcmdLoop 落地），
+        // 不另写一套 —— 否则"AI 能开、面板开不了"这种漂移迟早出现
+        var want = payload.on === undefined ? !qcmdLoopRunning(mid) : !!payload.on;
+        if (want) {
+            var why = qcmdLoopRefusal(mid);
+            if (why) return { ok: false, error: why };
+        }
+        setQcmdLoop(mid, want);
+        return { ok: true, value: { pane: mid, loop: qcmdLoopRunning(mid), planLength: qcmdLoopPlan(mid).length,
+                                    changed: true } };
+    }
+    if (action === 'quickAdd') {
+        var gt = qcmdResolveGroup(mid, payload.group);
+        if (!gt) return { ok: false, invalidParams: true, error: 'group 不认得：给组序号（0 起，见 quickList 的 groups[].index）或组名' };
+        addQcmdItem(mid, gt.id);
+        var newIdx = (gt.items || []).length - 1;
+        var applied = qcmdApplyItemPatch(mid, gt.id, newIdx, payload);
+        var flatAdd = qcmdAllItems(mid);
+        var at = -1;
+        flatAdd.forEach(function(x, i) { if (x.gid === gt.id && x.ii === newIdx) at = i; });
+        return { ok: true, value: { pane: mid, index: at, group: gt.name || '', groupIndex: qcmdGroupIndex(mid, gt.id),
+                                    itemIndex: newIdx, applied: applied } };
+    }
+    if (action === 'quickUpdate') {
+        var cellU = qcmdResolveItem(mid, payload.index);
+        if (!cellU) return { ok: false, invalidParams: true, error: 'index 越界（见 quickList 的 items[].index）' };
+        var appliedU = qcmdApplyItemPatch(mid, cellU.gid, cellU.ii, payload);
+        if (!appliedU.length) return { ok: false, invalidParams: true, error: '没给要改的字段（value / seq / delayMs / hex 至少一个）' };
+        return { ok: true, value: { pane: mid, index: parseInt(payload.index, 10), group: cellU.group.name || '',
+                                    itemIndex: cellU.ii, applied: appliedU } };
+    }
+    if (action === 'quickRemove') {
+        var cellR = qcmdResolveItem(mid, payload.index);
+        if (!cellR) return { ok: false, invalidParams: true, error: 'index 越界（见 quickList 的 items[].index）' };
+        var gone = { group: cellR.group.name || '', value: cellR.it.value || '', seq: qcmdItemSeq(cellR.it) };
+        removeQcmdItem(mid, cellR.gid, cellR.ii);
+        return { ok: true, value: { pane: mid, removed: parseInt(payload.index, 10), group: gone.group,
+                                    value: gone.value, seq: gone.seq, remaining: qcmdAllItems(mid).length } };
+    }
+    if (action === 'quickGroup') {
+        // 组操作：add / remove / rename / move / on / fold —— 每一个都复用面板里那个按钮的函数
+        var op = String(payload.op || '').toLowerCase();
+        var before = qcmdGroups(mid).map(function(g) { return g.name || ''; });
+        if (op === 'add') {
+            addQcmdGroup(mid);
+        } else {
+            var gr = qcmdResolveGroup(mid, payload.group);
+            if (!gr) return { ok: false, invalidParams: true, error: 'group 不认得：给组序号（0 起）或组名' };
+            if (op === 'remove') removeQcmdGroup(mid, gr.id);
+            else if (op === 'rename') {
+                if (payload.name === undefined) return { ok: false, invalidParams: true, error: 'rename 要给 name' };
+                renameQcmdGroup(mid, gr.id, String(payload.name));
+            } else if (op === 'move') {
+                var to = parseInt(payload.toIndex, 10);
+                if (!(to >= 0 && to < qcmdGroups(mid).length)) {
+                    return { ok: false, invalidParams: true, error: 'toIndex 越界（0..' + (qcmdGroups(mid).length - 1) + '）' };
+                }
+                qcmdMoveGroup(mid, gr.id, to);
+            } else if (op === 'on') {
+                setQcmdGroupOn(mid, gr.id, payload.on === undefined ? true : !!payload.on);
+            } else if (op === 'fold') {
+                setQcmdGroupFold(mid, gr.id, payload.on === undefined ? true : !!payload.on);
+            } else {
+                return { ok: false, invalidParams: true, error: 'op 只能是 add / remove / rename / move / on / fold' };
+            }
+        }
+        var after = qcmdGroups(mid).map(function(g) { return g.name || ''; });
+        return { ok: true, value: { pane: mid, op: op, groups: after, before: before,
+                                    loop: { on: qcmdLoopRunning(mid), planLength: qcmdLoopPlan(mid).length } } };
     }
     if (action === 'quickRun') {
         var idx = parseInt(payload.index, 10);
@@ -6453,6 +6535,122 @@ function qcmdGroups(mid) {
     return m.quickGroups;
 }
 
+/// 某一格控件的 id（组会变 → id 必须带组号，否则两组的下标会撞）。
+/// 单独成函数：MCP 的 quickList 要把这些 id 告诉 AI（它想用 ui_set 直接改某格时不用猜）
+function qcmdItemElId(mid, gid, idx, suffix) {
+    return mid + '-qcmdi-' + gid + '-' + idx + (suffix ? '-' + suffix : '');
+}
+
+/* ===== MCP 复用的一组小工具（AI 侧的 quick* 动作全走这里，不另写一套） ===== */
+
+/// 循环发送的前置检查：返回拒绝原因（null = 可以开）。
+/// **面板那颗开关与 MCP 的 quickLoop 共用这一份文案** —— 两处各写一套，迟早出现提示不一致。
+function qcmdLoopRefusal(mid) {
+    var m = monitors[mid];
+    if (!m) return '没有这个分栏';
+    if (!m.isConnected) return '还没打开监控：先连上串口，再开循环发送';
+    if (!qcmdLoopPlan(mid).length) {
+        return '没有顺序号大于 0 的指令：先在每条左侧的方框里填 1、2、3…（0 = 不参与），'
+             + '或者某一组被"参与开关"关掉了';
+    }
+    return null;
+}
+
+/// 组引用 → 组对象。ref 可以是组序号（0 起，见 quickList 的 groups[].index）、组名或组 id；
+/// 认不出来返回 null —— **不猜**（猜错就是删错组）
+function qcmdResolveGroup(mid, ref) {
+    var list = qcmdGroups(mid);
+    if (ref === undefined || ref === null || ref === '') return null;
+    if (typeof ref === 'number' || /^\d+$/.test(String(ref))) {
+        var i = parseInt(ref, 10);
+        return (i >= 0 && i < list.length) ? list[i] : null;
+    }
+    var key = String(ref);
+    for (var k = 0; k < list.length; k++) {
+        if (list[k].id === key || (list[k].name || '') === key) return list[k];
+    }
+    return null;
+}
+
+/// 摊平下标 → 条目（与 quickList 的 items[].index 同一套口径）
+function qcmdResolveItem(mid, index) {
+    var i = parseInt(index, 10);
+    var flat = qcmdAllItems(mid);
+    if (!(i >= 0 && i < flat.length)) return null;
+    return flat[i];
+}
+
+/// 把 {value,seq,delayMs,hex} 落到某一条上。**走用户手点那条路**：交给 `mcpWriteEl`
+/// （写真实输入框 + 派发 input/change；hex 是按钮 → 状态不一致才点它），
+/// 所以界面、模型、配置文件三者不会各说各话。控件不在时退回直接改模型 + 重建列表。
+/// 返回真正改动的字段名（空数组 = 没给任何字段）。
+function qcmdApplyItemPatch(mid, gid, idx, patch) {
+    var applied = [];
+    var it = qcmdItemAt(mid, gid, idx);
+    if (!it) return applied;
+    var put = function(suffix, kind, val) {
+        var el = document.getElementById(qcmdItemElId(mid, gid, idx, suffix));
+        if (el && el.value !== undefined) { mcpWriteEl(el, kind, val); return true; }
+        return false;
+    };
+    if (patch.value !== undefined) {
+        if (!put('val', 'text', String(patch.value))) it.value = String(patch.value);
+        applied.push('value');
+    }
+    if (patch.seq !== undefined) {
+        var sq = String(Math.max(0, Math.min(QCMD_SEQ_MAX, parseInt(patch.seq, 10) || 0)));
+        if (!put('seq', 'text', sq)) it.seq = parseInt(sq, 10);
+        applied.push('seq');
+    }
+    if (patch.delayMs !== undefined) {
+        var d = String(qcmdItemDelay({ delay: parseInt(patch.delayMs, 10) }));
+        if (!put('delay', 'text', d)) it.delay = parseInt(d, 10);
+        applied.push('delayMs');
+    }
+    if (patch.hex !== undefined) {
+        var hb = document.getElementById(qcmdItemElId(mid, gid, idx, 'hex'));
+        if (hb) mcpWriteEl(hb, 'toggle', !!patch.hex); else it.hex = !!patch.hex;
+        applied.push('hex');
+    }
+    if (!applied.length) return applied;
+    if (!document.getElementById(qcmdItemElId(mid, gid, idx, 'val'))) rebuildQcmdList(mid);
+    scheduleConfigSave();
+    scheduleQcmdFileSave(mid);      // 文件即存储：改了内容就写回
+    return applied;
+}
+
+/// 把某一组挪到第 to 位（**拖动排序与 MCP 的 quickGroup/move 共用这一条路**）：
+/// 模型换位 + 文件里那段表跟着挪 + DOM 按新顺序重排（带 FLIP 动画）
+function qcmdMoveGroup(mid, gid, to) {
+    var list = qcmdGroups(mid);
+    var from = qcmdGroupIndex(mid, gid);
+    if (from < 0) return false;
+    to = Math.max(0, Math.min(list.length - 1, parseInt(to, 10)));
+    if (to === from) return true;
+    qcmdReorderBoxes(mid, function() {
+        var moved = list.splice(from, 1)[0];
+        list.splice(to, 0, moved);
+        qcmdMoveGroupBlocks(mid, gid, to);
+        list.forEach(function(g) {
+            var b = document.getElementById(mid + '-qcmdGbox-' + g.id);
+            if (b) document.getElementById(mid + '-qcmdList').appendChild(b);
+        });
+    });
+    scheduleConfigSave();
+    scheduleQcmdFileSave(mid);
+    if (monitors[mid] && monitors[mid].qcmdLoop) qcmdLoopSyncPlan(mid);
+    return true;
+}
+
+/// 显式设置某一组的折叠状态（MCP 的 quickGroup/fold 用；面板那颗箭头走 toggle）
+function setQcmdGroupFold(mid, gid, on) {
+    var g = qcmdGroupById(mid, gid);
+    if (!g) return false;
+    if (!!g.folded === !!on) return true;
+    toggleQcmdGroupFold(mid, gid);
+    return true;
+}
+
 function qcmdGroupById(mid, gid) {
     var list = qcmdGroups(mid);
     for (var i = 0; i < list.length; i++) if (list[i].id === gid) return list[i];
@@ -7027,7 +7225,7 @@ function qcmdImportFile(mid) {
             return;
         }
         qcmdApplyParsed(mid, qcmdParseText(res.text), res);
-        showToast('已加载 ' + qcmdBaseName(res.path) + '（' + (monitors[mid] ? monitors[mid].quickCmds.length : 0) + ' 条）', 'success');
+        showToast('已加载 ' + qcmdBaseName(res.path) + '（' + qcmdAllItems(mid).length + ' 条）', 'success');
     }).catch(function(e) { showToast('导入失败: ' + e, 'error'); });
 }
 
@@ -7631,18 +7829,8 @@ function onQcmdGroupDragMove(e) {
         if (i > gi && e.clientY > r.top + r.height / 2) { target = i; }
     }
     if (target < 0 || target === gi) return;
-    qcmdReorderBoxes(mid, function() {
-        var moved = list.splice(gi, 1)[0];
-        list.splice(target, 0, moved);
-        qcmdMoveGroupBlocks(mid, d.gid, target);   // 文件里的表也跟着挪
-        // DOM 跟着模型走：按新顺序 append（appendChild 移动已有节点，不重建）
-        list.forEach(function(g) {
-            var b = document.getElementById(mid + '-qcmdGbox-' + g.id);
-            if (b) document.getElementById(mid + '-qcmdList').appendChild(b);
-        });
-    });
+    qcmdMoveGroup(mid, d.gid, target);             // 与 MCP 的 quickGroup/move 同一条路（含 FLIP 动画）
     band.classList.add('dragging');                // 节点没被换掉，补一次也无妨（幂等）
-    if (monitors[mid].qcmdLoop) qcmdLoopSyncPlan(mid);   // 循环顺序跟着新组序走
 }
 
 function endQcmdGroupDrag() {
@@ -7669,12 +7857,12 @@ function makeQcmdItem(mid, gid, idx, label, value) {
 
     var item = document.createElement('div');
     item.className = 'qcmd-item';
-    item.id = mid + '-qcmdi-' + gid + '-' + idx;
+    item.id = qcmdItemElId(mid, gid, idx);
 
     // 顺序号：方形小框，默认 0（= 不参与循环发送）。组内按它从小到大发。
     var seqInp = document.createElement('input');
     seqInp.className = 'qcmd-item-seq' + (qcmdItemSeq(model) > 0 ? ' on' : '');
-    seqInp.id = mid + '-qcmdi-' + gid + '-' + idx + '-seq';
+    seqInp.id = qcmdItemElId(mid, gid, idx, 'seq');
     seqInp.type = 'text';
     seqInp.setAttribute('inputmode', 'numeric');
     seqInp.setAttribute('autocomplete', 'off');
@@ -7693,6 +7881,7 @@ function makeQcmdItem(mid, gid, idx, label, value) {
 
     var valInp = document.createElement('input');
     valInp.className = 'qcmd-item-val';
+    valInp.id = qcmdItemElId(mid, gid, idx, 'val');   // 补 id：MCP 的 ui_list/ui_set 才够得到这一格
     valInp.type = 'text';
     valInp.value = value;
     valInp.placeholder = '指令内容...';
@@ -7713,7 +7902,7 @@ function makeQcmdItem(mid, gid, idx, label, value) {
     // 延时发送时间（毫秒）：本条发完到下发下一条的间隔
     var delayInp = document.createElement('input');
     delayInp.className = 'qcmd-item-delay';
-    delayInp.id = mid + '-qcmdi-' + gid + '-' + idx + '-delay';
+    delayInp.id = qcmdItemElId(mid, gid, idx, 'delay');
     delayInp.type = 'text';
     delayInp.setAttribute('inputmode', 'numeric');
     delayInp.setAttribute('autocomplete', 'off');
@@ -7737,7 +7926,7 @@ function makeQcmdItem(mid, gid, idx, label, value) {
     // HEX 使能（每条独立，默认关）
     var hexBtn = document.createElement('button');
     hexBtn.className = 'qcmd-item-hex' + (hexOn ? ' on' : '');
-    hexBtn.id = mid + '-qcmdi-' + gid + '-' + idx + '-hex';
+    hexBtn.id = qcmdItemElId(mid, gid, idx, 'hex');
     hexBtn.textContent = 'HEX';
     hexBtn.title = '本条按 HEX 格式发送（默认关闭；与主发送栏的文本/HEX 模式互不影响）';
     hexBtn.addEventListener('click', function(e) {
@@ -7913,13 +8102,10 @@ function setQcmdLoop(mid, on) {
     var m = monitors[mid];
     if (!m) return false;
     if (!on) { stopQcmdLoop(mid); return false; }
-    if (!m.isConnected) {
-        showToast('还没打开监控：先连上串口，再开循环发送', 'error');
-        syncQcmdLoopBtn(mid);
-        return false;
-    }
-    if (!qcmdLoopPlan(mid).length) {
-        showToast('没有顺序号大于 0 的指令：先在每条左侧的方框里填 1、2、3…（0 = 不参与）', 'error');
+    // 前置检查与 MCP 的 quickLoop 共用一份文案（qcmdLoopRefusal）—— 两处各写一套必然漂移
+    var why = qcmdLoopRefusal(mid);
+    if (why) {
+        showToast(why, 'error');
         syncQcmdLoopBtn(mid);
         return false;
     }
@@ -8623,7 +8809,11 @@ function applyMonitorConfig(mid, mc) {
         if (output && mc.btnLineNum) output.classList.add('with-line-num');
     }
     // 快速指令（现在是"组"）：新配置里有 quickGroups 就直接用；老配置只有扁平的 quickCmds →
-    // 置空 quickGroups 让 qcmdGroups() 现场包成一组（迁移，不丢任何一条）
+    // 置空 quickGroups 让 qcmdGroups() 现场包成一组（迁移，不丢任何一条）。
+    // ⚠️ 迁移后 `m.quickCmds` **保持 null**（只是给 qcmdGroups 读一次的种子）——
+    // 任何地方都别再从监视器对象上读它：旧代码在导入成功提示里读了 `quickCmds.length`，
+    // 于是抛 "Cannot read properties of null (reading 'length')"，
+    // 被 catch 一兜就变成"导入明明成功却报导入失败"（2026-09 真踩过）。要条数用 qcmdAllItems(mid).length
     if (monitors[mid]) {
         if (mc.quickGroups && mc.quickGroups.length) {
             monitors[mid].quickGroups = JSON.parse(JSON.stringify(mc.quickGroups));

@@ -2988,6 +2988,39 @@ console.log('preview ->', out);
       extractFunction('mcpSerialEl'), extractFunction('mcpSerialOptions'),
       extractFunction('mcpSerialState'), extractFunction('mcpSerialApply'), extractFunction('mcpSerialOp'),
       extractFunction('mcpSerialLogChannels'),
+      // mcpSerialOp 的 quick* 分支会调这些面板函数。本节只验证"发出去的 op/参数"与"回执形状"，
+      // 所以按最小语义打桩；**真实行为**（改真的落到模型上）由下面侧栏那一节用真函数 + 假 DOM 测，
+      // 两节各管一半、不重复。
+      'function qcmdItemElId(mid, gid, idx, s) { return mid + "-qcmdi-" + gid + "-" + idx + (s ? "-" + s : ""); }',
+      'function qcmdLoopRefusal() { return null; }',
+      'function qcmdLoopRunning(mid) { return !!(monitors[mid] && monitors[mid].qcmdLoop); }',
+      'function qcmdLoopPlan(mid) { return qcmdAllItems(mid).filter(function (x) { return qcmdItemSeq(x.it) > 0; }); }',
+      'function qcmdLoopSyncPlan() {}',
+      'function stopQcmdLoop(mid) { if (monitors[mid]) monitors[mid].qcmdLoop = false; }',
+      'function syncQcmdLoopBtn() {}',
+      'function setQcmdLoop(mid, on) { if (monitors[mid]) monitors[mid].qcmdLoop = !!on; return !!on; }',
+      'function qcmdItemAt(mid, gid, idx) { var g = qcmdGroupById(mid, gid); return (g && g.items[idx]) || null; }',
+      'function qcmdResolveGroup(mid, ref) { var l = qcmdGroups(mid); ' +
+        'if (typeof ref === "number") return l[ref] || null; ' +
+        'for (var i = 0; i < l.length; i++) if (l[i].name === ref || l[i].id === ref) return l[i]; return null; }',
+      'function qcmdResolveItem(mid, index) { var f = qcmdAllItems(mid); return f[index] || null; }',
+      'function qcmdApplyItemPatch(mid, gid, idx, p) { var out = []; ' +
+        'if (p.value !== undefined) out.push("value"); if (p.seq !== undefined) out.push("seq"); ' +
+        'if (p.delayMs !== undefined) out.push("delayMs"); if (p.hex !== undefined) out.push("hex"); ' +
+        'var it = qcmdItemAt(mid, gid, idx); if (it) { if (p.value !== undefined) it.value = String(p.value); ' +
+        'if (p.seq !== undefined) it.seq = parseInt(p.seq, 10) || 0; ' +
+        'if (p.delayMs !== undefined) it.delay = parseInt(p.delayMs, 10); if (p.hex !== undefined) it.hex = !!p.hex; } ' +
+        'return out; }',
+      'function addQcmdItem(mid, gid) { var g = qcmdGroupById(mid, gid); if (g) g.items.push({ label: "", value: "", seq: 0, delay: 1000, hex: false }); }',
+      'function removeQcmdItem(mid, gid, idx) { var g = qcmdGroupById(mid, gid); if (g) g.items.splice(idx, 1); }',
+      'function addQcmdGroup(mid) { qcmdGroups(mid).push({ id: qcmdNewGroupId(), name: "循环 " + (qcmdGroups(mid).length + 1), items: [{}] }); }',
+      'function removeQcmdGroup(mid, gid) { var l = qcmdGroups(mid); var i = qcmdGroupIndex(mid, gid); if (i >= 0 && l.length > 1) l.splice(i, 1); }',
+      'function renameQcmdGroup(mid, gid, name) { var g = qcmdGroupById(mid, gid); if (g) g.name = String(name); }',
+      'function setQcmdGroupOn(mid, gid, on) { var g = qcmdGroupById(mid, gid); if (g) g.on = !!on; }',
+      'function setQcmdGroupFold(mid, gid, on) { var g = qcmdGroupById(mid, gid); if (g) g.folded = !!on; return true; }',
+      'function qcmdMoveGroup(mid, gid, to) { var l = qcmdGroups(mid); var i = qcmdGroupIndex(mid, gid); ' +
+        'if (i < 0) return false; l.splice(to, 0, l.splice(i, 1)[0]); return true; }',
+      'function scheduleConfigSave() {}', 'function scheduleQcmdFileSave() {}',
     ].join('\n'), sbSer);
 
     check(JSON.stringify(sbSer.mcpSerialPanes()) === '["main","extra-1"]',
@@ -3123,6 +3156,19 @@ console.log('preview ->', out);
         },
         addEventListener(t, fn) { (el._handlers[t] = el._handlers[t] || []).push(fn); },
         appendChild(c) { el.children.push(c); },
+        // 浏览器里点一下会跑它自己的 click 处理器；假 DOM 也照做（MCP 的点击路径靠它验证）
+        click() {
+          el._clicks = (el._clicks || 0) + 1;
+          ((el._handlers && el._handlers.click) || []).forEach(fn =>
+            fn.call(el, { stopPropagation() {}, preventDefault() {} }));
+        },
+        // dispatchEvent：把事件按 type 送到该元素登记的处理器上（_mcpDispatch 靠它 ——
+        // 少了它，MCP 写的值进不了模型，只会改到一个空壳元素的 value 上）
+        dispatchEvent(ev) {
+          const type = ev && ev.type;
+          ((el._handlers && el._handlers[type]) || []).forEach(fn => fn.call(el, ev));
+          return true;
+        },
         setAttribute(k, v) { el.attrs[k] = v; },
         getAttribute(k) { return el.attrs[k]; },
         querySelector: () => null,
@@ -3140,9 +3186,27 @@ console.log('preview ->', out);
     const srcLine = re => { const m = re.exec(html); return m ? m[0] : ''; };
     const sbSide = {
       console,
+      // 浏览器里有 Event；沙箱里给个最小实现（_mcpDispatch 会 new Event(type, {bubbles:true})，
+      // 没有它 dispatchEvent 那一步在 try/catch 里被吞掉 —— 于是 MCP 写的值进不了模型）
+      Event: function Event(type) {
+        this.type = type; this.bubbles = true;
+        this.stopPropagation = function () {};
+        this.preventDefault = function () {};
+      },
       document: {
         getElementById: id => (sideById[id] = sideById[id] || stubEl(id)),
-        createElement: () => { const el = stubEl(); created.push(el); return el; },
+        createElement: () => {
+          const el = stubEl();
+          created.push(el);
+          // 浏览器里"设了 id 的元素"用 getElementById 找得到；假 DOM 也得这样，
+          // 否则面板里 `getElementById(mid + '-qcmdi-…')` 会拿到一个新建的空壳（断言全废）
+          Object.defineProperty(el, 'id', {
+            configurable: true,
+            get() { return el._id || ''; },
+            set(v) { el._id = String(v); sideById[el._id] = el; },
+          });
+          return el;
+        },
         querySelector: () => null,
         querySelectorAll: () => [],
         addEventListener: (t, fn) => { (docListeners[t] = docListeners[t] || []).push(fn); },
@@ -3187,7 +3251,9 @@ console.log('preview ->', out);
        'qcmdCurrentText', 'scheduleQcmdFileSave', 'qcmdFileSaveNow',
        'qcmdFlushPendingFileSaves', 'qcmdFileMountedBy', 'collectConfigForMonitor',
        'qcmdNewGroupId', 'qcmdGroups', 'qcmdGroupById', 'qcmdGroupIndex', 'qcmdAllItems', 'qcmdItemAt',
-       'qcmdGroupOn', 'setQcmdGroupOn',
+       'qcmdGroupOn', 'setQcmdGroupOn', 'qcmdItemElId', 'qcmdLoopRefusal', 'qcmdResolveGroup',
+       'qcmdResolveItem', 'qcmdApplyItemPatch', 'qcmdMoveGroup', 'setQcmdGroupFold',
+       'mcpWriteEl', 'mcpKindOf', '_mcpDispatch',
        'makeQcmdItem', 'makeQcmdGroupBand', 'addQcmdItem', 'removeQcmdItem', 'rebuildQcmdList',
        'addQcmdGroup', 'removeQcmdGroup', 'renameQcmdGroup', 'toggleQcmdGroupFold',
        'startQcmdGroupDrag', 'onQcmdGroupDragMove', 'endQcmdGroupDrag', 'qcmdReorderBoxes',
@@ -3693,6 +3759,64 @@ console.log('preview ->', out);
         '组进了配置（组名 + 组序 + 每组的条目）', JSON.stringify((cfg && cfg.quickGroups || []).map(g => g.name)));
     }
 
+    // ---------- MCP 侧要复用的那几个帮手（quick* 动作全走它们，别另写一套） ----------
+    {
+      sbSide.monitors.main.isConnected = true;   // 上面的循环用例把它设成过 false，这里复位
+      // 组引用：序号 / 组名 / 组 id 都认；认不出来返回 null（**不猜** —— 猜错就是删错组）
+      check(sbSide.qcmdResolveGroup('main', 0).id === sbSide.monitors.main.quickGroups[0].id,
+        'qcmdResolveGroup：认组序号');
+      check(sbSide.qcmdResolveGroup('main', '第二组').id === 'gB', 'qcmdResolveGroup：认组名');
+      check(sbSide.qcmdResolveGroup('main', 'gB').id === 'gB', 'qcmdResolveGroup：认组 id');
+      check(sbSide.qcmdResolveGroup('main', 99) === null && sbSide.qcmdResolveGroup('main', '不存在') === null
+        && sbSide.qcmdResolveGroup('main', undefined) === null,
+        'qcmdResolveGroup：越界/认不出来一律 null（不猜）');
+      // 摊平下标 → 条目
+      check(sbSide.qcmdResolveItem('main', 0).gid === 'gB' && sbSide.qcmdResolveItem('main', 9) === null,
+        'qcmdResolveItem：按摊平下标取条目，越界 null');
+      // 改一条：走 mcpWriteEl（写真实输入框 + 派发 input/change）→ 模型、配置文件一起更新
+      sbSide.monitors.main.quickGroups = [{ id: 'gA', name: '第一组',
+        items: [{ label: '', value: 'AT', seq: 0, delay: 1000, hex: false }] }];
+      sbSide.rebuildQcmdList('main');
+      const applied = sbSide.qcmdApplyItemPatch('main', 'gA', 0, { value: 'AT+GMR', seq: 3, delayMs: 500, hex: true });
+      const patched = sbSide.monitors.main.quickGroups[0].items[0];
+      check(JSON.stringify(applied) === '["value","seq","delayMs","hex"]',
+        'qcmdApplyItemPatch：返回真正改动的字段名', JSON.stringify(applied));
+      check(patched.value === 'AT+GMR' && patched.seq === 3 && patched.delay === 500 && patched.hex === true,
+        '改动落到模型（值/顺序号/延时/HEX 四项）', JSON.stringify(patched));
+      check(sideById['main-qcmdi-gA-0-val'].value === 'AT+GMR'
+        && sideById['main-qcmdi-gA-0-seq'].value === '3'
+        && sideById['main-qcmdi-gA-0-delay'].value === '500'
+        && sideById['main-qcmdi-gA-0-hex'].classList.contains('on'),
+        '四格控件都跟着变了（走的是用户手点那条路：input/change 事件）');
+      check(sbSide.qcmdApplyItemPatch('main', 'gA', 0, {}).length === 0,
+        '没给字段时什么都不动（返回空数组，MCP 据此报 invalidParams）');
+      // 组开关 / 折叠 / 移动（MCP 的 quickGroup 用的就是这几个）
+      sbSide.setQcmdGroupFold('main', 'gA', true);
+      check(sbSide.qcmdGroupById('main', 'gA').folded === true, 'setQcmdGroupFold(mid, gid, true) 折起来');
+      sbSide.setQcmdGroupFold('main', 'gA', false);
+      check(sbSide.qcmdGroupById('main', 'gA').folded === false, 'setQcmdGroupFold(mid, gid, false) 展开');
+      sbSide.monitors.main.quickGroups = [
+        { id: 'g1', name: '一', items: [{}] }, { id: 'g2', name: '二', items: [{}] },
+        { id: 'g3', name: '三', items: [{}] }];
+      sbSide.rebuildQcmdList('main');
+      sbSide.qcmdMoveGroup('main', 'g3', 0);
+      check(JSON.stringify(sbSide.monitors.main.quickGroups.map(g => g.id)) === '["g3","g1","g2"]',
+        'qcmdMoveGroup：把第三组挪到最前（拖动与 MCP 共用这一条路）',
+        JSON.stringify(sbSide.monitors.main.quickGroups.map(g => g.id)));
+      check(sbSide.qcmdMoveGroup('main', 'g2', 1) === true && sbSide.monitors.main.quickGroups[1].id === 'g2',
+        '挪到自己当前位置 = 无操作但仍返回 true');
+      // 循环开关的前置检查（面板开关与 MCP 共用一份文案）
+      sbSide.monitors.main.quickGroups = [{ id: 'gA', name: '第一组', items: [{ label: '', value: 'AT', seq: 0 }] }];
+      sbSide.rebuildQcmdList('main');
+      check(/没有顺序号大于 0 的指令/.test(sbSide.qcmdLoopRefusal('main') || ''),
+        'qcmdLoopRefusal：没有任何 >0 的顺序号时给出原因', String(sbSide.qcmdLoopRefusal('main')));
+      sbSide.monitors.main.quickGroups[0].items[0].seq = 1;
+      check(sbSide.qcmdLoopRefusal('main') === null, '有条目可发时不再拒绝');
+      sbSide.monitors.main.isConnected = false;
+      check(/还没打开监控/.test(sbSide.qcmdLoopRefusal('main') || ''),
+        '未连接时先报"还没打开监控"（与面板那颗开关同一句话）', String(sbSide.qcmdLoopRefusal('main')));
+      sbSide.monitors.main.isConnected = true;
+    }
     // ---------- 辅助读法（脏配置不许把循环带崩） ----------
     {
       check(sbSide.qcmdItemSeq({}) === 0 && sbSide.qcmdItemSeq({ seq: -5 }) === 0 && sbSide.qcmdItemSeq({ seq: '7' }) === 7,
@@ -4289,6 +4413,17 @@ console.log('preview ->', out);
         ? { path: exportPath, text: fs.readFileSync(exportPath, 'utf8'), encoding: 'utf-8', hash: 'hx' }
         : baseHandler(cmd));
       sbSide.qcmdImportFile('main');
+      // 导入成功必须只报"已加载 N 条"：**成功路径里抛异常会被 catch 变成"导入失败: TypeError..."**
+      // —— 2026-09 真踩过（组模型上线后 `monitors[mid].quickCmds` 变成 null，
+      // 成功提示里那句 `.length` 直接抛，于是"导入明明成功却报失败"）
+      {
+        const importToasts = toasts.map(t => String(t.msg));
+        check(importToasts.some(t => /^已加载 /.test(t)) && !importToasts.some(t => /导入失败/.test(t)),
+          '② 导入成功后只报「已加载 N 条」，不能出现「导入失败」（成功路径里抛异常会被 catch 吞成失败）',
+          importToasts.join(' | '));
+        check(!/monitors\[[^\]]+\]\.quickCmds\.length/.test(html),
+          '面板里不再从监视器对象上读 `quickCmds.length`（迁移后它是 null，读了就抛 —— 那个 bug 就是这么来的）');
+      }
       const back = sbSide.monitors['main'].quickCmds;
       check(back.length === 3, '② 导入回来的条数对得上', String(back.length));
       check(back[0].value === 'AT+GMR' && back[0].seq === 2 && back[0].delay === 500 && back[0].hex === true,
