@@ -1359,6 +1359,128 @@ ui_list / ui_get_state / ui_set / serial_* / ble_* / adb_* / wsl_* / log_* 等�
 | 5 | 是否发 0.5.0-beta（需先改 CI） | §16.4，等你定 |
 | 6 | 是否连带做 L3b 上报脱敏 | §13 D13 |
 
+### 16.6 剩余语义工具的施工计划（BLE / ADB+WSL / 全局 / 危险确认）
+
+> S0~S12 已落地（基础设施 + 串口语义 12 个 + 日志中心 + 只读模式 + npm 安装器）；
+> 2026-09-13 的 S12 记录里写着"**还没做**：BLE（第二批）、ADB/WSL（第三批）、全局（第四批），
+> 以及危险动作的二次确认"。本节把那四块补成**施工级**：每个工具给入参/返回契约、读写分类、
+> 危险级别与验证门，照它就能一步步做、一步步验。
+
+#### 16.6.0 每批都要先做的三件共用事
+
+| # | 事 | 说明 |
+|---|---|---|
+| 1 | **Rust 侧 `xxx_call(core, action, args, extra)`** | 抄 `serial_call`：拼 `{action, pane?}` → `core.ui_call("<面板>", payload)`。BLE/ADB/WSL 各自的 op 名**只在前端定义一处**，Rust 只转发 —— 工具名到 op 的映射写在 `protocol.rs` 的分派里（与 `serial_quick_cmd` 同款） |
+| 2 | **前端 `mcpBleOp/mcpAdbOp/mcpWslOp`** | 与 `mcpSerialOp` 同构：一个 `action` 分支表，**每个分支都调面板按钮走的那个函数**（AGENTS #3）；只读的 `*_get_state`/`*_list_*` 不许有任何副作用 |
+| 3 | **三处断言一起加** | ① Rust：`every_tool_has_a_tested_return_contract` 的表加行 + 假前端用例（钉住 op/参数与返回形状）② 前端：`index.html` 里每个 op 都有分支（跨端断言，已有骨架）③ 危险工具表断言（见 16.6.4） |
+
+#### 16.6.1 第二批：BLE 语义工具（`ble_*`，估 1.5~2 天）
+
+BLE 面板有两套完全不同的东西：**主机**（当中央去连别人的设备）与**从机**（把自己变成外设，
+对外广播服务）。工具按这两组划分，名字前缀都带 `ble_` 以免与串口的混。
+
+| 工具 | 对应后端命令 / 前端动作 | 入参 | 返回（顶层字段） | 分类 |
+|---|---|---|---|---|
+| `ble_get_state` | `ble_get_adapters`+`ble_get_connection`+`ble_get_mtu`+扫描状态 | `pane?` | `{pane, adapters[], connected, device, mtu, scanning, scanSecs, notifyCounters}` | 读 |
+| `ble_list_devices` | 扫描结果（内存里的列表，不触发扫描） | `pane?`, `limit?` | `{pane, total, devices:[{mac,name,rssi,paired,services}]}` | 读 |
+| `ble_start_scan` | 面板的"开始扫描" | `pane?`, `seconds?` | `{pane, scanning, seconds, devicesAfterWait}` | **写**（射频） |
+| `ble_stop_scan` | "停止扫描" | `pane?` | `{pane, scanning:false, devices}` | 写 |
+| `ble_connect` | 从列表连 / `ble_connect_direct`（按 MAC 直连） | `pane?`, `mac?`（省略=连列表里选中的那条） | `{pane, connected, device, mtu, services}` | **写**（占设备） |
+| `ble_disconnect` | `ble_disconnect` | `pane?` | `{pane, connected:false, keptValue}` | 写 |
+| `ble_get_services` | `ble_get_services`（服务/特征树） | `pane?` | `{pane, services:[{uuid,name,chars:[{uuid,props,descs}]}]}` | 读 |
+| `ble_read` | `ble_read`（特征）/ `ble_read_descriptor`（描述符） | `pane?`, `char` 或 `descriptor` | `{pane, uuid, bytes, hex, text}` | 读（但会占用链路） |
+| `ble_write` | `ble_write` / `ble_write_descriptor`（含"带响应/不带响应"） | `pane?`, `char`/`descriptor`, `data`, `asHex?`, `withResponse?` | `{pane, uuid, written, bytes, mode}` | **写** |
+| `ble_subscribe` | 订阅/退订通知 | `pane?`, `char`, `on` | `{pane, uuid, subscribed}` | 写 |
+| `ble_get_output` | **复用 LogHub 的 `ble:rx` 通道**（与 `serial_get_output` 同一套纪律：不在前端另存一份） | `pane?`, `sinceSeq?`, `limit?` | `{pane, count, items:[{seq,ts,uuid,hex,text}], truncated}` | 读 |
+| `ble_refresh_rssi` | `ble_refresh_rssi` | `pane?` | `{pane, mac, rssi}` | 读 |
+| `ble_pair` / `ble_pair_respond` | `ble_pair` / `ble_pair_respond` | `pane?`, `accept?` | `{pane, pairing, prompt, answered}` | **写**（系统弹窗） |
+| `ble_periph_status` | `ble_periph_status` | `pane?` | `{pane, advertising, mode, chars:[{uuid,value,notifying,subscribers}], pendingWrites}` | 读 |
+| `ble_periph_start` / `ble_periph_stop` | 从机开始/停止广播 | `pane?` | `{pane, advertising}` | **写 + 危险**（对外广播） |
+| `ble_periph_set_value` | `ble_periph_set_value`（改某个特征的值） | `pane?`, `char`, `data`, `asHex?` | `{pane, uuid, value}` | 写 |
+| `ble_periph_notify` | `ble_periph_notify`（主动推给订阅者） | `pane?`, `char`, `data?` | `{pane, uuid, subscribers, sent}` | 写 |
+| `ble_periph_respond_write` | `ble_periph_respond_write`（手动应答中心设备的写） | `pane?`, `accept` | `{pane, answered}` | **写 + 危险**（放行外部写入） |
+| `ble_periph_import_config` / `export_config` | `ble_periph_pick_config_file` / `save_config_file` | 无路径入参！ | `{pane, path|null, chars}` | 写（走原生框） |
+
+**验证门**：① 以上每个都有返回契约 + 假前端用例；② `ble_periph_start` 在只读模式被拦、
+在**危险确认**下才执行（16.6.4）；③ 前端无头断言里补"每个 `ble_*` op 都有分支"；
+④ 真机验证只能你来（沙箱没有蓝牙适配器）：扫描→连接→读特征→订阅→收通知 走一遍，
+把 `ble_get_state` 的输出贴回来。
+
+#### 16.6.2 第三批：ADB / WSL 语义工具（估 1 天）
+
+| 工具 | 对应 | 入参 | 返回 | 分类 |
+|---|---|---|---|---|
+| `adb_list_devices` | `adb_devices` | 无 | `{total, devices:[{serial,state,model}]}` | 读 |
+| `adb_open_shell` | `adb_open_shell` | `serial?` | `{serial, opened, cols, rows}` | **写 + 危险**（在设备上开 shell） |
+| `adb_shell_write` | `adb_shell_write` | `data`, `asHex?` | `{serial, written, bytes}` | **写 + 危险**（真的执行命令） |
+| `adb_shell_read` | `adb_shell_read`（也复用 loghub `adb:rx`） | `sinceSeq?`, `limit?` | `{serial, count, items, truncated}` | 读 |
+| `adb_shell_resize` | `adb_shell_resize` | `cols`, `rows` | `{serial, cols, rows}` | 写 |
+| `adb_close_shell` | `adb_shell_close` | 无 | `{serial, opened:false}` | 写 |
+| `wsl_get_state` | `get_wsl_distributions` + `get_wsl_serial_devices` + 映射状态 | 无 | `{distros[], devices[], mapped[], monitorOpen}` | 读 |
+| `wsl_map_device` / `wsl_unmap_device` | usbipd 映射（**要管理员**） | `busid` | `{busid, mapped}` | **写 + 危险**（动宿主机的 USB 挂载） |
+| `wsl_open_monitor` / `wsl_close_monitor` | WSL 监视器开关 | `pane?` | `{pane, isConnected}` | 写 |
+| `wsl_send` / `wsl_get_output` | 同串口的 `serial_send`/`serial_get_output`（通道前缀 `wsl:`） | 同串口那套 | 同串口那套 | 写 / 读 |
+
+**验证门**：① `busid` 只接受 `get_wsl_serial_devices` 报出来的那种格式（**不接受路径/任意串**）；
+② 危险工具（map/unmap/open_shell/shell_write）走确认机制；③ 真机验证由你跑（要 WSL + usbipd）。
+
+#### 16.6.3 第四批：全局 / 应用级工具（估 0.5 天）
+
+| 工具 | 对应 | 入参 | 返回 | 分类 |
+|---|---|---|---|---|
+| `app_get_theme` | 当前主题（12 套） | 无 | `{theme, dark, themes[]}` | 读 |
+| `app_set_theme` | 主题切换 | `theme`（必须是 `themes` 里的值） | `{theme, applied}` | 写 |
+| `app_get_window` | 窗口几何（与 `ui_get_state(window)` 同一份数据） | 无 | `{width, height, maximized}` | 读 |
+| `app_set_window` | 尺寸/最大化 | `width?`, `height?`, `maximized?` | `{width, height, maximized}` | 写 |
+| `app_get_update` | 检查更新（**唯一会出网的读工具**） | 无 | `{current, latest, hasUpdate, notesUrl}` | 读（联网，需在说明里写明） |
+
+**不做**：截图、任意文件读写、执行外部程序 —— 这些要么做不到（无界面外能力），
+要么等于给本机任意进程一个读写/执行原语（与"路径只认原生框选过的"同一条纪律）。
+
+#### 16.6.4 危险动作的二次确认（设计 §9，估 0.5 天）
+
+**判定"危险"的统一口径**（写进一张常量表，断言守着）：**会对外产生不可撤销影响**的操作 ——
+对外广播（`ble_periph_start/stop`）、放行外部写入（`ble_periph_respond_write`）、
+在别人的设备上执行（`adb_open_shell`/`adb_shell_write`）、动宿主机的硬件挂载（`wsl_map_device`/`unmap`）、
+系统弹窗配对（`ble_pair`）。
+
+**机制**（一层就够，不引入会话状态）：
+
+1. 工具表里标注 `danger: "<一句话说清后果>"`；`mcp_limits` 或一个只读工具 `mcp_danger` 把它列出来
+2. 调用时**必须带 `confirm: true`**；没带 → 返回 `-32006`（isError），文本是
+   "这一步会<后果>。确认后带 `confirm:true` 重试" —— 与现有"前置条件没满足"同一类错误码，
+   Agent 拿到就知道该改什么（不是参数错，不该反复重试）
+3. `confirm` 只对**危险工具**有意义，普通工具传了忽略（不做"两个参数名"）
+4. **只读模式优先**：`expose.read_only` 时，危险工具连确认也不给过（`-32007`）
+5. 断言：① 危险表里的每个工具都必须真的走确认（假前端能观察到"没执行"）；
+   ② 表外的工具**不得**要求 `confirm`（否则 Agent 会以为普通操作也能确认了事）；
+   ③ `mcp_limits`/文档里列出的危险工具集合与代码里的常量**逐字一致**
+
+#### 16.6.5 顺序、依赖与"做完的标准"
+
+```
+第二批 BLE ──┐
+第三批 ADB/WSL ├─→ 每批独立提交（前后端同改放同一个提交）
+第四批 全局 ──┘
+              └─→ 16.6.4 危险确认：**与第二批同时落地**（ble_periph_* 是第一批危险工具，
+                  先有机制再有工具，否则要么漏确认、要么回头补）
+```
+
+每批"做完"= 下面五条全绿，缺一条都不算：
+
+1. `cargo test --manifest-path src-tauri/Cargo.toml` 全绿（含新工具的返回契约与假前端用例）
+2. `node .walkthrough/gen_ble_preview.js` 全绿（含"每个 op 都有前端分支"与真实 handler 行为）
+3. `node .walkthrough/gen_mcp_tools_doc.js` 重跑，`doc/MCP_TOOLS.md` 里每个新工具都有入参与实测返回结构
+4. `doc/MCP.md`（使用者视角）与 `.walkthrough/mcp_inv_frontend.md`（控件/op 台账）同步
+5. 需要真机的项，我给出**可直接粘贴的命令 + 期望输出**，你跑完贴回来（§16.3 的分工不变）
+
+#### 16.6.6 明确不做的
+
+- **不为了"工具数好看"而生成**：`ctl_*` 全量工具已经覆盖"够不到就用控件路径"的长尾，
+  语义工具只补"有业务语义、值得先给 AI 一个名字"的那些（判据：面板上有专门的按钮/开关/流程）
+- **不给 AI 任何"任意路径/任意命令"的入参**（同 `quick_cmds_*` 与 `ble_periph_*_config_file` 的纪律）
+- **不把 UI 状态镜像到 Rust**：读状态一律问前端（`ui_call`），Rust 侧不缓存一份（避免两处真相）
+
 ---
 
 ## 17. 实施记录
@@ -1648,7 +1770,8 @@ ui_list / ui_get_state / ui_set / serial_* / ble_* / adb_* / wsl_* / log_* 等�
 快速指令（列出/空内容拒绝/执行走 `sendQcmdItem`）、清空走 `clearLog`、发送模式切换点是**真实下拉项**。
 `doc/MCP_TOOLS.md` 已重新生成（20 → **32 个工具**，含每条的入参与实测返回结构）。
 
-**还没做**：BLE（第二批）、ADB/WSL（第三批）、全局（第四批），以及**危险动作的二次确认**（设计 §9 仍未实现）。
+**还没做**：BLE（第二批）、ADB/WSL（第三批）、全局（第四批），以及**危险动作的二次确认**（设计 §9 仍未实现）
+—— 这四块 2026-09-14 已补成**施工级计划：见 §16.6**（每个工具的入参/返回契约、读写与危险分级、共用前置、顺序与"做完的标准"）。
 
 ### 2026-09-13 · **用官方 Python SDK 当独立客户端做一致性检查 → 抓出 3 个真问题** ✅（这是回答"要不要装 mcp-bench"之后该做的事）
 
