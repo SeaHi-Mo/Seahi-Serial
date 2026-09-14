@@ -3364,7 +3364,9 @@ console.log('preview ->', out);
       check(side.style.getPropertyValue('--qcmd-side-w') === '340px' && sbSide.qcmdSideWidth('main') === 340,
         '往左拖 100px → 240 变 340px（宽度跟手）', side.style.getPropertyValue('--qcmd-side-w'));
       (docListeners.mousemove || []).forEach(fn => fn({ clientX: 9000 }));     // 拖到最右
-      check(sbSide.qcmdSideWidth('main') === 120, '拖过头：收到下限 120px', String(sbSide.qcmdSideWidth('main')));
+      check(sbSide.qcmdSideWidth('main') === 300,
+        '拖过头：收到下限 **300px = 缺省宽度**（用户要求「最小宽度以当前的宽度为准」；六格再窄就挤成一团）',
+        String(sbSide.qcmdSideWidth('main')));
       (docListeners.mousemove || []).forEach(fn => fn({ clientX: -9000 }));    // 拖到最左
       check(sbSide.qcmdSideWidth('main') === 540,
         '上限**跟着窗格走**：900px 窗格 → 最多 540px（60%），不再是写死的 640',
@@ -3378,11 +3380,13 @@ console.log('preview ->', out);
       (docListeners.mousemove || []).forEach(fn => fn({ clientX: -9000 }));
       check(sbSide.qcmdSideWidth('main') === 300,
         '窗格只有 500px 时最多 300px（60%，且给输出区留了 200px）', String(sbSide.qcmdSideWidth('main')));
-      check(sbSide.QCMD_SIDE_MAX_RATIO === 0.6 && sbSide.QCMD_SIDE_RESERVE === 160,
-        '比例与保留宽度是常量（改口径只改一处）',
-        sbSide.QCMD_SIDE_MAX_RATIO + ' / ' + sbSide.QCMD_SIDE_RESERVE);
-      check(/\.qcmd-side\.open\s*\{[^}]*max-width:min\(60%, calc\(100% - 160px\)\)/.test(html),
-        'CSS 的 max-width 兜底与 JS 同口径（60% / 160px —— 改一处必须改另一处）');
+      check(sbSide.QCMD_SIDE_MAX_RATIO === 0.6 && sbSide.QCMD_SIDE_RESERVE === 160
+        && sbSide.QCMD_SIDE_MIN === 300 && sbSide.QCMD_SIDE_DEFAULT === 300,
+        '三个口径值都是常量，且**最小宽度 = 缺省宽度**（300px）',
+        [sbSide.QCMD_SIDE_MIN, sbSide.QCMD_SIDE_DEFAULT, sbSide.QCMD_SIDE_MAX_RATIO, sbSide.QCMD_SIDE_RESERVE].join(' / '));
+      check(/\.qcmd-side\.open\s*\{[^}]*min-width:300px/.test(html)
+        && /\.qcmd-side\.open\s*\{[^}]*max-width:min\(60%, calc\(100% - 160px\)\)/.test(html),
+        'CSS 的 min-width / max-width 兜底与 JS 同口径（300px / 60% / 160px —— 改一处必须改另一处）');
       (docListeners.mouseup || []).forEach(fn => fn({}));
       check(!side.classList.contains('dragging') &&
             (docListeners.mousemove || []).length === 0 && (docListeners.mouseup || []).length === 0,

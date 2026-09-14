@@ -1768,13 +1768,16 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     overflow:hidden;
 }
 /* 展开后整栏才算一块独立面板；宽度可由用户拖折叠条调节（--qcmd-side-w，缺省 300px）。
-   `max-width` 是**兜底**：JS（setQcmdSideWidth）已经按"窗格 60% / 给输出区留 160px"钳过一遍了，
+   `min-width` 是**下限兜底**（= JS 的 `QCMD_SIDE_MIN`）：分栏不能被拖到比六格还窄。
+   `max-width` 是**上限兜底**：JS（setQcmdSideWidth）已经按"窗格 60% / 给输出区留 160px"钳过一遍了，
    这里再拦一道 —— 分栏在还没显示的那一页里恢复宽度时量不到窗格宽度，靠它挡住视觉溢出。
-   ⚠️ 60% / 160px 与 JS 里的 QCMD_SIDE_MAX_RATIO / QCMD_SIDE_RESERVE **必须一致**（改一处必须改另一处）。
+   ⚠️ 300px / 60% / 160px 与 JS 里的 QCMD_SIDE_MIN / QCMD_SIDE_MAX_RATIO / QCMD_SIDE_RESERVE
+   **必须一致**（改一处必须改另一处）。
    ⚠️ 展开态还把那条 1px 分栏线收掉（`border-left-width:0`）：逐像素量过，它和 6px 色条并排 5px
    （x=0 是 --split-line、x=6..9 是 --btn-p），两条蓝竖线贴在一起就是"看着脏"的根因。 */
 .qcmd-side.open {
     width:var(--qcmd-side-w, 300px);
+    min-width:300px;
     max-width:min(60%, calc(100% - 160px));
     background:var(--toolbar-bg); border-left-width:0;
 }
@@ -6515,11 +6518,13 @@ function qcmdSideOpen(mid) {
 }
 
 /* 分栏宽度：拖折叠条调节，按监视器各记一份，随配置持久化（缺省 300px：一条六格要放得下）。
+   **最小宽度 = 缺省宽度 300px**（用户 2026-09 要求"最小宽度以当前的宽度为准"）：六格在更窄的栏里
+   会挤成一团（内容框只剩几十像素），不如干脆别让人拖到那么窄。
    上限**跟着窗格走**（`QCMD_SIDE_MAX_RATIO` × 窗格宽度），并与"给输出区留 `QCMD_SIDE_RESERVE`"
    取更严的那个 —— 原来是写死的 640px：窗口拉到 2000 多也拖不过 640（用户 2026-09 的反馈）。
-   ⚠️ 口径与 CSS 里 `.qcmd-side.open` 的 `max-width:min(60%, calc(100% - 160px))` **必须一致**：
-   CSS 那条是兜底（分栏在隐藏页里被恢复宽度时量不到窗格宽度），改一处必须改另一处。 */
-var QCMD_SIDE_DEFAULT = 300, QCMD_SIDE_MIN = 120;
+   ⚠️ 口径与 CSS 里 `.qcmd-side.open` 的 `min-width:300px` / `max-width:min(60%, calc(100% - 160px))`
+   **必须一致**：CSS 那两条是兜底（分栏在隐藏页里被恢复宽度时量不到窗格宽度），改一处必须改另一处。 */
+var QCMD_SIDE_DEFAULT = 300, QCMD_SIDE_MIN = 300;
 var QCMD_SIDE_MAX_RATIO = 0.6;   // 侧栏最多占窗格宽度的 60%
 var QCMD_SIDE_RESERVE = 160;     // 同时永远给输出区留 160px
 
