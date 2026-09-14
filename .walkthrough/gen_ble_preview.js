@@ -3189,7 +3189,7 @@ console.log('preview ->', out);
        'qcmdNewGroupId', 'qcmdGroups', 'qcmdGroupById', 'qcmdGroupIndex', 'qcmdAllItems', 'qcmdItemAt',
        'makeQcmdItem', 'makeQcmdGroupBand', 'addQcmdItem', 'removeQcmdItem', 'rebuildQcmdList',
        'addQcmdGroup', 'removeQcmdGroup', 'renameQcmdGroup', 'toggleQcmdGroupFold',
-       'startQcmdGroupDrag', 'onQcmdGroupDragMove', 'endQcmdGroupDrag',
+       'startQcmdGroupDrag', 'onQcmdGroupDragMove', 'endQcmdGroupDrag', 'qcmdReorderBoxes',
        'qcmdBlockIndexOf', 'qcmdInsertItemBlock', 'qcmdRemoveItemBlock',
        'qcmdGroupBlocksRange', 'qcmdGroupSectionBlocks', 'qcmdRemoveGroupBlocks', 'qcmdMoveGroupBlocks', 'qcmdRenameGroupBlock',
        'qcmdDigits', 'qcmdItemSeq', 'qcmdItemDelay', 'qcmdItemHex', 'qcmdLoopPlan', 'qcmdItemText',
@@ -3631,7 +3631,17 @@ console.log('preview ->', out);
       check(JSON.stringify(sbSide.qcmdLoopPlan('main').map(s => s.gi)) === '[0,0,1,1]',
         '换位后循环计划跟着变（先走新的第一组）',
         JSON.stringify(sbSide.qcmdLoopPlan('main').map(s => s.gi)));
-      sbSide.endQcmdGroupDrag();
+      // 换位时**只挪节点 + FLIP 动画**，绝不 rebuildQcmdList（重建会整块替换 DOM：
+      // 既没有过渡动画 —— 用户 2026-09 反馈"拖动的时候怎么没有动画" —— 又把正在拖的元素换掉）
+      check(/function qcmdReorderBoxes\(mid, reorder\)/.test(html)
+        && /translateY\(' \+ dy \+ 'px\)/.test(html)
+        && /transition = 'transform \.18s ease'/.test(html)
+        && /requestAnimationFrame/.test(html),
+        '拖动换位走 FLIP：先记位置 → 重排 → 用 transform 抵掉位移 → 下一帧放开过渡（有滑动动画）');
+      check(!/if \(target < 0 \|\| target === gi\) return;[\s\S]{0,600}rebuildQcmdList\(mid\)/.test(html),
+        '拖动过程中不再 rebuildQcmdList（重建 = 没有动画 + 丢焦点/监听）');
+      check(/\.qcmd-group\.dragging\s*\{[^}]*box-shadow/.test(html),
+        '正在搬的那一组浮一档（拖动中有明确的"拿起来了"反馈）');      sbSide.endQcmdGroupDrag();
       check((docListeners.mousemove || []).length === 0 && (docListeners.mouseup || []).length === 0,
         '松手：卸掉 document 监听（不泄漏）');
       // 配置持久化：组（含组名/折叠/条目）都进 config.json

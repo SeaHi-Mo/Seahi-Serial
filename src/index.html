@@ -1890,6 +1890,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     font-size:11px; color:var(--text-d); user-select:none;
 }
 .qcmd-group-hd.dragging { background:var(--btn-p); color:#fff; }   /* 正在拖：整条点亮，一眼看出在搬哪一组 */
+.qcmd-group.dragging { box-shadow:0 4px 14px rgba(0,0,0,.35); position:relative; z-index:2; }  /* 搬起来的那组浮一档 */
 .qcmd-group-hd.dragging .qcmd-group-name, .qcmd-group-hd.dragging .qcmd-group-count { color:#fff; }
 /* 折叠箭头与拖动握把都**用 CSS 画**，不用 `▾` / `⠿` 字形：那两个字符在 10–12px 下又细又灰
    （用户 2026-09 反馈"折叠 icon 太小了，几乎不可见"），而且字体不同渲染尺寸还不一样。
@@ -7482,8 +7483,36 @@ function toggleQcmdGroupFold(mid, gid) {
 }
 
 /* 拖动排序：按住抬头左侧的握把上下拖。指针越过邻组的**中线**就换位（经典 sortable 手感），
-   松手时写配置 + 写回文件（文件里的表顺序跟着变 —— 用户要求"每次拖动就会更改文件"）。 */
+   松手时写配置 + 写回文件（文件里的表顺序跟着变 —— 用户要求"每次拖动就会更改文件"）。
+   ⚠️ 换位时**只挪已有的 DOM 节点**（`qcmdReorderBoxes`），绝不 `rebuildQcmdList`：
+   重建会整块替换 DOM —— 既没有过渡动画（用户 2026-09 反馈"拖动的时候怎么没有动画"），
+   又会把正在拖的那个元素换掉、焦点和事件监听一起丢。 */
 var _qcmdGroupDrag = null;
+
+/// 重排组盒子并做 FLIP 动画：先记下各盒子当前位置，执行 reorder() 后把位移差用 transform 抵掉，
+/// 下一帧放开过渡 → 盒子平滑滑到新位置（比"重建 DOM 硬跳"高一档，且不用引入动画库）。
+function qcmdReorderBoxes(mid, reorder) {
+    var qlist = document.getElementById(mid + '-qcmdList');
+    if (!qlist) { reorder(); return; }
+    var boxes = Array.prototype.slice.call(qlist.children || []);
+    var canAnim = boxes.length > 0 && boxes.every(function(b) {
+        return b && typeof b.getBoundingClientRect === 'function';
+    });
+    var firstTop = canAnim ? boxes.map(function(b) { return b.getBoundingClientRect().top; }) : null;
+    reorder();
+    if (!canAnim) return;                       // 无头断言用的假 DOM 没有布局 → 直接跳过动画
+    var raf = (typeof requestAnimationFrame === 'function') ? requestAnimationFrame : function(fn) { fn(); };
+    boxes.forEach(function(b, i) {
+        var dy = firstTop[i] - b.getBoundingClientRect().top;
+        if (!dy) return;
+        b.style.transition = 'none';
+        b.style.transform = 'translateY(' + dy + 'px)';
+        raf(function() {
+            b.style.transition = 'transform .18s ease';
+            b.style.transform = '';
+        });
+    });
+}
 
 function startQcmdGroupDrag(e, mid, gid) {
     if (!e || e.button !== 0) return;
@@ -7491,6 +7520,8 @@ function startQcmdGroupDrag(e, mid, gid) {
     if (!band) return;
     e.preventDefault();
     _qcmdGroupDrag = { mid: mid, gid: gid, moved: false, y: e.clientY };
+    var box = document.getElementById(mid + '-qcmdGbox-' + gid);
+    if (box) box.classList.add('dragging');
     band.classList.add('dragging');
     document.addEventListener('mousemove', onQcmdGroupDragMove);
     document.addEventListener('mouseup', endQcmdGroupDrag);
@@ -7515,12 +7546,17 @@ function onQcmdGroupDragMove(e) {
         if (i > gi && e.clientY > r.top + r.height / 2) { target = i; }
     }
     if (target < 0 || target === gi) return;
-    var moved = list.splice(gi, 1)[0];
-    list.splice(target, 0, moved);
-    qcmdMoveGroupBlocks(mid, d.gid, target);   // 文件里的表也跟着挪
-    rebuildQcmdList(mid);
-    var again = document.getElementById(mid + '-qcmdG-' + d.gid);
-    if (again) again.classList.add('dragging');
+    qcmdReorderBoxes(mid, function() {
+        var moved = list.splice(gi, 1)[0];
+        list.splice(target, 0, moved);
+        qcmdMoveGroupBlocks(mid, d.gid, target);   // 文件里的表也跟着挪
+        // DOM 跟着模型走：按新顺序 append（appendChild 移动已有节点，不重建）
+        list.forEach(function(g) {
+            var b = document.getElementById(mid + '-qcmdGbox-' + g.id);
+            if (b) document.getElementById(mid + '-qcmdList').appendChild(b);
+        });
+    });
+    band.classList.add('dragging');                // 节点没被换掉，补一次也无妨（幂等）
     if (monitors[mid].qcmdLoop) qcmdLoopSyncPlan(mid);   // 循环顺序跟着新组序走
 }
 
@@ -7529,6 +7565,8 @@ function endQcmdGroupDrag() {
     var mid = _qcmdGroupDrag.mid, gid = _qcmdGroupDrag.gid, moved = _qcmdGroupDrag.moved;
     var band = document.getElementById(mid + '-qcmdG-' + gid);
     if (band) band.classList.remove('dragging');
+    var box = document.getElementById(mid + '-qcmdGbox-' + gid);
+    if (box) box.classList.remove('dragging');
     document.removeEventListener('mousemove', onQcmdGroupDragMove);
     document.removeEventListener('mouseup', endQcmdGroupDrag);
     _qcmdGroupDrag = null;
