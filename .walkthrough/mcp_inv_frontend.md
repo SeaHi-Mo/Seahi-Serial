@@ -149,11 +149,16 @@
 | M37 | div.send-as-opt ×2 | `#{mid}-sendAsDrop .send-as-opt[data-val=text/hex]` | 选发送格式 | `setSendAs(mid,val,this,event)` 2897 | 改+持久化 | 无 |
 | M38 | button.btn-send | `#{mid}-btnSend` | 发送 | `sendData(mid)` 4108 | **副作用**（发送） | 模板里写死 `disabled`，由 `updateMonitorUI` 3637 切换 |
 | M39 | button.qcmd-side-tab | `#{mid}-btnQcmdSide` | 展开/收起快速指令分栏；**展开后**拖动它调宽（折叠态不启用拖动，光标 pointer；展开态 col-resize）。**热区恒为 14px 宽**：折叠态显示居中细握把，展开态长成贯穿整栏的 6px 竖直色条（悬停/拖动更亮）；循环发送的闪点（`.qcmd-side-tab.loop`）**只在折叠态**出现 | `toggleQcmdSide(mid)` / `startQcmdSideDrag`+`onQcmdSideDragMove`+`endQcmdSideDrag` | 改+持久化（宽度 `qcmdSideWidth`；展开态本身不持久化） | 无 |
-| M40 | button.qcmd-dh-add | `#{mid}-qcmdSide .qcmd-dh-add`（无 id） | 添加指令行 | `addQcmdItem(mid)` | 改+持久化 | 无 |
+| M40 | button.qcmd-dh-add | `#{mid}-qcmdSide .qcmd-dh-add`（无 id） | 添加指令行（**在某一组的抬头里**，作用于那一组） | `addQcmdItem(mid, gid)` | 改+持久化 | 无 |
+| M40a | button.qcmd-dh-add | `#{mid}-btnQcmdGroupAdd`（工具栏） | **新建循环组**：追加到最下面 + 默认 1 条空指令 | `addQcmdGroup(mid)` | 改+持久化 | 组数到上限时拒绝并 toast |
+| M40b | div.qcmd-group-hd | `#{mid}-qcmdG-{gid}`（JS 建，抬头） | 组抬头容器；**按住左侧握把上下拖**调组的顺序（循环顺序 = 组的上下顺序） | `startQcmdGroupDrag` → `onQcmdGroupDragMove` → `endQcmdGroupDrag` | 改+持久化（组序写进 `quickGroups`，多组时连文件里的表顺序一起改） | 无 |
+| M40c | input.qcmd-group-name | `#{mid}-qcmdGn-{gid}` | **组名（可重命名）** | `input`（实时写模型 + 改文件里那行 `## 抬头`） | 改+持久化 | 无 |
+| M40d | button.qcmd-group-fold | 抬头里（无 id） | 折叠/展开**这一组**（列标题 + 数据行一起收） | `toggleQcmdGroupFold(mid, gid)` | 改+持久化（`folded`） | 无 |
+| M40e | button.qcmd-dep-del | 抬头里（无 id） | 删除这一组（连同组里的指令与文件里那张表） | `removeQcmdGroup(mid, gid)` | 改+持久化 | 只剩一组时拒绝并 toast |
+| M41a | input.qcmd-item-seq（JS 建） | `#{mid}-qcmdi-{gid}-{i}-seq` | **本组内的循环顺序号**：0 = 不参与；>0 参与，按数字升序发 | `input`（只收数字，去前导零） | 改+持久化 | 无 |
+| M41b | input.qcmd-item-delay（JS 建） | `#{mid}-qcmdi-{gid}-{i}-delay` | **延时发送时间(ms)**：本条发完到下发一条的间隔，默认 1000 | `input`（只收数字）+ `change`（规范化：空→1000，超 600000 夹住） | 改+持久化 | 无 |
+| M41c | button.qcmd-item-hex（JS 建） | `#{mid}-qcmdi-{gid}-{i}-hex` | **本条的 HEX 使能**（默认关，与主发送栏的文本/HEX 无关） | `click` | 改+持久化 | 无 |
 | M41 | button.qcmd-dh-loop | `#{mid}-btnQcmdLoop` | **开/关循环发送**（按顺序号从小到大依次发，发完一条等它自己的延时再发下一条） | `toggleQcmdLoop(mid)` → `setQcmdLoop` / `stopQcmdLoop` | **副作用**（会持续发数据）+改 | 未连串口 / 没有顺序号 > 0 的条目时函数内拒绝并 toast；掉线或列表空了则自愈停止 |
-| M41a | input.qcmd-item-seq（JS 建） | `#{mid}-qcmdi-{i}-seq` | **循环发送顺序号**：0 = 不参与；>0 参与，按数字升序发 | `input`（只收数字，去前导零） | 改+持久化 | 无 |
-| M41b | input.qcmd-item-delay（JS 建） | `#{mid}-qcmdi-{i}-delay` | **延时发送时间(ms)**：本条发完到下发一条的间隔，默认 1000 | `input`（只收数字）+ `change`（规范化：空→1000，超 600000 夹住） | 改+持久化 | 无 |
-| M41c | button.qcmd-item-hex（JS 建） | `#{mid}-qcmdi-{i}-hex` | **本条的 HEX 使能**（默认关，与主发送栏的文本/HEX 无关） | `click` | 改+持久化 | 无 |
 | M42 | input.qcmd-item-val（JS 建） | `#{mid}-qcmdi-{i} .qcmd-item-val` | 指令内容 | `input`；`keydown` Enter→发送 | **副作用**（Enter 即发）；发送格式取本条自己的 HEX 开关 | 无 |
 | M43 | button.qcmd-item-send（JS 建） | `#{mid}-qcmdList [data-qsend]` | 发送该指令 | `click` 4830→`sendQcmdItem` 4890 | **副作用** | `!isConnected` → `disabled`（4828、`updateQcmdSendBtns` 4918） |
 | M44 | button.qcmd-item-del（JS 建） | `#{mid}-qcmdList .qcmd-item-del` | 删除指令 | `click`→`removeQcmdItem` | 改+持久化 | 无 |

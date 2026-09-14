@@ -25,7 +25,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_builds -- --ignored -
 cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
 ```
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1265 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1282 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，62 条）：直接从
 `src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，也有把渲染函数丢进假 DOM
 跑行为断言），改前端后应先跑
@@ -185,6 +185,12 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
   但表头声明了 顺序号/延时/HEX 的文件里，"还没填内容、参数格有值"的行**必须留着** ——
   跳掉它，导出/写回的条数就跟面板对不上了）。用户没填过的参数格写回时**保持空格**
   （别把缺省值硬写进他的表）。
+  另一个"别改回去"（2026-09 加的循环组）：**一组一张表、循环顺序 = 组的上下顺序 → 组内顺序号**，
+  组的上下顺序**靠拖抬头调整**（拖到最上面的那组就是循环起点），组名可重命名、可折叠，
+  首次启动默认 1 组、新建组默认 1 条空指令、**最后一组删不掉**；每条指令自己的配置（顺序号/延时/HEX）不变。
+  文件里用 `## 组名` 抬头分隔各组（**两个及以上 `#`**；单个 `#` 仍是注释）；导出（副本）一定写抬头，
+  写回挂载文件时只有一组不写（不擅自改用户结构）。面板里**每组自带一份列标题**（抬头 → 列标题 → 数据行），
+  共用一份会夹在抬头与数据行之间、读起来是断的（用户 2026-09 指出的）。
   循环发送的开关状态**不持久化**（开机自动发指令太危险），
   掉线/关监视器/列表里再无可发条目时必须**自愈停止**并提示。
 - WSL 串口转发通过 Python bridge 脚本实现，使用持久化 shell 避免 fork 延迟

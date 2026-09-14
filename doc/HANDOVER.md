@@ -103,7 +103,7 @@ serial-debugger-tauri/
 | 发送逻辑 | 2423-2500 | sendData, addMonitor, closeMonitor, 行尾处理 |
 | 日志保存 | 2480-2510 | chooseLogDir, saveLogToFile, copyOutput |
 | 数据解码 | 2511-2570 | decodeData, decodeRaw, hexToBytes, bytesToHex |
-| 快速指令 | 6240-7150 | qcmdSideHtml（输出区右侧可折叠分栏，默认折叠只留一枚指示；标题行 = 循环发送开关 + ＋添加/导入/导出）, qcmdParseText/qcmdBuildText（外部文件三种载体，往返保真；**表头驱动**的 `顺序号/延时(ms)/HEX` 三列 —— 表头声明了才读、才写回，没声明就全是用户的备注）, qcmdJoinRow/qcmdItemCells/qcmdParamCell（按列原位重拼，"没动过的格子原样回吐"）, qcmdImportFile/qcmdExportFile/qcmdReloadFile/qcmdUnmountFile, qcmdExportPrep（导出=自包含快照，一律补全三列）, qcmdCarryItemPrefs（文件没声明那几列时按内容带回）, makeQcmdItem（一行六格：顺序号·内容·延时·HEX·发送·删除）, sendQcmdItem/sendQcmdPayload（手动与循环共用一条发送路径）, qcmdLoopPlan/setQcmdLoop/qcmdLoopStep/stopQcmdLoop（循环发送）, toggleQcmdSide, addQcmdItem 等 |
+| 快速指令（循环组） | 6307-7600 | qcmdSideHtml（输出区右侧可折叠分栏，默认折叠只留一枚指示；标题行 = 循环发送开关 + ＋新建循环组/导入/导出）, 组模型 qcmdGroups/addQcmdGroup/removeQcmdGroup/renameQcmdGroup/toggleQcmdGroupFold/startQcmdGroupDrag（拖抬头调组序 = 循环顺序）, 链式循环 qcmdLoopPlan（组从上到下 → 组内顺序号）, qcmdParseText/qcmdBuildText（外部文件三种载体，往返保真；**表头驱动**的 `顺序号/延时(ms)/HEX` 三列 —— 表头声明了才读、才写回，没声明就全是用户的备注）, qcmdJoinRow/qcmdItemCells/qcmdParamCell（按列原位重拼，"没动过的格子原样回吐"）, qcmdImportFile/qcmdExportFile/qcmdReloadFile/qcmdUnmountFile, qcmdExportPrep（导出=自包含快照，一律补全三列）, qcmdCarryItemPrefs（文件没声明那几列时按内容带回）, makeQcmdItem（一行六格：顺序号·内容·延时·HEX·发送·删除）, sendQcmdItem/sendQcmdPayload（手动与循环共用一条发送路径）, qcmdLoopPlan/setQcmdLoop/qcmdLoopStep/stopQcmdLoop（循环发送）, toggleQcmdSide, addQcmdItem 等 |
 | 配置管理 | 2755-2970 | collectConfig, applyMonitorConfig, scheduleConfigSave |
 | 主题系统 | 2994-3100 | toggleTheme, applyTheme, syncThemeUI |
 | WSL 面板 | 3155-3700 | getWslMappingHtml, openWslMapping, initWslMonResize |
