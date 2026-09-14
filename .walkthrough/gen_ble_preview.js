@@ -4430,9 +4430,13 @@ console.log('preview ->', out);
       // 成功提示里那句 `.length` 直接抛，于是"导入明明成功却报失败"）
       {
         const importToasts = toasts.map(t => String(t.msg));
-        check(importToasts.some(t => /^已加载 /.test(t)) && !importToasts.some(t => /导入失败/.test(t)),
-          '② 导入成功后只报「已加载 N 条」，不能出现「导入失败」（成功路径里抛异常会被 catch 吞成失败）',
+        // 成功**一条提示都不弹**（用户要求：面板已经显示了列表，再报"已加载"只是噪音）；
+        // 但也**绝不能出现「导入失败」** —— 成功路径里抛异常会被 catch 吞成失败，那种问题必须看得见
+        check(!importToasts.some(t => /导入失败/.test(t)),
+          '② 导入成功后不能出现「导入失败」（成功路径里抛异常会被 catch 吞成失败）',
           importToasts.join(' | '));
+        check(!/showToast\('已加载 |showToast\('已重载 /.test(html),
+          '成功不再弹提示（导入/重载）；失败提示保留');
         check(!/monitors\[[^\]]+\]\.quickCmds\.length/.test(html),
           '面板里不再从监视器对象上读 `quickCmds.length`（迁移后它是 null，读了就抛 —— 那个 bug 就是这么来的）');
       }

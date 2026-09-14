@@ -7225,7 +7225,9 @@ function qcmdImportFile(mid) {
             return;
         }
         qcmdApplyParsed(mid, qcmdParseText(res.text), res);
-        showToast('已加载 ' + qcmdBaseName(res.path) + '（' + qcmdAllItems(mid).length + ' 条）', 'success');
+        // 成功不弹提示（用户 2026-09 要求）：列表已经显示在面板上、来源行也写着文件名，
+        // 再糊一条"已加载"只是噪音。**失败仍然要弹** —— 成功路径里抛异常会被下面的 catch
+        // 变成"导入失败"，那种问题必须看得见。
     }).catch(function(e) { showToast('导入失败: ' + e, 'error'); });
 }
 
@@ -7235,7 +7237,7 @@ function qcmdReloadFile(mid, silent) {
     var path = m.quickCmdsFile;
     invoke('quick_cmds_read_file', { path: path }).then(function(res) {
         qcmdApplyParsed(mid, qcmdParseText(res.text), res, silent);   // 静默重载不弹提示
-        if (!silent) showToast('已重载 ' + qcmdBaseName(path), 'success');
+        // 重载成功也不弹提示（用户 2026-09 要求）；失败要弹（保留当前列表，绝不静默清空）
     }).catch(function(e) {
         // 文件没了/读不动：**保留现有列表**并提示，绝不静默清空（那是最伤的体验）
         showToast('重载失败（保留当前列表）: ' + e, 'error');
