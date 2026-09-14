@@ -29,7 +29,7 @@
 - **蓝牙调试（主机）** — 扫描周边 BLE 设备（含原始广播字节解析、设备类型识别、RSSI），连接后浏览 GATT 服务树并读写特征 / 描述符、订阅通知与指示、WinRT 配对
 - **蓝牙调试（从机）** — 本机作为 BLE 外设对外广播，被手机 / 其它主机搜索并连接；内置 Nordic UART、FFE0 透传等预设，可收发主机写入、改可读值、向已订阅主机下发通知
 - **USB 设备插拔检测** — 设备插拔自动刷新列表
-- **MCP 服务器（AI 控制接口）** — 程序内置 Model Context Protocol 服务器（SSE 模式 / 仅监听回环），把串口、日志、界面控件暴露成 32 个内置工具（20 通用 + 12 串口语义）供 AI 客户端调用；工具操作**与前端界面实时同步**，调用记录写在独立的 `ai-calls.jsonl`，绝不污染用户配置
+- **MCP 服务器（AI 控制接口）** — 程序内置 Model Context Protocol 服务器（SSE 模式 / 仅监听回环），把串口、日志、界面控件暴露成 33 个内置工具（20 通用 + 13 串口语义）供 AI 客户端调用；工具操作**与前端界面实时同步**，调用记录写在独立的 `ai-calls.jsonl`，绝不污染用户配置
 - **首次使用引导** — 9 步聚光灯引导，快速上手
 - **自动更新** — 启动时检测 GitHub 最新版本
 
@@ -83,7 +83,8 @@ serial-debugger-tauri/
 ├── skills/
 │   └── seahi-serial-dev/
 │       └── SKILL.md              # AI 开发技能指南
-├── doc/                          # 项目文档（含 MCP.md / MCP_DESIGN.md）
+├── doc/                          # 项目文档（含 MCP.md / MCP_TOOLS.md / MCP_DESIGN.md）
+├── TODO.md                       # **开发进度与待办**（当前状态实测快照 / 四批计划 / 阻塞项 / 待拍板）
 ├── installer.iss                 # Inno Setup 安装脚本
 └── TEST_CASES.md                 # 测试用例
 ```
@@ -103,15 +104,17 @@ serial-debugger-tauri/
 | **配置隔离** | 用户配置 `config.json` **完全不受影响**；AI 相关设置与调用记录单独存放（见下） |
 | **稳定性** | 会话数 / 队列长度 / 请求体大小 / 调用频率均有限额，空闲会话自动回收，日志中心按通道环形缓冲并有总量上限 |
 
-### 内置工具（32 个：20 通用 + 12 串口语义）
+### 内置工具（33 个：20 通用 + 13 串口语义）
 
 | 分类 | 工具 |
 |------|------|
 | 应用信息 | `app_info`、`mcp_status`、`mcp_limits` |
-| 串口 | `serial_list_ports` |
+| 串口语义（**优先用这些**，比按控件路径操作更准）| `serial_get_state`、`serial_list_ports`、`serial_select_port`、`serial_set_baud`、`serial_set_frame`、`serial_set_lines`、`serial_set_display`、`serial_open`、`serial_close`、`serial_send`、`serial_clear`、`serial_get_history`、`serial_get_output`、`serial_quick_cmd` |
 | 界面控件 | `ui_list`、`ui_describe`、`ui_get`、`ui_set`、`ui_click`、`ui_get_state` |
 | 日志中心 | `log_channels`、`log_tail`、`log_search`、`log_stats`、`log_clear`、`log_export` |
 | MCP 自身 | `mcp_calls`、`mcp_stats`、`mcp_config_get`、`mcp_config_set` |
+
+典型的串口主流程：`serial_get_state` → `serial_select_port` → `serial_set_baud` → `serial_open` → `serial_send` → `serial_get_output`（看设备回了什么）→ `serial_close`。
 
 此外可选开启 `expose.autoControlTools`：程序启动时会扫描界面上的按钮 / 输入框 / 下拉框，按控件生成 `ctl_*` 工具（**默认关闭**——几百个工具会显著拖累模型选工具的准确率）。
 
@@ -139,7 +142,21 @@ npx seahi-serial-mcp uninstall
 
 也可以在程序顶栏点击 MCP 图标，弹窗内直接复制「连接地址」与「安装提示词」手动配置。
 
-> 详细使用说明见 [`doc/MCP.md`](./doc/MCP.md)；**32 个工具的完整参考（入参 + 返回结构）见 [`doc/MCP_TOOLS.md`](./doc/MCP_TOOLS.md)**；架构与设计取舍见 [`doc/MCP_DESIGN.md`](./doc/MCP_DESIGN.md)。
+> 详细使用说明见 [`doc/MCP.md`](./doc/MCP.md)；**33 个工具的完整参考（入参 + 返回结构）见 [`doc/MCP_TOOLS.md`](./doc/MCP_TOOLS.md)**；架构与设计取舍见 [`doc/MCP_DESIGN.md`](./doc/MCP_DESIGN.md)。
+
+## 开发进度与待办
+
+进度、当前状态与"卡在哪"都记在 **[`TODO.md`](./TODO.md)**（已纳入版本库），主要内容：
+
+| 章节 | 内容 |
+|---|---|
+| 当前状态实测快照 | 33 个工具 / 182 个界面控件 / 会话与限流上限 / 日志中心容量 / 协议版本；外加三套测试的通过与真机一致性检查结果 |
+| 语义工具四批计划 | 批次 1（串口 13 个）**已落地**；批次 2（BLE 主机 ~16）、批次 3（ADB/WSL ~16）、批次 4（全局 + 危险动作二次确认）待做 |
+| ⛔ 阻塞项 | 串口的收发链路验证需要**真实串口设备**，当前没有设备（列了 H1~H7 与设备到位后的验证顺序）|
+| 已知问题与技术债 | 构建警告、`log_export` 上限、Streamable HTTP 未实现等，逐条写明范围与修法 |
+| 待拍板 | 需要产品决策的几项（危险动作确认策略、是否补 Streamable HTTP、协议版本广告等）|
+
+> 逐次的技术细节（改了什么、为什么、怎么验证的）记在 [`doc/MCP_DESIGN.md`](./doc/MCP_DESIGN.md) §17「实施记录」。
 
 ## 技术栈
 
