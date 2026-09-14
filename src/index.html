@@ -1943,6 +1943,9 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     border-right:1.6px solid currentColor; border-bottom:1.6px solid currentColor;
     transform:rotate(45deg); margin-top:-2px;   /* 展开态 ▾（旋转后视觉重心偏上，往回收一点） */
 }
+/* 展开态：箭头用**主题色 + 一层淡蓝底**，一眼看出"这组是展开的"（折叠态的箭头是灰的） */
+.qcmd-group-hd:not(.folded) .qcmd-group-fold { color:var(--link); background:rgba(55,148,255,.14); }
+.qcmd-group-hd:not(.folded) .qcmd-group-fold:hover { background:rgba(55,148,255,.24); }
 .qcmd-group.folded .qcmd-group-fold::before { transform:rotate(-45deg); margin-top:0; }   /* 折叠态 ▸ */
 .qcmd-group-fold:hover { background:rgba(128,128,128,.18); color:var(--text); }
 .qcmd-group-grip {
@@ -2045,7 +2048,9 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     text-align:center; padding:0 2px; outline:none; cursor:text;
 }
 .qcmd-item-seq:focus { border-color:var(--accent-focus); color:var(--text); }
-.qcmd-item-seq.on { color:var(--link); border-color:var(--btn-p); }
+.qcmd-item-seq.on { background:var(--btn-p); border-color:var(--btn-p); color:#fff; }   /* 蓝底 = 参与循环 */
+.qcmd-item-seq.on:hover { background:var(--btn-ph); border-color:var(--btn-ph); }
+.qcmd-item-seq.on:focus { background:var(--btn-p); color:#fff; border-color:var(--accent-focus); }
 .qcmd-item-val {
     grid-area:val; width:100%; height:22px; background:var(--input-bg); border:1px solid transparent;
     border-radius:4px; color:var(--text); font-family:var(--font-mono); font-size:12px;

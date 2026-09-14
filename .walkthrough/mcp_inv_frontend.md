@@ -425,7 +425,7 @@
 ```js
 function makeQcmdItem(mid, idx, label, value) {
     var seqInp = document.createElement('input');     seqInp.className = 'qcmd-item-seq';
-    seqInp.addEventListener('input', function() { /* 只收数字 → quickCmds[idx].seq，>0 时点亮 */ });
+    seqInp.addEventListener('input', function() { /* 只收数字 → quickCmds[idx].seq，>0 时蓝底（参与循环）*/ });
     var delayInp = document.createElement('input');   delayInp.className = 'qcmd-item-delay';
     delayInp.addEventListener('change', function() { /* 空→1000，超 600000 夹住 */ });
     var hexBtn = document.createElement('button');    hexBtn.className = 'qcmd-item-hex';

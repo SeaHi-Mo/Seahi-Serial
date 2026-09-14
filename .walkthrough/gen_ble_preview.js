@@ -3530,7 +3530,12 @@ console.log('preview ->', out);
         && /\.qcmd-group-sw\.on\s*\{[^}]*background:var\(--btn-p\)/.test(html)
         && /\.qcmd-group-sw\.on::after\s*\{[^}]*left:19px/.test(html),
         '参与开关：32×16 轨道 + **10px 白圆钮**；关闭态轨道用中性灰（浅色主题下白点才看得见）、开启态填主题色');
-      check(/\.qcmd-group\.off \.qcmd-group-items/.test(html),
+      // 两个"参与/展开"的蓝色标识（用户 2026-09 要求）
+      check(/\.qcmd-item-seq\.on\s*\{[^}]*background:var\(--btn-p\)[^}]*color:#fff/.test(html),
+        '顺序号 > 0 的方框用**蓝底**标识（参与循环；与 HEX 开关的开启态同一套）');
+      check(/\.qcmd-group-hd:not\(\.folded\) \.qcmd-group-fold\s*\{[^}]*color:var\(--link\)[^}]*background:/.test(html)
+        && /\.qcmd-group\.folded \.qcmd-group-fold::before\s*\{[^}]*rotate\(-45deg\)/.test(html),
+        '组**展开**时折叠箭头用蓝底标识；折叠时是灰箭头 + 方向转过去');      check(/\.qcmd-group\.off \.qcmd-group-items/.test(html),
         '关掉的组：内容压暗（一眼看出这组不参与循环）');
       // 「＋ 添加」挂在**本组表头行的最右**（用户 2026-09 要求："应该放在 顺序、指令那一栏最右侧"）
       // 跨"发送/删除"两条轨道 + 右对齐 → 正好落在数据行那两个图标的上方
