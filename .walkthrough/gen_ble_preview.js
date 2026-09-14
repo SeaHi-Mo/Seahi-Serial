@@ -9,6 +9,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const vm = require('vm');
 
 const root = path.resolve(__dirname, '..');
@@ -3165,13 +3166,18 @@ console.log('preview ->', out);
       srcLine(/var QCMD_LOOP_TITLE_OFF[^\n]*/),
       srcLine(/var QCMD_LOOP_TITLE_ON[^\n]*/),
       srcLine(/var _qcmdLoopTimers = \{\}[^\n]*/),
+      // 表头驱动列：别名表是模块级 var，HEX 真值表是一行数组
+      extractObject('QCMD_COL_ALIASES'),
+      srcLine(/var QCMD_HEX_TRUE[^\n]*/),
       // createMonitorPane 后段会调这几个命令；本次只验证它拼出来的 HTML，命令本身不执行
       'function scheduleConfigSave() {}', 'function refreshPorts() {}', 'function initTerminalMode() {}',
-      ['qcmdSideHtml', 'qcmdSideOpen', 'setQcmdSideOpen', 'toggleQcmdSide',
+      ['qcmdSideHtml', 'qcmdColsHtml', 'qcmdSideOpen', 'setQcmdSideOpen', 'toggleQcmdSide',
        'qcmdSideWidth', 'setQcmdSideWidth', 'startQcmdSideDrag', 'onQcmdSideDragMove', 'endQcmdSideDrag',
-       'qcmdMdCells', 'qcmdIsStructureRow', 'qcmdParseText', 'qcmdBuildText', 'qcmdBaseName',
+       'qcmdMdCells', 'qcmdColKey', 'qcmdHeaderMap', 'qcmdIsSeparatorRow', 'qcmdIsStructureRow',
+       'qcmdCellInt', 'qcmdCellHex', 'qcmdParamCell', 'qcmdParseText', 'qcmdJoinRow', 'qcmdItemCells', 'qcmdBuildText', 'qcmdBaseName',
        'qcmdApplyParsed', 'qcmdCarryItemPrefs', 'renderQcmdSource', 'qcmdImportFile', 'qcmdReloadFile', 'qcmdUnmountFile',
-       'qcmdExportFile', 'qcmdCurrentText', 'scheduleQcmdFileSave', 'qcmdFileSaveNow',
+       'qcmdExportCols', 'qcmdExportPrep', 'qcmdItemHasParams', 'qcmdExportFile',
+       'qcmdCurrentText', 'scheduleQcmdFileSave', 'qcmdFileSaveNow',
        'qcmdFlushPendingFileSaves', 'qcmdFileMountedBy', 'collectConfigForMonitor',
        'makeQcmdItem', 'addQcmdItem', 'removeQcmdItem', 'rebuildQcmdList',
        'qcmdBlockIndexOf', 'qcmdInsertItemBlock', 'qcmdRemoveItemBlock',
@@ -3194,7 +3200,7 @@ console.log('preview ->', out);
       '折叠条里没有任何图标/文字/三角字符（整条只有 CSS 画的那根握把）', JSON.stringify(tabInner));
     check(sideHtml.includes('id="main-btnQcmdSide"') && sideHtml.includes('title="展开快速指令"'),
       '折叠条带 title 提示（无文字时唯一的可发现性来源）');
-    // 折叠条的视觉：折叠态=细握把，悬停点亮；展开态=整条填主题蓝（不只是边上那根线）
+    // 折叠条的视觉：折叠态=居中细握把；展开态=**一条收窄的贯穿竖色条**（用户定的方向）
     {
       const i = html.indexOf('/* ===== 快速指令分栏');
       const j = html.indexOf('.qcmd-side.open .qcmd-side-body', i);
@@ -3204,14 +3210,38 @@ console.log('preview ->', out);
       check(/\.qcmd-side\s*\{[^}]*border-left:1px solid var\(--split-line\)/.test(sideCss),
         '分栏线用 --split-line（与窗格分隔线、拖拽手柄同一套语义）');
       check(/\.qcmd-side-tab:hover::before\s*\{[^}]*opacity:1/.test(sideCss),
-        '折叠态悬停：握把点亮（没有三角箭头，靠这根线示意可折叠）');
-      check(/\.qcmd-side-tab\.on\s*\{[^}]*background:var\(--btn-p\)/.test(sideCss) &&
-            /\.qcmd-side-tab\.on::before\s*\{[^}]*rgba\(255,255,255/.test(sideCss),
-        '展开态：整条填主题蓝 + 握把转成白色（蓝底上再画蓝线等于没有）');
-      check(/\.qcmd-side-tab\.on:hover\s*\{[^}]*background:var\(--btn-ph\)/.test(sideCss),
+        '悬停：握把点亮（折叠态的可发现性就靠它）');
+      // 展开态：贯穿整栏的竖色条，但**收窄到 6px**（14px 整条刷蓝是被否掉的第一版）
+      check(/\.qcmd-side-tab\.on::before\s*\{[^}]*top:0[^}]*bottom:0[^}]*height:auto/.test(sideCss),
+        '展开态色条**贯穿整高**（不是一颗浮在中间的小珠子）');
+      check(/\.qcmd-side-tab\.on::before\s*\{[^}]*left:0[^}]*margin:0/.test(sideCss) &&
+            /\.qcmd-side\.open\s*\{[^}]*border-left-width:0/.test(sideCss),
+        '色条**顶到面板左缘** + 展开态收掉那条 1px 分栏线：全栏只留一条竖线'
+        + '（逐像素量过：两条蓝竖线并排 5px = "看着脏"的根因）');
+      check(/\.qcmd-side-tab\.on::before\s*\{[^}]*width:6px/.test(sideCss) &&
+            /\.qcmd-side-tab\.on::before\s*\{[^}]*background-color:var\(--btn-p\)/.test(sideCss),
+        '色条宽 6px + 主题色（收窄后的"竖色条"：既贯穿整栏，又不是一堵墙）');
+      check(!/\.qcmd-side-tab\.on::before\s*\{[^}]*background-image/.test(sideCss),
+        '色条上不叠花纹（试过条心画浅色握把：浅色主题下白线压在浅蓝条上像"这根条断了"）');
+      check(/\.qcmd-side-tab\.on:hover::before\s*\{[^}]*background-color:var\(--btn-ph\)/.test(sideCss),
         '展开态悬停再亮一档（--btn-p → --btn-ph，与 .btn-send 同一套语义）');
+      check(/\.qcmd-side-tab\s*\{[^}]*width:14px/.test(sideCss),
+        '折叠条自身仍是 14px —— 那是点击/拖动热区，只收窄视觉、不缩热区');
+      check(!/repeating-linear-gradient/.test(sideCss) && !/background-size:1px 100%/.test(sideCss),
+        '**没有**贯穿整高的虚线轨（"像沿虚线剪开"，被否掉的第三版）');
+      check(!/\.qcmd-side-tab\.on::before\s*\{[^}]*opacity:0/.test(sideCss),
+        '展开态不再"默认隐身"（那一版用户也不认）');
+      check(/\.qcmd-side-tab\.on\.loop::after\s*\{[^}]*display:none/.test(sideCss),
+        '循环指示灯只在折叠态出现（展开时标题行的循环开关本身就亮着，再点一颗就是重复装饰）');
+      check(/\.qcmd-side-hd\s*\{[^}]*background:transparent/.test(html) &&
+            !/\.qcmd-side-hd\s*\{[^}]*background:var\(--surface-3\)/.test(html),
+        '标题行不自带底色（浅一档的色带只能从 x=14 开始，会把标题栏与面板左缘切成两截 —— 用户反馈的"割裂"）');
+      check(/\.qcmd-side-src\s*\{[^}]*background:transparent/.test(html),
+        '来源行同理：整块面板一个面，只用细线分隔');
+      check(/\.qcmd-side\.dragging \.qcmd-side-tab::before\s*\{[^}]*var\(--btn-ph\)/.test(sideCss),
+        '拖动调宽时色条再亮一档');
       check(!/accent-green/.test(sideCss),
-        '折叠条不用别的语义色（绿/红等），只用主题强调色 + 蓝底上的白握把');
+        '折叠条不用别的语义色（绿/红等），只用主题强调色');
       check(/\.qcmd-side\.open\s*\{[^}]*width:var\(--qcmd-side-w,\s*300px\)/.test(sideCss),
         '展开态宽度走 --qcmd-side-w（缺省 300px：一条六格要放得下）：拖动只改这个变量，不写死内联宽度');
       check(/\.qcmd-side\.dragging\s*\{[^}]*transition:none/.test(sideCss),
@@ -3220,15 +3250,55 @@ console.log('preview ->', out);
             /\.qcmd-side-tab\.on\s*\{[^}]*cursor:col-resize/.test(sideCss),
         '光标跟着可用性走：折叠态 pointer（点击展开），展开态才是 col-resize（拖宽只在展开后启用）');
       check(/cubic-bezier/.test(sideCss), '展开/收起用缓动曲线，不是生硬的 linear');
-      // 蓝色填充与中性灰悬停特异性相同，必须让 .on 写在后面才压得住
+      // 蓝色把手与中性灰悬停特异性相同，必须让 .on 写在后面才压得住
       const iOn = sideCss.indexOf('.qcmd-side-tab.on {');
       const iHover = sideCss.indexOf('.qcmd-side-tab:hover {');
       check(iOn >= 0 && iHover >= 0 && iOn > iHover,
-        '展开态的蓝色填充必须写在 :hover 之后（同特异性靠顺序取胜，写反了悬停会盖掉蓝色）');
+        '展开态的把手必须写在 :hover 之后（同特异性靠顺序取胜，写反了悬停会盖掉它）');
       check(!/qcmd-side-tab-arrow/.test(html), '小三角箭头已彻底删除（HTML/CSS/JS 都不再有它）');
     }
     check(sideHtml.includes('id="main-qcmdList"') && sideHtml.includes("addQcmdItem('main')"),
       '侧栏内含指令列表容器与「＋ 添加」，复用既有 addQcmdItem/qcmdList');
+    // 列标题行：值有名字才读得成一张表；轨道必须与 .qcmd-item 完全一致，否则列会错位
+    {
+      check(sideHtml.includes('id="main-qcmdCols"') && /顺序/.test(sideHtml) && /指令/.test(sideHtml)
+        && /延时/.test(sideHtml) && /HEX/.test(sideHtml),
+      '列表上方有一行列标题（顺序 / 指令 / 延时 / HEX）');
+      const itemCols = /\.qcmd-item\s*\{[^}]*grid-template-columns:([^;]+);/.exec(html);
+      const colsRow = /\.qcmd-cols\s*\{[^}]*grid-template-columns:([^;]+);/.exec(html);
+      check(itemCols && colsRow && itemCols[1].trim() === colsRow[1].trim(),
+        '列标题与数据行用同一套 grid 轨道（写歪一个值就会全线错位）',
+        (itemCols && itemCols[1]) + ' vs ' + (colsRow && colsRow[1]));
+      // 列标题必须在**列表里面**（同一个滚动容器 + sticky）：放外面的话，列表一出滚动条，
+      // 滚动条占 8px，行宽就比列标题窄 8px —— 两条分隔线差一截（用户报的"线不够长"）
+      check(/<div class="qcmd-list" id="' \+ mid \+ '-qcmdList">' \+ qcmdColsHtml\(mid\)/.test(html),
+        '列标题放在 .qcmd-list 里面（与数据行共享滚动容器）');
+      check(/\.qcmd-cols\s*\{[^}]*position:sticky[^}]*top:0/.test(html) &&
+            /\.qcmd-cols\s*\{[^}]*background:var\(--toolbar-bg\)/.test(html),
+        '列标题 sticky 钉顶 + 不透明底（滚动时盖住从下面过去的行）');
+      check(/function rebuildQcmdList\(mid\)\s*\{[\s\S]{0,200}qlist\.innerHTML = qcmdColsHtml\(mid\)/.test(html),
+        'rebuildQcmdList 重建时把列标题一起补回来（它现在住在列表里，清空会把它删掉）');
+      check(/\.qcmd-side-hd\s*\{[^}]*justify-content:flex-start/.test(html),
+        '标题行控件靠左聚拢（原来是 space-between：左一个开关、右三个按钮，中间一大段空）');
+      // 面板里所有横向分隔线必须等长：滚动条宽 8px，列表出滚动条时内容区窄 8px，
+      // 滚动容器**外面**的标题行/来源行不让出这 8px 就会长出 8px（用户圈出来的那条线）
+      check(/\.qcmd-list\s*\{[^}]*scrollbar-gutter:stable/.test(html),
+        '列表预留滚动条槽（行宽恒定，不会因为出滚动条而跳 8px）');
+      check(/\.qcmd-side-hd\s*\{[^}]*margin-right:8px/.test(html) &&
+            /\.qcmd-side-src\s*\{[^}]*margin-right:8px/.test(html),
+        '标题行/来源行也让出那 8px 滚动条槽（否则它们的边线比行线长 8px）');
+      check(/\.qcmd-list::\-webkit-scrollbar\s*\{\s*width:8px/.test(html),
+        '滚动条宽 8px —— 上面两个 margin-right:8px 就是跟它对账的（改一个必须改另一个）');
+      // 左端：分隔线必须从**面板左缘**拉起，而不是折叠条右边 14px 处（用户："左侧没有触及到折叠条"）
+      check(/\.qcmd-side\.open \.qcmd-side-tab\s*\{[^}]*position:absolute[^}]*left:0/.test(html),
+        '展开态折叠条脱离文档流：面板内容因此拿到整宽，分隔线才能从面板左缘拉起');
+      check(/\.qcmd-item\s*\{[^}]*padding:5px 8px 5px 22px/.test(html) &&
+            /\.qcmd-cols\s*\{[^}]*padding:3px 8px 5px 22px/.test(html),
+        '数据行/列标题同款左边距 22px（= 14 折叠条 + 8 视觉留白）：线满宽、内容让开折叠条');
+      check(/\.qcmd-side-tab\s*\{[^}]*z-index:3/.test(html) &&
+            /\.qcmd-cols\s*\{[^}]*z-index:1/.test(html),
+        '折叠条压在 sticky 列标题之上（否则列标题那段的不透明底会把色条盖断）');
+    }
     check(!/qcmd-dropdown|qcmd-trigger|qcmd-wrap/.test(sideHtml), '侧栏里不出现旧下拉的三个类名');
     // <div> 开闭与嵌套：只数个数抓不到"重复一整块但自身平衡"这类错误（本轮真踩过），
     // 所以按出现顺序做深度扫描 —— 深度不得为负、末尾必须归零。
@@ -3370,8 +3440,28 @@ console.log('preview ->', out);
         '三个新控件都带 id（MCP 控件注册表按 id 枚举，少了 AI 就摸不到）');
       check(/grid-template-areas:'seq val delay hex send del'/.test(html),
         'CSS 的九宫格区域与上面的排列一一对应（列名对不上就会错位）');
-      check(/\.qcmd-item\s*\{[^}]*grid-template-columns:24px minmax\(0,1fr\) 44px auto 22px 18px/.test(html),
+      check(/\.qcmd-item\s*\{[^}]*grid-template-columns:24px minmax\(0,1fr\) 44px auto 20px 20px/.test(html),
         '六列宽度固定：内容列 minmax(0,1fr) 是唯一会缩的列（其余列被挤变形就没法用了）');
+      // ---- 观感（日本排版那一套：面只留两个、数字右揃え、右缘一条线） ----
+      check(/\.qcmd-item-delay\s*\{[^}]*text-align:right/.test(html) &&
+            /\.qcmd-item-delay\s*\{[^}]*font-variant-numeric:tabular-nums/.test(html),
+        '延时是右对齐的等宽数字（1000 / 500 / 80 的个位对齐成一条竖线）');
+      check(/\.qcmd-item-seq\s*\{[^}]*font-variant-numeric:tabular-nums/.test(html) &&
+            /\.qcmd-item-val\s*\{[^}]*font-variant-numeric:tabular-nums/.test(html),
+        '顺序号与指令内容也用等宽数字口径');
+      check(/\.qcmd-item-seq\s*\{[^}]*background:var\(--input-bg\)/.test(html),
+        '顺序号的方框留着（用户点名要的顺序标识，底色常驻）');
+      check(/\.qcmd-item-delay\s*\{[^}]*background:transparent/.test(html) &&
+            /\.qcmd-item-delay:hover\s*\{[^}]*background:var\(--input-bg\)/.test(html) &&
+            /\.qcmd-item-delay:focus\s*\{[^}]*background:var\(--input-bg\)/.test(html),
+        '延时平时没有面，hover/focus 才浮出面（一行里少一个框就安静一档）');
+      check(/\.qcmd-item\s*\{[^}]*border-bottom:1px solid rgba\(60,60,60,\.3\)/.test(html),
+        '行分隔线压淡（.5 → .3），不再抢内容');
+      check(/\.qcmd-item-send\s*\{[^}]*width:20px/.test(html) && /\.qcmd-item-del\s*\{[^}]*width:20px/.test(html),
+        '发送与删除同宽（两个图标成了一对，不再一大一小）');
+      check(/\.qcmd-side-hd\s*\{[^}]*padding:6px 8px/.test(html) &&
+            /\.qcmd-side-src\s*\{[^}]*padding:3px 8px/.test(html),
+        '标题行/来源行与数据行同为 8px 边距：右缘连成一条竖线');
 
       // 行为：真触发一次处理器，证明"改了会进模型"
       const m = sbSide.monitors.main;
@@ -3593,12 +3683,101 @@ console.log('preview ->', out);
       '往返保真：build(parse(x)) === x（注释/空行/表头/分隔行都在原位）');
     const md2 = sbSide.qcmdParseText('| 重启 | AT+RST | 备注甲 |\r\n| 竖线 | A\\|B |');
     const md2Items = md2.blocks.filter(b => b.kind === 'item');
-    check(md2Items[0].rest[0] === '备注甲' && sbSide.qcmdBuildText(md2.blocks, 'md').indexOf('备注甲') >= 0,
+    check(md2Items[0].cells[2] === '备注甲' && sbSide.qcmdBuildText(md2.blocks, 'md').indexOf('备注甲') >= 0,
       '第三个列（备注等额外列）原样保留并写回');
     check(md2.items[1].value === 'A|B' && sbSide.qcmdBuildText(md2.blocks, 'md').indexOf('A\\|B') >= 0,
       '单元格内的竖线按 Markdown 规范转义（读回来是 A|B）');
     check(sbSide.qcmdBuildText(md2.blocks, 'md').indexOf('| AT+RST | AT+RST |') < 0,
       '原本只写了一列的行不会被写回时复制成两列');
+
+    // ---- 表头驱动：顺序号 / 延时 / HEX 三列（**表头写了列名才认**，绝不按列号硬塞） ----
+    {
+      const pText = [
+        '| 名称 | 指令 | 备注 | 顺序号 | 延时(ms) | HEX |',
+        '|---|---|---|---|---|---|',
+        '| 查版本 | AT+GMR | 甲的备注 | 2 | 500 | hex |',
+        '| 重启 | AT+RST | 乙 | 1 |  | 0 |',
+      ].join('\r\n');
+      const p = sbSide.qcmdParseText(pText);
+      check(p.cols && p.cols.seq === 3 && p.cols.delay === 4 && p.cols.hex === 5,
+        '表头认出了三列（顺序号 / 延时(ms) / HEX）', JSON.stringify(p.cols));
+      check(p.items[0].seq === 2 && p.items[0].delay === 500 && p.items[0].hex === true,
+        '第一行三项都读进模型', JSON.stringify(p.items[0]));
+      check(p.items[1].seq === 1 && sbSide.qcmdItemDelay(p.items[1]) === 1000 && p.items[1].hex === false,
+        '延时格留空 → 有效值缺省 1000；HEX 写 0 → 关', JSON.stringify(p.items[1]));
+      check(p.items[1].delay === undefined,
+        '留空的格子**不往模型里塞值**（写回时那一格还是空的，不硬写 1000 进用户的表）',
+        String(p.items[1].delay));
+      check(p.items[0].value === 'AT+GMR' && p.items[1].value === 'AT+RST', '指令列照旧');
+      check(sbSide.qcmdBuildText(p.blocks, 'md') === pText, '三列表格往返保真（备注列也在原位）');
+      // 改参数 → 写回只动对应那几格，备注一字不动
+      p.items[0].seq = 7; p.items[0].hex = false; p.items[1].delay = 250;
+      const pOut = sbSide.qcmdBuildText(p.blocks, 'md');
+      check(/\| 查版本 \| AT\+GMR \| 甲的备注 \| 7 \| 500 \| text \|/.test(pOut),
+        '写回按列原位更新（顺序号 7、HEX→text），备注列一字不动', pOut.split('\r\n')[2]);
+      check(/\| 重启 \| AT\+RST \| 乙 \| 1 \| 250 \| 0 \|/.test(pOut),
+        '延时改 250 只动那一格；没碰的 HEX 格保持用户写的 `0`（不被规范化成 text）',
+        pOut.split('\r\n')[3]);
+      // 列名别名
+      const alias = sbSide.qcmdParseText('| 指令 | 序号 | 延迟 | 十六进制 |\r\n| AT+GMR | 3 | 800 | 是 |');
+      check(alias.cols && alias.cols.value === 0 && alias.cols.seq === 1 && alias.cols.delay === 2 && alias.cols.hex === 3,
+        '列名别名（序号/延迟/十六进制）也认', JSON.stringify(alias.cols));
+      check(alias.items[0].seq === 3 && alias.items[0].delay === 800 && alias.items[0].hex === true
+        && alias.items[0].label === 'AT+GMR',
+        '别名表头下的值照读；没有名称列时名称取指令本身', JSON.stringify(alias.items[0]));
+      // 危险列名：`编号`/`no` 这种很可能是用户自己的 ID 列 —— 认错就会把 A1 改写成 0
+      const risky = sbSide.qcmdParseText('| 指令 | 编号 |\r\n| AT+GMR | A1 |');
+      check(risky.items.length === 1 && risky.items[0].seq === undefined && risky.items[0].hex === undefined,
+        '「编号」不当顺序号认（认错会把 A1 改写成 0）', JSON.stringify(risky.items));
+      check(/^\| AT\+GMR \| A1 \|$/m.test(sbSide.qcmdBuildText(risky.blocks, 'md')),
+        '那一列（用户的 ID/备注）原样保留', sbSide.qcmdBuildText(risky.blocks, 'md'));
+      // 写回**不擅自补列**：表头没写这三列，写回就一字不多
+      const noParam = sbSide.qcmdParseText('| 名称 | 指令 |\r\n| 查版本 | AT+GMR |');
+      noParam.items[0].seq = 3; noParam.items[0].hex = true; noParam.items[0].delay = 50;
+      check(sbSide.qcmdBuildText(noParam.blocks, 'md') === '| 名称 | 指令 |\r\n| 查版本 | AT+GMR |',
+        '挂载文件表头没这三列 → 写回绝不擅自加列（用户的表结构由用户定）',
+        sbSide.qcmdBuildText(noParam.blocks, 'md'));
+      // 新增条目：沿用表头声明的列（不然写回会把表格撑歪）
+      const parsedIns = sbSide.qcmdParseText('| 指令 | 顺序号 | 延时(ms) | HEX |\r\n|---|---|---|---|\r\n| AT+GMR | 1 | 500 | hex |');
+      sbSide.monitors['t-x'] = { _qcmdBlocks: parsedIns.blocks, _qcmdCols: parsedIns.cols, quickCmds: [] };
+      sbSide.qcmdInsertItemBlock('t-x', { label: '', value: 'AT+NEW' });
+      const insOut = sbSide.qcmdBuildText(sbSide.monitors['t-x']._qcmdBlocks, 'md');
+      check(/\| AT\+NEW \| 0 \| 1000 \| text \|/.test(insOut),
+        '新条目按表头的列补齐（0 / 1000 / text），表格不会被撑歪', insOut.split('\r\n').pop());
+      delete sbSide.monitors['t-x'];
+    }
+
+    // ---- 导出：副本一律带三列（自包含快照；导出→导入不丢循环配置） ----
+    {
+      const items = [
+        { label: '', value: 'AT+GMR', seq: 2, delay: 500, hex: true },
+        { label: '', value: 'AT+RST', seq: 1 },
+      ];
+      const prep = sbSide.qcmdExportPrep(items, 'md');
+      const txt = sbSide.qcmdBuildText(prep.blocks, prep.style);
+      check(/^\| 指令 \| 顺序号 \| 延时\(ms\) \| HEX \|$/.test(txt.split('\r\n')[0]),
+        '导出表头带三列（面板里没有名称入口 → 不带空的名称列）', txt.split('\r\n')[0]);
+      check(/\| AT\+GMR \| 2 \| 500 \| hex \|/.test(txt) && /\| AT\+RST \| 1 \| 1000 \| text \|/.test(txt),
+        '每一行的三列都是真值（缺省也写全 1000 / text）', txt);
+      const back = sbSide.qcmdParseText(txt);
+      check(back.items.length === 2 && back.items[0].seq === 2 && back.items[0].delay === 500 && back.items[0].hex === true
+        && back.items[1].seq === 1 && back.items[1].delay === 1000 && back.items[1].hex === false,
+        '导出的文件回读 = 原样（导出→导入往返，循环配置不丢）', JSON.stringify(back.items));
+      check(back.cols && back.cols.seq !== undefined && back.cols.delay !== undefined && back.cols.hex !== undefined,
+        '回读时三列都被认出来（不用再靠"按内容带回来"兜）', JSON.stringify(back.cols));
+      const withName = sbSide.qcmdBuildText(
+        sbSide.qcmdExportPrep([{ label: '查版本', value: 'AT+GMR', seq: 1 }], 'md').blocks, 'md');
+      check(/^\| 名称 \| 指令 \| 顺序号 \| 延时\(ms\) \| HEX \|$/.test(withName.split('\r\n')[0]),
+        '本来就有名称的列表（从文件读进来的）导出时保留名称列，不丢名字', withName.split('\r\n')[0]);
+      const tsv = sbSide.qcmdBuildText(sbSide.qcmdExportPrep(items, 'tsv').blocks, 'tsv');
+      check(/^指令\t顺序号\t延时\(ms\)\tHEX$/.test(tsv.split('\r\n')[0]),
+        'TSV 导出同样带三列（且没有多余的 Markdown 分隔行）', tsv.split('\r\n')[0]);
+      check(!/\|---/.test(tsv), 'TSV 里不掺 Markdown 分隔行');
+      // 纯指令行载体：没有非默认参数就保持原样，有参数才升级成表格
+      const plainItems = [{ label: '', value: 'AT' }, { label: '', value: 'AT+GMR' }];
+      check(sbSide.qcmdItemHasParams(plainItems[0]) === false && sbSide.qcmdItemHasParams(items[0]) === true,
+        'qcmdItemHasParams 认得出"有没有非默认参数"');
+    }
 
     // ---- YAML / TOML 文件头（front matter）：原样保留，且**不能**被当成指令 ----
     const fmText = [
@@ -3813,6 +3992,70 @@ console.log('preview ->', out);
       '纯描述性文件头（title/note）不瞎提示', toasts.map(t => t.msg).join(' / ') || '(无提示)');
     check(/QCMD_FRONT_UNSUPPORTED/.test(html), '不可解释的 key 清单是常量（改口径只改一处）');
     invokeHandler = baseHandler;
+
+    // ---- 端到端：**真的导出一份文件到磁盘，再把这份文件导入回来** ----
+    // （用户要求"通过导出文件验证是否成功"：不能只在内存里 build/parse 自证，得让导出物落盘、回读）
+    {
+      const exportPath = path.join(os.tmpdir(), 'seahi-qcmd-export-verify.md');
+      try { fs.unlinkSync(exportPath); } catch (e) { /* 首次运行没有这个文件 */ }
+      m.quickCmds = [
+        { label: '', value: 'AT+GMR', seq: 2, delay: 500, hex: true },
+        { label: '', value: '01 02 03 04', seq: 1, delay: 250, hex: true },
+        { label: '', value: 'AT+RST', seq: 0, delay: 1000, hex: false },
+      ];
+      m.quickCmdsFileStyle = 'md';
+      m.quickCmdsFileEnc = 'utf-8';
+      invokeCalls.length = 0;
+      toasts.length = 0;
+      invokeHandler = (cmd, args) => {
+        if (cmd === 'quick_cmds_export_file') {
+          fs.writeFileSync(exportPath, args.text, 'utf8');        // ← 真的落盘
+          return { path: exportPath };
+        }
+        return baseHandler(cmd);
+      };
+      sbSide.qcmdExportFile('main');
+      check(fs.existsSync(exportPath), '① 导出真的写了文件', exportPath);
+      const onDisk = fs.readFileSync(exportPath, 'utf8');         // ← 从磁盘读回来
+      const diskLines = onDisk.split('\r\n');
+      check(/^\| 指令 \| 顺序号 \| 延时\(ms\) \| HEX \|$/.test(diskLines[0]),
+        '① 文件第一行是带三列的表头', diskLines[0]);
+      check(diskLines.length === 5 && /^\|\s*---/.test(diskLines[1]),
+        '① 表头 + Markdown 分隔行 + 3 条数据行', diskLines.length + ' 行 / ' + diskLines[1]);
+      check(/\| AT\+GMR \| 2 \| 500 \| hex \|/.test(onDisk)
+        && /\| 01 02 03 04 \| 1 \| 250 \| hex \|/.test(onDisk)
+        && /\| AT\+RST \| 0 \| 1000 \| text \|/.test(onDisk),
+        '① 每行的三列都是真值（HEX 用 hex/text 写清）', onDisk);
+      // 手动看一眼导出物长什么样：QCMD_SHOW_EXPORT=1 node .walkthrough/gen_ble_preview.js
+      if (process.env.QCMD_SHOW_EXPORT === '1') console.log('--- 导出文件实际内容 ---\n' + onDisk + '\n--- 结束 ---');
+
+      // ② 把磁盘上这份文件当作用户选中的文件导入（走真实的 qcmdImportFile → qcmdParseText）
+      invokeHandler = (cmd) => (cmd === 'quick_cmds_pick_file'
+        ? { path: exportPath, text: fs.readFileSync(exportPath, 'utf8'), encoding: 'utf-8', hash: 'hx' }
+        : baseHandler(cmd));
+      sbSide.qcmdImportFile('main');
+      const back = sbSide.monitors['main'].quickCmds;
+      check(back.length === 3, '② 导入回来的条数对得上', String(back.length));
+      check(back[0].value === 'AT+GMR' && back[0].seq === 2 && back[0].delay === 500 && back[0].hex === true,
+        '② 第 1 条：指令 + 顺序号 2 + 延时 500 + HEX 开 —— 一项不丢', JSON.stringify(back[0]));
+      check(back[1].value === '01 02 03 04' && back[1].seq === 1 && back[1].delay === 250 && back[1].hex === true,
+        '② 第 2 条：含空格的 HEX 串原样，参数也原样', JSON.stringify(back[1]));
+      check(back[2].value === 'AT+RST' && back[2].seq === 0 && back[2].delay === 1000 && back[2].hex === false,
+        '② 第 3 条：顺序号 0（不参与循环）+ 延时 1000 + HEX 关', JSON.stringify(back[2]));
+      check(sbSide.monitors['main']._qcmdCols && sbSide.monitors['main']._qcmdCols.seq === 1,
+        '② 导入后列映射还在（之后新增/写回都按这三列走）', JSON.stringify(sbSide.monitors['main']._qcmdCols));
+      // ③ 不改任何东西，直接写回（走真实 qcmdCurrentText）→ 与磁盘上的那份**逐字节一致**
+      check(sbSide.qcmdCurrentText('main') === onDisk,
+        '③ 挂载后原样写回 = 导出文件逐字节一致（往返保真，不擅自改用户的表）');
+      // ④ 改一个参数再写回：只有那一格变
+      sbSide.monitors['main'].quickCmds[1].delay = 800;
+      sbSide.monitors['main'].quickCmds[0].hex = false;
+      const afterEdit = sbSide.qcmdCurrentText('main');
+      check(/\| AT\+GMR \| 2 \| 500 \| text \|/.test(afterEdit) && /\| 01 02 03 04 \| 1 \| 800 \| hex \|/.test(afterEdit),
+        '④ 改延时/HEX 后写回只有那两格变，其余一字不动', afterEdit);
+      try { fs.unlinkSync(exportPath); } catch (e) { /* 清理 */ }
+      invokeHandler = baseHandler;
+    }
   }
   }   // 外部文件这一段与上面的分栏断言共用同一个沙箱（sbSide 是块内 const）
 

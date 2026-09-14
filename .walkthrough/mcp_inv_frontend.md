@@ -148,7 +148,7 @@
 | M36 | div.send-as | `#{mid}-sendAs` | 展开 文本/HEX | `toggleSendAsDrop(mid)` 2894 | 改 | 无 |
 | M37 | div.send-as-opt ×2 | `#{mid}-sendAsDrop .send-as-opt[data-val=text/hex]` | 选发送格式 | `setSendAs(mid,val,this,event)` 2897 | 改+持久化 | 无 |
 | M38 | button.btn-send | `#{mid}-btnSend` | 发送 | `sendData(mid)` 4108 | **副作用**（发送） | 模板里写死 `disabled`，由 `updateMonitorUI` 3637 切换 |
-| M39 | button.qcmd-side-tab | `#{mid}-btnQcmdSide` | 展开/收起快速指令分栏；**展开后**拖动它调宽（折叠态不启用拖动，光标 pointer；展开态 col-resize）。循环发送进行中时这里会点一颗一闪一闪的小点（`.qcmd-side-tab.loop`） | `toggleQcmdSide(mid)` / `startQcmdSideDrag`+`onQcmdSideDragMove`+`endQcmdSideDrag` | 改+持久化（宽度 `qcmdSideWidth`；展开态本身不持久化） | 无 |
+| M39 | button.qcmd-side-tab | `#{mid}-btnQcmdSide` | 展开/收起快速指令分栏；**展开后**拖动它调宽（折叠态不启用拖动，光标 pointer；展开态 col-resize）。**热区恒为 14px 宽**：折叠态显示居中细握把，展开态长成贯穿整栏的 6px 竖直色条（悬停/拖动更亮）；循环发送的闪点（`.qcmd-side-tab.loop`）**只在折叠态**出现 | `toggleQcmdSide(mid)` / `startQcmdSideDrag`+`onQcmdSideDragMove`+`endQcmdSideDrag` | 改+持久化（宽度 `qcmdSideWidth`；展开态本身不持久化） | 无 |
 | M40 | button.qcmd-dh-add | `#{mid}-qcmdSide .qcmd-dh-add`（无 id） | 添加指令行 | `addQcmdItem(mid)` | 改+持久化 | 无 |
 | M41 | button.qcmd-dh-loop | `#{mid}-btnQcmdLoop` | **开/关循环发送**（按顺序号从小到大依次发，发完一条等它自己的延时再发下一条） | `toggleQcmdLoop(mid)` → `setQcmdLoop` / `stopQcmdLoop` | **副作用**（会持续发数据）+改 | 未连串口 / 没有顺序号 > 0 的条目时函数内拒绝并 toast；掉线或列表空了则自愈停止 |
 | M41a | input.qcmd-item-seq（JS 建） | `#{mid}-qcmdi-{i}-seq` | **循环发送顺序号**：0 = 不参与；>0 参与，按数字升序发 | `input`（只收数字，去前导零） | 改+持久化 | 无 |
@@ -162,7 +162,9 @@
 > ① 指令名称输入框 `input.qcmd-item-label` **已删除** —— `label` 字段仍在数据与外部文件里原样保留/写回，
 >    只是界面上不再有入口；② 标题文字「快速指令」（`.qcmd-hd-title`）已删除，标题行只剩控件；
 > ③ 每条现在是**一行六格**：顺序号 · 内容 · 延时 · HEX · 发送 · 删除；④ 新增「循环发送」开关
->    （`#{mid}-btnQcmdLoop`，在「＋ 添加」左侧）。以上四项都随 `config.json` 的 `quickCmds` 持久化，
+>    （`#{mid}-btnQcmdLoop`，在「＋ 添加」左侧）；⑤ 标题行控件**靠左聚拢**（原来是左右分家的
+>    `space-between`）；⑥ 列表上方多了一行**列标题** `.qcmd-cols`（顺序 / 指令 / 延时 / HEX，
+>    与数据行同一套 grid 轨道，纯展示、不可交互）。以上都随 `config.json` 的 `quickCmds` 持久化，
 >    **循环发送的开关状态不持久化**（开机自动发指令太危险）。
 | M45 | input[checkbox] | `#{mid}-wfList input[name="wf-enabled"]` | 启用/禁用规则 | `onchange`→`toggleWorkflowEnabled` 4958 | 改+持久化 | 无 |
 | M46 | input[text] | `#{mid}-wfList input[name="wf-rule-name"]` | 规则重命名 | `onchange`→`renameWorkflowRule` 4963 | 改+持久化 | 无 |

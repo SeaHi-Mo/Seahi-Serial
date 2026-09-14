@@ -25,7 +25,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_builds -- --ignored -
 cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
 ```
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1193 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1236 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，62 条）：直接从
 `src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，也有把渲染函数丢进假 DOM
 跑行为断言），改前端后应先跑
@@ -175,10 +175,14 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
   别用"读进列表再重新生成一份"的做法；**文件头（YAML `---` / TOML `+++` front matter）原样保留但不解释**
   —— 不识别它的话 `baud: 115200` 会被当成一条指令读进来、写回时还会被转成表格行（实测踩过）；
   `baud`/`mode`/`lineEnding`/`delay`/`expect`/`timeout`/`hex` 这些 key 要提示"暂不生效"，别做静默 no-op。
-  另有两条同属"别改回去"：**每条指令的 `seq`/`delay`/`hex`（顺序号/延时/HEX 使能）绝不写进用户的文件**
-  （那文件只有名称/指令两列，塞私有列就是污染；三项只随 `config.json` 走，重载时按指令内容带回来
-  —— `qcmdCarryItemPrefs`），以及**名称与内容都为空的条目不写回文件**（写进去也活不过一次重载：
-  解析端把空行当结构行丢掉）。循环发送的开关状态**不持久化**（开机自动发指令太危险），
+  另有两条同属"别改回去"：**每条指令的 `seq`/`delay`/`hex`（顺序号/延时/HEX 使能）只认"表头声明了列名"
+  的列** —— 表头写了 `顺序号 / 延时(ms) / HEX` 才读进来、才写回同一列；**没有这些列的文件一律按老规矩**
+  （第 3 列起是用户的备注，原样保留），绝不按列号硬塞（那会把用户写在第 3 列的「备注甲」读成顺序号、
+  再改写成 `0`，真丢数据）；**写回挂载文件不擅自补列**（用户的表结构由用户定），
+  需要自包含的三列文件走「导出」——导出的是副本，一律补全这三列（纯指令行载体放不下就升级成
+  Markdown 表格并提示）。以及**名称与内容都为空的条目不写回文件**（写进去也活不过一次重载：
+  解析端把空行当结构行丢掉），用户没填过的参数格写回时**保持空格**（别把缺省值硬写进他的表）。
+  循环发送的开关状态**不持久化**（开机自动发指令太危险），
   掉线/关监视器/列表里再无可发条目时必须**自愈停止**并提示。
 - WSL 串口转发通过 Python bridge 脚本实现，使用持久化 shell 避免 fork 延迟
 - USB 设备映射到 WSL 依赖 `usbipd-win` 工具，需管理员权限
