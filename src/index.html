@@ -6606,7 +6606,15 @@ function qcmdParseText(text) {
         }
         var label = cols.name !== undefined && cells.length > cols.name ? (cells[cols.name] || '') : '';
         var value = cells.length > cols.value ? (cells[cols.value] || '') : '';
-        if (!label && !value) { blocks.push({ kind: 'raw', text: raw }); continue; }
+        // 这一行算不算"一条指令"：名称/内容有值，**或者**表头声明的参数格里有值（哪怕只是 `0` / `1000`）。
+        // 只看名称+内容的话，`|  | 0 | 1000 | text |` 这种"还没填内容的指令行"会被丢掉 ——
+        // 导出的文件再导入就少几条，与面板对不上（用户 2026-09 报的"文件与前端对不上"）。
+        var cellFilled = function(i) {
+            return i !== undefined && cells.length > i && String(cells[i] == null ? '' : cells[i]).trim() !== '';
+        };
+        if (!label && !value && !cellFilled(cols.seq) && !cellFilled(cols.delay) && !cellFilled(cols.hex)) {
+            blocks.push({ kind: 'raw', text: raw }); continue;
+        }
         if (items.length >= QCMD_FILE_MAX_ITEMS) {
             skipped.push({ line: i + 1, reason: '超过 ' + QCMD_FILE_MAX_ITEMS + ' 条上限' });
             blocks.push({ kind: 'raw', text: raw }); continue;
@@ -6681,7 +6689,7 @@ function qcmdItemCells(b) {
     if (cols.value !== undefined) cells[cols.value] = String(it.value == null ? '' : it.value);
     if (cols.seq !== undefined) cells[cols.seq] = qcmdParamCell(b, 'seq', it.seq, String(qcmdItemSeq(it)), fill);
     if (cols.delay !== undefined) cells[cols.delay] = qcmdParamCell(b, 'delay', it.delay, String(qcmdItemDelay(it)), fill);
-    if (cols.hex !== undefined) cells[cols.hex] = qcmdParamCell(b, 'hex', it.hex, qcmdItemHex(it) ? 'hex' : 'text', fill);
+    if (cols.hex !== undefined) cells[cols.hex] = qcmdParamCell(b, 'hex', it.hex, qcmdItemHex(it) ? 'true' : 'false', fill);
     return cells;
 }
 
@@ -6691,13 +6699,14 @@ function qcmdBuildText(blocks, style) {
     var out = [];
     (blocks || []).forEach(function(b) {
         if (!b || b.kind !== 'item') { out.push(b && typeof b.text === 'string' ? b.text : ''); return; }
-        var it = b.item || {};
-        var label = String(it.label == null ? '' : it.label), value = String(it.value == null ? '' : it.value);
-        // 名称已退出界面、内容还没填的空条目：不往用户文件里写空行 ——
-        // 写进去也活不过一次重载（解析端把空行当结构行丢掉），只会白留一行垃圾
-        // （label 只有在"新加的条目"上才可能为空，所以不会误删用户在文件里写的行）
-        if (!label && !value) return;
-        out.push(qcmdJoinRow(qcmdItemCells(b), style));
+        var cells = qcmdItemCells(b);
+        // **整行都空**才跳过（而不是"名称与内容空就跳"）：表头声明了 顺序号/延时/HEX 的文件里，
+        // 一条还没填内容的指令仍然占一行 —— 跳过它，导出/写回的条数就跟面板对不上
+        // （用户 2026-09 报的"指令文件的内容没有和前端对应上"）。
+        // 用户手写文件里那种纯空白行（所有格都空）仍然不会被写出来。
+        var hasAny = cells.some(function(c) { return String(c == null ? '' : c).trim() !== ''; });
+        if (!hasAny) return;
+        out.push(qcmdJoinRow(cells, style));
     });
     return out.join('\r\n');
 }
@@ -6849,23 +6858,26 @@ function qcmdUnmountFile(mid) {
     showToast('已断开文件（列表保留在配置里）', 'success');
 }
 
-/// 导出的列：面板里已经没有名称入口了，所以**只有本来就有名称的列表**才带名称列
-/// （从文件读进来的列表 label 是有值的，别把它丢了）
-function qcmdExportCols(items) {
-    var hasName = (items || []).some(function(it) { return !!(it && it.label); });
-    var cols = [];
-    if (hasName) cols.push({ key: 'name', label: '名称' });
-    cols.push({ key: 'value', label: '指令' });
-    cols.push({ key: 'seq', label: '顺序号' });
-    cols.push({ key: 'delay', label: '延时(ms)' });
-    cols.push({ key: 'hex', label: 'HEX' });
-    return cols;
+/// 导出的列：**列序照抄面板** —— 顺序号 → 指令 → 延时(ms) → HEX。
+/// 面板上每一行就是这四格从左到右，文件照着来才"一一对应"
+/// （用户 2026-09 反馈：顺序号跑到指令右边去了，看着对不上）。
+/// **不带「名称」列**：面板里没有名称入口，导出的副本就不该多一栏。
+/// 挂载文件自己的「名称」列由**写回**路径原样保留，不受影响。
+function qcmdExportCols() {
+    return [
+        { key: 'seq',   label: '顺序号' },
+        { key: 'value', label: '指令' },
+        { key: 'delay', label: '延时(ms)' },
+        { key: 'hex',   label: 'HEX' }
+    ];
 }
 
-/// 导出用的块序列：**自包含快照** —— 表头 + 分隔行 + 每一行，一律带 顺序号/延时/HEX 三列。
+/// 导出用的块序列：**自包含快照** —— 表头 + 分隔行 + **每条一行**，一律带 顺序号/延时/HEX 三列。
 /// 导出的是副本，补列只动副本、不碰用户的挂载文件；不补的话"导出再导入"就丢了循环配置。
+/// ⚠️ 条目**一条都不跳**（`fill:true` 会把 0 / 1000 / text 写全）—— 空条目也占一行，
+/// 导出的行数必须与面板上的条数一致，否则又是"对不上"。
 function qcmdExportPrep(items, style) {
-    var cols = qcmdExportCols(items);
+    var cols = qcmdExportCols();
     var map = {}, header = [];
     cols.forEach(function(c, i) { map[c.key] = i; header.push(c.label); });
     var blocks = [{ kind: 'raw', text: qcmdJoinRow(header, style) }];
@@ -6873,7 +6885,6 @@ function qcmdExportPrep(items, style) {
         blocks.push({ kind: 'raw', text: qcmdJoinRow(header.map(function() { return '---'; }), 'md') });
     }
     (items || []).forEach(function(it) {
-        // fill：导出的副本要**写全**三列（0 / 1000 / text），文件才自解释、才能原样导回来
         blocks.push({ kind: 'item', item: it, cols: map, cells: null, fill: true });
     });
     return { blocks: blocks, style: style, cols: cols };

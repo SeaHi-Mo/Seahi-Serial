@@ -3738,8 +3738,8 @@ console.log('preview ->', out);
       // 改参数 → 写回只动对应那几格，备注一字不动
       p.items[0].seq = 7; p.items[0].hex = false; p.items[1].delay = 250;
       const pOut = sbSide.qcmdBuildText(p.blocks, 'md');
-      check(/\| 查版本 \| AT\+GMR \| 甲的备注 \| 7 \| 500 \| text \|/.test(pOut),
-        '写回按列原位更新（顺序号 7、HEX→text），备注列一字不动', pOut.split('\r\n')[2]);
+      check(/\| 查版本 \| AT\+GMR \| 甲的备注 \| 7 \| 500 \| false \|/.test(pOut),
+        '写回按列原位更新（顺序号 7、HEX→false），备注列一字不动', pOut.split('\r\n')[2]);
       check(/\| 重启 \| AT\+RST \| 乙 \| 1 \| 250 \| 0 \|/.test(pOut),
         '延时改 250 只动那一格；没碰的 HEX 格保持用户写的 `0`（不被规范化成 text）',
         pOut.split('\r\n')[3]);
@@ -3767,8 +3767,8 @@ console.log('preview ->', out);
       sbSide.monitors['t-x'] = { _qcmdBlocks: parsedIns.blocks, _qcmdCols: parsedIns.cols, quickCmds: [] };
       sbSide.qcmdInsertItemBlock('t-x', { label: '', value: 'AT+NEW' });
       const insOut = sbSide.qcmdBuildText(sbSide.monitors['t-x']._qcmdBlocks, 'md');
-      check(/\| AT\+NEW \| 0 \| 1000 \| text \|/.test(insOut),
-        '新条目按表头的列补齐（0 / 1000 / text），表格不会被撑歪', insOut.split('\r\n').pop());
+      check(/\| AT\+NEW \| 0 \| 1000 \| false \|/.test(insOut),
+        '新条目按表头的列补齐（0 / 1000 / false），表格不会被撑歪', insOut.split('\r\n').pop());
       delete sbSide.monitors['t-x'];
     }
 
@@ -3780,22 +3780,40 @@ console.log('preview ->', out);
       ];
       const prep = sbSide.qcmdExportPrep(items, 'md');
       const txt = sbSide.qcmdBuildText(prep.blocks, prep.style);
-      check(/^\| 指令 \| 顺序号 \| 延时\(ms\) \| HEX \|$/.test(txt.split('\r\n')[0]),
+      check(/^\| 顺序号 \| 指令 \| 延时\(ms\) \| HEX \|$/.test(txt.split('\r\n')[0]),
         '导出表头带三列（面板里没有名称入口 → 不带空的名称列）', txt.split('\r\n')[0]);
-      check(/\| AT\+GMR \| 2 \| 500 \| hex \|/.test(txt) && /\| AT\+RST \| 1 \| 1000 \| text \|/.test(txt),
-        '每一行的三列都是真值（缺省也写全 1000 / text）', txt);
+      check(/\| 2 \| AT\+GMR \| 500 \| true \|/.test(txt) && /\| 1 \| AT\+RST \| 1000 \| false \|/.test(txt),
+        '每一行的三列都是真值（缺省也写全 1000 / false；HEX 是布尔字面 true/false）', txt);
       const back = sbSide.qcmdParseText(txt);
       check(back.items.length === 2 && back.items[0].seq === 2 && back.items[0].delay === 500 && back.items[0].hex === true
         && back.items[1].seq === 1 && back.items[1].delay === 1000 && back.items[1].hex === false,
         '导出的文件回读 = 原样（导出→导入往返，循环配置不丢）', JSON.stringify(back.items));
       check(back.cols && back.cols.seq !== undefined && back.cols.delay !== undefined && back.cols.hex !== undefined,
         '回读时三列都被认出来（不用再靠"按内容带回来"兜）', JSON.stringify(back.cols));
-      const withName = sbSide.qcmdBuildText(
+      // 导出的副本**不带「名称」列**：面板里没有名称入口，文件就该与面板一一对应
+      // （用户 2026-09 报的"指令文件的内容没有和前端对应上"：文件里冒出一列 指令4/5/6/7，
+      //  面板上根本没有这一栏）。挂载文件自己的名称列由**写回**路径保留，不受影响
+      const withLabel = sbSide.qcmdBuildText(
         sbSide.qcmdExportPrep([{ label: '查版本', value: 'AT+GMR', seq: 1 }], 'md').blocks, 'md');
-      check(/^\| 名称 \| 指令 \| 顺序号 \| 延时\(ms\) \| HEX \|$/.test(withName.split('\r\n')[0]),
-        '本来就有名称的列表（从文件读进来的）导出时保留名称列，不丢名字', withName.split('\r\n')[0]);
+      check(/^\| 顺序号 \| 指令 \| 延时\(ms\) \| HEX \|$/.test(withLabel.split('\r\n')[0]),
+        '即使条目里还留着名称（从老文件读进来的），导出也不带名称列',
+        withLabel.split('\r\n')[0]);
+      check(!/查版本/.test(withLabel), '那个名称不会出现在导出物里');
+      // 行数必须与面板对得上：**空条目也占一行**（用户报的正是"面板 7 行、文件只有 4 行"）
+      const blankItems = [{ label: '指令1', value: '' }, { label: '', value: '' }, { label: '', value: 'AT+RST' }];
+      const blankOut = sbSide.qcmdBuildText(sbSide.qcmdExportPrep(blankItems, 'md').blocks, 'md');
+      check(blankOut.split('\r\n').length === 2 + 3,
+        '导出的行数 = 表头 + 分隔行 + **每条一行**（空条目也占一行，不跳）',
+        String(blankOut.split('\r\n').length));
+      check(/^\| 0 \|  \| 1000 \| false \|$/m.test(blankOut),
+        '空条目的那一行写全缺省值（0 / 1000 / false），回来还是"一条"', blankOut);
+      // 导出→导入：连空条目一起原样回来（否则又是"对不上"）
+      const backBlank = sbSide.qcmdParseText(blankOut);
+      check(backBlank.items.length === 3 && backBlank.items[1].value === '' && backBlank.items[1].seq === 0,
+        '导出→导入：条数不变（参数格有值的空条目行不会被丢掉）',
+        JSON.stringify(backBlank.items.map(i => i.value)));
       const tsv = sbSide.qcmdBuildText(sbSide.qcmdExportPrep(items, 'tsv').blocks, 'tsv');
-      check(/^指令\t顺序号\t延时\(ms\)\tHEX$/.test(tsv.split('\r\n')[0]),
+      check(/^顺序号\t指令\t延时\(ms\)\tHEX$/.test(tsv.split('\r\n')[0]),
         'TSV 导出同样带三列（且没有多余的 Markdown 分隔行）', tsv.split('\r\n')[0]);
       check(!/\|---/.test(tsv), 'TSV 里不掺 Markdown 分隔行');
       // 纯指令行载体：没有非默认参数就保持原样，有参数才升级成表格
@@ -4043,14 +4061,14 @@ console.log('preview ->', out);
       check(fs.existsSync(exportPath), '① 导出真的写了文件', exportPath);
       const onDisk = fs.readFileSync(exportPath, 'utf8');         // ← 从磁盘读回来
       const diskLines = onDisk.split('\r\n');
-      check(/^\| 指令 \| 顺序号 \| 延时\(ms\) \| HEX \|$/.test(diskLines[0]),
+      check(/^\| 顺序号 \| 指令 \| 延时\(ms\) \| HEX \|$/.test(diskLines[0]),
         '① 文件第一行是带三列的表头', diskLines[0]);
       check(diskLines.length === 5 && /^\|\s*---/.test(diskLines[1]),
         '① 表头 + Markdown 分隔行 + 3 条数据行', diskLines.length + ' 行 / ' + diskLines[1]);
-      check(/\| AT\+GMR \| 2 \| 500 \| hex \|/.test(onDisk)
-        && /\| 01 02 03 04 \| 1 \| 250 \| hex \|/.test(onDisk)
-        && /\| AT\+RST \| 0 \| 1000 \| text \|/.test(onDisk),
-        '① 每行的三列都是真值（HEX 用 hex/text 写清）', onDisk);
+      check(/\| 2 \| AT\+GMR \| 500 \| true \|/.test(onDisk)
+        && /\| 1 \| 01 02 03 04 \| 250 \| true \|/.test(onDisk)
+        && /\| 0 \| AT\+RST \| 1000 \| false \|/.test(onDisk),
+        '① 每行的三列都是真值（HEX 写成布尔字面 true/false）', onDisk);
       // 手动看一眼导出物长什么样：QCMD_SHOW_EXPORT=1 node .walkthrough/gen_ble_preview.js
       if (process.env.QCMD_SHOW_EXPORT === '1') console.log('--- 导出文件实际内容 ---\n' + onDisk + '\n--- 结束 ---');
 
@@ -4067,8 +4085,10 @@ console.log('preview ->', out);
         '② 第 2 条：含空格的 HEX 串原样，参数也原样', JSON.stringify(back[1]));
       check(back[2].value === 'AT+RST' && back[2].seq === 0 && back[2].delay === 1000 && back[2].hex === false,
         '② 第 3 条：顺序号 0（不参与循环）+ 延时 1000 + HEX 关', JSON.stringify(back[2]));
-      check(sbSide.monitors['main']._qcmdCols && sbSide.monitors['main']._qcmdCols.seq === 1,
-        '② 导入后列映射还在（之后新增/写回都按这三列走）', JSON.stringify(sbSide.monitors['main']._qcmdCols));
+      check(sbSide.monitors['main']._qcmdCols && sbSide.monitors['main']._qcmdCols.seq === 0
+        && sbSide.monitors['main']._qcmdCols.value === 1,
+        '② 导入后列映射还在（顺序号第 0 列、指令第 1 列 —— 导出列序与面板一致）',
+        JSON.stringify(sbSide.monitors['main']._qcmdCols));
       // ③ 不改任何东西，直接写回（走真实 qcmdCurrentText）→ 与磁盘上的那份**逐字节一致**
       check(sbSide.qcmdCurrentText('main') === onDisk,
         '③ 挂载后原样写回 = 导出文件逐字节一致（往返保真，不擅自改用户的表）');
@@ -4076,7 +4096,7 @@ console.log('preview ->', out);
       sbSide.monitors['main'].quickCmds[1].delay = 800;
       sbSide.monitors['main'].quickCmds[0].hex = false;
       const afterEdit = sbSide.qcmdCurrentText('main');
-      check(/\| AT\+GMR \| 2 \| 500 \| text \|/.test(afterEdit) && /\| 01 02 03 04 \| 1 \| 800 \| hex \|/.test(afterEdit),
+      check(/\| 2 \| AT\+GMR \| 500 \| false \|/.test(afterEdit) && /\| 1 \| 01 02 03 04 \| 800 \| true \|/.test(afterEdit),
         '④ 改延时/HEX 后写回只有那两格变，其余一字不动', afterEdit);
       try { fs.unlinkSync(exportPath); } catch (e) { /* 清理 */ }
       invokeHandler = baseHandler;
