@@ -42,6 +42,19 @@ function extractFunction(name) {
   return src.body.slice(0, m.index + m[0].length);
 }
 
+/** 抽取 main.rs 里一个顶层 fn 的完整定义体（按大括号配平；Rust 函数之间不保证有空行） */
+function extractRustFn(sig) {
+  const i = mainRs.indexOf(sig);
+  if (i < 0) throw new Error('rust fn not found: ' + sig);
+  let depth = 0, started = false;
+  for (let j = i; j < mainRs.length; j++) {
+    const c = mainRs[j];
+    if (c === '{') { depth++; started = true; }
+    else if (c === '}') { depth--; if (started && depth === 0) return mainRs.slice(i, j + 1); }
+  }
+  throw new Error('rust fn end not found: ' + sig);
+}
+
 const ICONS = extractObject('BLE_DEV_ICONS');
 const META = extractObject('BLE_DEV_TYPE_META');
 const ESCAPE = extractFunction('escapeHtml');
@@ -3610,6 +3623,75 @@ console.log('preview ->', out);
     check(html.indexOf('placeholder="输入目标设备 MAC 直接连接"') >= 0,
       'MAC 直连输入框占位符已改为「输入目标设备 MAC 直接连接」');
     check(html.indexOf('按 MAC 直连（如 A4:C1:38:11:14:2B）') < 0, '旧的占位符文案已不存在');
+  }
+
+  // ---------- 主窗口几何记忆（PR #20）----------
+  // 来龙去脉：窗口几何原来由前端存进 config.json（windowWidth/windowHeight），恢复走
+  // invoke('set_window_size')，位置与最大化状态全丢。现在改成 Rust 端 window.json 统一管，
+  // 并且主窗口在 tauri.conf.json 里 visible:false —— 恢复完几何再由前端 reveal。
+  // 这条链路任何一环掉了都是"应用启动了但窗口不出现"，所以从后端一路断言到前端。
+  {
+    console.log('\n【主窗口几何记忆（PR #20）】');
+
+    // --- 后端：window.json 的读写、事件接线、恢复保护 ---
+    const winState = extractRustFn('fn window_state_file()');
+    check(/d\.join\("window\.json"\)/.test(winState),
+      '窗口状态落在 %APPDATA%\\seahi-serial\\window.json（不放 config.json，避免与用户配置互相覆盖）', winState);
+    const loadFn = extractRustFn('fn load_window_state()');
+    check(/read_to_string\(f\)[\s\S]{0,60}from_str/.test(loadFn),
+      '读 window.json；解析失败当作"没有记录"（不 panic —— 这是启动路径）', loadFn);
+    check(/struct SavedWindowState[\s\S]{0,220}maximized: bool/.test(mainRs),
+      '保存了最大化状态（只存尺寸会让最大化用户下次起来变成小窗）');
+    check(/if maximized \{\s*\r?\n\s*state\.maximized = true;/.test(mainRs) &&
+          /state\.maximized = false;[\s\S]{0,80}if !minimized \{/.test(mainRs),
+      '最大化时只翻标志、保留最近一次普通几何；最小化时不改写（系统会给 -32000 哨兵坐标）');
+    check(/window\.outer_position\(\)/.test(mainRs) && /window\.inner_size\(\)/.test(mainRs),
+      '位置存外框坐标、尺寸存内尺寸（存错一个就会每次开关窗口都往右下漂移）');
+    check(/if !force && !window\.is_visible\(\)\.unwrap_or\(false\) \{\s*\r?\n\s*return;/.test(mainRs),
+      '非强制自动保存只在窗口可见时执行（隐藏期恢复几何的瞬时态不能写盘）');
+    check(/prev\.elapsed\(\) < std::time::Duration::from_millis\(400\)/.test(mainRs),
+      '拖动/缩放去抖 400ms（不能每帧写盘）');
+    check(/tauri::WindowEvent::Moved\(_\) \| tauri::WindowEvent::Resized\(_\)[\s\S]{0,120}window_auto_save\(window, false\)/.test(mainRs) &&
+          /tauri::WindowEvent::CloseRequested \{ \.\. \}[\s\S]{0,120}window_auto_save\(window, true\)/.test(mainRs),
+      'Moved/Resized 去抖保存，CloseRequested 强制保存最终几何（退出前最后一下也要留住）');
+    check(/ow >= 60 && oh >= 40/.test(mainRs) && /fn rect_on_screen/.test(mainRs),
+      '恢复位置前先判"至少露出 60×40 可操作区"，否则拔掉外接屏后窗口落在不可见的虚拟屏上');
+    check(/if restore_pos && rect_on_screen\(window\.app_handle\(\), state\.x, state\.y, width, height\)/.test(mainRs),
+      '位置只有"有 window.json 记录且落在屏内"才恢复');
+    check(/fn apply_window_state\(window: &tauri::WebviewWindow\)/.test(mainRs) &&
+          /apply_window_state\(&win\);/.test(mainRs),
+      'setup 里（设完最小尺寸之后）恢复一次几何');
+    check(/fn reveal_main_window\(/.test(mainRs) && /\n\s+reveal_main_window,\r?\n/.test(mainRs),
+      'reveal_main_window 命令实现且已注册进 invoke_handler（漏注册 = 窗口永远不显示）');
+    check(/fn set_window_size\(/.test(mainRs) && /\n\s+set_window_size,\r?\n/.test(mainRs),
+      'set_window_size 命令本身留着（BLE 页仍在用它做最小尺寸兜底）');
+    check(/std::thread::sleep\(std::time::Duration::from_millis\(4000\)\)[\s\S]{0,320}w\.is_visible\(\)/.test(mainRs),
+      '后端 4 秒兜底：前端没能调 reveal 时也要把窗口显示出来');
+
+    // 迁移兜底：老用户只在 config.json 里有尺寸，读不到 window.json 时别把尺寸重置掉
+    check(/fn legacy_window_state_from_config_json/.test(mainRs) &&
+          /legacy_window_state_from_config\(\)/.test(mainRs),
+      '旧版本 config.json 的 windowWidth/windowHeight 作为迁移兜底（升级后第一次启动不改尺寸）');
+    check(/let \(state, restore_pos\) = match load_window_state\(\) \{\s*\r?\n\s*Some\(s\) => \(s, true\),/.test(mainRs),
+      'window.json 命中才恢复位置；旧字段没有位置，用 (0,0) 会把窗口顶到左上角');
+
+    // --- 前端：reveal 时机 + 旧恢复路径确实删掉了 ---
+    const revealFn = extractFunction('revealMainWindow');
+    check(/invoke\('reveal_main_window'\)/.test(revealFn),
+      'revealMainWindow() 走 reveal_main_window 命令（不是 window.show —— 权限只开了 core:*）', revealFn);
+    const revealCalls = (html.match(/revealMainWindow\(\);/g) || []).length;
+    check(revealCalls >= 3,
+      '启动成功、初始化异常、以及兜底页三条路径都调 revealMainWindow（少一条 = 那种情况下窗口不出现，'
+      + '用户看到"启动了但没窗口"）', '调用点 ' + revealCalls + ' 处');
+    check(/function showFatalError\(title, detail\) \{[\s\S]{0,420}revealMainWindow\(\)/.test(html),
+      'showFatalError 内部自己兜一道（8 秒看门狗那条路不经过 DOMContentLoaded 的 catch）');
+    check(/loadAndApplyConfig\(\);[\s\S]{0,400}?revealMainWindow\(\);/.test(html),
+      '配置恢复（含 Rust 端几何恢复）之后才 reveal，避免"先显示再跳变"');
+    check(!/cfg\.windowWidth && cfg\.windowHeight/.test(html),
+      '前端旧的 set_window_size 恢复已删除（两处都设尺寸就会二次跳变）');
+    check(/if \(_cachedWindowSize\) \{\s*\r?\n\s*cfg\.windowWidth = _cachedWindowSize\[0\];/.test(html) &&
+          /out = \{ width: snap\.windowWidth, height: snap\.windowHeight \};/.test(html),
+      'windowWidth/windowHeight 仍在采集（别删：MCP 的 ui_get_state(window) 读它，迁移兜底也读它）');
   }
 
   console.log(`\n结果: ${pass} passed, ${fail} failed`);

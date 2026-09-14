@@ -3498,10 +3498,47 @@ fn window_auto_save(window: &tauri::Window, force: bool) {
     }
 }
 
+/// 迁移兜底：0.5.1 之前窗口尺寸是存在 `config.json` 的 `windowWidth`/`windowHeight` 里的
+/// （由前端 `collectConfig` 写入），没有位置、也没有最大化状态。刚升级上来的老用户
+/// 一次都还没写过 `window.json`，若直接回退默认值，窗口尺寸会被重置一次（用户可感知）。
+/// 所以读不到 `window.json` 时用它兜一次尺寸。
+fn legacy_window_state_from_config() -> Option<SavedWindowState> {
+    let cfg = dirs_config_path()?.join("config.json");
+    let text = std::fs::read_to_string(cfg).ok()?;
+    legacy_window_state_from_config_json(&text)
+}
+
+/// 从 `config.json` 的文本里取旧的窗口尺寸字段（纯函数，便于单测）。
+fn legacy_window_state_from_config_json(text: &str) -> Option<SavedWindowState> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let width = v.get("windowWidth").and_then(|x| x.as_u64()).unwrap_or(0);
+    let height = v.get("windowHeight").and_then(|x| x.as_u64()).unwrap_or(0);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some(SavedWindowState {
+        // 旧字段里没有位置：留 (0,0) 但由调用方决定**不恢复位置**（否则会把窗口顶到左上角，
+        // 还不如保持 tauri.conf.json 的居中）。
+        x: 0,
+        y: 0,
+        width: width.min(u32::MAX as u64) as u32,
+        height: height.min(u32::MAX as u64) as u32,
+        maximized: false,
+    })
+}
+
 /// 恢复窗口几何：仅在启动时调用一次。位置需保证落在某块显示器可见区域内，
 /// 避免用户拔掉外接显示器后窗口被“放”到不可见的虚拟屏上。
 fn apply_window_state(window: &tauri::WebviewWindow) {
-    let Some(state) = load_window_state() else { return };
+    // window.json 优先（含位置 + 最大化）；读不到时退回老配置里的尺寸。
+    // `restore_pos` 只有前者为真 —— 旧字段没有位置，用 (0,0) 会把窗口挪到左上角。
+    let (state, restore_pos) = match load_window_state() {
+        Some(s) => (s, true),
+        None => match legacy_window_state_from_config() {
+            Some(s) => (s, false),
+            None => return,
+        },
+    };
     let width = state.width.max(1047);
     let height = state.height.max(650);
     if state.maximized {
@@ -3511,7 +3548,7 @@ fn apply_window_state(window: &tauri::WebviewWindow) {
     }
     let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height }));
     // 仅当窗口矩形能与至少一块显示器重叠到可操作尺寸时才恢复位置，否则保持默认居中。
-    if rect_on_screen(window.app_handle(), state.x, state.y, width, height) {
+    if restore_pos && rect_on_screen(window.app_handle(), state.x, state.y, width, height) {
         let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
             x: state.x,
             y: state.y,
@@ -3535,6 +3572,51 @@ fn rect_on_screen(app: &tauri::AppHandle, x: i32, y: i32, w: u32, h: u32) -> boo
         }
     }
     false
+}
+
+#[cfg(test)]
+mod window_state_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_config_size_is_used_as_fallback() {
+        // 老用户的 config.json：只有尺寸、没有位置（位置与最大化状态是 window.json 才有的）
+        let s = legacy_window_state_from_config_json(
+            r#"{"version":2,"windowWidth":1400,"windowHeight":900,"theme":"dark"}"#,
+        )
+        .expect("旧配置里有尺寸就该回退，否则老用户升级后窗口尺寸被重置一次");
+        assert_eq!((s.width, s.height), (1400, 900));
+        assert!(!s.maximized, "旧字段没有最大化状态，不能凭空当成最大化");
+    }
+
+    #[test]
+    fn legacy_config_without_size_yields_nothing() {
+        // 没写过尺寸（或为 0、只写了一半）→ 不回退，保持 tauri.conf.json 的默认几何
+        assert!(legacy_window_state_from_config_json(r#"{"version":2}"#).is_none());
+        assert!(legacy_window_state_from_config_json(r#"{"windowWidth":0,"windowHeight":900}"#).is_none());
+        assert!(legacy_window_state_from_config_json(r#"{"windowWidth":1400}"#).is_none());
+        // 配置损坏也不能 panic —— 这是启动路径，panic 等于应用起不来
+        assert!(legacy_window_state_from_config_json("not json").is_none());
+        assert!(legacy_window_state_from_config_json("").is_none());
+    }
+
+    #[test]
+    fn saved_window_state_round_trips_through_json() {
+        // 副屏在主屏左侧时 x 为负，必须能存能读（否则多屏用户的窗口每次都被拉回主屏）
+        let s = SavedWindowState { x: -1200, y: 40, width: 1500, height: 950, maximized: true };
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(text.contains("-1200"));
+        let back: SavedWindowState = serde_json::from_str(&text).unwrap();
+        assert_eq!((back.x, back.y, back.width, back.height, back.maximized),
+                   (-1200, 40, 1500, 950, true));
+        // 默认值与 tauri.conf.json 里主窗口的几何（1047×794）一致
+        let d = SavedWindowState::default();
+        assert_eq!((d.width, d.height), (1047, 794));
+        assert!(!d.maximized);
+        // 位置哨兵：最小化时系统会给 (-32000,-32000)，只要求能存能读（是否写由 persist 决定）
+        let m = SavedWindowState { x: -32000, y: -32000, width: 1047, height: 794, maximized: false };
+        assert_eq!(serde_json::from_str::<SavedWindowState>(&serde_json::to_string(&m).unwrap()).unwrap().x, -32000);
+    }
 }
 
 /// 保存日志内容到文件

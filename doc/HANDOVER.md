@@ -166,10 +166,13 @@ serial-debugger-tauri/
 ### 6.3 发布新版本
 
 ```bash
-# 1. 同步版本号（3 处）
-#    - Cargo.toml        → package.version
-#    - tauri.conf.json   → version
-#    - installer.iss     → MyAppVersion
+# 1. 同步版本号（5 处，漏一处 CI 的 "Verify version consistency" 直接失败）
+#    - src-tauri/Cargo.toml        → package.version
+#    - src-tauri/tauri.conf.json   → version
+#    - installer.iss               → MyAppVersion
+#    - package.json                → version
+#    - src-tauri/Cargo.lock        → seahi-serial 条目的 version
+#    （package-lock.json 里的 version 不进 CI 校验，但顺手一起改，别留 0.4.0 这类旧值）
 
 # 2. 提交并推送
 git add -A && git commit -m "chore: 版本号更新至 v0.x.x"
@@ -181,7 +184,15 @@ git push origin v0.x.x
 
 # 4. GitHub Actions 自动构建并直接发布正式 Release（latest）
 #    无需手动发布（releaseDraft/prerelease/draft 均为 false）
+
+# 5. 【别忘】改了版本号必须重新编译本地发布产物再打安装包：
+#    env!("CARGO_PKG_VERSION") 是编译期烘焙进 exe 的，只改文件不重编，
+#    装出来的应用还是旧版本号（2026-09 真实事故，见 AGENTS.md 的版本号同步一节）。
+npm run build   # 或 cargo build --release --manifest-path src-tauri/Cargo.toml
 ```
+
+> 合并社区 PR 后要注意：**已发布的 tag 是不会跟着走的**。PR 合进 `main` 只影响后续版本，
+> 已经发布出去的安装包里没有这些改动 —— 需要就再切一个版本号发一次。
 
 ---
 
@@ -221,6 +232,7 @@ Windows 会缓存 exe 图标。修改应用图标后需要清除缓存。
 |------|------|
 | `main` | 稳定发布分支 |
 | `v*` tag | 版本发布标签，触发 GitHub Actions 自动构建 |
+| PR 分支 | 社区贡献（如 PR #20 的窗口几何记忆）。**用 `git merge --no-ff` 合并**，保留贡献者提交 —— rebase / cherry-pick 会让 GitHub 把 PR 标成 Closed 而不是 Merged |
 
 ---
 

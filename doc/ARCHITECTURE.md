@@ -546,6 +546,23 @@ WSL 串口通过 Python bridge 脚本实现：
 - 支持跳过和点击外部关闭
 - localStorage 记录完成状态
 
+### 6.10 主窗口几何记忆（window.json）
+
+窗口位置/尺寸/最大化状态由 **Rust 端**统一记忆，前端不再参与（PR #20，v0.5.1 起）。
+
+| 环节 | 实现 | 为什么 |
+|------|------|--------|
+| 存储 | `%APPDATA%\seahi-serial\window.json`（`SavedWindowState{x,y,width,height,maximized}`） | 与用户配置 `config.json` 分开：两者写入时机与责任人都不同，混在一起会互相覆盖 |
+| 采集 | `Moved`/`Resized` → `window_auto_save(window, false)`，400ms 去抖；`CloseRequested` → `window_auto_save(window, true)` 强制写 | 拖动时每帧写盘不可接受；但退出前最后一下几何必须留住 |
+| 保护 | 非强制保存只在 `window.is_visible()` 时执行；最大化只翻 `maximized` 标志、保留最近一次普通几何；最小化（`-32000` 哨兵坐标）不改写普通几何 | 启动期隐藏窗口摆放的瞬时态（甚至 2068×2060 这类异常尺寸）不能污染记录 |
+| 坐标 | 位置取 `outer_position()`、尺寸取 `inner_size()` | 恢复时 `set_position` 设外框、`set_size` 设客户区；取错一个，每次开关窗口都会向右下漂移一格 |
+| 恢复 | `setup` 里设完最小尺寸后 `apply_window_state()`；位置需通过 `rect_on_screen()`（与任一显示器至少重叠 60×40）才恢复 | 拔掉外接显示器后，窗口不能被"放"到不存在的虚拟屏上再也找不回来 |
+| 迁移 | 读不到 `window.json` 时回退 `config.json` 的 `windowWidth`/`windowHeight`（只取尺寸、不取位置） | 老用户升级后第一次启动不该看到窗口尺寸被重置；旧字段里没有位置，(0,0) 会把窗口顶到左上角 |
+| 显示 | `tauri.conf.json` 主窗口 `visible:false`；前端页面就绪后 `revealMainWindow()` → `reveal_main_window`；Rust 端另有 4 秒兜底显示 | 先显示再移动/缩放会看到窗口跳变；但**任何**异常路径都必须能把窗口露出来，否则用户面对的是"应用启动了但没有窗口" |
+
+`config.json` 里的 `windowWidth`/`windowHeight` **仍然照写不误**（`collectConfig`）：MCP 的
+`ui_get_state` 的 `window` 分支读的就是它，同时它也是上面那条迁移回退的数据来源。
+
 ---
 
 ## 7. 构建配置
@@ -571,6 +588,7 @@ WSL 串口通过 Python bridge 脚本实现：
 | `build.frontendDist` | `../src` | 前端直接使用 src 目录 |
 | `app.withGlobalTauri` | `true` | 全局 __TAURI__ API |
 | `app.security.csp` | `null` | 禁用 CSP（内联脚本需要） |
+| `app.windows[0].visible` | `false` | 启动先隐藏，等 Rust 恢复几何 + 前端就绪后由 `reveal_main_window` 一次性显示（见 §6.10；改了它窗口会先闪一下默认几何） |
 | `bundle.targets` | `"all"` | 所有打包格式 |
 
 ### 7.3 ACL 权限 (capabilities/default.json)

@@ -2508,6 +2508,10 @@ function reportError(errMsg, ctx) {
 /* ===== 启动兜底页：初始化失败/超时/桥接不可用时显示 ===== */
 function showFatalError(title, detail) {
     try {
+        // 主窗口启动时是隐藏的（tauri.conf.json 的 visible:false，为了在恢复几何后才显示）。
+        // 任何走到兜底页的路径都必须先把窗口露出来 —— 否则用户看到的是"应用启动了但没有窗口"，
+        // 连这个错误页都看不见（Rust 端另有 4 秒兜底显示，这里再兜一道）。
+        try { revealMainWindow(); } catch (_) {}
         var box = document.getElementById('bootError');
         if (!box) return;
         var t = document.getElementById('bootErrorTitle');
@@ -7152,6 +7156,10 @@ function collectConfig() {
         if (m) { var n = parseInt(m[1], 10); if (n > maxExtra) maxExtra = n; }
     });
     var cfg = { version: 2, extraCount: maxExtra, wslExtraCount: _wslExtraCount, monitors: {}, logDir: logDirPath, wslAutoMap: _wslAutoMap, theme: _currentTheme, themeStyle: _currentThemeStyle };
+    // 注意（别删）：窗口尺寸与位置**已改由 Rust 端统一记忆**（window.json，含最大化状态），
+    // 恢复不再走这里。但这两个字段仍要写 —— ① MCP 的 ui_get_state(window) 读的就是它
+    // （见 window 分支 snap.windowWidth/windowHeight）；② 老版本升级过来时 Rust 的
+    // load_window_state() 读不到 window.json，会回退用这两个字段兜一次尺寸。
     if (_cachedWindowSize) {
         cfg.windowWidth = _cachedWindowSize[0];
         cfg.windowHeight = _cachedWindowSize[1];

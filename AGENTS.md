@@ -13,7 +13,7 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/从机属性/busid 白名单/MCP 协议与日志中心）
 ```
 
-无 lint 与类型检查；后端有单测（`main.rs` 里的 `#[cfg(test)]` 模块，155 条 + 4 条 `#[ignore]`
+无 lint 与类型检查；后端有单测（`main.rs` 里的 `#[cfg(test)]` 模块，169 条 + 4 条 `#[ignore]`
 真机/诊断）。BLE 从机相关的三条（需蓝牙硬件）：
 
 ```bash
@@ -25,7 +25,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_builds -- --ignored -
 cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
 ```
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1102 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1139 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，62 条）：直接从
 `src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，也有把渲染函数丢进假 DOM
 跑行为断言），改前端后应先跑
@@ -41,6 +41,22 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
    设备永远搜不到"。`ble_get_devices` / `ble_find_peripheral` / `ble_refresh_rssi` 都必须遍历全部。
 3. 后端连接有 **10 秒显式超时**（`BLE_CONNECT_TIMEOUT_MS`，比前端的 15s 略短），超时会主动
    `disconnect` —— 为的是不让"前端放弃了、后端稍后才连上"造成长期状态错位。
+
+## 窗口几何记忆的三条约定（别改回去）
+
+窗口位置/尺寸/最大化由 **Rust 端** `%APPDATA%\seahi-serial\window.json` 统一管（`SavedWindowState`），
+详见 `doc/ARCHITECTURE.md` §6.10。三条踩过的坑：
+
+1. **`tauri.conf.json` 的主窗口是 `visible:false`，所以"把窗口显示出来"是一等公民**：任何让初始化
+   走不到"页面就绪"的路径都必须能露出窗口 —— 前端 `revealMainWindow()`（`reveal_main_window` 命令）
+   在成功、`catch`、`showFatalError` 三处都要调，Rust 端另有 4 秒兜底 `show()`。
+   少一处就是"应用启动了但用户看不到窗口"，而且**报错页自己也看不见**。
+2. **`config.json` 的 `windowWidth`/`windowHeight` 仍然要写**（`collectConfig`）：MCP 的
+   `ui_get_state` 的 `window` 分支读它，同时它是老版本升级上来的迁移兜底
+   （`legacy_window_state_from_config_json`，只取尺寸不取位置）。删了就两个功能一起坏。
+3. **位置存 `outer_position()`、尺寸存 `inner_size()`**，且非强制的自动保存只在窗口可见时执行、
+   最小化/最大化状态下不改写普通几何 —— 这三条各自对应一类真实故障：窗口每次开关往右下漂移、
+   启动期隐藏窗口的瞬时尺寸（2068×2060）被写进记录、`-32000` 哨兵坐标污染位置。
 
 ## MCP 的十一条关键约定（别改回去）
 
