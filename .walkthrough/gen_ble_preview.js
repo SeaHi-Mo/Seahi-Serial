@@ -3449,7 +3449,26 @@ console.log('preview ->', out);
       check(JSON.stringify(hdCls) === JSON.stringify(['qcmd-group-fold', 'qcmd-group-grip', 'qcmd-group-name',
         'qcmd-group-count', 'qcmd-dh-add', 'qcmd-dep-del']),
         '抬头里依次是：折叠 · 拖动握把 · 组名(可改) · 条数 · ＋添加 · 删组', JSON.stringify(hdCls));
-      check(box.children[0].children[2].value === '循环 1' && box.children[1].id === 'main-qcmdCols-' + g0id(),
+      // 折叠箭头与拖动握把：**CSS 画的**（字形 ▾/⠿ 在 10–12px 下几乎不可见，用户 2026-09 反馈过）
+      check(/\.qcmd-group-fold\s*\{[^}]*width:18px[^}]*height:18px/.test(html)
+        && /\.qcmd-group-fold::before\s*\{[^}]*border-right:1\.6px solid currentColor[^}]*transform:rotate\(45deg\)/.test(html)
+        && /\.qcmd-group\.folded \.qcmd-group-fold::before\s*\{[^}]*rotate\(-45deg\)/.test(html),
+        '折叠箭头是 CSS 画的 18px 按钮 + 5×5 折角（展开 ▾ / 折叠 ▸），不是小字号字形');
+      const bandSrc = extractFunction('makeQcmdGroupBand') + extractFunction('toggleQcmdGroupFold');
+      check(!/fold\.textContent|grip\.textContent/.test(html) && !/[⠿▾▸]/.test(bandSrc),
+        '组装抬头的代码不再依赖 ▾/▸/⠿ 字形（箭头与握把都是 CSS 画的）');
+      check(/\.qcmd-group-grip\s*\{[^}]*radial-gradient\(currentColor/.test(html)
+        && /\.qcmd-group-grip\s*\{[^}]*width:12px[^}]*height:16px/.test(html),
+        '拖动握把是 2×3 点阵（radial-gradient 平铺），可发现性不靠一个灰字');      // 折叠必须把**列标题与数据行一起**收掉（只藏数据行的话，表头会孤零零留在那儿 —— 用户 2026-09 实测发现）
+      check(/\.qcmd-group\.folded \.qcmd-cols,\s*\r?\n\.qcmd-group\.folded \.qcmd-group-items\s*\{[^}]*display:none/.test(html),
+        '折叠一组：列标题与数据行一起隐藏（只留抬头）');
+      check(/\.qcmd-group\.folded \.qcmd-group-hd\s*\{[^}]*opacity/.test(html),
+        '折叠后的抬头压暗一档（一眼看出这组是折着的）');
+      // 真折一次：盒子挂上 folded、箭头旋转由 CSS 决定、标题与数据行都被 CSS 藏掉
+      sbSide.toggleQcmdGroupFold('main', g0id());
+      check(sbSide.qcmdGroupById('main', g0id()).folded === true, '点折叠箭头：组的 folded 状态翻成 true（CSS 据此连列标题一起藏）');
+      sbSide.toggleQcmdGroupFold('main', g0id());
+      check(sbSide.qcmdGroupById('main', g0id()).folded === false, '再点一下展开');      check(box.children[0].children[2].value === '循环 1' && box.children[1].id === 'main-qcmdCols-' + g0id(),
         '组名填进输入框、列标题 id 带组号（两组时不会撞）',
         box.children[0].children[2].value + ' / ' + box.children[1].id);
     }

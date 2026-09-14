@@ -1891,17 +1891,31 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 }
 .qcmd-group-hd.dragging { background:var(--btn-p); color:#fff; }   /* 正在拖：整条点亮，一眼看出在搬哪一组 */
 .qcmd-group-hd.dragging .qcmd-group-name, .qcmd-group-hd.dragging .qcmd-group-count { color:#fff; }
+/* 折叠箭头与拖动握把都**用 CSS 画**，不用 `▾` / `⠿` 字形：那两个字符在 10–12px 下又细又灰
+   （用户 2026-09 反馈"折叠 icon 太小了，几乎不可见"），而且字体不同渲染尺寸还不一样。
+   CSS 画的线宽/尺寸都是确定的，任意 DPI 都清晰。 */
 .qcmd-group-fold {
-    border:none; background:transparent; color:var(--text-d); cursor:pointer; flex-shrink:0;
-    font-size:10px; line-height:1; padding:2px 3px; border-radius:3px; font-family:inherit;
+    width:18px; height:18px; padding:0; flex-shrink:0; box-sizing:border-box;
+    display:inline-flex; align-items:center; justify-content:center;
+    border:none; border-radius:4px; background:transparent; cursor:pointer;
+    color:var(--text-b);                     /* 比列标题的 --text-d 亮一档：它是可点的控件，不是说明文字 */
 }
-.qcmd-group-fold:hover { background:rgba(128,128,128,.15); color:var(--text); }
+.qcmd-group-fold::before {
+    content:''; display:block; width:5px; height:5px;
+    border-right:1.6px solid currentColor; border-bottom:1.6px solid currentColor;
+    transform:rotate(45deg); margin-top:-2px;   /* 展开态 ▾（旋转后视觉重心偏上，往回收一点） */
+}
+.qcmd-group.folded .qcmd-group-fold::before { transform:rotate(-45deg); margin-top:0; }   /* 折叠态 ▸ */
+.qcmd-group-fold:hover { background:rgba(128,128,128,.18); color:var(--text); }
 .qcmd-group-grip {
-    flex-shrink:0; cursor:grab; color:var(--text-d); font-size:12px; line-height:1;
-    padding:0 2px; opacity:.6;
+    width:12px; height:16px; flex-shrink:0; cursor:grab; border-radius:3px;
+    color:var(--text-d); opacity:.85;
+    /* 2×3 的点阵（radial-gradient 平铺）—— 一眼看出"这里可以拖"，又不抢组名 */
+    background-image:radial-gradient(currentColor 1.1px, transparent 1.2px);
+    background-size:5px 5px; background-position:1px 2px; background-repeat:repeat;
 }
 .qcmd-group-grip:hover { opacity:1; color:var(--link); }
-.qcmd-group-hd.dragging .qcmd-group-grip { cursor:grabbing; opacity:1; }
+.qcmd-group-hd.dragging .qcmd-group-grip { cursor:grabbing; opacity:1; color:#fff; }
 .qcmd-group-name {
     flex:1; min-width:0; background:transparent; border:1px solid transparent; border-radius:3px;
     color:var(--text-b); font-size:11px; font-family:inherit; padding:1px 4px; outline:none; cursor:text;
@@ -1914,7 +1928,9 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     font-size:14px; line-height:1; padding:0 4px; border-radius:3px;
 }
 .qcmd-dep-del:hover { color:var(--accent-orange); background:rgba(244,135,113,.12); }
-/* 折叠：只收起组里的指令，抬头还在（收起来的抬头一眼看得出是折着的） */
+/* 折叠：**列标题与数据行一起收**，只留抬头 —— 用户 2026-09 实测发现只藏了数据行，
+   表头（顺序/指令/延时/HEX）孤零零留在那儿。收起来的抬头压暗一档，一眼看出这组是折着的。 */
+.qcmd-group.folded .qcmd-cols,
 .qcmd-group.folded .qcmd-group-items { display:none; }
 .qcmd-group.folded .qcmd-group-hd { opacity:.75; }
 /* 循环发送开关（「＋ 添加」左侧）：关闭态只有描边，开启态填主题色 + 一个会亮的小圆点。
@@ -7324,13 +7340,11 @@ function makeQcmdGroupBand(mid, g) {
 
     var fold = document.createElement('button');
     fold.className = 'qcmd-group-fold';
-    fold.textContent = g.folded ? '▸' : '▾';
-    fold.title = g.folded ? '展开这一组' : '折叠这一组';
+    fold.title = g.folded ? '展开这一组' : '折叠这一组';   // 箭头是 CSS 画的（::before），按钮里不放字形
     fold.addEventListener('click', function(e) { e.stopPropagation(); toggleQcmdGroupFold(mid, g.id); });
 
     var grip = document.createElement('span');
-    grip.className = 'qcmd-group-grip';
-    grip.textContent = '⠿';
+    grip.className = 'qcmd-group-grip';                    // 点阵也是 CSS 画的
     grip.title = '按住上下拖动：调整组的顺序（循环按这个顺序从上往下走，最上面那组就是起点）';
     grip.addEventListener('mousedown', function(e) { startQcmdGroupDrag(e, mid, g.id); });
 
@@ -7462,7 +7476,7 @@ function toggleQcmdGroupFold(mid, gid) {
     if (band) {
         band.classList.toggle('folded', !!g.folded);
         var fold = band.querySelector('.qcmd-group-fold');
-        if (fold) { fold.textContent = g.folded ? '▸' : '▾'; fold.title = g.folded ? '展开这一组' : '折叠这一组'; }
+        if (fold) fold.title = g.folded ? '展开这一组' : '折叠这一组';   // 箭头朝向由 .folded 上的 CSS 决定
     }
     scheduleConfigSave();
 }
