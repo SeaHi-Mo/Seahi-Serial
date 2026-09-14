@@ -1485,6 +1485,39 @@ BLE 面板有两套完全不同的东西：**主机**（当中央去连别人的
 
 ## 17. 实施记录
 
+### 2026-09-14 · §16.6 开工：**危险动作二次确认**落地 + BLE 语义工具第一批（4 个）✅
+
+按 §16.6.5 的顺序做的第一步（**机制先于工具**：危险确认与 BLE 第一批同一次落地，
+否则要么漏确认、要么回头补）。
+
+**危险动作二次确认（§16.6.4）**
+
+- `DANGER_TOOLS`（protocol.rs）：名字 → 一句后果。判定口径只有一条：**会对外产生不可撤销影响**
+  （串口收发不算 —— 它是本职，加确认只会让人关掉确认）
+- 门放在 `call_tool` 里、**只读门之后**：没带 `confirm:true` → `-32006`（前置条件类，
+  Agent 该做的是"确认后再来"而不是改参数重试），且**不执行**（连工具调用计数都不加 ——
+  "没执行"要有证据）；只读模式下连确认也不给过（先返回 `-32007`）
+- 新增只读工具 `mcp_danger`：AI 可以先问"有哪些危险动作、各自什么后果"再决定
+- 四条断言一起守：表里每项都必须是真工具且 schema 有 `confirm`、有后果说明；不带 confirm 必被拦
+  且计数为 0；带了 confirm 必须放行（错误里不能再出现"危险动作"）；普通工具不得要求 confirm
+
+**BLE 语义工具第一批（§16.6.1 里最靠前的一批）**
+
+- 前端新增 `mcpBleOp`（与 `mcpSerialOp` 同构），`ui_call` 的 `ble` 面板接上它；
+  `state` / `periphStatus` 只读；`periphStart` / `periphStop` **复用面板的
+  `startBlePeriph()` / `stopBlePeriph()`**（顺手让这两个函数 return 自己的 promise，MCP 才能等它完成再读状态）
+- Rust：`ble_get_state`、`ble_periph_status`、`ble_periph_start`、`ble_periph_stop` + `mcp_danger`，
+  共 5 个新工具（总数 33 → **38**）；`ble_call` 与 `serial_call` 同构；启停进 `WRITE_TOOLS`
+- 假前端加了 `ble` 分支并把 5 个工具都接进"调用情况"表（那张表与契约表必须覆盖同一批界面工具，
+  漏一个就 fail —— 这次就是它逼着我把 BLE 四个补进 want 列表的）
+
+**验证**：`cargo test` 170 通过（+1 危险门测试、+4 工具契约、+4 调用情况）；
+`node .walkthrough/gen_ble_preview.js` 1351 通过（+13 条 BLE/危险门断言）；
+`doc/MCP_TOOLS.md` 重生成（38 个工具，新增"蓝牙语义工具"与"安全与策略"两组）。
+
+**下一步**：BLE 第二批（扫描/连接/服务树/读写/订阅通知/读通知内容/刷新 RSSI/配对）——
+清单与契约见 §16.6.1；危险机制已就位，`ble_pair`/`ble_periph_respond_write` 直接进 `DANGER_TOOLS` 即可。
+
 ### 2026-09-14 · 「报得出来的开关就得设得了」—— 补上 `advOpen` 的"看得到改不了" ✅
 
 用户问的是**自动滚动**有没有对应工具。答案：**有** —— `serial_set_display { autoScroll: true|false }`，

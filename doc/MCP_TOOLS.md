@@ -26,7 +26,7 @@
 
 - 运行时：`tools/list`（分页，每页 50，用 `nextCursor` 翻页）——这是**权威来源**，本页只是它的可读版本。
 - `mcp_limits` / `mcp_status` 里的 `toolCount` / `builtinToolCount` 能看到数量。
-- 内置工具 **33 个**；另有可选的 `ctl_*`（见 §4）。
+- 内置工具 **38 个**；另有可选的 `ctl_*`（见 §4）。
 
 ## 3. 一页速查
 
@@ -45,6 +45,11 @@
 | [`serial_get_history`](#serial-get-history) | 读 | 读该分栏的发送历史（最近的在前）。用来回看刚才发过什么，或复用上一条指令。 |
 | [`serial_get_output`](#serial-get-output) | 读 | 读该分栏**实际收发的内容**（串口监视器的核心：设备刚才回了什么）。默认收+发都返回，按时间归并；每条带 dir 区分。数据取自日志中心，与 log_tail 是同一份存储；本工具额外的好处是**不需要你知道通道名**，且「还没收到数据」会返回空列表而不是报错。 |
 | [`serial_quick_cmd`](#serial-quick-cmd) | 读 | 快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、delayMs 延时、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。 |
+| [`ble_get_state`](#ble-get-state) | 读 | 蓝牙分栏的当前状态：是否在扫描、扫到几台设备、选中/已连的是哪台、GATT 服务树有几个服务、订阅了几路通知、内嵌监视器是否打开。只读，无副作用。 |
+| [`ble_periph_status`](#ble-periph-status) | 读 | BLE **从机**（把本机变成外设）的状态：是否真的在对外广播、服务 UUID、特征数、是否可被发现/可连接、是否手动应答写请求、以及后端给出的告警（蓝牙关着 / 不支持外设角色等）。只读。 |
+| [`ble_periph_start`](#ble-periph-start) | 读 | 启动 BLE 从机：按面板上已配置好的服务/特征**对外广播**。⚠️ 这是危险动作（附近设备都能看到并连上来），必须带 confirm:true；不带时不会执行，并返回 -32006 说明后果。 |
+| [`ble_periph_stop`](#ble-periph-stop) | 读 | 停止 BLE 从机广播。⚠️ 危险动作（已连上来的中心设备会断开），必须带 confirm:true。 |
+| [`mcp_danger`](#mcp-danger) | 读 | 列出**需要二次确认**的危险工具（会对外产生不可撤销影响的那些）与各自的后果。调用它们时必须带 confirm:true，否则不会执行。只读。 |
 | [`app_info`](#app-info) | 读 | 本机 SeaHi Serial 应用的基本信息（版本、平台、进程、运行时长）。只读，无副作用。 |
 | [`mcp_status`](#mcp-status) | 读 | MCP 服务器自身状态：是否运行、监听端点、会话数、请求数与限流/丢弃计数。只读。 |
 | [`mcp_limits`](#mcp-limits) | 读 | MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。 |
@@ -276,6 +281,69 @@
 | `delayMs` | number | 否 | action=add/update 时的延时（毫秒，本条发完到下发一条的间隔，缺省 1000，上限 600000） |
 | `hex` | boolean | 否 | action=add/update 时：这一条是否按 HEX 解析后发送（默认 false） |
 | `pane` | string | 否 | 分栏名，省略=main |
+
+### 蓝牙语义工具（BLE）
+
+#### `ble_get_state`
+
+- **作用**：蓝牙分栏的当前状态：是否在扫描、扫到几台设备、选中/已连的是哪台、GATT 服务树有几个服务、订阅了几路通知、内嵌监视器是否打开。只读，无副作用。
+- **读/写**：只读，无副作用
+- **返回**：{scanning, deviceCount, selected, connected, addr, connName, serviceCount, notifySubs, logCount, monitorOpen}
+- **注意**：**操作蓝牙前先调它**；只反映面板内存里的状态，不会去碰适配器
+
+**入参**
+
+无（不需要参数）
+
+#### `ble_periph_status`
+
+- **作用**：BLE **从机**（把本机变成外设）的状态：是否真的在对外广播、服务 UUID、特征数、是否可被发现/可连接、是否手动应答写请求、以及后端给出的告警（蓝牙关着 / 不支持外设角色等）。只读。
+- **读/写**：只读，无副作用
+- **返回**：{advertising, serviceUuid, chars, discoverable, connectable, manualReply, warning?}
+- **注意**：**关键**：`advertising=false` 表示"服务建好了但没在广播"（蓝牙关着/不支持外设角色时 `warning` 会给真实原因），别把它当成功
+
+**入参**
+
+无（不需要参数）
+
+#### `ble_periph_start`
+
+- **作用**：启动 BLE 从机：按面板上已配置好的服务/特征**对外广播**。⚠️ 这是危险动作（附近设备都能看到并连上来），必须带 confirm:true；不带时不会执行，并返回 -32006 说明后果。
+- **读/写**：只读，无副作用
+- **返回**：{pane, started, advertising, serviceUuid, warning?}
+- **注意**：**危险动作：对外广播**（附近设备都能看到并连上来）。必须带 `confirm:true`，否则不执行并回 `-32006`；用的是面板上已配置好的服务/特征
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `confirm` | boolean | 否 | 危险动作确认：必须为 true 才会执行（想清楚再传） |
+
+#### `ble_periph_stop`
+
+- **作用**：停止 BLE 从机广播。⚠️ 危险动作（已连上来的中心设备会断开），必须带 confirm:true。
+- **读/写**：只读，无副作用
+- **返回**：{pane, started, advertising, serviceUuid, warning?}
+- **注意**：**危险动作**：停掉对外广播（已连上来的中心设备会断开）。必须带 `confirm:true`
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `confirm` | boolean | 否 | 危险动作确认：必须为 true 才会执行 |
+
+### 安全与策略
+
+#### `mcp_danger`
+
+- **作用**：列出**需要二次确认**的危险工具（会对外产生不可撤销影响的那些）与各自的后果。调用它们时必须带 confirm:true，否则不会执行。只读。
+- **读/写**：只读，无副作用
+- **返回**：{tools:[{name, consequence, confirm}], total, note}
+- **注意**：危险工具清单（会对外产生不可撤销影响的那些）。**先问后果再确认**：不带 confirm 调用它们不会执行
+
+**入参**
+
+无（不需要参数）
 
 ### 应用与服务器
 

@@ -68,7 +68,12 @@ const META = {
   serial_clear: ['写', '{pane, cleared:true, outputLines}', '**只清界面**，不动磁盘会话日志缓存'],
   serial_get_history: ['读', '{pane, total, items:[…]}', '最近的在前'],
   serial_get_output: ['读', '{pane, direction, isConnected, channels:{rx,tx}, count, items:[{seq,ts,dir,text,bytes}], truncated, note?}', '**串口监视器的核心：读设备回了什么**。默认收+发按时间归并；数据与 `log_tail` 同一份存储，但**不需要你知道通道名**，且"还没收到数据"返回空列表 + note 而不是报错'],
-  serial_quick_cmd: ['读', '{pane, items:[{index,label,value,seq,delayMs,hex}], usable, file, source}', '不带 index 只列；带 index 才执行（→ {pane, ran, label, value, hex}）。`seq`/`delayMs`/`hex` 是**每条自己的发送参数**（顺序号 > 0 才进面板上的「循环发送」列表，`delayMs` 默认 1000，`hex` 默认关闭）；`source=file` 表示这个列表来自外部文件（面板里增删改会写回该文件），`file` 是它的路径；`source=config` 才是纯配置里的列表'],
+  // ===== BLE 语义（第一批：状态 + 从机）=====
+  ble_get_state: ['读', '{scanning, deviceCount, selected, connected, addr, connName, serviceCount, notifySubs, logCount, monitorOpen}', '**操作蓝牙前先调它**；只反映面板内存里的状态，不会去碰适配器'],
+  ble_periph_status: ['读', '{advertising, serviceUuid, chars, discoverable, connectable, manualReply, warning?}', '**关键**：`advertising=false` 表示"服务建好了但没在广播"（蓝牙关着/不支持外设角色时 `warning` 会给真实原因），别把它当成功'],
+  ble_periph_start: ['写⚠️', '{pane, started, advertising, serviceUuid, warning?}', '**危险动作：对外广播**（附近设备都能看到并连上来）。必须带 `confirm:true`，否则不执行并回 `-32006`；用的是面板上已配置好的服务/特征'],
+  ble_periph_stop: ['写⚠️', '{pane, started, advertising, serviceUuid, warning?}', '**危险动作**：停掉对外广播（已连上来的中心设备会断开）。必须带 `confirm:true`'],
+  mcp_danger: ['读', '{tools:[{name, consequence, confirm}], total, note}', '危险工具清单（会对外产生不可撤销影响的那些）。**先问后果再确认**：不带 confirm 调用它们不会执行'],  serial_quick_cmd: ['读', '{pane, items:[{index,label,value,seq,delayMs,hex}], usable, file, source}', '不带 index 只列；带 index 才执行（→ {pane, ran, label, value, hex}）。`seq`/`delayMs`/`hex` 是**每条自己的发送参数**（顺序号 > 0 才进面板上的「循环发送」列表，`delayMs` 默认 1000，`hex` 默认关闭）；`source=file` 表示这个列表来自外部文件（面板里增删改会写回该文件），`file` 是它的路径；`source=config` 才是纯配置里的列表'],
   app_info: ['读', '`{name, version, profile, os, arch, pid, uptimeSecs}`', ''],
   mcp_status: ['读', '打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/statusEmits/readOnly/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`', '**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新；**`readOnly` 必须先看** —— 为 true 时所有写操作会被拒（-32007）'],
   mcp_limits: ['读', '`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels, maxQuickCmdItems, maxQuickCmdLabelChars, maxQuickCmdValueChars, maxQuickCmdFileBytes}`', '用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**'],
@@ -93,6 +98,8 @@ const META = {
 
 const GROUPS = [
   ['串口语义工具（**优先用这些**，比 ui_* 通用桥更准）', ['serial_get_state', 'serial_select_port', 'serial_set_baud', 'serial_set_frame', 'serial_set_lines', 'serial_set_display', 'serial_open', 'serial_close', 'serial_send', 'serial_clear', 'serial_get_history', 'serial_get_output', 'serial_quick_cmd']],
+  ['蓝牙语义工具（BLE）', ['ble_get_state', 'ble_periph_status', 'ble_periph_start', 'ble_periph_stop']],
+  ['安全与策略', ['mcp_danger']],
   ['应用与服务器', ['app_info', 'mcp_status', 'mcp_limits', 'serial_list_ports']],
   ['界面操作（走合成 DOM 事件，和用户点击同一条路径）', ['ui_list', 'ui_describe', 'ui_get', 'ui_set', 'ui_click', 'ui_get_state']],
   ['日志中心', ['log_channels', 'log_tail', 'log_search', 'log_stats', 'log_clear', 'log_export']],

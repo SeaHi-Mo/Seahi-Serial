@@ -2691,7 +2691,7 @@ console.log('preview ->', out);
                        mcpSrc.indexOf('\n    ]', mcpSrc.indexOf('pub fn tool_defs()')))
         .matchAll(/"name":\s*"([a-z][a-z0-9_]*)"/g)].map((m) => m[1])
     )];
-    check(srcTools.length === 33, '源码里是 33 个内置工具（20 通用 + 13 串口语义）', srcTools.length);
+    check(srcTools.length === 38, '源码里是 38 个内置工具（20 通用 + 13 串口语义 + 5 蓝牙语义）', srcTools.length);
     const missing = srcTools.filter((n) => toolsDoc.indexOf('#### `' + n + '`') < 0);
     check(missing.length === 0, '工具参考文档 doc/MCP_TOOLS.md 列出了全部内置工具', '缺：' + missing.join(','));
     check((toolsDoc.match(/^#### `/gm) || []).length === srcTools.length,
@@ -2755,7 +2755,8 @@ console.log('preview ->', out);
     const genMeta = fs.readFileSync(path.join(root, '.walkthrough', 'gen_mcp_tools_doc.js'), 'utf8');
     const rustWrites = [...(/pub const WRITE_TOOLS: &\[&str\] = &\[([\s\S]*?)\];/.exec(mcpProd) || ['', ''])[1]
       .matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort();
-    const docWrites = [...genMeta.matchAll(/^\s{2}([a-z_]+): \['写'/gm)].map((m) => m[1]).sort();
+    // 「写⚠️」也算写（⚠️ 只是给读者的危险动作提示，不改变读写分类）
+  const docWrites = [...genMeta.matchAll(/^\s{2}([a-z_]+): \['写/gm)].map((m) => m[1]).sort();
     check(rustWrites.length >= 10, '扫到了 Rust 的写工具表（不是空扫）', rustWrites.join(','));
     check(JSON.stringify(rustWrites.filter((n) => n !== 'serial_quick_cmd'))
         === JSON.stringify(docWrites.filter((n) => n !== 'serial_quick_cmd')),
@@ -4218,6 +4219,37 @@ console.log('preview ->', out);
       check(missingFe.length === 0, '前端 mcpSerialOp 对每个 quick* op 都有分支', missingFe.join(',') || '(全都有)');
       check(/serial_quick_cmd[\s\S]{0,1200}Some\("add"\)/.test(proto) && /Some\("group"\)/.test(proto),
         'Rust 的 action → op 映射在（add/group/loop/update/remove）');
+    }
+    // ---- BLE 语义层（MCP 的 ble_* 工具）：前端分支、危险动作、跨端对齐 ----
+    {
+      const proto = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');
+      check(/if \(op === 'ble'\) return mcpBleOp\(payload\)/.test(html) && /function mcpBleOp\(payload\)/.test(html),
+        'ui_call 的 ble 面板接上了 mcpBleOp（与 serial 同构）');
+      for (const a of ['state', 'periphStatus', 'periphStart', 'periphStop']) {
+        check(html.indexOf("action === '" + a + "'") >= 0, "mcpBleOp 有 " + a + " 分支");
+      }
+      // 启动/停止走面板那颗按钮的函数，不给 AI 另写一套
+      check(/typeof startBlePeriph === 'function' \? startBlePeriph\(\)/.test(html)
+        && /typeof stopBlePeriph === 'function' \? stopBlePeriph\(\)/.test(html),
+        'BLE 从机启停复用面板的 startBlePeriph/stopBlePeriph（不是 AI 专用逻辑）');
+      check(/return invoke\('ble_periph_start'/.test(html) && /return invoke\('ble_periph_stop'/.test(html),
+        '两个从机函数返回各自的 promise（MCP 才能等它完成再读状态）');
+      // 危险动作：Rust 侧的表与二次确认门
+      check(/pub const DANGER_TOOLS[\s\S]{0,400}ble_periph_start[\s\S]{0,400}ble_periph_stop/.test(proto),
+        '危险动作表里有 BLE 从机启停（对外广播 = 不可撤销）');
+      check(/danger_note\(name\)[\s\S]{0,500}E_DEVICE_NOT_READY/.test(proto)
+        && /confirm/.test(proto) && /这一步\*\*没有执行\*\*/.test(proto),
+        '二次确认门：没带 confirm 就不执行，并回 -32006 说明后果');
+      check(/if core\.read_only\(\) && is_write_call[\s\S]{0,700}danger_note\(name\)/.test(proto),
+        '只读门在危险门**之前**（只读模式下连确认也不给过）');
+      // 跨端：Rust 的 ble_* 工具 ↔ 前端 action
+      const pairs = [['ble_get_state', 'state'], ['ble_periph_status', 'periphStatus'],
+                     ['ble_periph_start', 'periphStart'], ['ble_periph_stop', 'periphStop']];
+      const bad = pairs.filter(p => proto.indexOf('"' + p[0] + '"') < 0
+        || proto.indexOf('ble_call(core, "' + p[1] + '"') < 0);
+      check(bad.length === 0, '每个 ble_* 工具都能映射到前端的 action', JSON.stringify(bad));
+      check(/"mcp_danger"/.test(proto) && /pub const WRITE_TOOLS[\s\S]{0,700}"ble_periph_start"/.test(proto),
+        'mcp_danger 工具在、BLE 启停也算写（只读模式拦得下）');
     }
     // ---- 跨端一致：前端上限必须与 Rust 侧常量一致 ----
     const protoSrc = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');

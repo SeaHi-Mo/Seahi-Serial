@@ -5533,7 +5533,79 @@ function mcpHandleUiCmd(op, payload) {
         return { ok: true, value: { results: results, effects: effects } };
     }
     if (op === 'serial') return mcpSerialOp(payload);
+    if (op === 'ble') return mcpBleOp(payload);
     return { ok: false, error: '未知的 ui 操作: ' + op };
+}
+
+/* ===== BLE 语义层（给 MCP 的 ble_* 工具用）=====
+ *
+ * 与 `mcpSerialOp` 同构：一个 action 分支表，**每个分支都调面板那颗按钮走的函数**
+ * （启动/停止广播就是 `startBlePeriph()` / `stopBlePeriph()`），不给 AI 另写一套。
+ * 只读的两个（state / periphStatus）保证没有任何副作用。
+ *
+ * ⚠️ 从机启停是**危险动作**（对外广播，撤不回来）：Rust 侧 `DANGER_TOOLS` 要求 `confirm:true`
+ * 才会走到这里（见 protocol.rs 的二次确认门）。
+ */
+function mcpBleOp(payload) {
+    payload = payload || {};
+    var action = payload.action;
+
+    if (action === 'state') {
+        // 只读：全部来自面板已有的内存状态（_ble* 那几个模块级变量），不多打一次后端
+        return { ok: true, value: {
+            scanning: !!_bleScanning,
+            deviceCount: (_bleDevices || []).length,
+            selected: _bleSelected || null,
+            connected: !!_bleConnInfo,
+            addr: _bleConnAddr || null,
+            connName: (_bleConnInfo && (_bleConnInfo.name || _bleConnInfo.deviceName)) || null,
+            serviceCount: (_bleServices || []).length,
+            notifySubs: Object.keys(_bleSubs || {}).filter(function (k) { return _bleSubs[k]; }).length,
+            logCount: (_bleLog || []).length,
+            monitorOpen: !!_bleExtraMon,
+        } };
+    }
+    if (action === 'periphStatus') {
+        // 只读：直接问后端（面板的 refreshBlePeriphStatus 会捎带渲染，这里只取状态）
+        return invoke('ble_periph_status').then(function (st) {
+            st = st || {};
+            return { ok: true, value: {
+                advertising: !!st.advertising,
+                serviceUuid: st.serviceUuid || null,
+                chars: (st.characteristics || st.chars || []).length,
+                discoverable: !!st.discoverable,
+                connectable: !!st.connectable,
+                manualReply: !!st.manualReply,
+                warning: st.warning || null,
+            } };
+        }).catch(function (e) { return { ok: false, error: '读从机状态失败: ' + e }; });
+    }
+    if (action === 'periphStart' || action === 'periphStop') {
+        // 走面板那颗按钮的函数（含它自己的表单校验与 toast）
+        try {
+            var p = action === 'periphStart'
+                ? (typeof startBlePeriph === 'function' ? startBlePeriph() : null)
+                : (typeof stopBlePeriph === 'function' ? stopBlePeriph() : null);
+            var done = (p && typeof p.then === 'function')
+                ? p
+                : invoke('ble_periph_status');        // 函数没回 promise（老版本）→ 直接读状态兜底
+            return Promise.resolve(done).then(function () {
+                return invoke('ble_periph_status');
+            }).then(function (st) {
+                st = st || {};
+                return { ok: true, value: {
+                    pane: 'ble', started: action === 'periphStart',
+                    advertising: !!st.advertising,
+                    serviceUuid: st.serviceUuid || null,
+                    warning: st.warning || null,
+                } };
+            }).catch(function (e) { return { ok: false, error: (action === 'periphStart' ? '启动' : '停止') + '广播失败: ' + e }; });
+        } catch (e) {
+            return { ok: false, error: '从机操作失败: ' + e };
+        }
+    }
+    return { ok: false, invalidParams: true, error: '未知的 ble action: ' + action
+        + '（可用：state / periphStatus / periphStart / periphStop）' };
 }
 
 /* ===== 串口语义层（给 MCP 的 serial_* 工具用）=====
@@ -12345,7 +12417,7 @@ function startBlePeriph() {
     if (btn) btn.disabled = true;
     pushBlePeriphLog({ text: '[启动] 服务 ' + p.serviceUuid + ' · ' + p.characteristics.length + ' 个特征', dim: '' });
     renderBlePeriphLog();
-    invoke('ble_periph_start', {
+    return invoke('ble_periph_start', {
         serviceUuid: p.serviceUuid,
         characteristics: p.characteristics,
         discoverable: p.discoverable,
@@ -12377,7 +12449,7 @@ function startBlePeriph() {
 }
 
 function stopBlePeriph() {
-    invoke('ble_periph_stop').then(function() {
+    return invoke('ble_periph_stop').then(function() {
         // 停掉后待应答列表必然作废（后端会把它们按协议错误回掉）
         _blePfPending = [];
         renderBlePfPending();

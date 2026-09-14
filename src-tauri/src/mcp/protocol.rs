@@ -101,10 +101,37 @@ pub const WRITE_TOOLS: &[&str] = &[
     "ui_click",
     "log_clear",
     "mcp_config_set",
+    // BLE 从机的启停：写 + **危险**（见 DANGER_TOOLS，还要 confirm:true）
+    "ble_periph_start",
+    "ble_periph_stop",
 ];
 
 /// 判断**这一次调用**算不算写操作。
 ///
+/// **危险动作表**（设计 §9 / §16.6.4）：名字 → 一句"后果"。
+///
+/// 判定口径**只有一条**：会对外产生**不可撤销**影响的操作（对外广播、放行外部写入、
+/// 在别人的设备上执行、动宿主机的硬件挂载、系统弹窗配对）。
+/// 串口收发**不算** —— 它是这个工具的本职，天天要按，加确认只会让人关掉确认。
+///
+/// 表里的每个工具调用时都必须带 `confirm: true`，否则**不执行**并回 `-32006`
+/// （"前置条件没满足"那一类：Agent 该做的是"确认后再来"，不是改参数重试）。
+pub const DANGER_TOOLS: &[(&str, &str)] = &[
+    (
+        "ble_periph_start",
+        "让本机变成 BLE 外设并**对外广播**服务（附近设备都能看到、能连上来）",
+    ),
+    (
+        "ble_periph_stop",
+        "停掉正在对外广播的 BLE 外设（已连上来的中心设备会断开）",
+    ),
+];
+
+/// 这个工具要不要二次确认；要的话返回它的后果说明
+pub fn danger_note(name: &str) -> Option<&'static str> {
+    DANGER_TOOLS.iter().find(|(n, _)| *n == name).map(|(_, why)| *why)
+}
+
 /// 为什么不能只看工具名：`serial_quick_cmd` 不带 `index`/`action` 是"列出快速指令"（只读），
 /// 带 `index` 就是"真的把那条指令发出去"、带 `action` 就是"改列表/开关循环"（都是写）。
 /// **只读模式必须按调用判，不能按工具判** —— 否则要么漏放一个真写操作进来，
@@ -345,6 +372,45 @@ pub fn tool_defs() -> Vec<Value> {
                 },
                 "additionalProperties": false
             }
+        }),
+        // ===== BLE 语义工具（§16.6.1 第一批：状态 + 从机）=====
+        // 与 serial_* 同构：工具名 → 前端 `mcpBleOp` 的 action；读写分类见 is_write_call。
+        json!({
+            "name": "ble_get_state",
+            "description": "蓝牙分栏的当前状态：是否在扫描、扫到几台设备、选中/已连的是哪台、GATT 服务树有几个服务、订阅了几路通知、内嵌监视器是否打开。只读，无副作用。",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        json!({
+            "name": "ble_periph_status",
+            "description": "BLE **从机**（把本机变成外设）的状态：是否真的在对外广播、服务 UUID、特征数、是否可被发现/可连接、是否手动应答写请求、以及后端给出的告警（蓝牙关着 / 不支持外设角色等）。只读。",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        json!({
+            "name": "ble_periph_start",
+            "description": "启动 BLE 从机：按面板上已配置好的服务/特征**对外广播**。⚠️ 这是危险动作（附近设备都能看到并连上来），必须带 confirm:true；不带时不会执行，并返回 -32006 说明后果。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "confirm": { "type": "boolean", "description": "危险动作确认：必须为 true 才会执行（想清楚再传）" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ble_periph_stop",
+            "description": "停止 BLE 从机广播。⚠️ 危险动作（已连上来的中心设备会断开），必须带 confirm:true。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "confirm": { "type": "boolean", "description": "危险动作确认：必须为 true 才会执行" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "mcp_danger",
+            "description": "列出**需要二次确认**的危险工具（会对外产生不可撤销影响的那些）与各自的后果。调用它们时必须带 confirm:true，否则不会执行。只读。",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
         // ===== 通用界面桥（S5）：保证"没有任何控件够不到" =====
         json!({
@@ -631,6 +697,21 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
             ),
         ));
     }
+    // 危险动作的二次确认（设计 §9）：**放在只读门之后** —— 只读模式下连确认也不给过
+    // （先返回 -32007"策略拒绝"，比"你没确认"更准确：确认了也没用）。
+    if let Some(note) = danger_note(name) {
+        let confirmed = args.get("confirm").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !confirmed {
+            return Err(RpcError::new(
+                E_DEVICE_NOT_READY,
+                format!(
+                    "「{}」是危险动作：{}。\n这一步**没有执行**。确认要这么做就带 confirm:true 再调一次\
+                     （例如 {{\"confirm\": true}}）；不想做就别重试 —— 改参数重试没用。",
+                    name, note
+                ),
+            ));
+        }
+    }
     {
         let mut calls = core.tool_calls.lock().unwrap_or_else(|e| e.into_inner());
         *calls.entry(name.to_string()).or_insert(0) += 1;
@@ -852,6 +933,20 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
                 },
             }
         }
+        // ===== BLE 语义工具（前端 mcpBleOp；与 serial_* 同构）=====
+        "ble_get_state" => ble_call(core, "state", args, json!({})).await,
+        "ble_periph_status" => ble_call(core, "periphStatus", args, json!({})).await,
+        "ble_periph_start" => ble_call(core, "periphStart", args, json!({})).await,
+        "ble_periph_stop" => ble_call(core, "periphStop", args, json!({})).await,
+        "mcp_danger" => Ok(json!({
+            "tools": DANGER_TOOLS
+                .iter()
+                .map(|(n, why)| json!({ "name": n, "consequence": why, "confirm": "调用时必须带 confirm:true" }))
+                .collect::<Vec<_>>(),
+            "total": DANGER_TOOLS.len(),
+            "note": "没带 confirm 时这些工具**不会执行**，会返回 -32006 并说明后果；\
+                     普通工具不需要 confirm（传了也会被忽略）。",
+        })),
         // ===== 界面桥：全部经 core.ui_call → 前端执行 → 回执 =====
         "ui_list" => core.ui_call("list", args.clone()).await,
         "ui_describe" => {
@@ -1079,6 +1174,22 @@ async fn serial_call(
         payload["pane"] = json!(pane);
     }
     core.ui_call("serial", payload).await
+}
+
+/// BLE 语义工具的转发（与 `serial_call` 同构，只是面板换成 `ble`）
+async fn ble_call(
+    core: &Arc<McpCore>,
+    action: &str,
+    args: &Value,
+    extra: Value,
+) -> Result<Value, RpcError> {
+    let mut payload = extra;
+    payload["action"] = json!(action);
+    // BLE 只有"蓝牙页"这一块面板，没有多分栏；`pane` 仅为与 serial_* 保持一致的入参习惯
+    if let Some(pane) = opt_str(args, "pane") {
+        payload["pane"] = json!(pane);
+    }
+    core.ui_call("ble", payload).await
 }
 
 /// 批量改字段/开关（前端按"字段表 / 开关表"决定是写值还是切 class）
@@ -2181,6 +2292,13 @@ mod tests {
                 ("serial_get_history", json!({}), NoGui),
                 ("serial_get_output", json!({}), NoGui),
                 ("serial_quick_cmd", json!({}), NoGui),
+                // BLE 语义工具（第一批）：读的两个 + 从机启停（危险，没 GUI 时也是 -32006）
+                ("ble_get_state", json!({}), NoGui),
+                ("ble_periph_status", json!({}), NoGui),
+                ("ble_periph_start", json!({ "confirm": true }), NoGui),
+                ("ble_periph_stop", json!({ "confirm": true }), NoGui),
+                // 危险工具表本身是纯后端只读：不需要界面（"有哪些危险动作"不该依赖 GUI）
+                ("mcp_danger", json!({}), Backend(&["tools", "total", "note"], &[])),
                 ("ui_list", json!({}), NoGui),
                 ("ui_describe", json!({ "path": "serial.conn.portSelect" }), NoGui),
                 ("ui_get", json!({ "path": "serial.conn.portSelect" }), NoGui),
@@ -2370,6 +2488,32 @@ mod tests {
                                 _ => json!({ "ok": false, "error": format!("假前端不认识 action: {}", action) }),
                             }
                         }
+                        // BLE 语义层（mcpBleOp）：只做"够驱动 ble_* 工具解析路径"的最小仿真
+                        "ble" => {
+                            let action = payload["action"].as_str().unwrap_or("");
+                            match action {
+                                "state" => json!({ "ok": true, "value": {
+                                    "scanning": false, "deviceCount": 2, "selected": null,
+                                    "connected": connected.load(Ordering::Relaxed), "addr": null, "connName": null,
+                                    "serviceCount": 0, "notifySubs": 0, "logCount": 0, "monitorOpen": false,
+                                }}),
+                                "periphStatus" => json!({ "ok": true, "value": {
+                                    "advertising": false,
+                                    "serviceUuid": "0000fff0-0000-1000-8000-00805f9b34fb",
+                                    "chars": 2, "discoverable": true, "connectable": true,
+                                    "manualReply": false, "warning": null,
+                                }}),
+                                "periphStart" => json!({ "ok": true, "value": {
+                                    "pane": "ble", "started": true, "advertising": true,
+                                    "serviceUuid": "0000fff0-0000-1000-8000-00805f9b34fb", "warning": null,
+                                }}),
+                                "periphStop" => json!({ "ok": true, "value": {
+                                    "pane": "ble", "started": false, "advertising": false,
+                                    "serviceUuid": null, "warning": null,
+                                }}),
+                                _ => json!({ "ok": false, "error": format!("假前端不认识 action: {}", action) }),
+                            }
+                        }
                         "list" => json!({ "ok": true, "value": { "controls": [], "total": 0 } }),
                         "describe" | "get" => json!({ "ok": true, "value": { "path": "serial.conn.portSelect", "value": "COM1" } }),
                         "getState" => json!({ "ok": true, "value": { "theme": "dark" } }),
@@ -2502,6 +2646,24 @@ mod tests {
                     pre_connected: None,
                     calls: vec![("serial", json!({ "action": "quickGroup" }))],
                     keys: &["pane", "op", "groups", "before", "loop"] },
+                // BLE 第一批：状态 / 从机状态是读，从机启停是危险动作（要 confirm —— 危险门在 Rust 侧，
+                // 这一层只钉"发出去的 op 与返回形状"）
+                Case { tool: "ble_get_state", args: json!({}),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "state" }))],
+                    keys: &["scanning", "deviceCount", "connected", "serviceCount", "notifySubs", "logCount"] },
+                Case { tool: "ble_periph_status", args: json!({}),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "periphStatus" }))],
+                    keys: &["advertising", "serviceUuid", "chars", "discoverable", "connectable", "manualReply"] },
+                Case { tool: "ble_periph_start", args: json!({ "confirm": true }),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "periphStart" }))],
+                    keys: &["pane", "started", "advertising", "serviceUuid"] },
+                Case { tool: "ble_periph_stop", args: json!({ "confirm": true }),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "periphStop" }))],
+                    keys: &["pane", "started", "advertising"] },
                 Case { tool: "ui_list", args: json!({ "limit": 3 }),
                     pre_connected: None,
                     calls: vec![("list", json!({ "limit": 3 }))],
@@ -2580,6 +2742,8 @@ mod tests {
                 "serial_open", "serial_quick_cmd", "serial_select_port", "serial_send",
                 "serial_set_baud", "serial_set_display", "serial_set_frame", "serial_set_lines",
                 "ui_click", "ui_describe", "ui_get", "ui_get_state", "ui_list", "ui_set",
+                // BLE 第一批（都经前端 mcpBleOp）
+                "ble_get_state", "ble_periph_status", "ble_periph_start", "ble_periph_stop",
             ];
             // serial_get_output 只读日志中心，但**先要过前端拿分栏名与通道名**，所以也算界面工具
             want.push("serial_get_output");
@@ -2722,6 +2886,69 @@ mod tests {
         for w in WRITE_TOOLS {
             assert!(names.iter().any(|n| n == w), "WRITE_TOOLS 里的 {} 不是内置工具", w);
         }
+    }
+
+    /// 危险动作的二次确认（设计 §9 / §16.6.4）。四条一起才叫测过：
+    /// ① 表里的每一项都是真工具、schema 里有 confirm、有一句后果；
+    /// ② 没带 confirm → **拦下且没执行**（-32006，而不是走到界面那一步）；
+    /// ③ 带了 confirm → 放行（这时才会走到界面/后端）；
+    /// ④ 普通工具不要求 confirm（否则 Agent 会以为普通操作也能"确认了事"）。
+    #[test]
+    fn danger_tools_require_explicit_confirm() {
+        let defs = tool_defs();
+        assert!(!DANGER_TOOLS.is_empty(), "危险动作表空了？那这套机制就没被测到");
+        for (name, why) in DANGER_TOOLS {
+            let d = defs
+                .iter()
+                .find(|t| t["name"] == *name)
+                .unwrap_or_else(|| panic!("危险工具 {name} 不在工具表里（笔误？）"));
+            assert!(!why.is_empty(), "{name} 要写一句后果，AI 才知道自己在确认什么");
+            assert!(
+                d["inputSchema"]["properties"]["confirm"].is_object(),
+                "{name} 的 schema 必须声明 confirm，否则客户端不会传"
+            );
+            assert!(
+                d["description"].as_str().unwrap_or("").contains("confirm"),
+                "{name} 的 description 要写明要确认，否则 Agent 只会看到一次 -32006"
+            );
+            assert!(is_write_call(name, &json!({})), "{name} 是写操作（只读模式也要拦）");
+        }
+        block_on(async {
+            let c = core();
+            // ② 没带 confirm：被危险门拦下 —— 错误里点明"危险动作"，且**没有走到界面那一步**
+            let e = call_tool(&c, "ble_periph_start", &json!({})).await.unwrap_err();
+            assert_eq!(e.code, E_DEVICE_NOT_READY, "危险动作没确认时用 -32006（前置条件类）");
+            assert!(
+                e.message.contains("危险动作") && e.message.contains("confirm"),
+                "要说清这是危险动作、带 confirm 重试: {}",
+                e.message
+            );
+            // 没执行 → 工具调用计数里不该有它（"没执行"要有证据）
+            let called = c
+                .tool_calls
+                .lock()
+                .unwrap_or_else(|x| x.into_inner())
+                .get("ble_periph_start")
+                .copied()
+                .unwrap_or(0);
+            assert_eq!(called, 0, "被危险门拦下的调用不能计入工具调用次数");
+            // ③ 带了 confirm：放行（没有 GUI，所以这里会变成"没有界面"那类错误，而不是危险门）
+            let e2 = call_tool(&c, "ble_periph_start", &json!({ "confirm": true })).await.unwrap_err();
+            assert!(
+                !e2.message.contains("危险动作"),
+                "带了 confirm 就不该再被危险门拦: {}",
+                e2.message
+            );
+            // ④ 普通工具不受影响
+            assert!(
+                call_tool(&c, "app_info", &json!({})).await.is_ok(),
+                "普通工具不该要求 confirm"
+            );
+            assert!(
+                call_tool(&c, "mcp_danger", &json!({})).await.is_ok(),
+                "查询危险工具表本身不该要确认（否则 AI 没法先问清后果）"
+            );
+        });
     }
 
     #[test]
