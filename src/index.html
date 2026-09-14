@@ -1878,6 +1878,16 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .qcmd-cols .qcmd-col-hex   { grid-area:hex;   text-align:center; }
 /* 单位 `(ms)` 缩一号：它是次要信息，不跟列名抢注意力，也让 48px 的列宽放得下整个标签 */
 .qcmd-cols .qcmd-col-unit  { font-size:9px; opacity:.8; margin-left:1px; }
+/* 「＋ 添加」= 这张表表头行的最右一格：跨"发送/删除"两条轨道、右对齐 ——
+   正好落在数据行那两个图标的上方（用户 2026-09 要求"放在 顺序、指令那一栏最右侧"）。
+   它属于这一组，所以每组的表头各有一份（id 带组号）。 */
+.qcmd-cols .qcmd-col-add {
+    grid-column:send-start / del-end; grid-row:1; justify-self:end;
+    height:16px; padding:0 4px; box-sizing:border-box;
+    border:none; border-radius:3px; background:transparent; cursor:pointer;
+    color:var(--text-d); font-family:inherit; font-size:10px; white-space:nowrap;
+}
+.qcmd-cols .qcmd-col-add:hover { color:var(--link); background:rgba(128,128,128,.15); }
 
 /* ===== 循环组 =====
    组抬头（可改名 / 按住握把上下拖动排序 / 折叠 / 加条 / 删组）+ 组内指令。
@@ -6374,6 +6384,8 @@ var QCMD_LOOP_TITLE_ON  = '循环发送进行中：点击停止';
 /// 列标题里那四格（纯静态文案）。单独拆出来是因为 rebuildQcmdList 要**逐个组建元素**：
 /// 直接 `el.innerHTML = '<div class="qcmd-cols">…</div>'` 在真实浏览器里没问题，
 /// 但在无头断言用的假 DOM 里 innerHTML 不解析 → 拿不到那个 .qcmd-cols 元素（断言就测不到它）。
+/// ⚠️ `＋ 添加` **不在**这里：它要绑到"这一组"，由 rebuildQcmdList 建成真元素后挂到这一行的最右
+/// （用户 2026-09 要求："＋添加 按钮应该放在 顺序、指令那一栏最右侧"）。
 function qcmdColsInnerHtml() {
     return '<span class="qcmd-col-seq">顺序</span>' +
         '<span class="qcmd-col-val">指令</span>' +
@@ -7366,11 +7378,7 @@ function makeQcmdGroupBand(mid, g) {
     count.textContent = total + ' 条';
     count.title = '这一组共 ' + total + ' 条指令';
 
-    var add = document.createElement('button');
-    add.className = 'qcmd-dh-add';
-    add.textContent = '＋ 添加';
-    add.title = '在这一组末尾加一条指令';
-    add.addEventListener('click', function(e) { e.stopPropagation(); addQcmdItem(mid, g.id); });
+    // 「＋ 添加」不在这里 —— 它在这张表**表头行的最右**（见 rebuildQcmdList 里那个 .qcmd-col-add）
 
     var del = document.createElement('button');
     del.className = 'qcmd-dep-del';
@@ -7379,12 +7387,11 @@ function makeQcmdGroupBand(mid, g) {
     del.addEventListener('click', function(e) { e.stopPropagation(); removeQcmdGroup(mid, g.id); });
 
     // 顺序：**拖动握把在最左**（用户 2026-09 要求 —— 它是最常用的操作，放最左边一伸手就够到），
-    // 然后是折叠箭头、组名、条数、＋添加、删组
+    // 然后是折叠箭头、组名、条数、删组（「＋ 添加」在表头行最右）
     band.appendChild(grip);
     band.appendChild(fold);
     band.appendChild(name);
     band.appendChild(count);
-    band.appendChild(add);
     band.appendChild(del);
     return band;
 }
@@ -7407,6 +7414,15 @@ function rebuildQcmdList(mid) {
         cols.className = 'qcmd-cols';
         cols.id = mid + '-qcmdCols-' + g.id;
         cols.innerHTML = qcmdColsInnerHtml();
+        // 「＋ 添加」挂在**这张表表头行的最右**：它属于这一组（往这张表加一行），
+        // 跨 .qcmd-item-send / .qcmd-item-del 两条轨道、右对齐，正好落在数据行那两个图标的上方
+        var addBtn = document.createElement('button');
+        addBtn.className = 'qcmd-col-add';
+        addBtn.id = mid + '-qcmdAdd-' + g.id;
+        addBtn.textContent = '＋ 添加';
+        addBtn.title = '在这一组末尾加一条指令（写进上面这张表）';
+        addBtn.addEventListener('click', function(e) { e.stopPropagation(); addQcmdItem(mid, g.id); });
+        cols.appendChild(addBtn);
         box.appendChild(cols);
         var items = document.createElement('div');
         items.className = 'qcmd-group-items';

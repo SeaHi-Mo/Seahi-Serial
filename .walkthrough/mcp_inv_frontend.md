@@ -149,7 +149,7 @@
 | M37 | div.send-as-opt ×2 | `#{mid}-sendAsDrop .send-as-opt[data-val=text/hex]` | 选发送格式 | `setSendAs(mid,val,this,event)` 2897 | 改+持久化 | 无 |
 | M38 | button.btn-send | `#{mid}-btnSend` | 发送 | `sendData(mid)` 4108 | **副作用**（发送） | 模板里写死 `disabled`，由 `updateMonitorUI` 3637 切换 |
 | M39 | button.qcmd-side-tab | `#{mid}-btnQcmdSide` | 展开/收起快速指令分栏；**展开后**拖动它调宽（折叠态不启用拖动，光标 pointer；展开态 col-resize）。**热区恒为 14px 宽**：折叠态显示居中细握把，展开态长成贯穿整栏的 6px 竖直色条（悬停/拖动更亮）；循环发送的闪点（`.qcmd-side-tab.loop`）**只在折叠态**出现 | `toggleQcmdSide(mid)` / `startQcmdSideDrag`+`onQcmdSideDragMove`+`endQcmdSideDrag` | 改+持久化（宽度 `qcmdSideWidth`；展开态本身不持久化） | 无 |
-| M40 | button.qcmd-dh-add | `#{mid}-qcmdSide .qcmd-dh-add`（无 id） | 添加指令行（**在某一组的抬头里**，作用于那一组） | `addQcmdItem(mid, gid)` | 改+持久化 | 无 |
+| M40 | button.qcmd-col-add | `#{mid}-qcmdAdd-{gid}`（靠 id 或 `.qcmd-dh-add` 兜底） | **往这一组加一条指令**（挂在**该组表头行的最右**，跨发送/删除两条轨道、右对齐） | `addQcmdItem(mid, gid)` | 改+持久化 | 无 |
 | M40a | button.qcmd-dh-add | `#{mid}-btnQcmdGroupAdd`（工具栏） | **新建循环组**：追加到最下面 + 默认 1 条空指令 | `addQcmdGroup(mid)` | 改+持久化 | 组数到上限时拒绝并 toast |
 | M40b | div.qcmd-group-hd | `#{mid}-qcmdG-{gid}`（JS 建，抬头） | 组抬头容器；**按住**最左侧**的握把上下拖**调组的顺序（循环顺序 = 组的上下顺序） | `startQcmdGroupDrag` → `onQcmdGroupDragMove` → `endQcmdGroupDrag` | 改+持久化（组序写进 `quickGroups`，多组时连文件里的表顺序一起改） | 无 |
 | M40c | input.qcmd-group-name | `#{mid}-qcmdGn-{gid}` | **组名（可重命名）** | `input`（实时写模型 + 改文件里那行 `## 抬头`） | 改+持久化 | 无 |

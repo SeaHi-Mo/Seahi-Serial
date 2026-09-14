@@ -3281,7 +3281,7 @@ console.log('preview ->', out);
       check(!/qcmd-side-tab-arrow/.test(html), '小三角箭头已彻底删除（HTML/CSS/JS 都不再有它）');
     }
     check(sideHtml.includes('id="main-qcmdList"') && sideHtml.includes('id="main-btnQcmdGroupAdd"'),
-      '侧栏内含指令列表容器与「＋ 新建循环组」（「＋ 添加」现在在每组自己的抬头里）');
+      '侧栏内含指令列表容器与「＋ 新建循环组」（「＋ 添加」在每组自己的表头行最右）');
     // 列标题行：值有名字才读得成一张表；轨道必须与 .qcmd-item 完全一致，否则列会错位
     {
       check(/qcmd-col-seq[^>]*>顺序</.test(html) && /qcmd-col-val[^>]*>指令</.test(html)
@@ -3447,8 +3447,17 @@ console.log('preview ->', out);
         '组盒子里依次是：抬头 → 列标题 → 数据行（跟文件里"一组一张表"同形）', JSON.stringify(cls));
       const hdCls = box.children[0].children.map(c => c.className);
       check(JSON.stringify(hdCls) === JSON.stringify(['qcmd-group-grip', 'qcmd-group-fold', 'qcmd-group-name',
-        'qcmd-group-count', 'qcmd-dh-add', 'qcmd-dep-del']),
-        '抬头里依次是：**拖动握把（最左）** · 折叠 · 组名(可改) · 条数 · ＋添加 · 删组', JSON.stringify(hdCls));
+        'qcmd-group-count', 'qcmd-dep-del']),
+        '抬头里依次是：**拖动握把（最左）** · 折叠 · 组名(可改) · 条数 · 删组（「＋添加」不在这里）', JSON.stringify(hdCls));
+      // 「＋ 添加」挂在**本组表头行的最右**（用户 2026-09 要求："应该放在 顺序、指令那一栏最右侧"）
+      // 跨"发送/删除"两条轨道 + 右对齐 → 正好落在数据行那两个图标的上方
+      check(box.children[1].children.length === 1
+        && box.children[1].children[0].className === 'qcmd-col-add'
+        && box.children[1].children[0].id === 'main-qcmdAdd-' + g0id(),
+        '每组表头行最右有一个「＋ 添加」（id 带组号，作用于这一组）',
+        JSON.stringify(box.children[1].children.map(c => c.className + '#' + c.id)));
+      check(/\.qcmd-cols \.qcmd-col-add\s*\{[^}]*grid-column:send-start \/ del-end[^}]*justify-self:end/.test(html),
+        '「＋ 添加」跨发送/删除两条轨道并右对齐（表头行最右一格）');
       // 折叠箭头与拖动握把：**CSS 画的**（字形 ▾/⠿ 在 10–12px 下几乎不可见，用户 2026-09 反馈过）
       check(/\.qcmd-group-fold\s*\{[^}]*width:18px[^}]*height:18px/.test(html)
         && /\.qcmd-group-fold::before\s*\{[^}]*border-right:1\.6px solid currentColor[^}]*transform:rotate\(45deg\)/.test(html)
@@ -4164,7 +4173,7 @@ console.log('preview ->', out);
     // ---- 按钮位置：＋新建循环组 / 导入 / 导出 依次排在标题行右侧（「＋添加」在每组抬头里） ----
     const iAdd = sideHtml.indexOf('＋ 新建循环组'), iImp = sideHtml.indexOf('>导入<'), iExp = sideHtml.indexOf('>导出<');
     check(iAdd >= 0 && iImp > iAdd && iExp > iImp,
-      '「＋新建循环组 → 导入 → 导出」按顺序排在标题行右侧（「＋添加」在每组抬头里）', [iAdd, iImp, iExp].join(','));
+      '「＋新建循环组 → 导入 → 导出」按顺序排在标题行右侧（「＋添加」在每组表头行最右）', [iAdd, iImp, iExp].join(','));
     check(sideHtml.includes("qcmdImportFile('main')") && sideHtml.includes("qcmdExportFile('main')"),
       '两个按钮各自接到 qcmdImportFile / qcmdExportFile');
 
