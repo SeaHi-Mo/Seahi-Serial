@@ -294,6 +294,11 @@ pub fn tool_defs() -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
+        // ⚠️ 这个 json! 字面量里**不能写 // 注释**：`.walkthrough/gen_mcp_tools_doc.js`
+        // 会把整段 `{…}` 抠出来 `JSON.parse`，JSON 不允许注释（踩过：加注释直接把文档生成器打挂）。
+        // 关于下面那个 anyOf：不用 `"type": ["string","number","boolean"]` 是因为 type 数组虽然
+        // 合法，但**不少 MCP 客户端把 type 当单个字符串读**（官方 Inspector 的 portability 检查
+        // 会报出来）→ 要么拒收工具、要么丢掉约束。
         json!({
             "name": "ui_set",
             "description": "设置控件值。执行走的是与用户点击完全相同的路径，所以界面会同步变化。返回的是**写后的真实值**（控件可能规范化输入）。可用 items 一次设置多个。",
@@ -301,11 +306,11 @@ pub fn tool_defs() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
-                    "value": { "description": "新值：文本/数字/布尔；下拉传选项的 data-val" },
+                    "value": { "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }], "description": "新值：文本/数字/布尔；下拉传选项的 data-val" },
                     "items": {
                         "type": "array",
                         "description": "批量设置：[{path, value}, …]（**一次最多 200 个**，这是硬上限：这条链路跑在界面主线程上，超了会报 -32602，请分批）",
-                        "items": { "type": "object", "properties": { "path": { "type": "string" }, "value": {} }, "required": ["path"] }
+                        "items": { "type": "object", "properties": { "path": { "type": "string" }, "value": { "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }] } }, "required": ["path"] }
                     }
                 },
                 "additionalProperties": false
@@ -1548,7 +1553,55 @@ mod tests {
                 name
             );
             assert_eq!(t["inputSchema"]["type"], "object", "{} 的 schema 必须是 object", name);
+            // 每个属性都得**真的约束点什么**（type / enum / oneOf…）。
+            // 空 schema `{}` 在 JSON Schema 里等价于 bare `true`：什么也不约束，
+            // 模型拿不到任何类型提示 —— 2026-09 由**官方 MCP Inspector** 报出来的
+            // （`Schema portability: 0 errors, 2 warnings across 1 tool`，两处都在 `ui_set`）。
+            let bad = bare_schemas(&t["inputSchema"], "inputSchema");
+            assert!(
+                bad.is_empty(),
+                "{} 的 schema 里有空约束（模型拿不到类型提示）: {:?}",
+                name,
+                bad
+            );
         }
+    }
+
+    /// 找出**没有约束力**或**可移植性差**的子 schema。递归进 `properties` 与 `items`。
+    ///
+    /// 两条判据都来自**官方 MCP Inspector** 的 portability 检查（2026-09 实跑）：
+    /// ① 空对象 `{}` 等价于 JSON Schema 的 bare `true`，什么也不约束 —— 模型拿不到类型提示；
+    /// ② `type` 写成**数组**（`["string","number"]`）虽合法，但不少客户端按单个字符串读，
+    ///    会拒收工具或悄悄丢掉约束。要表达多类型请用 `anyOf`。
+    fn bare_schemas(v: &Value, path: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(props) = v.get("properties").and_then(|p| p.as_object()) {
+            for (k, sub) in props {
+                let here = format!("{}.properties.{}", path, k);
+                if let Some(o) = sub.as_object() {
+                    if o.is_empty() {
+                        out.push(here.clone());
+                    }
+                    if o.get("type").map(|t| t.is_array()).unwrap_or(false) {
+                        out.push(format!("{}（type 是数组，客户端兼容性差，请用 anyOf）", here));
+                    }
+                }
+                out.extend(bare_schemas(sub, &here));
+            }
+        }
+        if let Some(items) = v.get("items") {
+            let here = format!("{}.items", path);
+            if let Some(o) = items.as_object() {
+                if o.is_empty() {
+                    out.push(here.clone());
+                }
+                if o.get("type").map(|t| t.is_array()).unwrap_or(false) {
+                    out.push(format!("{}（type 是数组，客户端兼容性差，请用 anyOf）", here));
+                }
+            }
+            out.extend(bare_schemas(items, &here));
+        }
+        out
     }
 
     #[test]
