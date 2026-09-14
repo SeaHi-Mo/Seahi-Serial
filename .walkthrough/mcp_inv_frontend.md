@@ -161,10 +161,13 @@
 > 快速指令一栏的近期变更（与 `.walkthrough/gen_ble_preview.js` 的断言一一对应）：
 > ① 指令名称输入框 `input.qcmd-item-label` **已删除** —— `label` 字段仍在数据与外部文件里原样保留/写回，
 >    只是界面上不再有入口；② 标题文字「快速指令」（`.qcmd-hd-title`）已删除，标题行只剩控件；
-> ③ 每条现在是**一行六格**：顺序号 · 内容 · 延时 · HEX · 发送 · 删除；④ 新增「循环发送」开关
->    （`#{mid}-btnQcmdLoop`，在「＋ 添加」左侧）；⑤ 标题行控件**靠左聚拢**（原来是左右分家的
->    `space-between`）；⑥ 列表上方多了一行**列标题** `.qcmd-cols`（顺序 / 指令 / 延时 / HEX，
->    与数据行同一套 grid 轨道，纯展示、不可交互）。以上都随 `config.json` 的 `quickCmds` 持久化，
+> ③ 每条现在是**一行六格**：顺序号 · 内容 · 延时(ms) · HEX · 发送 · 删除；
+> ④ 新增「循环发送」开关（`#{mid}-btnQcmdLoop`）；
+> ⑤ 标题行**分两端**：左 = 循环发送开关（状态），右 = ＋添加 / 导入 / 导出（动作）。
+>    （中途试过把控件整体靠左聚拢，用户要求"按钮还是摆右侧"，已改回）；
+> ⑥ 列表上方多了一行列标题 `.qcmd-cols`（顺序 / 指令 / 延时(ms) / HEX）：与数据行同一套 grid 轨道、
+>    六列全固定宽（`auto` 会让表头与数据行各自算宽、列边界对不上）、单元格 padding 照抄输入框，
+>    纯展示、不可交互。以上都随 `config.json` 的 `quickCmds` 持久化，
 >    **循环发送的开关状态不持久化**（开机自动发指令太危险）。
 | M45 | input[checkbox] | `#{mid}-wfList input[name="wf-enabled"]` | 启用/禁用规则 | `onchange`→`toggleWorkflowEnabled` 4958 | 改+持久化 | 无 |
 | M46 | input[text] | `#{mid}-wfList input[name="wf-rule-name"]` | 规则重命名 | `onchange`→`renameWorkflowRule` 4963 | 改+持久化 | 无 |

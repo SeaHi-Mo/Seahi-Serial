@@ -3154,8 +3154,10 @@ console.log('preview ->', out);
       'var TEXT_BUF_INIT = ' + numConst('TEXT_BUF_INIT') + ';',
       'var TEXT_IDX_INIT = ' + numConst('TEXT_IDX_INIT') + ';',
       'var _terminalBuffers = {};',
-      // 宽度上下限与拖动状态：直接从源码取那一行，改动值也会被这些断言看到
+      // 宽度上下限与拖动状态：直接从源码取那几行，改动值也会被这些断言看到
       srcLine(/var QCMD_SIDE_DEFAULT[^\n]*/),
+      srcLine(/var QCMD_SIDE_MAX_RATIO[^\n]*/),
+      srcLine(/var QCMD_SIDE_RESERVE[^\n]*/),
       srcLine(/var _qcmdDrag = null[^\n]*/),
       // 外部文件的上限与写回去抖表同样是模块级 var
       /var QCMD_FILE_MAX_ITEMS[\s\S]*?var QCMD_FILE_MAX_VALUE = \d+;/.exec(html)[0],
@@ -3278,8 +3280,8 @@ console.log('preview ->', out);
         '列标题 sticky 钉顶 + 不透明底（滚动时盖住从下面过去的行）');
       check(/function rebuildQcmdList\(mid\)\s*\{[\s\S]{0,200}qlist\.innerHTML = qcmdColsHtml\(mid\)/.test(html),
         'rebuildQcmdList 重建时把列标题一起补回来（它现在住在列表里，清空会把它删掉）');
-      check(/\.qcmd-side-hd\s*\{[^}]*justify-content:flex-start/.test(html),
-        '标题行控件靠左聚拢（原来是 space-between：左一个开关、右三个按钮，中间一大段空）');
+      check(/\.qcmd-side-hd\s*\{[^}]*justify-content:space-between/.test(html),
+        '标题行分两端：左=状态（循环发送开关），右=动作（＋添加/导入/导出）—— 用户明确要求按钮在右侧');
       // 面板里所有横向分隔线必须等长：滚动条宽 8px，列表出滚动条时内容区窄 8px，
       // 滚动容器**外面**的标题行/来源行不让出这 8px 就会长出 8px（用户圈出来的那条线）
       check(/\.qcmd-list\s*\{[^}]*scrollbar-gutter:stable/.test(html),
@@ -3347,11 +3349,23 @@ console.log('preview ->', out);
       (docListeners.mousemove || []).forEach(fn => fn({ clientX: 9000 }));     // 拖到最右
       check(sbSide.qcmdSideWidth('main') === 120, '拖过头：收到下限 120px', String(sbSide.qcmdSideWidth('main')));
       (docListeners.mousemove || []).forEach(fn => fn({ clientX: -9000 }));    // 拖到最左
-      check(sbSide.qcmdSideWidth('main') === 640, '拖过头：收到上限 640px', String(sbSide.qcmdSideWidth('main')));
+      check(sbSide.qcmdSideWidth('main') === 540,
+        '上限**跟着窗格走**：900px 窗格 → 最多 540px（60%），不再是写死的 640',
+        String(sbSide.qcmdSideWidth('main')));
+      side.parentElement = { clientWidth: 2000 };                              // 大窗口
+      (docListeners.mousemove || []).forEach(fn => fn({ clientX: -9000 }));
+      check(sbSide.qcmdSideWidth('main') === 1200,
+        '窗格 2000px → 上限跟着涨到 1200px（固定上限在大窗口上根本拖不开）',
+        String(sbSide.qcmdSideWidth('main')));
       side.parentElement = { clientWidth: 500 };                               // 窄窗格
       (docListeners.mousemove || []).forEach(fn => fn({ clientX: -9000 }));
-      check(sbSide.qcmdSideWidth('main') === 340,
-        '窗格只有 500px 时最多 340px（永远给输出区留 160px）', String(sbSide.qcmdSideWidth('main')));
+      check(sbSide.qcmdSideWidth('main') === 300,
+        '窗格只有 500px 时最多 300px（60%，且给输出区留了 200px）', String(sbSide.qcmdSideWidth('main')));
+      check(sbSide.QCMD_SIDE_MAX_RATIO === 0.6 && sbSide.QCMD_SIDE_RESERVE === 160,
+        '比例与保留宽度是常量（改口径只改一处）',
+        sbSide.QCMD_SIDE_MAX_RATIO + ' / ' + sbSide.QCMD_SIDE_RESERVE);
+      check(/\.qcmd-side\.open\s*\{[^}]*max-width:min\(60%, calc\(100% - 160px\)\)/.test(html),
+        'CSS 的 max-width 兜底与 JS 同口径（60% / 160px —— 改一处必须改另一处）');
       (docListeners.mouseup || []).forEach(fn => fn({}));
       check(!side.classList.contains('dragging') &&
             (docListeners.mousemove || []).length === 0 && (docListeners.mouseup || []).length === 0,
@@ -3366,8 +3380,9 @@ console.log('preview ->', out);
         '折叠态按下不进入拖动');
       // 再次展开：套回用户调过的宽度（宽度跨折叠/展开保留）
       sbSide.setQcmdSideOpen('main', true);
-      check(side.style.getPropertyValue('--qcmd-side-w') === '340px',
-        '重新展开仍用用户调过的宽度', side.style.getPropertyValue('--qcmd-side-w'));
+      check(side.style.getPropertyValue('--qcmd-side-w') === '300px',
+        '重新展开仍用用户调过的宽度（窗格还是 500px，钳制后仍是 300px）',
+        side.style.getPropertyValue('--qcmd-side-w'));
       check(tab.title.indexOf('拖动可调宽') >= 0, '展开态提示里写明可以拖动调宽', tab.title);
     }
 
@@ -3440,8 +3455,18 @@ console.log('preview ->', out);
         '三个新控件都带 id（MCP 控件注册表按 id 枚举，少了 AI 就摸不到）');
       check(/grid-template-areas:'seq val delay hex send del'/.test(html),
         'CSS 的九宫格区域与上面的排列一一对应（列名对不上就会错位）');
-      check(/\.qcmd-item\s*\{[^}]*grid-template-columns:24px minmax\(0,1fr\) 44px auto 20px 20px/.test(html),
-        '六列宽度固定：内容列 minmax(0,1fr) 是唯一会缩的列（其余列被挤变形就没法用了）');
+      check(/\.qcmd-item\s*\{[^}]*grid-template-columns:24px minmax\(0,1fr\) 48px 34px 20px 20px/.test(html),
+        '六列**全是固定宽**：内容列 minmax(0,1fr) 是唯一会缩的列。'
+        + 'HEX 那列早先用 auto —— auto 是每个 grid 各按自己内容算的，表头里是文字、行里是按钮，'
+        + '两边列边界都不一样，标题自然对不上格');
+      check(/qcmd-col-delay[^>]*>延时\s*<span class="qcmd-col-unit">\(ms\)<\/span>/.test(sideHtml)
+        && /\.qcmd-cols \.qcmd-col-unit\s*\{[^}]*font-size:9px/.test(html),
+        '延时列名带单位 `(ms)`，单位缩一号（次要信息，也让 48px 的列宽放得下）');
+      check(/\.qcmd-item-hex\s*\{[^}]*width:100%/.test(html),
+        'HEX 按钮撑满 34px 轨道（列标题的 HEX 照这条轨道居中，两者才重合）');
+      check(/\.qcmd-cols \.qcmd-col-val\s*\{[^}]*padding-left:5px/.test(html) &&
+            /\.qcmd-cols \.qcmd-col-delay\s*\{[^}]*padding-right:3px/.test(html),
+        '表头单元格的盒模型照抄输入框（左/右内边距 5px / 3px）—— 字才真的对着格');
       // ---- 观感（日本排版那一套：面只留两个、数字右揃え、右缘一条线） ----
       check(/\.qcmd-item-delay\s*\{[^}]*text-align:right/.test(html) &&
             /\.qcmd-item-delay\s*\{[^}]*font-variant-numeric:tabular-nums/.test(html),

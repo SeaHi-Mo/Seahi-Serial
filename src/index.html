@@ -1768,10 +1768,16 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     overflow:hidden;
 }
 /* 展开后整栏才算一块独立面板；宽度可由用户拖折叠条调节（--qcmd-side-w，缺省 300px）。
-   ⚠️ 展开态把那条 1px 分栏线**收掉**（`border-left-width:0`）：逐像素量过，它和 6px 色条
-   并排 5px（x=0 是 --split-line、x=6..9 是 --btn-p），两条蓝竖线贴在一起就是"看着脏"的根因。
-   色条自己就是分界，一条足够。 */
-.qcmd-side.open { width:var(--qcmd-side-w, 300px); background:var(--toolbar-bg); border-left-width:0; }
+   `max-width` 是**兜底**：JS（setQcmdSideWidth）已经按"窗格 60% / 给输出区留 160px"钳过一遍了，
+   这里再拦一道 —— 分栏在还没显示的那一页里恢复宽度时量不到窗格宽度，靠它挡住视觉溢出。
+   ⚠️ 60% / 160px 与 JS 里的 QCMD_SIDE_MAX_RATIO / QCMD_SIDE_RESERVE **必须一致**（改一处必须改另一处）。
+   ⚠️ 展开态还把那条 1px 分栏线收掉（`border-left-width:0`）：逐像素量过，它和 6px 色条并排 5px
+   （x=0 是 --split-line、x=6..9 是 --btn-p），两条蓝竖线贴在一起就是"看着脏"的根因。 */
+.qcmd-side.open {
+    width:var(--qcmd-side-w, 300px);
+    max-width:min(60%, calc(100% - 160px));
+    background:var(--toolbar-bg); border-left-width:0;
+}
 /* 展开态折叠条**脱离文档流**（绝对定位贴左缘）：面板内容因此拿到整个宽度，
    标题行 / 来源行 / 列标题 / 每行下方的分隔线才能从面板左缘一直拉到右边 ——
    否则它们都从折叠条右边 14px 才开始（用户："左侧没有触及到左侧折叠条"）。
@@ -1836,10 +1842,10 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
    它右边那条 panel 是 14px 折叠条的地盘，所以 `--surface-3` 那条浅色带只能从 x=14 开始 ——
    于是标题栏跟面板左缘之间出现一道竖缝。整块面板用一个面（--toolbar-bg），
    标题行只用一条细线分隔，跟左缘就连成一片了。
-   控件**靠左聚拢**（原来是 space-between：左边一个循环开关、右边三个按钮，中间一大段空 ——
-   用户说"排版还是不够好"）。靠左还顺带跟数据行第一列对齐成一条轴。 */
+   控件分两端：**左边是状态（循环发送开关），右边是动作（＋添加 / 导入 / 导出）** ——
+   常规工具条的分法，用户 2026-09 明确要求"＋添加/导入/导出 还是摆右侧"。 */
 .qcmd-side-hd {
-    display:flex; align-items:center; justify-content:flex-start; gap:6px; flex-shrink:0; flex-wrap:wrap;
+    display:flex; align-items:center; justify-content:space-between; gap:6px; flex-shrink:0; flex-wrap:wrap;
     padding:6px 8px 6px 22px;            /* 左 22 = 14（让开折叠条）+8 */
     margin-right:8px;                     /* 8px = 让出滚动条那条槽，线才跟数据行等长 */
     background:transparent; border-bottom:1px solid var(--border);
@@ -1853,18 +1859,23 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
    两边的分隔线于是差一截（用户 2026-09 报的"每行下方的线不够长"）。
    放进同一个滚动容器里，两条线永远等长（实测：溢出时行宽 278px，列标题也是 278px）。 */
 .qcmd-cols {
-    display:grid; grid-template-columns:24px minmax(0,1fr) 44px auto 20px 20px;
+    display:grid; grid-template-columns:24px minmax(0,1fr) 48px 34px 20px 20px;
     grid-template-areas:'seq val delay hex send del';
     align-items:center; gap:6px; padding:3px 8px 5px 22px;   /* 与 .qcmd-item 同款左边距 */
-    font-size:10px; color:var(--text-d); user-select:none;
+    font-size:10px; color:var(--text-d); user-select:none; white-space:nowrap;
     border-bottom:1px solid var(--border);
     position:sticky; top:0; z-index:1;
     background:var(--toolbar-bg);   /* 钉住时要盖住从下面滚过去的行 */
 }
+/* 表头单元格的盒模型**照抄对应输入框**，字才真的对着格：文字与输入框的左/右内边距不一致，
+   就算轨道一样也会差几个像素（`HEX` 那列早先用 auto：表头里是文字、行里是按钮，
+   两个 grid 各算各的自然宽度 → 列边界都不一样了。现在六列全是固定宽，两边必然重合）。 */
 .qcmd-cols .qcmd-col-seq   { grid-area:seq;   text-align:center; }
-.qcmd-cols .qcmd-col-val   { grid-area:val; }
-.qcmd-cols .qcmd-col-delay { grid-area:delay; text-align:right; }
+.qcmd-cols .qcmd-col-val   { grid-area:val;   padding-left:5px; }
+.qcmd-cols .qcmd-col-delay { grid-area:delay; text-align:right; padding-right:3px; }
 .qcmd-cols .qcmd-col-hex   { grid-area:hex;   text-align:center; }
+/* 单位 `(ms)` 缩一号：它是次要信息，不跟列名抢注意力，也让 48px 的列宽放得下整个标签 */
+.qcmd-cols .qcmd-col-unit  { font-size:9px; opacity:.8; margin-left:1px; }
 /* 循环发送开关（「＋ 添加」左侧）：关闭态只有描边，开启态填主题色 + 一个会亮的小圆点。
    开着的循环是"持续有副作用"的状态，必须一眼看出来（同 .ibtn.on 的语义）。 */
 .qcmd-dh-loop {
@@ -1920,7 +1931,7 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
    与指令内容；延时退成右对齐的等宽数字，只在 hover/focus 时才浮出面来。
    数字一律 tabular-nums（1000 / 500 / 80 的个位要能对齐成一条竖线）。 */
 .qcmd-item {
-    display:grid; grid-template-columns:24px minmax(0,1fr) 44px auto 20px 20px;
+    display:grid; grid-template-columns:24px minmax(0,1fr) 48px 34px 20px 20px;
     grid-template-areas:'seq val delay hex send del';
     align-items:center; gap:6px; padding:5px 8px 5px 22px;   /* 左 22 = 14（让开折叠条）+8 */
     border-bottom:1px solid rgba(60,60,60,.3);
@@ -1960,9 +1971,10 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .qcmd-item-delay:hover { background:var(--input-bg); color:var(--text); }
 .qcmd-item-delay:focus { background:var(--input-bg); border-color:var(--accent-focus); color:var(--text); }
 /* HEX 使能（每条独立，默认关）：开启 = 本条按 HEX 解析后发送，与主发送栏的文本/HEX 无关。
-   它是"有状态"的开关（开着要一眼看出），所以这个框留着不删。 */
+   它是"有状态"的开关（开着要一眼看出），所以这个框留着不删；
+   宽度撑满那 34px 的固定轨道 —— 列标题的 `HEX` 是照这条轨道居中的，两者才会重合。 */
 .qcmd-item-hex {
-    grid-area:hex; height:22px; box-sizing:border-box; padding:0 5px;
+    grid-area:hex; width:100%; height:22px; box-sizing:border-box; padding:0 5px;
     background:transparent; border:1px solid var(--border); border-radius:4px;
     color:var(--text-d); font-family:inherit; font-size:9px; letter-spacing:.5px;
     cursor:pointer; flex-shrink:0;
@@ -6301,14 +6313,16 @@ function bytesToHex(arr) {
 var QCMD_LOOP_TITLE_OFF = '循环发送已关闭：点击开启（顺序号大于 0 的指令按数字从小到大依次发送）';
 var QCMD_LOOP_TITLE_ON  = '循环发送进行中：点击停止';
 
-/// 列标题行的 HTML（顺序 / 指令 / 延时 / HEX）。单独成函数是因为它要能**被重建**：
+/// 列标题行的 HTML（顺序 / 指令 / 延时(ms) / HEX）。单独成函数是因为它要能**被重建**：
 /// 它待在 `.qcmd-list` 里面（sticky 钉顶，跟数据行共享同一个滚动容器 —— 滚动条才不会把
 /// 行宽吃掉 8px、让两边的分隔线差一截），而 rebuildQcmdList 会清空列表。
+/// 延时后面挂单位 `(ms)`：它是次要信息，用 `.qcmd-col-unit` 缩一号，整列 48px 刚好放得下。
 function qcmdColsHtml(mid) {
     return '<div class="qcmd-cols" id="' + mid + '-qcmdCols">' +
         '<span class="qcmd-col-seq">顺序</span>' +
         '<span class="qcmd-col-val">指令</span>' +
-        '<span class="qcmd-col-delay" title="延时发送时间（毫秒）：本条发完到下发一条的间隔">延时</span>' +
+        '<span class="qcmd-col-delay" title="延时发送时间：本条发完到下发一条的间隔">延时' +
+            '<span class="qcmd-col-unit">(ms)</span></span>' +
         '<span class="qcmd-col-hex" title="本条按 HEX 格式发送（默认关闭）">HEX</span>' +
     '</div>';
 }
@@ -6349,8 +6363,13 @@ function qcmdSideOpen(mid) {
 }
 
 /* 分栏宽度：拖折叠条调节，按监视器各记一份，随配置持久化（缺省 300px：一条六格要放得下）。
-   上限还要看窗格实际宽度 —— 至少给输出区留 160px，否则能把输出区挤没。 */
-var QCMD_SIDE_DEFAULT = 300, QCMD_SIDE_MIN = 120, QCMD_SIDE_MAX = 640;
+   上限**跟着窗格走**（`QCMD_SIDE_MAX_RATIO` × 窗格宽度），并与"给输出区留 `QCMD_SIDE_RESERVE`"
+   取更严的那个 —— 原来是写死的 640px：窗口拉到 2000 多也拖不过 640（用户 2026-09 的反馈）。
+   ⚠️ 口径与 CSS 里 `.qcmd-side.open` 的 `max-width:min(60%, calc(100% - 160px))` **必须一致**：
+   CSS 那条是兜底（分栏在隐藏页里被恢复宽度时量不到窗格宽度），改一处必须改另一处。 */
+var QCMD_SIDE_DEFAULT = 300, QCMD_SIDE_MIN = 120;
+var QCMD_SIDE_MAX_RATIO = 0.6;   // 侧栏最多占窗格宽度的 60%
+var QCMD_SIDE_RESERVE = 160;     // 同时永远给输出区留 160px
 
 function qcmdSideWidth(mid) {
     var m = monitors[mid];
@@ -6362,10 +6381,13 @@ function setQcmdSideWidth(mid, w) {
     if (!side) return 0;
     var body = side.parentElement;                      // .mon-body：宽度 = 窗格可用宽度
     var avail = (body && body.clientWidth) ? body.clientWidth : 0;
-    var max = QCMD_SIDE_MAX;
-    if (avail > 0) max = Math.min(max, avail - 160);
-    max = Math.max(QCMD_SIDE_MIN, max);
-    w = Math.max(QCMD_SIDE_MIN, Math.min(max, Math.round(w || 0)));
+    w = Math.max(QCMD_SIDE_MIN, Math.round(w || 0));
+    if (avail > 0) {
+        var max = Math.min(Math.round(avail * QCMD_SIDE_MAX_RATIO), avail - QCMD_SIDE_RESERVE);
+        w = Math.min(w, Math.max(QCMD_SIDE_MIN, max));
+    }
+    // avail=0（分栏在还没显示的那一页里）：照单收下 —— 不去悄悄改用户存下来的宽度，
+    // 视觉溢出交给 CSS 的 max-width 兜住
     side.style.setProperty('--qcmd-side-w', w + 'px');  // CSS：.qcmd-side.open { width: var(--qcmd-side-w, 300px) }
     if (monitors[mid]) monitors[mid].qcmdSideWidth = w;
     return w;
