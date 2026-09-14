@@ -25,7 +25,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_builds -- --ignored -
 cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
 ```
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1282 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1309 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，62 条）：直接从
 `src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，也有把渲染函数丢进假 DOM
 跑行为断言），改前端后应先跑
@@ -191,6 +191,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
   文件里用 `## 组名` 抬头分隔各组（**两个及以上 `#`**；单个 `#` 仍是注释）；导出（副本）一定写抬头，
   写回挂载文件时只有一组不写（不擅自改用户结构）。面板里**每组自带一份列标题**（抬头 → 列标题 → 数据行），
   共用一份会夹在抬头与数据行之间、读起来是断的（用户 2026-09 指出的）。
+  ⚠️ **改了文件格式/列名/上限/写回规则，必须同步 `doc/QUICK_CMDS.md`**（面向使用者的那份格式说明；断言里有 7 条守着它别烂掉）。
   循环发送的开关状态**不持久化**（开机自动发指令太危险），
   掉线/关监视器/列表里再无可发条目时必须**自愈停止**并提示。
 - WSL 串口转发通过 Python bridge 脚本实现，使用持久化 shell 避免 fork 延迟

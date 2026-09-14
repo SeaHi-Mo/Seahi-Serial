@@ -4006,6 +4006,27 @@ console.log('preview ->', out);
         'qcmdItemHasParams 认得出"有没有非默认参数"');
     }
 
+    // ---- 格式文档：doc/QUICK_CMDS.md 必须把关键规则写清楚（写文档最容易漏的就是这几条） ----
+    {
+      const docPath = path.join(__dirname, '..', 'doc', 'QUICK_CMDS.md');
+      const doc = fs.existsSync(docPath) ? fs.readFileSync(docPath, 'utf8') : '';
+      check(doc.length > 2000, 'doc/QUICK_CMDS.md 存在（面向使用者的文件格式说明）', String(doc.length));
+      // 别名表：文档里得真的列出认得的列名（否则用户只能猜）
+      const aliases = ['顺序号', '延时', 'HEX', 'cmd', 'command', 'delay', 'interval', 'order', 'seq'];
+      check(aliases.every(a => doc.indexOf(a) >= 0), '文档列出了认得的列名/别名',
+        aliases.filter(a => doc.indexOf(a) < 0).join(',') || '(全都有)');
+      // 三件最容易踩的事：不认 ID 列、表头驱动、写回不擅自补列
+      check(/编号/.test(doc) && /(不认|不识别|刻意)/.test(doc),
+        '文档写明 `编号`/`no`/`num`/`index` 这类列**不认**（认错就丢数据）');
+      check(/两个及以上 `#`/.test(doc) && /单个 `#`/.test(doc),
+        '文档写明分组规则：≥2 个 `#` 是组抬头、单个 `#` 仍是注释');
+      check(/不擅自补列/.test(doc) && /只保存在本机配置里/.test(doc),
+        '文档写明"写回不擅自补列、这三项只存本机配置"');
+      check(/256 KB/.test(doc) && /500/.test(doc) && /4096/.test(doc),
+        '文档写明上限（256 KB / 500 条 / 4096 字符）');
+      check(/true/.test(doc) && /false/.test(doc) && /宽容/.test(doc),
+        '文档写明 HEX 列读写口径（读宽容、写回 true/false）');
+    }
     // ---- YAML / TOML 文件头（front matter）：原样保留，且**不能**被当成指令 ----
     const fmText = [
       '---',
