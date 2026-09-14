@@ -58,7 +58,7 @@
 | 抽屉 | 波特率下拉 | `.baud-dropdown.open` | `toggleBaudDropdown` 2778 | ❌ |
 | 抽屉 | 发送历史 | `.send-hist.open` | `showSendHistory` 4140 | ❌ |
 | 抽屉 | 文本/HEX | `.send-as-drop.open` | `toggleSendAsDrop` 2894 | ❌ |
-| 抽屉 | 快速指令 | `.qcmd-dropdown.open` | `toggleQcmdDropdown` 4845 | ❌ |
+| 分栏 | 快速指令分栏（只占输出区高度） | `.qcmd-side.open`（默认折叠） | `toggleQcmdSide` 6093 / `setQcmdSideOpen` 6084 | ❌（不持久化，每次折叠开始） |
 | 抽屉 | 主题风格 | `#themeStyleDrop.open` | `toggleThemeStyleDrop` 5709 | ❌ |
 | 抽屉 | 终端 TAB 补全 | `.term-comp.open` | `completeTermTab` 3387 / `showTermComp` 3437 / `hideTermComp` 3468 | ❌ |
 | 抽屉 | 设备过滤区 | `#ble-filterBody`（display 切换） | `toggleBleFilter` 8084 | ✅ `filterOpen` |
@@ -148,8 +148,8 @@
 | M36 | div.send-as | `#{mid}-sendAs` | 展开 文本/HEX | `toggleSendAsDrop(mid)` 2894 | 改 | 无 |
 | M37 | div.send-as-opt ×2 | `#{mid}-sendAsDrop .send-as-opt[data-val=text/hex]` | 选发送格式 | `setSendAs(mid,val,this,event)` 2897 | 改+持久化 | 无 |
 | M38 | button.btn-send | `#{mid}-btnSend` | 发送 | `sendData(mid)` 4108 | **副作用**（发送） | 模板里写死 `disabled`，由 `updateMonitorUI` 3637 切换 |
-| M39 | button.qcmd-trigger | `#{mid}-btnQcmd` | 展开快速指令 | `toggleQcmdDropdown(mid)` 4845 | 改 | 无 |
-| M40 | button.qcmd-dh-add | `#{mid}-qcmdDrop .qcmd-dh-add`（无 id） | 添加指令行 | `addQcmdItem(mid)` 4865 | 改+持久化 | 无 |
+| M39 | button.qcmd-side-tab | `#{mid}-btnQcmdSide` | 展开/收起快速指令分栏；**展开后**拖动它调宽（折叠态不启用拖动，光标 pointer；展开态 col-resize） | `toggleQcmdSide(mid)` 6179 / `startQcmdSideDrag`+`onQcmdSideDragMove`+`endQcmdSideDrag` | 改+持久化（宽度 `qcmdSideWidth`；展开态本身不持久化） | 无 |
+| M40 | button.qcmd-dh-add | `#{mid}-qcmdSide .qcmd-dh-add`（无 id） | 添加指令行 | `addQcmdItem(mid)` 6152 | 改+持久化 | 无 |
 | M41 | input.qcmd-item-label（JS 建） | `#{mid}-qcmdi-{i} .qcmd-item-label`（父 `.qcmd-item` 有 id） | 指令名 | `input` 4803 | 改+持久化 | 无 |
 | M42 | input.qcmd-item-val（JS 建） | `#{mid}-qcmdi-{i} .qcmd-item-val` | 指令内容 | `input` 4816；`keydown` Enter→发送 4820 | **副作用**（Enter 即发） | 无 |
 | M43 | button.qcmd-item-send（JS 建） | `#{mid}-qcmdList [data-qsend]` | 发送该指令 | `click` 4830→`sendQcmdItem` 4890 | **副作用** | `!isConnected` → `disabled`（4828、`updateQcmdSendBtns` 4918） |
@@ -373,7 +373,7 @@
 2831: document.addEventListener('click', function(e) {
 2832:     document.querySelectorAll('.baud-dropdown.open').forEach(function(dd) { ... dd.classList.remove('open'); });
 2844:     document.querySelectorAll('.sel-drop.open').forEach(...);          // 关通用下拉
-2848:     if (!e.target.closest('.qcmd-wrap')) { ... }                        // 关快速指令
+2848:     // （快速指令不再走下拉开合：已改为监控区最右侧的可折叠分栏，与全局 click 无关）
 2852: });
 5730: document.addEventListener('click', ...)     // 关主题风格下拉
 7361: document.addEventListener('keydown', function(e) { if (e.key !== 'Escape') return; ... });  // Esc 关 BLE 写入弹窗

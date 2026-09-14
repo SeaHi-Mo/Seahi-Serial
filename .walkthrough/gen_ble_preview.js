@@ -2955,6 +2955,9 @@ console.log('preview ->', out);
       /var MCP_SERIAL_FUNCS = \{[\s\S]*?\n\};/.exec(html)[0],
       extractFunction('mcpReadEl'), extractFunction('mcpWriteEl'), extractFunction('_mcpDispatch'),
       extractFunction('_mcpFindOption'), extractFunction('mcpKindOf'),
+      // collectConfigForMonitor 现在会读分栏宽度 → 沙箱也得有 qcmdSideWidth 和它的上下限常量
+      /var QCMD_SIDE_DEFAULT[^\n]*/.exec(html)[0],
+      extractFunction('qcmdSideWidth'),
       extractFunction('collectConfigForMonitor'),
       extractFunction('mcpSerialPanes'), extractFunction('mcpSerialResolvePane'),
       extractFunction('mcpSerialEl'), extractFunction('mcpSerialOptions'),
@@ -3058,6 +3061,237 @@ console.log('preview ->', out);
       '发送模式本来就是 text → 不点下拉项');
     sbSer.mcpSerialOp({ action: 'setSendAs', mode: 'hex' });
     check(els['main-sendAsDrop']._opts[1]._clicks === 1, '切 HEX：点是真实下拉项（触发它自己的 onclick）');
+  }
+
+  // ---------- 快速指令侧栏（监控区最右侧、可折叠、默认折叠） ----------
+  {
+    // ICONS 是 `const ICONS = {`（不是 var），extractObject 不适用，这里单独切
+    const ICON_SRC = (() => {
+      const i = html.indexOf('const ICONS = {');
+      const end = html.indexOf('\n};', i);
+      if (i < 0 || end < 0) throw new Error('ICONS 未找到');
+      return html.slice(i, end + 3);
+    })();
+    function stubEl(id) {
+      const cls = new Set();
+      const props = {};
+      const el = {
+        id: id || '', innerHTML: '', className: '', textContent: '', value: '', disabled: false,
+        offsetWidth: 0, offsetHeight: 0, clientWidth: 0,
+        style: {
+          setProperty: (k, v) => { props[k] = v; },
+          getPropertyValue: k => props[k] || '',
+        },
+        dataset: {}, attrs: {}, children: [], title: '',
+        classList: {
+          add: c => cls.add(c),
+          remove: c => cls.delete(c),
+          contains: c => cls.has(c),
+          toggle: (c, on) => {
+            const want = on === undefined ? !cls.has(c) : !!on;
+            want ? cls.add(c) : cls.delete(c);
+            return want;
+          },
+        },
+        addEventListener() {},
+        appendChild(c) { el.children.push(c); },
+        setAttribute(k, v) { el.attrs[k] = v; },
+        getAttribute(k) { return el.attrs[k]; },
+        querySelector: () => null,
+        querySelectorAll: () => [],
+      };
+      return el;
+    }
+    const sideById = {};
+    const created = [];   // createMonitorPane 用 createElement 造窗格，按顺序留痕（[0] 就是窗格）
+    const docListeners = {};   // 拖动用的 document 级监听，登记下来好模拟鼠标事件
+    const numConst = name => ((new RegExp('(?:var|const) ' + name + ' = ([0-9*\\s]+);')).exec(html) || [])[1];
+    const srcLine = re => { const m = re.exec(html); return m ? m[0] : ''; };
+    const sbSide = {
+      console,
+      document: {
+        getElementById: id => (sideById[id] = sideById[id] || stubEl(id)),
+        createElement: () => { const el = stubEl(); created.push(el); return el; },
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        addEventListener: (t, fn) => { (docListeners[t] = docListeners[t] || []).push(fn); },
+        removeEventListener: (t, fn) => {
+          if (docListeners[t]) docListeners[t] = docListeners[t].filter(f => f !== fn);
+        },
+      },
+    };
+    vm.createContext(sbSide);
+    vm.runInContext([
+      ICON_SRC,
+      'var monitors = {};',
+      'var TEXT_BUF_INIT = ' + numConst('TEXT_BUF_INIT') + ';',
+      'var TEXT_IDX_INIT = ' + numConst('TEXT_IDX_INIT') + ';',
+      'var _terminalBuffers = {};',
+      // 宽度上下限与拖动状态：直接从源码取那一行，改动值也会被这些断言看到
+      srcLine(/var QCMD_SIDE_DEFAULT[^\n]*/),
+      srcLine(/var _qcmdDrag = null[^\n]*/),
+      // createMonitorPane 后段会调这几个命令；本次只验证它拼出来的 HTML，命令本身不执行
+      'function scheduleConfigSave() {}', 'function refreshPorts() {}', 'function initTerminalMode() {}',
+      ['qcmdSideHtml', 'qcmdSideOpen', 'setQcmdSideOpen', 'toggleQcmdSide',
+       'qcmdSideWidth', 'setQcmdSideWidth', 'startQcmdSideDrag', 'onQcmdSideDragMove', 'endQcmdSideDrag',
+       'makeQcmdItem', 'createMonitorPane', 'getWslMonitorHtml'].map(extractFunction).join('\n'),
+    ].join('\n'), sbSide);
+    // 用 try 兜住：真正的 HTML 在函数前段就赋好了，后段的命令不在验证范围
+    let paneCreateErr = null;
+    try { sbSide.createMonitorPane('main', '监视器', false); } catch (e) { paneCreateErr = e.message; }
+    const mainPaneHtml = created.length ? created[0].innerHTML : '';
+
+    const sideHtml = sbSide.qcmdSideHtml('main');
+    check(sideHtml.includes('id="main-qcmdSide"') && sideHtml.includes('class="qcmd-side"'),
+      '侧栏容器 id/类名契约（main-qcmdSide / .qcmd-side）', sideHtml.slice(0, 80));
+    // 折叠态只有一根 CSS 画的握把：按钮里不放图标、文字，也不放小三角
+    const tabTag = (/<button class="qcmd-side-tab"[\s\S]*?<\/button>/).exec(sideHtml);
+    const tabInner = tabTag ? tabTag[0].replace(/^[^>]*>/, '').replace(/<\/button>$/, '') : 'x';
+    check(tabTag && tabInner.trim() === '',
+      '折叠条里没有任何图标/文字/三角字符（整条只有 CSS 画的那根握把）', JSON.stringify(tabInner));
+    check(sideHtml.includes('id="main-btnQcmdSide"') && sideHtml.includes('title="展开快速指令"'),
+      '折叠条带 title 提示（无文字时唯一的可发现性来源）');
+    // 折叠条的视觉：折叠态=细握把，悬停点亮；展开态=整条填主题蓝（不只是边上那根线）
+    {
+      const i = html.indexOf('/* ===== 快速指令分栏');
+      const j = html.indexOf('.qcmd-side.open .qcmd-side-body', i);
+      const sideCss = i < 0 || j < 0 ? '' : html.slice(i, j + 40);
+      check(/\.qcmd-side-tab::before\s*\{[^}]*var\(--link\)/.test(sideCss),
+        '握把用主题强调色 --link（默认主题即主题蓝；浅色主题也看得见）');
+      check(/\.qcmd-side\s*\{[^}]*border-left:1px solid var\(--split-line\)/.test(sideCss),
+        '分栏线用 --split-line（与窗格分隔线、拖拽手柄同一套语义）');
+      check(/\.qcmd-side-tab:hover::before\s*\{[^}]*opacity:1/.test(sideCss),
+        '折叠态悬停：握把点亮（没有三角箭头，靠这根线示意可折叠）');
+      check(/\.qcmd-side-tab\.on\s*\{[^}]*background:var\(--btn-p\)/.test(sideCss) &&
+            /\.qcmd-side-tab\.on::before\s*\{[^}]*rgba\(255,255,255/.test(sideCss),
+        '展开态：整条填主题蓝 + 握把转成白色（蓝底上再画蓝线等于没有）');
+      check(/\.qcmd-side-tab\.on:hover\s*\{[^}]*background:var\(--btn-ph\)/.test(sideCss),
+        '展开态悬停再亮一档（--btn-p → --btn-ph，与 .btn-send 同一套语义）');
+      check(!/accent-green/.test(sideCss),
+        '折叠条不用别的语义色（绿/红等），只用主题强调色 + 蓝底上的白握把');
+      check(/\.qcmd-side\.open\s*\{[^}]*width:var\(--qcmd-side-w,\s*240px\)/.test(sideCss),
+        '展开态宽度走 --qcmd-side-w（缺省 240px）：拖动只改这个变量，不写死内联宽度');
+      check(/\.qcmd-side\.dragging\s*\{[^}]*transition:none/.test(sideCss),
+        '拖动时去掉宽度过渡（跟手，而不是追着动画跑）');
+      check(/\.qcmd-side-tab\s*\{[^}]*cursor:pointer/.test(sideCss) &&
+            /\.qcmd-side-tab\.on\s*\{[^}]*cursor:col-resize/.test(sideCss),
+        '光标跟着可用性走：折叠态 pointer（点击展开），展开态才是 col-resize（拖宽只在展开后启用）');
+      check(/cubic-bezier/.test(sideCss), '展开/收起用缓动曲线，不是生硬的 linear');
+      // 蓝色填充与中性灰悬停特异性相同，必须让 .on 写在后面才压得住
+      const iOn = sideCss.indexOf('.qcmd-side-tab.on {');
+      const iHover = sideCss.indexOf('.qcmd-side-tab:hover {');
+      check(iOn >= 0 && iHover >= 0 && iOn > iHover,
+        '展开态的蓝色填充必须写在 :hover 之后（同特异性靠顺序取胜，写反了悬停会盖掉蓝色）');
+      check(!/qcmd-side-tab-arrow/.test(html), '小三角箭头已彻底删除（HTML/CSS/JS 都不再有它）');
+    }
+    check(sideHtml.includes('id="main-qcmdList"') && sideHtml.includes("addQcmdItem('main')"),
+      '侧栏内含指令列表容器与「＋ 添加」，复用既有 addQcmdItem/qcmdList');
+    check(!/qcmd-dropdown|qcmd-trigger|qcmd-wrap/.test(sideHtml), '侧栏里不出现旧下拉的三个类名');
+    // <div> 开闭与嵌套：只数个数抓不到"重复一整块但自身平衡"这类错误（本轮真踩过），
+    // 所以按出现顺序做深度扫描 —— 深度不得为负、末尾必须归零。
+    // 变量注入的 HTML（closeBtn / ICONS 的 svg）自身平衡、且不含 div，不影响结果。
+    function divDepth(src) {
+      const re = /<div\b|<\/div>/g;
+      let depth = 0, min = 0, m;
+      while ((m = re.exec(src))) {
+        if (m[0] === '</div>') depth--; else depth++;
+        if (depth < min) min = depth;
+      }
+      return { depth, min };
+    }
+    {
+      const d = divDepth(sideHtml);
+      check(d.depth === 0 && d.min === 0, '侧栏 HTML 的 <div> 嵌套闭合正确', JSON.stringify(d));
+    }
+
+    check(sbSide.qcmdSideOpen('main') === false, '侧栏默认折叠');
+    sbSide.toggleQcmdSide('main');
+    check(sbSide.qcmdSideOpen('main') === true, '点标签展开');
+    check(sideById['main-btnQcmdSide'].classList.contains('on') &&
+          sideById['main-btnQcmdSide'].title === '收起快速指令（左右拖动可调宽）',
+      '展开后：折叠条进入蓝色填充态（.on）+ 提示写明「拖动可调宽」', sideById['main-btnQcmdSide'].title);
+    sbSide.toggleQcmdSide('main');
+    check(sbSide.qcmdSideOpen('main') === false &&
+          !sideById['main-btnQcmdSide'].classList.contains('on') &&
+          sideById['main-btnQcmdSide'].title === '展开快速指令',
+      '再点收起：蓝色填充取消、提示改回「展开」');
+    sbSide.setQcmdSideOpen('main', true);
+    check(sbSide.qcmdSideOpen('main') === true, 'setQcmdSideOpen(mid, true) 是可编程入口（AI/测试可直接展开）');
+
+    // ---------- 拖折叠条调宽（分栏贴在右边缘：往左拖 = 变宽） ----------
+    {
+      const side = sideById['main-qcmdSide'];
+      const tab = sideById['main-btnQcmdSide'];
+      side.offsetWidth = 240;
+      side.parentElement = { clientWidth: 900 };     // .mon-body 宽度 → 上限受 MAX 与"留 160px"约束
+      check(sbSide.qcmdSideWidth('main') === 240, '分栏缺省宽度 240px', String(sbSide.qcmdSideWidth('main')));
+      sbSide.startQcmdSideDrag({ button: 0, clientX: 500, preventDefault() {} }, 'main');
+      check(side.classList.contains('dragging') && (docListeners.mousemove || []).length === 1,
+        '按下折叠条进入拖动（加 dragging 样式 + 挂 document 监听）');
+      (docListeners.mousemove || []).forEach(fn => fn({ clientX: 400 }));      // 往左拖 100px
+      check(side.style.getPropertyValue('--qcmd-side-w') === '340px' && sbSide.qcmdSideWidth('main') === 340,
+        '往左拖 100px → 240 变 340px（宽度跟手）', side.style.getPropertyValue('--qcmd-side-w'));
+      (docListeners.mousemove || []).forEach(fn => fn({ clientX: 9000 }));     // 拖到最右
+      check(sbSide.qcmdSideWidth('main') === 120, '拖过头：收到下限 120px', String(sbSide.qcmdSideWidth('main')));
+      (docListeners.mousemove || []).forEach(fn => fn({ clientX: -9000 }));    // 拖到最左
+      check(sbSide.qcmdSideWidth('main') === 640, '拖过头：收到上限 640px', String(sbSide.qcmdSideWidth('main')));
+      side.parentElement = { clientWidth: 500 };                               // 窄窗格
+      (docListeners.mousemove || []).forEach(fn => fn({ clientX: -9000 }));
+      check(sbSide.qcmdSideWidth('main') === 340,
+        '窗格只有 500px 时最多 340px（永远给输出区留 160px）', String(sbSide.qcmdSideWidth('main')));
+      (docListeners.mouseup || []).forEach(fn => fn({}));
+      check(!side.classList.contains('dragging') &&
+            (docListeners.mousemove || []).length === 0 && (docListeners.mouseup || []).length === 0,
+        '松手：去掉 dragging 样式并卸掉 document 监听（不泄漏）');
+      // 拖完松手浏览器会补一个 click —— 不能把刚调好宽度的分栏又收起来
+      sbSide.toggleQcmdSide('main');
+      check(sbSide.qcmdSideOpen('main') === true, '刚拖完那一次 click 不算点击（不会顺手收起）');
+      // 折叠态按下不进入拖动（那一下的语义是"展开"）
+      sbSide.setQcmdSideOpen('main', false);
+      sbSide.startQcmdSideDrag({ button: 0, clientX: 100, preventDefault() {} }, 'main');
+      check(!side.classList.contains('dragging') && (docListeners.mousemove || []).length === 0,
+        '折叠态按下不进入拖动');
+      // 再次展开：套回用户调过的宽度（宽度跨折叠/展开保留）
+      sbSide.setQcmdSideOpen('main', true);
+      check(side.style.getPropertyValue('--qcmd-side-w') === '340px',
+        '重新展开仍用用户调过的宽度', side.style.getPropertyValue('--qcmd-side-w'));
+      check(tab.title.indexOf('拖动可调宽') >= 0, '展开态提示里写明可以拖动调宽', tab.title);
+    }
+
+    // 宽度随配置持久化：collectConfig / collectConfigForMonitor / applyMonitorConfig 三处都要接上
+    check((html.match(/qcmdSideWidth/g) || []).length >= 4,
+      '宽度进了配置链路（采集两处 + 应用一处 + 状态字段）',
+      String((html.match(/qcmdSideWidth/g) || []).length));
+    check(/if \(mc\.qcmdSideWidth\) setQcmdSideWidth\(mid, mc\.qcmdSideWidth\);/.test(html),
+      '恢复配置时套回分栏宽度');
+
+    // 两个生成器都真的跑一遍，直接检查"生成出来的 HTML"（而不是只扫源码文本）
+    const wslHtml = sbSide.getWslMonitorHtml('wsl');
+    [['createMonitorPane', mainPaneHtml, 'main'], ['getWslMonitorHtml', wslHtml, 'wsl']].forEach(([name, src, mid]) => {
+      check(src.length > 1000, name + ' 真的拼出了 HTML',
+        src.length + (paneCreateErr ? ' / 后段报错: ' + paneCreateErr : ''));
+      // 分栏范围：只占输出区那一行 —— 工具栏 → mon-body(输出 + 侧栏) → 发送栏
+      check(src.includes('class="mon-body"') && !/class="pane-body"|class="pane-main"/.test(src),
+        name + ' 用 mon-body 把输出区与侧栏包成一行（不再整窗格分栏）');
+      {
+        const iTb = src.indexOf('class="toolbar-wrap"'), iOut = src.indexOf('class="output"');
+        const iSide = src.indexOf('class="qcmd-side"'), iSend = src.indexOf('class="send-bar"');
+        check(iTb >= 0 && iTb < iOut && iOut < iSide && iSide < iSend,
+          name + ' 顺序为 工具栏 < 输出 < 侧栏 < 发送栏（侧栏不跨越上下两栏）',
+          [iTb, iOut, iSide, iSend].join(','));
+      }
+      check(src.includes('id="' + mid + '-qcmdSide"') && src.includes('id="' + mid + '-qcmdList"'),
+        name + ' 挂上了带列表容器的快速指令侧栏');
+      check(!/qcmd-wrap|qcmd-dropdown|btnQcmd"/.test(src),
+        name + ' 里没有旧下拉、也没有第二个入口（发送栏那个图标已删）');
+      // 结构写坏（少一个 </div>、整块粘重）在界面上只表现为错位，很难一眼看出，这里直接卡住
+      const d = divDepth(src);
+      check(d.depth === 0 && d.min === 0, name + ' 生成的真实 HTML 嵌套闭合正确', JSON.stringify(d));
+    });
+    check(sideById['main-qcmdList'].children.length === 5,
+      '列表容器搬到侧栏后，默认 5 条指令仍然建得出来',
+      String(sideById['main-qcmdList'].children.length));
+    check(!/qcmd-dropdown|qcmd-trigger/.test(html), '整个前端已无旧下拉的类名/引用残留');
   }
 
   console.log(`\n结果: ${pass} passed, ${fail} failed`);

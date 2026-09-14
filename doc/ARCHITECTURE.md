@@ -156,8 +156,11 @@ serial-debugger-tauri/
 | `.ibtn-group` | 图标按钮组容器 | inline-flex |
 | `.output` | 数据输出区 | flex:1, overflow:auto |
 | `.send-bar` | 底部发送栏 | flex, flex-shrink:0 |
-| `.qcmd-wrap` | 快速指令容器 | position:relative |
-| `.qcmd-dropdown` | 快速指令下拉面板 | position:absolute, 向上弹出 |
+| `.mon-body` | 输出区那一行的横向容器（输出区 + 右侧快速指令分栏） | flex, row |
+| `.qcmd-side` | 快速指令分栏（折叠 14px；展开宽度 = `var(--qcmd-side-w, 240px)`，可由用户拖动调宽），**只占输出区高度** | flex, row |
+| `.qcmd-side-tab` | 折叠条：整条可点。折叠态只有一根居中的 3×34 握把（`::before`，`--link` 50% → 悬停 100%），`cursor:pointer`；**展开态整条填 `--btn-p`（悬停 `--btn-ph`）且握把转白色**（蓝底上的蓝线等于没有），`cursor:col-resize` 可拖动调宽 | flex, 居中 |
+| `.qcmd-side.dragging` | 拖动调宽中：`transition:none`（宽度跟手），折叠条点亮为 `--btn-ph` | |
+| `.qcmd-side-body` | 展开态的分栏内容区（标题 + 列表） | flex, column |
 | `.adv-row` | 高级设置行 | flex-wrap |
 
 #### ANSI 颜色支持
@@ -190,7 +193,6 @@ const MAX_SEND_HISTORY = 50;  // 发送历史最大条数
 | `ICONS.rollback` | 自动滚动图标 |
 | `ICONS.saveLog` | 保存日志图标 |
 | `ICONS.copyAll` | 复制全部图标 |
-| `ICONS.quickCmd` | 快速指令列表图标 |
 | `ICONS.sendIcon` | 发送图标 |
 | `ICONS.lineNum` | 行号图标 |
 
@@ -241,8 +243,11 @@ const MAX_SEND_HISTORY = 50;  // 发送历史最大条数
 
 | 函数 | 功能 |
 |------|------|
+| `qcmdSideHtml(mid)` | 生成侧栏 HTML（通用监视器与 WSL 监视器共用，避免两处漂移） |
+| `toggleQcmdSide(mid)` | 展开/收起侧栏（默认折叠） |
+| `setQcmdSideOpen(mid, open)` | 直接设定展开态并同步标签高亮/箭头/提示 |
+| `qcmdSideOpen(mid)` | 读当前展开态（无头断言用） |
 | `makeQcmdItem(mid, idx, label, value)` | 创建指令条目 DOM |
-| `toggleQcmdDropdown(mid)` | 开关下拉面板 |
 | `addQcmdItem(mid)` | 添加新指令 |
 | `removeQcmdItem(mid, idx)` | 删除指定指令 |
 | `rebuildQcmdList(mid)` | 重建指令列表 DOM |
@@ -468,8 +473,14 @@ WSL 串口通过 Python bridge 脚本实现：
 
 - 每个监视器独立维护 `quickCmds[]`
 - 支持动态增删、编辑名称和内容
-- 下拉面板向上弹出
-- 每条指令有独立发送按钮
+- 呈现方式是**监控输出区最右侧的可折叠分栏**：只占输出区那一行的高度（`.mon-body`），**不跨越**上方工具栏与下方发送栏
+- 折叠态（默认）只有一条 14px 折叠条：与输出区同底色，只有一条主题色分栏线 + 一根居中的细握把（悬停点亮）；**没有图标、没有文字、也没有小三角**；可发现性靠 `title` 提示与引导第 7 步的高亮
+- 展开态：**整条折叠条填成主题蓝**（`--btn-p`，悬停 `--btn-ph`），一眼看出这一栏是开着的；握把在蓝底上转成白色
+- 宽度可调：**展开后**拖动折叠条即可调宽（往左拖变宽，`cursor:col-resize`）；折叠态不启用拖动（那一下的语义是"展开"）
+  - 宽度走 CSS 变量 `--qcmd-side-w`（缺省 240px），钳在 120–640px，且永远给输出区留 160px
+  - 按监视器各记一份、写入 `config.json`（`qcmdSideWidth`），重启/切页后沿用；拖动位移 < 3px 仍按点击处理（松手那次 click 不会把刚调好的分栏收起来）
+- 展开后缺省 240px，显示「快速指令 + ＋添加」标题行与指令列表；每条指令有独立发送按钮
+- 展开态本身**不做持久化**：每次打开监视器都从折叠开始（宽度会保留）
 
 ### 6.5 发送历史
 

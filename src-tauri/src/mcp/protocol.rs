@@ -323,7 +323,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "serial_quick_cmd",
-            "description": "快速指令（发送栏右侧那个下拉）：不带 index 就**列出全部**（含每条是否已配内容）；给了 index 就**执行**第 index 条。",
+            "description": "快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）：不带 index 就**列出全部**（含每条是否已配内容）；给了 index 就**执行**第 index 条。",
             "inputSchema": {
                 "type": "object",
                 "properties": {

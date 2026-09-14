@@ -44,7 +44,7 @@
 | [`serial_clear`](#serial-clear) | **写** | 清空该分栏的输出区内容（等价于点「清除内容」）。**只清界面显示，不动磁盘上的会话日志缓存文件。** |
 | [`serial_get_history`](#serial-get-history) | 读 | 读该分栏的发送历史（最近的在前）。用来回看刚才发过什么，或复用上一条指令。 |
 | [`serial_get_output`](#serial-get-output) | 读 | 读该分栏**实际收发的内容**（串口监视器的核心：设备刚才回了什么）。默认收+发都返回，按时间归并；每条带 dir 区分。数据取自日志中心，与 log_tail 是同一份存储；本工具额外的好处是**不需要你知道通道名**，且「还没收到数据」会返回空列表而不是报错。 |
-| [`serial_quick_cmd`](#serial-quick-cmd) | 读 | 快速指令（发送栏右侧那个下拉）：不带 index 就**列出全部**（含每条是否已配内容）；给了 index 就**执行**第 index 条。 |
+| [`serial_quick_cmd`](#serial-quick-cmd) | 读 | 快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）：不带 index 就**列出全部**（含每条是否已配内容）；给了 index 就**执行**第 index 条。 |
 | [`app_info`](#app-info) | 读 | 本机 SeaHi Serial 应用的基本信息（版本、平台、进程、运行时长）。只读，无副作用。 |
 | [`mcp_status`](#mcp-status) | 读 | MCP 服务器自身状态：是否运行、监听端点、会话数、请求数与限流/丢弃计数。只读。 |
 | [`mcp_limits`](#mcp-limits) | 读 | MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。 |
@@ -256,7 +256,7 @@
 
 #### `serial_quick_cmd`
 
-- **作用**：快速指令（发送栏右侧那个下拉）：不带 index 就**列出全部**（含每条是否已配内容）；给了 index 就**执行**第 index 条。
+- **作用**：快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）：不带 index 就**列出全部**（含每条是否已配内容）；给了 index 就**执行**第 index 条。
 - **读/写**：只读，无副作用
 - **返回**：{pane, items:[{index,label,value}], usable}
 - **注意**：不带 index 只列；带 index 才执行（→ {pane, ran, label, value}）

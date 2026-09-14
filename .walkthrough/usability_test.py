@@ -391,11 +391,11 @@ def run_tests():
     time.sleep(0.5)
     t.esc()
 
-    # ---- T17: 快捷指令面板 ----
+    # ---- T17: 快速指令侧栏 ----
     def test_quick_commands():
-        # 快捷指令按钮在发送栏右侧
-        click(hwnd, 1320, 1005)
-    t.test("quick_commands_panel", test_quick_commands, "点击快捷指令按钮，预期弹出面板")
+        # 快速指令已从发送栏移到监控区最右侧的分栏（默认折叠，点竖排标签展开）
+        click(hwnd, 1354, 560)
+    t.test("quick_commands_panel", test_quick_commands, "点击右侧竖排标签，预期展开快速指令分栏")
 
     time.sleep(1.0)
     t.esc()

@@ -125,7 +125,8 @@ COORDS = {
     "inputBox": (400, 1010),
     "sendMode": (1140, 1010),
     "sendBtn": (1200, 1010),
-    "quickCmd": (1290, 1010),
+    # 监控区最右侧的快速指令竖排标签（默认折叠，1367 宽时栏中心 x≈1354）
+    "quickCmd": (1354, 560),
 
     # WSL panel (when open)
     "wslBack": (170, 13),  # 返回监视器

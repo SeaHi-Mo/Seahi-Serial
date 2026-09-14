@@ -210,7 +210,7 @@ WSL 功能通过 Python bridge 脚本实现串口转发：
 | WSL 映射 | `openWslMapping()` | `list_wsl_devices` / `attach_port_to_wsl` | 依赖 usbipd-win |
 | WSL 串口 | `initWslMonitor()` | `open_wsl_serial` / `read_wsl_serial` / `send_wsl_serial` | 通过 Python bridge |
 | 主题切换 | `toggleTheme()` / `toggleThemeStyleDrop()` | 无 | 纯前端 |
-| 快速指令 | `toggleQcmdDropdown(mid)` | 无 | 纯前端，localStorage 持久化 |
+| 快速指令 | `toggleQcmdSide(mid)` | 无 | 纯前端；输出区右侧的可折叠分栏（默认折叠、只占输出区高度），配置写入 config.json（scheduleConfigSave） |
 | 首次引导 | `showOnboarding()` | 无 | 纯前端，localStorage 记录状态 |
 | 自动更新 | `checkForUpdate()` | 无 | 前端直接请求 GitHub API |
 
