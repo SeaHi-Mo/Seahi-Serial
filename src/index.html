@@ -1880,14 +1880,17 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
 .qcmd-cols .qcmd-col-unit  { font-size:9px; opacity:.8; margin-left:1px; }
 /* 「＋ 添加」= 这张表表头行的最右一格：跨"发送/删除"两条轨道、右对齐 ——
    正好落在数据行那两个图标的上方（用户 2026-09 要求"放在 顺序、指令那一栏最右侧"）。
-   它属于这一组，所以每组的表头各有一份（id 带组号）。 */
+   它属于这一组，所以每组的表头各有一份（id 带组号）。
+   颜色用**主题强调色**（`--link`，与工具栏那三个动作按钮同一套语义）：它是个动作，
+   不该缩成灰字（用户 2026-09 要求"用使用主题颜色"）。 */
 .qcmd-cols .qcmd-col-add {
     grid-column:send-start / del-end; grid-row:1; justify-self:end;
     height:16px; padding:0 4px; box-sizing:border-box;
     border:none; border-radius:3px; background:transparent; cursor:pointer;
-    color:var(--text-d); font-family:inherit; font-size:10px; white-space:nowrap;
+    color:var(--link); font-family:inherit; font-size:10px; white-space:nowrap;
+    transition:background .15s ease, color .15s ease;
 }
-.qcmd-cols .qcmd-col-add:hover { color:var(--link); background:rgba(128,128,128,.15); }
+.qcmd-cols .qcmd-col-add:hover { color:var(--btn-ph); background:rgba(55,148,255,.14); }
 
 /* ===== 循环组 =====
    组抬头（可改名 / 按住握把上下拖动排序 / 折叠 / 加条 / 删组）+ 组内指令。
@@ -7387,10 +7390,11 @@ function makeQcmdGroupBand(mid, g) {
     del.addEventListener('click', function(e) { e.stopPropagation(); removeQcmdGroup(mid, g.id); });
 
     // 顺序：**拖动握把在最左**（用户 2026-09 要求 —— 它是最常用的操作，放最左边一伸手就够到），
-    // 然后是折叠箭头、组名、条数、删组（「＋ 添加」在表头行最右）
+    // 中间是组名（flex:1 撑开），**折叠箭头紧挨在"N 条"左边**（用户 2026-09 要求），最后是删组。
+    // 「＋ 添加」不在这里：它在表头行的最右（见 rebuildQcmdList）。
     band.appendChild(grip);
-    band.appendChild(fold);
     band.appendChild(name);
+    band.appendChild(fold);
     band.appendChild(count);
     band.appendChild(del);
     return band;

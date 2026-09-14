@@ -3446,9 +3446,10 @@ console.log('preview ->', out);
       check(cls.length === 3 && cls[0] === 'qcmd-group-hd' && cls[1] === 'qcmd-cols' && cls[2] === 'qcmd-group-items',
         '组盒子里依次是：抬头 → 列标题 → 数据行（跟文件里"一组一张表"同形）', JSON.stringify(cls));
       const hdCls = box.children[0].children.map(c => c.className);
-      check(JSON.stringify(hdCls) === JSON.stringify(['qcmd-group-grip', 'qcmd-group-fold', 'qcmd-group-name',
+      check(JSON.stringify(hdCls) === JSON.stringify(['qcmd-group-grip', 'qcmd-group-name', 'qcmd-group-fold',
         'qcmd-group-count', 'qcmd-dep-del']),
-        '抬头里依次是：**拖动握把（最左）** · 折叠 · 组名(可改) · 条数 · 删组（「＋添加」不在这里）', JSON.stringify(hdCls));
+        '抬头里依次是：**拖动握把（最左）** · 组名(可改) · **折叠（紧挨条数左边）** · 条数 · 删组（「＋添加」不在这里）',
+        JSON.stringify(hdCls));
       // 「＋ 添加」挂在**本组表头行的最右**（用户 2026-09 要求："应该放在 顺序、指令那一栏最右侧"）
       // 跨"发送/删除"两条轨道 + 右对齐 → 正好落在数据行那两个图标的上方
       check(box.children[1].children.length === 1
@@ -3477,9 +3478,14 @@ console.log('preview ->', out);
       sbSide.toggleQcmdGroupFold('main', g0id());
       check(sbSide.qcmdGroupById('main', g0id()).folded === true, '点折叠箭头：组的 folded 状态翻成 true（CSS 据此连列标题一起藏）');
       sbSide.toggleQcmdGroupFold('main', g0id());
-      check(sbSide.qcmdGroupById('main', g0id()).folded === false, '再点一下展开');      check(box.children[0].children[2].value === '循环 1' && box.children[1].id === 'main-qcmdCols-' + g0id(),
-        '组名填进输入框、列标题 id 带组号（两组时不会撞）',
-        box.children[0].children[2].value + ' / ' + box.children[1].id);
+      check(sbSide.qcmdGroupById('main', g0id()).folded === false, '再点一下展开');
+      check(box.children[0].children[1].value === '循环 1' && box.children[1].id === 'main-qcmdCols-' + g0id(),
+        '组名填进输入框（抬头第 2 个孩子）、列标题 id 带组号（两组时不会撞）',
+        box.children[0].children[1].value + ' / ' + box.children[1].id);
+      // 「＋ 添加」用主题色（与工具栏那三个动作按钮同一套语义色），不是一个灰字
+      check(/\.qcmd-cols \.qcmd-col-add\s*\{[^}]*color:var\(--link\)/.test(html)
+        && /\.qcmd-cols \.qcmd-col-add:hover\s*\{[^}]*background:/.test(html),
+        '「＋ 添加」用主题强调色（--link），悬停再加一层淡底 —— 与工具栏动作按钮一致');
     }
 
     // ---------- 标题文字 / 循环发送开关 ----------
