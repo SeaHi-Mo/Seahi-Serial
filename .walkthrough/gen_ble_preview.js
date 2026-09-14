@@ -3446,9 +3446,9 @@ console.log('preview ->', out);
       check(cls.length === 3 && cls[0] === 'qcmd-group-hd' && cls[1] === 'qcmd-cols' && cls[2] === 'qcmd-group-items',
         '组盒子里依次是：抬头 → 列标题 → 数据行（跟文件里"一组一张表"同形）', JSON.stringify(cls));
       const hdCls = box.children[0].children.map(c => c.className);
-      check(JSON.stringify(hdCls) === JSON.stringify(['qcmd-group-fold', 'qcmd-group-grip', 'qcmd-group-name',
+      check(JSON.stringify(hdCls) === JSON.stringify(['qcmd-group-grip', 'qcmd-group-fold', 'qcmd-group-name',
         'qcmd-group-count', 'qcmd-dh-add', 'qcmd-dep-del']),
-        '抬头里依次是：折叠 · 拖动握把 · 组名(可改) · 条数 · ＋添加 · 删组', JSON.stringify(hdCls));
+        '抬头里依次是：**拖动握把（最左）** · 折叠 · 组名(可改) · 条数 · ＋添加 · 删组', JSON.stringify(hdCls));
       // 折叠箭头与拖动握把：**CSS 画的**（字形 ▾/⠿ 在 10–12px 下几乎不可见，用户 2026-09 反馈过）
       check(/\.qcmd-group-fold\s*\{[^}]*width:18px[^}]*height:18px/.test(html)
         && /\.qcmd-group-fold::before\s*\{[^}]*border-right:1\.6px solid currentColor[^}]*transform:rotate\(45deg\)/.test(html)

@@ -7378,8 +7378,10 @@ function makeQcmdGroupBand(mid, g) {
     del.title = '删除这一组（连同组里的指令）';
     del.addEventListener('click', function(e) { e.stopPropagation(); removeQcmdGroup(mid, g.id); });
 
-    band.appendChild(fold);
+    // 顺序：**拖动握把在最左**（用户 2026-09 要求 —— 它是最常用的操作，放最左边一伸手就够到），
+    // 然后是折叠箭头、组名、条数、＋添加、删组
     band.appendChild(grip);
+    band.appendChild(fold);
     band.appendChild(name);
     band.appendChild(count);
     band.appendChild(add);
