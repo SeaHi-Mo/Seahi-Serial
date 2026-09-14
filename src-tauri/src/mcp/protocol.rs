@@ -105,15 +105,16 @@ pub const WRITE_TOOLS: &[&str] = &[
 
 /// 判断**这一次调用**算不算写操作。
 ///
-/// 为什么不能只看工具名：`serial_quick_cmd` 不带 `index` 是"列出快速指令"（只读），
-/// 带 `index` 就是"真的把那条指令发出去"（写）。**只读模式必须按调用判，不能按工具判** ——
-/// 否则要么漏放一个真写操作进来，要么把只读的列举也一起禁掉。
+/// 为什么不能只看工具名：`serial_quick_cmd` 不带 `index`/`action` 是"列出快速指令"（只读），
+/// 带 `index` 就是"真的把那条指令发出去"、带 `action` 就是"改列表/开关循环"（都是写）。
+/// **只读模式必须按调用判，不能按工具判** —— 否则要么漏放一个真写操作进来，
+/// 要么把只读的列举也一起禁掉。
 pub fn is_write_call(name: &str, args: &Value) -> bool {
     if name.starts_with("ctl_") {
         return true; // 每个 ctl_* 都是"改某个控件"
     }
     if name == "serial_quick_cmd" {
-        return args.get("index").is_some();
+        return args.get("index").is_some() || args.get("action").is_some();
     }
     WRITE_TOOLS.contains(&name)
 }
@@ -323,11 +324,23 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "serial_quick_cmd",
-            "description": "快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）：不带 index 就**列出全部**（每条含 index/label/value 与它自己的发送参数 seq 顺序号、delayMs 延时、hex 是否按 HEX 发；以及列表是否来自外部文件）；给了 index 就**执行**第 index 条（按该条自己的 hex 决定文本还是 HEX）。顺序号 > 0 的条目会被面板上的「循环发送」按序号依次发出。",
+            "description": "快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、delayMs 延时、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "index": { "type": "number", "description": "要执行的快速指令下标（从 0 开始）；省略=只列不执行" },
+                    "index": { "type": "number", "description": "要执行（不带 action 时）或要改（update/remove 时）的条目下标，从 0 开始，见 quickList 的 items[].index（按组→组内摊平）" },
+                    "action": { "type": "string", "enum": ["loop", "add", "update", "remove", "group"], "description": "要做的动作：loop=开关循环发送；add=加一条；update=改一条；remove=删一条；group=组操作。省略=按 index 执行/只列举" },
+                    "on": { "type": "boolean", "description": "action=loop 时：true 开、false 关（省略=取反）；action=group 且 op=on/fold 时：该组是否参与循环 / 是否折叠" },
+                    "group": {
+                        "anyOf": [ { "type": "number" }, { "type": "string" } ],
+                        "description": "action=add/group 时指定哪一组：组序号（0 起，见 quickList 的 groups[].index）、组名或组 id。add 省略时加到最后那组（这里用 anyOf 而不是 type 数组：数组型 type 的客户端兼容性差，官方 Inspector 会报）"
+                    },
+                    "name": { "type": "string", "description": "action=group 且 op=rename 时的新组名" },
+                    "toIndex": { "type": "number", "description": "action=group 且 op=move 时的目标组序号（0 起；组的上下顺序就是循环顺序）" },
+                    "value": { "type": "string", "description": "action=add/update 时的指令内容（原样发送，不按逗号切分）" },
+                    "seq": { "type": "number", "description": "action=add/update 时的顺序号：0 = 不参与循环，>0 在**组内**按数字升序发" },
+                    "delayMs": { "type": "number", "description": "action=add/update 时的延时（毫秒，本条发完到下发一条的间隔，缺省 1000，上限 600000）" },
+                    "hex": { "type": "boolean", "description": "action=add/update 时：这一条是否按 HEX 解析后发送（默认 false）" },
                     "pane": { "type": "string", "description": "分栏名，省略=main" }
                 },
                 "additionalProperties": false
@@ -818,9 +831,25 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         // 于是 AI 会得出"不支持读串口数据"这种错结论，而事实只是"还没收到数据"。
         "serial_get_output" => serial_get_output(core, args).await,
         "serial_quick_cmd" => {
-            match args.get("index") {
-                Some(i) => serial_call(core, "quickRun", args, json!({ "index": i })).await,
-                None => serial_call(core, "quickList", args, json!({})).await,
+            // `action` 走"改列表/开关循环"，不带 action 时：给了 index = 执行那一条，
+            // 什么都没给 = 只列举。每个 action 都映射到前端**用户点按钮走的那条路**。
+            match args.get("action").and_then(|a| a.as_str()) {
+                Some("loop") => {
+                    let on = args.get("on").cloned().unwrap_or(json!(true));
+                    serial_call(core, "quickLoop", args, json!({ "on": on })).await
+                }
+                Some("add") => serial_call(core, "quickAdd", args, json!({})).await,
+                Some("update") => serial_call(core, "quickUpdate", args, json!({})).await,
+                Some("remove") => serial_call(core, "quickRemove", args, json!({})).await,
+                Some("group") => serial_call(core, "quickGroup", args, json!({})).await,
+                Some(other) => Err(RpcError::new(E_INVALID_PARAMS, format!(
+                    "不认识的 action「{other}」：可用 loop / add / update / remove / group；\
+                     想执行某一条就传 index，想列出来就两个都不传"
+                ))),
+                None => match args.get("index") {
+                    Some(i) => serial_call(core, "quickRun", args, json!({ "index": i })).await,
+                    None => serial_call(core, "quickList", args, json!({})).await,
+                },
             }
         }
         // ===== 界面桥：全部经 core.ui_call → 前端执行 → 回执 =====
@@ -2319,6 +2348,24 @@ mod tests {
                                     "pane": "main", "items": [{ "index": 0, "label": "AT", "value": "AT" }], "usable": 1,
                                 }}),
                                 "quickRun" => json!({ "ok": true, "value": { "pane": "main", "ran": 0, "label": "AT", "value": "AT" } }),
+                                // 循环开关 / 改列表：这里只回"前端会回的那些字段"，用于钉住工具层的返回形状
+                                "quickLoop" => json!({ "ok": true, "value": {
+                                    "pane": "main", "loop": true, "planLength": 1, "changed": true,
+                                }}),
+                                "quickAdd" => json!({ "ok": true, "value": {
+                                    "pane": "main", "index": 1, "group": "循环 1", "groupIndex": 0, "itemIndex": 1,
+                                    "applied": ["value", "seq", "delayMs", "hex"],
+                                }}),
+                                "quickUpdate" => json!({ "ok": true, "value": {
+                                    "pane": "main", "index": 0, "group": "循环 1", "itemIndex": 0, "applied": ["value", "seq"],
+                                }}),
+                                "quickRemove" => json!({ "ok": true, "value": {
+                                    "pane": "main", "removed": 0, "group": "循环 1", "value": "AT", "seq": 1, "remaining": 0,
+                                }}),
+                                "quickGroup" => json!({ "ok": true, "value": {
+                                    "pane": "main", "op": "rename", "groups": ["初始化"], "before": ["循环 1"],
+                                    "loop": { "on": false, "planLength": 1 },
+                                }}),
                                 "setSendAs" => json!({ "ok": true, "value": { "pane": "main", "sendAs": "hex" } }),
                                 _ => json!({ "ok": false, "error": format!("假前端不认识 action: {}", action) }),
                             }
@@ -2433,6 +2480,28 @@ mod tests {
                     pre_connected: None,
                     calls: vec![("serial", json!({ "action": "quickRun", "index": 0 }))],
                     keys: &["pane", "ran", "label", "value"] },
+                // 循环开关：只传 on 就开关（复用面板那颗开关的前置检查），返回值说明"计划多长"
+                Case { tool: "serial_quick_cmd", args: json!({ "action": "loop", "on": true }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "quickLoop", "on": true }))],
+                    keys: &["pane", "loop", "planLength", "changed"] },
+                // 加一条：group 给组序号/组名，其余字段是这一条自己的发送参数
+                Case { tool: "serial_quick_cmd", args: json!({ "action": "add", "group": 0, "value": "AT+GMR", "seq": 1, "delayMs": 500, "hex": true }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "quickAdd" }))],
+                    keys: &["pane", "index", "group", "groupIndex", "itemIndex", "applied"] },
+                Case { tool: "serial_quick_cmd", args: json!({ "action": "update", "index": 0, "value": "AT+RST", "seq": 2 }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "quickUpdate" }))],
+                    keys: &["pane", "index", "group", "itemIndex", "applied"] },
+                Case { tool: "serial_quick_cmd", args: json!({ "action": "remove", "index": 0 }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "quickRemove" }))],
+                    keys: &["pane", "removed", "group", "value", "seq", "remaining"] },
+                Case { tool: "serial_quick_cmd", args: json!({ "action": "group", "op": "rename", "group": 0, "name": "初始化" }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "quickGroup" }))],
+                    keys: &["pane", "op", "groups", "before", "loop"] },
                 Case { tool: "ui_list", args: json!({ "limit": 3 }),
                     pre_connected: None,
                     calls: vec![("list", json!({ "limit": 3 }))],
@@ -2634,7 +2703,15 @@ mod tests {
     #[test]
     fn write_classification_is_per_call() {
         assert!(is_write_call("serial_quick_cmd", &json!({ "index": 0 })), "带 index = 真的执行");
-        assert!(!is_write_call("serial_quick_cmd", &json!({})), "不带 index = 只列举");
+        assert!(!is_write_call("serial_quick_cmd", &json!({})), "不带 index/action = 只列举");
+        // 带 action 的每一种（loop 开关循环、add/update/remove 改列表、group 改组）都算写：
+        // 只读模式下必须整类拦下，漏一个就是"只读模式下界面被改了"
+        for a in ["loop", "add", "update", "remove", "group"] {
+            assert!(
+                is_write_call("serial_quick_cmd", &json!({ "action": a })),
+                "action={a} 也是写操作（只读模式要拦下）"
+            );
+        }
         assert!(is_write_call("ctl_serial_conn_portselect", &json!({})), "ctl_* 一律算写");
         assert!(is_write_call("ui_set", &json!({})) && !is_write_call("ui_get", &json!({})));
         // 写工具表里不能有"不存在的工具"这种笔误

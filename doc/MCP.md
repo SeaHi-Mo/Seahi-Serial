@@ -92,6 +92,24 @@ npx seahi-serial-mcp uninstall  # 只移除它写的那一条
 通用的界面操作仍然留着兜长尾：`ui_list` 看有哪些控件 → `ui_describe` 看某个控件怎么填 → `ui_set`/`ui_click` 操作。
 每个工具的完整入参与返回结构见 [`MCP_TOOLS.md`](./MCP_TOOLS.md)。
 
+### `serial_quick_cmd`：快速指令（列表 / 执行 / 循环 / 增删改）
+
+界面右侧那条"快速指令"分栏里的东西，都能从这里操作。列表**按循环组分段，一组一张表**；
+每个动作都复用面板上那颗按钮走的**同一条代码路径**（不给 AI 另开一套）。
+
+| 用法 | 传参 | 说明 |
+|---|---|---|
+| **列出来** | 什么都不传 | 每条含 `index`（按"组→组内"摊平的下标）、`group`/`groupIndex`/`itemIndex`、`value`、`seq`/`delayMs`/`hex`，以及可直接交给 `ui_set` 的 `domIds`；另给 `groups[]`（组名/条数/`on` 是否参与循环/`folded`）与 `loop`{on, planLength} |
+| **执行一条** | `index` | 按**该条自己的 `hex`** 决定发文本还是 HEX（与主发送栏的模式无关） |
+| **开关循环** | `action: "loop"`，`on` 可省（省=取反） | 循环顺序 = **组从上到下 → 组内顺序号**；没连串口、或整条链上没有 `seq>0` 的条目就**拒绝**并说明原因 |
+| **加一条** | `action: "add"`，`group`（组序号/组名，可省=最后那组）、`value`、`seq`、`delayMs`、`hex` | 加完报告它落在 `index`、所属组与 `applied` |
+| **改一条** | `action: "update"`，`index` + 要改的字段 | 至少给一个字段；`applied` 列出真正改动的项 |
+| **删一条** | `action: "remove"`，`index` | 返回被删那条的组/内容/顺序号与剩余条数 |
+| **组操作** | `action: "group"`，`op: "add"｜"remove"｜"rename"｜"move"｜"on"｜"fold"` | `group` 指定哪一组（序号/组名/组 id）；`rename` 给 `name`；`move` 给 `toIndex`（**组的上下顺序就是循环顺序**）；`on`/`fold` 给 `on` |
+
+改列表会**同时写回它挂载的外部文件**（"文件即存储"）—— 文件格式（列名/别名、`## 组名` 抬头、注释、
+写回规则、上限）见 [`QUICK_CMDS.md`](./QUICK_CMDS.md)。
+
 ### 想让"每个控件都是一个工具"？
 
 默认关闭。打开后界面上每个按钮/输入框/下拉都会生成一个独立工具（名字形如 `ctl_serial_conn_portselect`）：

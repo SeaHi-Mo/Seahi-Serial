@@ -44,7 +44,7 @@
 | [`serial_clear`](#serial-clear) | **写** | 清空该分栏的输出区内容（等价于点「清除内容」）。**只清界面显示，不动磁盘上的会话日志缓存文件。** |
 | [`serial_get_history`](#serial-get-history) | 读 | 读该分栏的发送历史（最近的在前）。用来回看刚才发过什么，或复用上一条指令。 |
 | [`serial_get_output`](#serial-get-output) | 读 | 读该分栏**实际收发的内容**（串口监视器的核心：设备刚才回了什么）。默认收+发都返回，按时间归并；每条带 dir 区分。数据取自日志中心，与 log_tail 是同一份存储；本工具额外的好处是**不需要你知道通道名**，且「还没收到数据」会返回空列表而不是报错。 |
-| [`serial_quick_cmd`](#serial-quick-cmd) | 读 | 快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）：不带 index 就**列出全部**（每条含 index/label/value 与它自己的发送参数 seq 顺序号、delayMs 延时、hex 是否按 HEX 发；以及列表是否来自外部文件）；给了 index 就**执行**第 index 条（按该条自己的 hex 决定文本还是 HEX）。顺序号 > 0 的条目会被面板上的「循环发送」按序号依次发出。 |
+| [`serial_quick_cmd`](#serial-quick-cmd) | 读 | 快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、delayMs 延时、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。 |
 | [`app_info`](#app-info) | 读 | 本机 SeaHi Serial 应用的基本信息（版本、平台、进程、运行时长）。只读，无副作用。 |
 | [`mcp_status`](#mcp-status) | 读 | MCP 服务器自身状态：是否运行、监听端点、会话数、请求数与限流/丢弃计数。只读。 |
 | [`mcp_limits`](#mcp-limits) | 读 | MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。 |
@@ -256,7 +256,7 @@
 
 #### `serial_quick_cmd`
 
-- **作用**：快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）：不带 index 就**列出全部**（每条含 index/label/value 与它自己的发送参数 seq 顺序号、delayMs 延时、hex 是否按 HEX 发；以及列表是否来自外部文件）；给了 index 就**执行**第 index 条（按该条自己的 hex 决定文本还是 HEX）。顺序号 > 0 的条目会被面板上的「循环发送」按序号依次发出。
+- **作用**：快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、delayMs 延时、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。
 - **读/写**：只读，无副作用
 - **返回**：{pane, items:[{index,label,value,seq,delayMs,hex}], usable, file, source}
 - **注意**：不带 index 只列；带 index 才执行（→ {pane, ran, label, value, hex}）。`seq`/`delayMs`/`hex` 是**每条自己的发送参数**（顺序号 > 0 才进面板上的「循环发送」列表，`delayMs` 默认 1000，`hex` 默认关闭）；`source=file` 表示这个列表来自外部文件（面板里增删改会写回该文件），`file` 是它的路径；`source=config` 才是纯配置里的列表
@@ -265,7 +265,16 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `index` | number | 否 | 要执行的快速指令下标（从 0 开始）；省略=只列不执行 |
+| `index` | number | 否 | 要执行（不带 action 时）或要改（update/remove 时）的条目下标，从 0 开始，见 quickList 的 items[].index（按组→组内摊平） |
+| `action` | string | 否 | 枚举：`loop` / `add` / `update` / `remove` / `group` 要做的动作：loop=开关循环发送；add=加一条；update=改一条；remove=删一条；group=组操作。省略=按 index 执行/只列举 |
+| `on` | boolean | 否 | action=loop 时：true 开、false 关（省略=取反）；action=group 且 op=on/fold 时：该组是否参与循环 / 是否折叠 |
+| `group` | any | 否 | action=add/group 时指定哪一组：组序号（0 起，见 quickList 的 groups[].index）、组名或组 id。add 省略时加到最后那组（这里用 anyOf 而不是 type 数组：数组型 type 的客户端兼容性差，官方 Inspector 会报） |
+| `name` | string | 否 | action=group 且 op=rename 时的新组名 |
+| `toIndex` | number | 否 | action=group 且 op=move 时的目标组序号（0 起；组的上下顺序就是循环顺序） |
+| `value` | string | 否 | action=add/update 时的指令内容（原样发送，不按逗号切分） |
+| `seq` | number | 否 | action=add/update 时的顺序号：0 = 不参与循环，>0 在**组内**按数字升序发 |
+| `delayMs` | number | 否 | action=add/update 时的延时（毫秒，本条发完到下发一条的间隔，缺省 1000，上限 600000） |
+| `hex` | boolean | 否 | action=add/update 时：这一条是否按 HEX 解析后发送（默认 false） |
 | `pane` | string | 否 | 分栏名，省略=main |
 
 ### 应用与服务器

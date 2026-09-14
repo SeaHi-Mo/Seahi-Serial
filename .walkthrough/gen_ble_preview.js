@@ -4202,6 +4202,18 @@ console.log('preview ->', out);
           longParsed.items[0].value.length === sbSide.QCMD_FILE_MAX_VALUE && longParsed.skipped.length === 2,
       '超长名称/指令被截断，并各记一条跳过原因', JSON.stringify(longParsed.skipped));
 
+    // ---- 跨端一致：quick* 的每个 action，Rust 发的 op 名与前端的分支必须一一对上 ----
+    // （"后端发了、前端没有"会静默失败，而两边各自测自己那一半时全是绿的）
+    {
+      const proto = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');
+      const ops = ['quickList', 'quickRun', 'quickLoop', 'quickAdd', 'quickUpdate', 'quickRemove', 'quickGroup'];
+      const missingRust = ops.filter(op => proto.indexOf('"' + op + '"') < 0);
+      const missingFe = ops.filter(op => html.indexOf("action === '" + op + "'") < 0);
+      check(missingRust.length === 0, 'Rust 侧认得全部 quick* op', missingRust.join(',') || '(全都有)');
+      check(missingFe.length === 0, '前端 mcpSerialOp 对每个 quick* op 都有分支', missingFe.join(',') || '(全都有)');
+      check(/serial_quick_cmd[\s\S]{0,1200}Some\("add"\)/.test(proto) && /Some\("group"\)/.test(proto),
+        'Rust 的 action → op 映射在（add/group/loop/update/remove）');
+    }
     // ---- 跨端一致：前端上限必须与 Rust 侧常量一致 ----
     const protoSrc = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');
     const usizeOf = name => {
