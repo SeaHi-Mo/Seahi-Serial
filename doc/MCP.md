@@ -117,6 +117,9 @@ npx seahi-serial-mcp uninstall  # 只移除它写的那一条
 | 工具 | 干什么 | 读/写 |
 |---|---|---|
 | `ble_get_state` | 是否在扫描、扫到几台、选中/已连哪台、服务树几个服务、订阅了几路、内嵌监视器开着没 | 读 |
+| `ble_list_devices` | 已扫到的设备列表（MAC / 名称 / RSSI / 是否配对 / 是否选中） | 读 |
+| `ble_start_scan` / `ble_stop_scan` | 开始 / 停止扫描（面板那颗按钮的同一条路径） | 写 |
+| `ble_get_services` | 已连设备的 GATT 服务树（服务 → 特征 + 属性 props + 描述符数） | 读 |
 | `ble_periph_status` | **从机**（本机当外设）状态：是否真的在对外广播、服务 UUID、特征数、可发现/可连接、手动应答、后端告警 | 读 |
 | `ble_periph_start` | 按面板上已配置的服务/特征**对外广播** | **写 ⚠️ 危险** |
 | `ble_periph_stop` | 停掉对外广播 | **写 ⚠️ 危险** |

@@ -104,6 +104,9 @@ pub const WRITE_TOOLS: &[&str] = &[
     // BLE 从机的启停：写 + **危险**（见 DANGER_TOOLS，还要 confirm:true）
     "ble_periph_start",
     "ble_periph_stop",
+    // 扫描占用射频、会让附近设备应答 —— 算写（只读模式下不该开）
+    "ble_start_scan",
+    "ble_stop_scan",
 ];
 
 /// 判断**这一次调用**算不算写操作。
@@ -381,6 +384,31 @@ pub fn tool_defs() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
         json!({
+            "name": "ble_list_devices",
+            "description": "列出**已扫到**的蓝牙设备（不触发扫描）：MAC、名称、信号强度 RSSI、是否已配对、是否当前选中，以及扫描是否在进行中。列表空时会说明该先做什么。只读。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "number", "description": "最多返回几台（省略=全部）" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ble_start_scan",
+            "description": "开始扫描蓝牙设备（面板那颗「开始/停止扫描」按钮的同一条路径）。默认按面板上设的时长自动停止；扫完用 ble_list_devices 取结果。写操作（会占用射频）。",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        json!({
+            "name": "ble_stop_scan",
+            "description": "停止蓝牙扫描（复用同一颗按钮的路径）。写操作。",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        json!({
+            "name": "ble_get_services",
+            "description": "当前已连接设备的 GATT 服务树（服务 UUID / 名称，每个服务下的特征 UUID、属性 props、描述符个数）。只读，取的是面板已经拉到的那份，不会重新去问设备。",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),        json!({
             "name": "ble_periph_status",
             "description": "BLE **从机**（把本机变成外设）的状态：是否真的在对外广播、服务 UUID、特征数、是否可被发现/可连接、是否手动应答写请求、以及后端给出的告警（蓝牙关着 / 不支持外设角色等）。只读。",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
@@ -935,7 +963,10 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         }
         // ===== BLE 语义工具（前端 mcpBleOp；与 serial_* 同构）=====
         "ble_get_state" => ble_call(core, "state", args, json!({})).await,
-        "ble_periph_status" => ble_call(core, "periphStatus", args, json!({})).await,
+        "ble_list_devices" => ble_call(core, "listDevices", args, json!({})).await,
+        "ble_start_scan" => ble_call(core, "startScan", args, json!({})).await,
+        "ble_stop_scan" => ble_call(core, "stopScan", args, json!({})).await,
+        "ble_get_services" => ble_call(core, "getServices", args, json!({})).await,        "ble_periph_status" => ble_call(core, "periphStatus", args, json!({})).await,
         "ble_periph_start" => ble_call(core, "periphStart", args, json!({})).await,
         "ble_periph_stop" => ble_call(core, "periphStop", args, json!({})).await,
         "mcp_danger" => Ok(json!({
@@ -2294,6 +2325,10 @@ mod tests {
                 ("serial_quick_cmd", json!({}), NoGui),
                 // BLE 语义工具（第一批）：读的两个 + 从机启停（危险，没 GUI 时也是 -32006）
                 ("ble_get_state", json!({}), NoGui),
+                ("ble_list_devices", json!({}), NoGui),
+                ("ble_get_services", json!({}), NoGui),
+                ("ble_start_scan", json!({}), NoGui),
+                ("ble_stop_scan", json!({}), NoGui),
                 ("ble_periph_status", json!({}), NoGui),
                 ("ble_periph_start", json!({ "confirm": true }), NoGui),
                 ("ble_periph_stop", json!({ "confirm": true }), NoGui),
@@ -2497,6 +2532,22 @@ mod tests {
                                     "connected": connected.load(Ordering::Relaxed), "addr": null, "connName": null,
                                     "serviceCount": 0, "notifySubs": 0, "logCount": 0, "monitorOpen": false,
                                 }}),
+                                "listDevices" => json!({ "ok": true, "value": {
+                                    "scanning": false, "total": 2, "selected": null,
+                                    "devices": [{ "mac": "AA:BB:CC:DD:EE:FF", "name": "Ai-WB2", "rssi": -55,
+                                                  "paired": false, "selected": false }],
+                                }}),
+                                "startScan" => json!({ "ok": true, "value": {
+                                    "scanning": true, "seconds": 15, "deviceCount": 2,
+                                }}),
+                                "stopScan" => json!({ "ok": true, "value": {
+                                    "scanning": false, "deviceCount": 2,
+                                }}),
+                                "getServices" => json!({ "ok": true, "value": {
+                                    "connected": true, "addr": "AA:BB:CC:DD:EE:FF", "serviceCount": 1,
+                                    "services": [{ "uuid": "0000fff0-0000-1000-8000-00805f9b34fb", "name": null,
+                                                   "chars": [{ "uuid": "0000fff1-0000-1000-8000-00805f9b34fb", "props": ["read","notify"], "descs": 1 }] }],
+                                }}),
                                 "periphStatus" => json!({ "ok": true, "value": {
                                     "advertising": false,
                                     "serviceUuid": "0000fff0-0000-1000-8000-00805f9b34fb",
@@ -2652,6 +2703,22 @@ mod tests {
                     pre_connected: None,
                     calls: vec![("ble", json!({ "action": "state" }))],
                     keys: &["scanning", "deviceCount", "connected", "serviceCount", "notifySubs", "logCount"] },
+                Case { tool: "ble_list_devices", args: json!({ "limit": 5 }),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "listDevices" }))],
+                    keys: &["scanning", "total", "devices", "selected"] },
+                Case { tool: "ble_start_scan", args: json!({}),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "startScan" }))],
+                    keys: &["scanning", "seconds", "deviceCount"] },
+                Case { tool: "ble_stop_scan", args: json!({}),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "stopScan" }))],
+                    keys: &["scanning", "deviceCount"] },
+                Case { tool: "ble_get_services", args: json!({}),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "getServices" }))],
+                    keys: &["connected", "serviceCount", "services"] },
                 Case { tool: "ble_periph_status", args: json!({}),
                     pre_connected: None,
                     calls: vec![("ble", json!({ "action": "periphStatus" }))],
@@ -2744,6 +2811,7 @@ mod tests {
                 "ui_click", "ui_describe", "ui_get", "ui_get_state", "ui_list", "ui_set",
                 // BLE 第一批（都经前端 mcpBleOp）
                 "ble_get_state", "ble_periph_status", "ble_periph_start", "ble_periph_stop",
+                "ble_list_devices", "ble_start_scan", "ble_stop_scan", "ble_get_services",
             ];
             // serial_get_output 只读日志中心，但**先要过前端拿分栏名与通道名**，所以也算界面工具
             want.push("serial_get_output");

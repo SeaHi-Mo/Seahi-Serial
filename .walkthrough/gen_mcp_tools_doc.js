@@ -70,7 +70,10 @@ const META = {
   serial_get_output: ['读', '{pane, direction, isConnected, channels:{rx,tx}, count, items:[{seq,ts,dir,text,bytes}], truncated, note?}', '**串口监视器的核心：读设备回了什么**。默认收+发按时间归并；数据与 `log_tail` 同一份存储，但**不需要你知道通道名**，且"还没收到数据"返回空列表 + note 而不是报错'],
   // ===== BLE 语义（第一批：状态 + 从机）=====
   ble_get_state: ['读', '{scanning, deviceCount, selected, connected, addr, connName, serviceCount, notifySubs, logCount, monitorOpen}', '**操作蓝牙前先调它**；只反映面板内存里的状态，不会去碰适配器'],
-  ble_periph_status: ['读', '{advertising, serviceUuid, chars, discoverable, connectable, manualReply, warning?}', '**关键**：`advertising=false` 表示"服务建好了但没在广播"（蓝牙关着/不支持外设角色时 `warning` 会给真实原因），别把它当成功'],
+  ble_list_devices: ['读', '{scanning, total, devices:[{mac,name,rssi,paired,selected}], selected, note?}', '**只列已扫到的**（不触发扫描）。空列表时 `note` 会说该先做什么（`ble_start_scan`）；RSSI 是负数，越接近 0 越强'],
+  ble_start_scan: ['写', '{scanning, seconds, deviceCount}', '走面板那颗「开始/停止扫描」按钮的同一路径；按面板上设的时长自动停止，扫完用 `ble_list_devices` 取结果'],
+  ble_stop_scan: ['写', '{scanning:false, deviceCount}', '同上：复用同一颗按钮的路径'],
+  ble_get_services: ['读', '{connected, addr, serviceCount, services:[{uuid,name,chars:[{uuid,props,descs}]}]}', '**取的是面板已经拉到的那份服务树**（不会重新去问设备）；还没连设备时 `note` 会说明'],  ble_periph_status: ['读', '{advertising, serviceUuid, chars, discoverable, connectable, manualReply, warning?}', '**关键**：`advertising=false` 表示"服务建好了但没在广播"（蓝牙关着/不支持外设角色时 `warning` 会给真实原因），别把它当成功'],
   ble_periph_start: ['写⚠️', '{pane, started, advertising, serviceUuid, warning?}', '**危险动作：对外广播**（附近设备都能看到并连上来）。必须带 `confirm:true`，否则不执行并回 `-32006`；用的是面板上已配置好的服务/特征'],
   ble_periph_stop: ['写⚠️', '{pane, started, advertising, serviceUuid, warning?}', '**危险动作**：停掉对外广播（已连上来的中心设备会断开）。必须带 `confirm:true`'],
   mcp_danger: ['读', '{tools:[{name, consequence, confirm}], total, note}', '危险工具清单（会对外产生不可撤销影响的那些）。**先问后果再确认**：不带 confirm 调用它们不会执行'],  serial_quick_cmd: ['读', '{pane, items:[{index,label,value,seq,delayMs,hex}], usable, file, source}', '不带 index 只列；带 index 才执行（→ {pane, ran, label, value, hex}）。`seq`/`delayMs`/`hex` 是**每条自己的发送参数**（顺序号 > 0 才进面板上的「循环发送」列表，`delayMs` 默认 1000，`hex` 默认关闭）；`source=file` 表示这个列表来自外部文件（面板里增删改会写回该文件），`file` 是它的路径；`source=config` 才是纯配置里的列表'],
@@ -98,7 +101,8 @@ const META = {
 
 const GROUPS = [
   ['串口语义工具（**优先用这些**，比 ui_* 通用桥更准）', ['serial_get_state', 'serial_select_port', 'serial_set_baud', 'serial_set_frame', 'serial_set_lines', 'serial_set_display', 'serial_open', 'serial_close', 'serial_send', 'serial_clear', 'serial_get_history', 'serial_get_output', 'serial_quick_cmd']],
-  ['蓝牙语义工具（BLE）', ['ble_get_state', 'ble_periph_status', 'ble_periph_start', 'ble_periph_stop']],
+  ['蓝牙语义工具（BLE）', ['ble_get_state', 'ble_list_devices', 'ble_start_scan', 'ble_stop_scan', 'ble_get_services',
+                    'ble_periph_status', 'ble_periph_start', 'ble_periph_stop']],
   ['安全与策略', ['mcp_danger']],
   ['应用与服务器', ['app_info', 'mcp_status', 'mcp_limits', 'serial_list_ports']],
   ['界面操作（走合成 DOM 事件，和用户点击同一条路径）', ['ui_list', 'ui_describe', 'ui_get', 'ui_set', 'ui_click', 'ui_get_state']],

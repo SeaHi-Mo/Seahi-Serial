@@ -26,7 +26,7 @@
 
 - 运行时：`tools/list`（分页，每页 50，用 `nextCursor` 翻页）——这是**权威来源**，本页只是它的可读版本。
 - `mcp_limits` / `mcp_status` 里的 `toolCount` / `builtinToolCount` 能看到数量。
-- 内置工具 **38 个**；另有可选的 `ctl_*`（见 §4）。
+- 内置工具 **42 个**；另有可选的 `ctl_*`（见 §4）。
 
 ## 3. 一页速查
 
@@ -46,6 +46,10 @@
 | [`serial_get_output`](#serial-get-output) | 读 | 读该分栏**实际收发的内容**（串口监视器的核心：设备刚才回了什么）。默认收+发都返回，按时间归并；每条带 dir 区分。数据取自日志中心，与 log_tail 是同一份存储；本工具额外的好处是**不需要你知道通道名**，且「还没收到数据」会返回空列表而不是报错。 |
 | [`serial_quick_cmd`](#serial-quick-cmd) | 读 | 快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、delayMs 延时、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。 |
 | [`ble_get_state`](#ble-get-state) | 读 | 蓝牙分栏的当前状态：是否在扫描、扫到几台设备、选中/已连的是哪台、GATT 服务树有几个服务、订阅了几路通知、内嵌监视器是否打开。只读，无副作用。 |
+| [`ble_list_devices`](#ble-list-devices) | 读 | 列出**已扫到**的蓝牙设备（不触发扫描）：MAC、名称、信号强度 RSSI、是否已配对、是否当前选中，以及扫描是否在进行中。列表空时会说明该先做什么。只读。 |
+| [`ble_start_scan`](#ble-start-scan) | **写** | 开始扫描蓝牙设备（面板那颗「开始/停止扫描」按钮的同一条路径）。默认按面板上设的时长自动停止；扫完用 ble_list_devices 取结果。写操作（会占用射频）。 |
+| [`ble_stop_scan`](#ble-stop-scan) | **写** | 停止蓝牙扫描（复用同一颗按钮的路径）。写操作。 |
+| [`ble_get_services`](#ble-get-services) | 读 | 当前已连接设备的 GATT 服务树（服务 UUID / 名称，每个服务下的特征 UUID、属性 props、描述符个数）。只读，取的是面板已经拉到的那份，不会重新去问设备。 |
 | [`ble_periph_status`](#ble-periph-status) | 读 | BLE **从机**（把本机变成外设）的状态：是否真的在对外广播、服务 UUID、特征数、是否可被发现/可连接、是否手动应答写请求、以及后端给出的告警（蓝牙关着 / 不支持外设角色等）。只读。 |
 | [`ble_periph_start`](#ble-periph-start) | 读 | 启动 BLE 从机：按面板上已配置好的服务/特征**对外广播**。⚠️ 这是危险动作（附近设备都能看到并连上来），必须带 confirm:true；不带时不会执行，并返回 -32006 说明后果。 |
 | [`ble_periph_stop`](#ble-periph-stop) | 读 | 停止 BLE 从机广播。⚠️ 危险动作（已连上来的中心设备会断开），必须带 confirm:true。 |
@@ -290,6 +294,52 @@
 - **读/写**：只读，无副作用
 - **返回**：{scanning, deviceCount, selected, connected, addr, connName, serviceCount, notifySubs, logCount, monitorOpen}
 - **注意**：**操作蓝牙前先调它**；只反映面板内存里的状态，不会去碰适配器
+
+**入参**
+
+无（不需要参数）
+
+#### `ble_list_devices`
+
+- **作用**：列出**已扫到**的蓝牙设备（不触发扫描）：MAC、名称、信号强度 RSSI、是否已配对、是否当前选中，以及扫描是否在进行中。列表空时会说明该先做什么。只读。
+- **读/写**：只读，无副作用
+- **返回**：{scanning, total, devices:[{mac,name,rssi,paired,selected}], selected, note?}
+- **注意**：**只列已扫到的**（不触发扫描）。空列表时 `note` 会说该先做什么（`ble_start_scan`）；RSSI 是负数，越接近 0 越强
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `limit` | number | 否 | 最多返回几台（省略=全部） |
+
+#### `ble_start_scan`
+
+- **作用**：开始扫描蓝牙设备（面板那颗「开始/停止扫描」按钮的同一条路径）。默认按面板上设的时长自动停止；扫完用 ble_list_devices 取结果。写操作（会占用射频）。
+- **读/写**：**写**（会改状态）
+- **返回**：{scanning, seconds, deviceCount}
+- **注意**：走面板那颗「开始/停止扫描」按钮的同一路径；按面板上设的时长自动停止，扫完用 `ble_list_devices` 取结果
+
+**入参**
+
+无（不需要参数）
+
+#### `ble_stop_scan`
+
+- **作用**：停止蓝牙扫描（复用同一颗按钮的路径）。写操作。
+- **读/写**：**写**（会改状态）
+- **返回**：{scanning:false, deviceCount}
+- **注意**：同上：复用同一颗按钮的路径
+
+**入参**
+
+无（不需要参数）
+
+#### `ble_get_services`
+
+- **作用**：当前已连接设备的 GATT 服务树（服务 UUID / 名称，每个服务下的特征 UUID、属性 props、描述符个数）。只读，取的是面板已经拉到的那份，不会重新去问设备。
+- **读/写**：只读，无副作用
+- **返回**：{connected, addr, serviceCount, services:[{uuid,name,chars:[{uuid,props,descs}]}]}
+- **注意**：**取的是面板已经拉到的那份服务树**（不会重新去问设备）；还没连设备时 `note` 会说明
 
 **入参**
 

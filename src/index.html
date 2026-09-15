@@ -5604,8 +5604,61 @@ function mcpBleOp(payload) {
             return { ok: false, error: '从机操作失败: ' + e };
         }
     }
+    if (action === 'listDevices') {
+        // 只读：扫描结果（不触发扫描）；limit 省略=全部
+        var lim = parseInt(payload.limit, 10);
+        var all = (_bleDevices || []);
+        var list = (lim > 0 ? all.slice(0, lim) : all).map(function (d) {
+            return {
+                mac: d.address || d.mac || null,
+                name: d.name || d.localName || null,
+                rssi: (typeof d.rssi === 'number') ? d.rssi : null,
+                paired: !!d.paired,
+                selected: !!(_bleSelected && (d.address || d.mac) === _bleSelected),
+            };
+        });
+        return { ok: true, value: {
+            scanning: !!_bleScanning,
+            total: all.length,
+            devices: list,
+            selected: _bleSelected || null,
+            note: all.length ? null : (_bleScanning ? '正在扫描，稍后再问' : '还没扫到设备：先 ble_start_scan'),
+        } };
+    }
+    if (action === 'startScan' || action === 'stopScan') {
+        // 复用面板那颗"开始/停止扫描"按钮的函数（toggleBleScan 内部按 _bleScanning 分流）
+        var wantScan = (action === 'startScan');
+        if (!!_bleScanning !== wantScan) {
+            try { toggleBleScan(); } catch (e) { return { ok: false, error: '切换扫描失败: ' + e }; }
+        }
+        return { ok: true, value: {
+            scanning: !!_bleScanning,
+            seconds: (typeof bleScanSecs === 'function') ? bleScanSecs() : null,
+            deviceCount: (_bleDevices || []).length,
+        } };
+    }
+    if (action === 'getServices') {
+        // 只读：当前连接设备的 GATT 服务树（面板已经拉好的那份）
+        var svcs = (_bleServices || []).map(function (s) {
+            return {
+                uuid: s.uuid || null,
+                name: s.name || null,
+                chars: (s.characteristics || s.chars || []).map(function (c) {
+                    return { uuid: c.uuid || null, props: c.properties || c.props || [],
+                             descs: (c.descriptors || []).length };
+                }),
+            };
+        });
+        return { ok: true, value: {
+            connected: !!_bleConnInfo,
+            addr: _bleConnAddr || null,
+            serviceCount: svcs.length,
+            services: svcs,
+            note: svcs.length ? null : (_bleConnInfo ? '设备已连但还没服务树：稍后重试' : '还没连设备：先 ble_connect'),
+        } };
+    }
     return { ok: false, invalidParams: true, error: '未知的 ble action: ' + action
-        + '（可用：state / periphStatus / periphStart / periphStop）' };
+        + '（可用：state / listDevices / startScan / stopScan / getServices / periphStatus / periphStart / periphStop）' };
 }
 
 /* ===== 串口语义层（给 MCP 的 serial_* 工具用）=====
