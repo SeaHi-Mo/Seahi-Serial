@@ -1485,6 +1485,60 @@ BLE 面板有两套完全不同的东西：**主机**（当中央去连别人的
 
 ## 17. 实施记录
 
+### 2026-09-14 · BLE 语义工具第五批（写入 / 连接 / 断开）✅ —— 顺手逮到上一批的真 bug
+
+按 §16.6.1 收尾主机方向：`ble_write`、`ble_connect`、`ble_disconnect`（46 → 49 个工具）。
+
+**改动**
+
+- **`ble_write`**：没有绕开界面直接调后端，而是**点开面板那个写入窗、填进去、点「发送」** ——
+  HEX/文本解析、行尾、写响应/无响应全部复用弹窗自己那套（`bleReadWriteModalInput` + `sendBleWriteCore`）。
+  顺带把 `sendBleWrite()` 拆成 `sendBleWriteCore()`：**返回真实成败**（`{ok,hex,bytes,writeType}`
+  或 `{ok:false,error}`），按钮入口忽略返回值，MCP 靠它给 AI 真实结论 —— 写失败绝不谎报成功。
+  默认 `lineEnding=none`（AI 写的多是协议帧，擅自补 CRLF 会写坏数据）；`writeType` 给了但特征不支持时
+  **报错并把可选值列出来**，不静默换一种写。
+- **`ble_connect`**：给 MAC 时先在扫描列表里找 —— **找到就点它的卡片再走「连接设备」**，
+  **找不到就走「按 MAC 直连」**（`ble_connect_direct`，不依赖广播；这正是"设备被配对过/被别的主机连走
+  就不再广播"的唯一出路，见 AGENTS 的 BLE 主机三条约定）；不给 MAC 就用面板选中的那台。
+  **等 `bleOnConnected` 把服务树拉完才返回**（和 `serial_open` 一样不做乐观返回）。
+  为此把 `toggleBleConnect` 里那段内联编排抽成 `bleConnectTo(address,label)`（门闩 + 显式超时 +
+  "只有确实需要配对才配对再重连"），按钮与 MCP 共用；`connectBleDirect` 也改成可传地址并回报结果。
+- **`ble_disconnect`**：抽成 `bleDisconnect()`，与那颗「断开设备」按钮完全同一条路
+  （服务树/订阅/本次会话日志一起清）；本来就没连时幂等返回，不打后端。
+
+**逮到的真 bug（上一批的）**：`ble_call(core, action, args, extra)` **只把 `pane` 转进 payload**，
+所以第四批的 `ble_read`/`ble_subscribe` 虽然 `require_str(args,"char")` 校验通过，
+**`char` 根本没到前端** —— 真机上这两个工具会一直回"要给 char"。两端各自的测试都是绿的：
+Rust 侧的假前端不看参数内容（只钉 op 序列），前端侧当时只有源码断言。
+修法与加固：① 需要的字段一律显式放进 `extra`；② Rust 的假前端把期望参数钉进调用序列
+（`{"action":"read","char":"0x2a00"}`，`json_subset` 会比对），`ble_write`/`ble_connect` 同理；
+③ `.walkthrough` 补了 **27 条真 handler 行为断言** —— 用真实 `renderCharRow` 产出特征行、
+把 onclick 原样搬进假 DOM，再跑 `mcpBleOp`：读/订阅/写/连接/断开各条路都验到"点了哪颗按钮、
+发出什么字节、失败是不是真的回失败"。
+
+另一个小坑：`ble_subscribe` 判断"已经订阅了吗"用的是 `_bleSubs[<uuid>::<prop>]`，
+而 `_bleSubs` 的键取自**服务树里的 UUID 写法**。原先用调用方传来的 UUID（可能大小写不同）去查，
+会查不到 —— 那会把"已订阅"误判成"未订阅"，**退订请求于是静默不生效**。现在统一用按钮 onclick 里的
+真实 UUID（`bleBtnUuid`），顺带回执里的 `uuid` 也是服务树那个写法（可直接回喂给下一个工具）。
+
+还有个必须处理的界面事实：**特征行只在该服务展开时才在 DOM 里**（面板一次只展开一个服务，收起即移除）。
+所以"按 UUID 找那颗图标"找不到时不能直接判"不支持"，而是先让拥有这个特征的服务展开
+（`bleFindCharBtn`：查 `_bleServices` 找所属服务 → 点它的抬头行 → 再找一次）——
+否则 AI 得先让用户手点展开才能读写，否则得到一堆假的"特征不支持"。
+
+上限：新增 `MAX_BLE_WRITE_CHARS = 4096`（进 `mcp_limits.maxBleWriteChars`）——
+BLE 单次写受 MTU 限制，无界字符串等于让 AI 灌爆 WebView（AGENTS #10）。
+
+**验证**：`cargo test` 170 通过（+4 契约行 +6 调用情况用例 +1 上限断言）；前端 **1401** 通过
+（46 → 49 工具、+3 op 分支、+3 跨端对、+32 行为断言，含"服务未展开也能操作"这条）；
+npm 安装器 62 通过；`doc/MCP_TOOLS.md` 重生成（49 个工具）；`doc/MCP.md` 的 BLE 表补到 14 行。
+
+⚠️ 真机验证仍待办（沙箱里没有蓝牙）：写入/读通知/连接都要在真设备上跑一遍
+（见 `doc/BLE_VERIFICATION.md` 的清单）。
+
+**下一批**：`ble_pair`（危险：会写进 Windows 的配对表 → 进 `DANGER_TOOLS`，且要用户在那颗配对弹窗上确认）、
+`ble_periph_respond_write`（从机手动应答，从机模式当前默认关闭）→ 之后转 ADB/WSL（§16.6.2）与全局/应用（§16.6.3）。
+
 ### 2026-09-14 · BLE 语义工具第四批（特征读 / 订阅通知）✅ —— 不改面板结构也能做
 
 上一批我说"读写要按 UUID 寻址、得先抽函数"。看了实现发现**不用抽**：特征行上的读/订阅按钮
@@ -1501,6 +1555,9 @@ BLE 面板有两套完全不同的东西：**主机**（当中央去连别人的
 
 **验证**：`cargo test` 170 通过（+2 契约 +2 调用情况）；前端 1359 通过（+2 op/跨端断言）；
 `doc/MCP_TOOLS.md` 重生成（46 个工具）；`doc/MCP.md` 的 BLE 表补到 11 行。
+
+⚠️ **更正（第五批发现）**：本批的 `ble_read`/`ble_subscribe` 有个真 bug —— `ble_call` 只把 `pane`
+转进 payload，`char` 根本没到前端（Rust/前端两侧测试当时都是绿的）。详见上面第五批的记录。
 
 ⚠️ **顺带发现一个既有问题（本批没改）**：`every_tool_has_a_tested_return_contract` **单跑必失败**
 （`log_tail` 要的 `app` 通道还没被建出来），整套跑时别的用例会先建出这个通道才过 ——

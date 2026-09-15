@@ -5546,6 +5546,76 @@ function mcpHandleUiCmd(op, payload) {
  * ⚠️ 从机启停是**危险动作**（对外广播，撤不回来）：Rust 侧 `DANGER_TOOLS` 要求 `confirm:true`
  * 才会走到这里（见 protocol.rs 的二次确认门）。
  */
+// 在已渲染的服务树里按「特征 UUID + 属性」找到那颗操作图标（读/写/订阅共用同一套 DOM 结构）。
+// 找不到返回 null —— 调用方据此说明"这个特征不支持该操作"，而不是去猜或另写一套读写逻辑。
+function bleCharActionBtn(uuid, prop) {
+    var want = String(uuid || '').toLowerCase() + '::' + prop;
+    var btns = document.querySelectorAll ? document.querySelectorAll('.ble-ch-action') : [];
+    for (var i = 0; i < btns.length; i++) {
+        var key = String(btns[i].getAttribute('onclick') || '').toLowerCase();
+        if (key.indexOf(want) >= 0) return btns[i];
+    }
+    return null;
+}
+
+// 图标 onclick（`bleCharAction(this,'<uuid>::<prop>')`）里的**真实 UUID**。
+// 大小写以服务树为准：`_bleSubs` 的键就是服务树里那个写法，用调用方传来的大小写去查
+// 会查不到 —— 那会让"已经是订阅中"被误判成"未订阅"，退订请求于是静默不生效。
+function bleBtnUuid(el) {
+    var m = /bleCharAction\(this,'([^']*)::/.exec(String((el && el.getAttribute) ? el.getAttribute('onclick') : ''));
+    return m ? m[1] : '';
+}
+
+// 服务树里那个服务抬头行（.ble-svc）
+function bleSvcRowEl(svcUuid) {
+    var want = String(svcUuid || '').toLowerCase();
+    if (!want || !document.querySelectorAll) return null;
+    var rows = document.querySelectorAll('.ble-svc');
+    for (var i = 0; i < rows.length; i++) {
+        if (String(rows[i].getAttribute('data-uuid') || '').toLowerCase() === want) return rows[i];
+    }
+    return null;
+}
+
+// 某个特征属于哪个服务（大小写不敏感 —— 后端回的特征 UUID 是小写，调用方可能给大写）
+function bleSvcUuidOfChar(charUuid) {
+    var want = String(charUuid || '').toLowerCase();
+    var list = _bleServices || [];
+    for (var i = 0; i < list.length; i++) {
+        var chars = list[i].characteristics || [];
+        for (var j = 0; j < chars.length; j++) {
+            if (String(chars[j].uuid || '').toLowerCase() === want) return list[i].uuid || '';
+        }
+    }
+    return '';
+}
+
+// 特征行上的操作图标**只在该服务展开时才在 DOM 里**（面板一次只展开一个服务，收起即移除）。
+// 所以找不到就先让拥有它的那个服务展开（= 用户点服务抬头，同一条路），再找一次 ——
+// 否则"没手动展开过服务"会被误判成"这个特征不支持读写"。
+function bleFindCharBtn(uuid, prop) {
+    var btn = bleCharActionBtn(uuid, prop);
+    if (btn) return btn;
+    var svcUuid = bleSvcUuidOfChar(uuid);
+    if (!svcUuid) return null;
+    var row = bleSvcRowEl(svcUuid);
+    if (!row) return null;
+    // 已经展开说明这个特征确实没有该属性：别再点一下把人家收起来
+    if (!(row.classList && row.classList.contains('expanded'))) row.click();
+    return bleCharActionBtn(uuid, prop);
+}
+
+// 设备列表里那台设备的卡片（点它 = 选中，与用户点卡片同一条路）
+function bleDevCardEl(addr) {
+    var want = String(addr || '').trim().toUpperCase();
+    if (!want || !document.querySelectorAll) return null;
+    var cards = document.querySelectorAll('.ble-dev-card');
+    for (var i = 0; i < cards.length; i++) {
+        if (String(cards[i].getAttribute('data-addr') || '').toUpperCase() === want) return cards[i];
+    }
+    return null;
+}
+
 function mcpBleOp(payload) {
     payload = payload || {};
     var action = payload.action;
@@ -5706,40 +5776,140 @@ function mcpBleOp(payload) {
         }
         var devSel = (typeof getSelectedBleDev === 'function') ? getSelectedBleDev() : null;
         if (!devSel || !devSel.connected) return { ok: false, error: '还没连设备：先连上再操作特征' };
-        var findBtn = function(prop0) {
-            var btns = document.querySelectorAll ? document.querySelectorAll('.ble-ch-action') : [];
-            for (var i = 0; i < btns.length; i++) {
-                var key = String(btns[i].getAttribute('onclick') || '').toLowerCase();
-                if (key.indexOf(wantUuid + '::' + prop0) >= 0) return btns[i];
-            }
-            return null;
-        };
+        var findBtn = function(prop0) { return bleFindCharBtn(wantUuid, prop0); };
         if (action === 'read') {
             var rbtn = findBtn('read');
-            if (!rbtn) return { ok: false, error: '这个特征没有 read 属性（或服务树还没展开到它）' };
+            if (!rbtn) return { ok: false, error: '服务树里没有这个特征，或它没有 read 属性：先用 ble_get_services 确认 UUID' };
             rbtn.click();
-            return { ok: true, value: { pane: 'ble', uuid: wantUuid, action: 'read',
+            return { ok: true, value: { pane: 'ble', uuid: bleBtnUuid(rbtn) || wantUuid, action: 'read',
                                         note: '已触发读取（结果随后出现在 ble_get_output 里）' } };
         }
         // subscribe：订阅开关（notify / indicate 都算）。**只在状态不一致时点**，
         // 否则会把用户刚打开的订阅又关掉。
         var btn = findBtn('notify') || findBtn('indicate');
-        if (!btn) return { ok: false, error: '这个特征不支持订阅（没有 notify / indicate 属性）' };
+        if (!btn) return { ok: false, error: '这个特征不支持订阅（没有 notify / indicate 属性），或它不在当前服务树里' };
         var propName = (String(btn.getAttribute('onclick')).toLowerCase().indexOf('::indicate') >= 0) ? 'indicate' : 'notify';
-        var subKey = wantUuid + '::' + propName;
+        // 键用**服务树里那个写法**（bleBtnUuid），不是调用方传来的 —— `_bleSubs` 就是按它存的
+        var subUuid = bleBtnUuid(btn) || wantUuid;
+        var subKey = subUuid + '::' + propName;
         var wantOn = (payload.on === undefined) ? true : !!payload.on;
         var already = !!_bleSubs[subKey];
         if (already !== wantOn) {
             btn.click();
-            return { ok: true, value: { pane: 'ble', uuid: wantUuid, prop: propName, on: wantOn,
+            return { ok: true, value: { pane: 'ble', uuid: subUuid, prop: propName, on: wantOn,
                                         changed: true, note: '已' + (wantOn ? '订阅' : '退订') + '（数据随后出现在 ble_get_output）' } };
         }
-        return { ok: true, value: { pane: 'ble', uuid: wantUuid, prop: propName, on: already,
+        return { ok: true, value: { pane: 'ble', uuid: subUuid, prop: propName, on: already,
                                     changed: false, note: '本来就是' + (already ? '订阅中' : '未订阅') } };
     }
+    if (action === 'connect') {
+        // 连接：扫描列表里有它就「点卡片 + 走连接路径」；没有它就走面板那个「按 MAC 直连」
+        // （不依赖广播 —— 被 Windows 配对过 / 被别的主机连走而不广播的设备，只有这条路能连）
+        var cAddr = String(payload.addr || '').trim().toUpperCase();
+        if (cAddr) {
+            var card = bleDevCardEl(cAddr);
+            if (card) {
+                card.click();                        // 选中它（与用户点列表卡片同一条路）
+                var selDev = (typeof getSelectedBleDev === 'function') ? getSelectedBleDev() : null;
+                if (!selDev) return { ok: false, error: '选中设备失败：列表里找不到 ' + cAddr };
+                return bleConnectTo(selDev.address, selDev.name || '未知设备').then(function (r) {
+                    if (!r.ok) return { ok: false, error: r.error };
+                    return { ok: true, value: { pane: 'ble', connected: true, addr: r.addr,
+                                                name: r.name, via: 'list', paired: !!r.paired,
+                                                serviceCount: (_bleServices || []).length } };
+                });
+            }
+            return connectBleDirect(cAddr).then(function (r) {
+                if (!r.ok) return { ok: false, invalidParams: !!r.invalidParams, error: r.error };
+                return { ok: true, value: { pane: 'ble', connected: true, addr: r.addr,
+                                            name: r.name, via: 'direct', paired: false,
+                                            serviceCount: (_bleServices || []).length } };
+            });
+        }
+        var curDev = (typeof getSelectedBleDev === 'function') ? getSelectedBleDev() : null;
+        if (!curDev) {
+            return { ok: false, invalidParams: true,
+                     error: '先给 addr（设备 MAC），或在面板列表里选一台设备' };
+        }
+        if (curDev.connected) {
+            return { ok: true, value: { pane: 'ble', connected: true, addr: curDev.address,
+                                        name: curDev.name || '未知设备', via: 'selected', paired: false,
+                                        changed: false, serviceCount: (_bleServices || []).length,
+                                        note: '本来就连着，没有重复连接' } };
+        }
+        return bleConnectTo(curDev.address, curDev.name || '未知设备').then(function (r) {
+            if (!r.ok) return { ok: false, error: r.error };
+            return { ok: true, value: { pane: 'ble', connected: true, addr: r.addr, name: r.name,
+                                        via: 'selected', paired: !!r.paired,
+                                        serviceCount: (_bleServices || []).length } };
+        });
+    }
+    if (action === 'disconnect') {
+        if (!_bleConnAddr) {
+            return { ok: true, value: { pane: 'ble', connected: false, addr: null, changed: false,
+                                        note: '本来就没连设备' } };
+        }
+        var wasAddr = _bleConnAddr;
+        return bleDisconnect().then(function (r) {
+            if (!r.ok) return { ok: false, error: r.error };
+            return { ok: true, value: { pane: 'ble', connected: false, addr: wasAddr, changed: true } };
+        });
+    }
+    if (action === 'write') {
+        // 写入 = 点面板那颗写图标打开写入窗 → 填内容 → 点「发送」。
+        // HEX/文本解析、行尾、写响应/无响应**全用弹窗自己那套**（不复刻一份），
+        // 所以写入窗会真的打开并留在界面上，数据日志里也能看到这一条。
+        var wUuid = String(payload.char || '').toLowerCase();
+        if (!wUuid) {
+            return { ok: false, invalidParams: true,
+                     error: '要给 char：特征 UUID（见 ble_get_services 的 services[].chars[].uuid）' };
+        }
+        var wData = (payload.data === undefined || payload.data === null) ? '' : String(payload.data);
+        if (!wData) {
+            return { ok: false, invalidParams: true,
+                     error: '要给 data：要写入的内容（format=hex 时是十六进制串，如 01A0FF）' };
+        }
+        var fmt = String(payload.format || 'text').toLowerCase();
+        if (fmt !== 'text' && fmt !== 'hex') {
+            return { ok: false, invalidParams: true, error: 'format 只能是 text 或 hex' };
+        }
+        // 行尾默认 none：AI 写入多半是协议帧，擅自补 CRLF 会写坏数据（用户自己发时才用面板上的选择）
+        var le = (payload.lineEnding === undefined) ? 'none' : String(payload.lineEnding).toLowerCase();
+        if (['none', 'cr', 'lf', 'crlf'].indexOf(le) < 0) {
+            return { ok: false, invalidParams: true, error: 'lineEnding 只能是 none / cr / lf / crlf' };
+        }
+        var devW = (typeof getSelectedBleDev === 'function') ? getSelectedBleDev() : null;
+        if (!devW || !devW.connected) return { ok: false, error: '还没连设备：先连上再写特征' };
+        var wBtn = bleFindCharBtn(wUuid, 'write');
+        if (!wBtn) return { ok: false, error: '这个特征不支持写入（没有 write / write_without_response 属性），或它不在当前服务树里' };
+        var modes = String(wBtn.getAttribute('data-modes') || 'write').split(',');
+        var wantType = String(payload.writeType || '').toLowerCase();
+        if (wantType && modes.indexOf(wantType) < 0) {
+            return { ok: false, invalidParams: true,
+                     error: 'writeType 只能是 ' + modes.join(' / ') + '（这个特征支持的写入方式）' };
+        }
+        wBtn.click();      // 打开写入窗（与用户点那颗图标同一条路）
+        var q = function(sel) { return document.querySelector ? document.querySelector(sel) : null; };
+        // 弹窗里的三个选择器都用面板自己的 setter，免得下拉高亮与实际值不符
+        setBleWriteAs(fmt, q('#bleWriteAsDrop .send-as-opt[data-val="' + fmt + '"]'), null);
+        var leOpt = q('#bleWriteLineEnd .sel-opt[data-val="' + le + '"]');
+        if (leOpt) setSel(leOpt, le, null);
+        if (wantType) setBleWriteMode(wantType, q('#bleWriteModeDrop .send-as-opt[data-val="' + wantType + '"]'), null);
+        var wInp = document.getElementById('bleWriteValue');
+        if (wInp) wInp.value = wData;
+        return sendBleWriteCore().then(function(r) {
+            if (!r || !r.ok) return { ok: false, error: (r && r.error) || '写入失败' };
+            return { ok: true, value: {
+                pane: 'ble', uuid: (_bleWriteTarget && _bleWriteTarget.uuid) || wUuid,
+                hex: r.hex, bytes: r.bytes, writeType: r.writeType,
+                format: fmt, lineEnding: le,
+                note: '已写入（面板写入窗与数据日志里都能看到）',
+            } };
+        });
+    }
     return { ok: false, invalidParams: true, error: '未知的 ble action: ' + action
-        + '（可用：state / listDevices / startScan / stopScan / getServices / read / subscribe'
-        + ' / getOutput / refreshRssi / periphStatus / periphStart / periphStop）' };
+        + '（可用：state / listDevices / startScan / stopScan / getServices / read / subscribe / write'
+        + ' / connect / disconnect / getOutput / refreshRssi / periphStatus / periphStart / periphStop）' };
 }
 
 /* ===== 串口语义层（给 MCP 的 serial_* 工具用）=====
@@ -10857,21 +11027,33 @@ function bleReadWriteModalInput() {
     };
 }
 
-function sendBleWrite() {
-    if (!_bleWriteTarget) { showToast('请先点特征行的「写入」图标', 'error'); return; }
+// 面板那颗「发送」按钮与回车键的入口（返回值给 MCP 的 ble_write 用，按钮忽略）
+function sendBleWrite() { return sendBleWriteCore(); }
+
+// 核心：返回 Promise<{ok:true, hex, bytes, writeType} | {ok:false, error}>（一律 resolve）。
+// **写失败不能当成成功** —— MCP 的 ble_write 靠这里的 ok 给 AI 真实结论，
+// 按钮路径只关心提示（提示与日志仍在本函数里给，两条路看到的东西一样）。
+function sendBleWriteCore() {
+    if (!_bleWriteTarget) {
+        showToast('请先点特征行的「写入」图标', 'error');
+        return Promise.resolve({ ok: false, error: '还没有选好要写入的特征' });
+    }
     // 从机模式（设值 / 下发通知）与主机写入共用这个弹窗，但校验与命令完全不同
     if (_bleWriteTarget.kind === 'periph_set' || _bleWriteTarget.kind === 'periph_notify') {
         sendBlePeriphWrite();
-        return;
+        return Promise.resolve({ ok: true, delegated: 'periph' });
     }
     var dev = getSelectedBleDev();
-    if (!dev || !dev.connected) { showToast('请先连接设备', 'error'); return; }
+    if (!dev || !dev.connected) {
+        showToast('请先连接设备', 'error');
+        return Promise.resolve({ ok: false, error: '请先连接设备' });
+    }
     var r = bleReadWriteModalInput();
     if (r.error) {
         showToast(r.error, 'error');
         var inp0 = document.getElementById('bleWriteValue');
         if (inp0 && !inp0.value) inp0.focus();
-        return;
+        return Promise.resolve({ ok: false, error: r.error });
     }
     var inp = document.getElementById('bleWriteValue');
     var bytes = r.bytes, hex = r.hex, hexMode = r.hexMode, leLog = r.leLog;
@@ -10882,22 +11064,23 @@ function sendBleWrite() {
         logBle('[发送成功] 0x' + hex + ' · ' + bytes.length + ' 字节');
         showToast('发送成功：0x' + hex, 'success');
         if (inp) { inp.value = ''; inp.focus(); }   // 发完一条即清空
+        return { ok: true, hex: hex, bytes: bytes.length, writeType: writeType };
     };
     var onFail = function(e) {
         logBle('[发送失败] ' + e);
         showToast('发送失败: ' + e, 'error');       // 失败保留输入内容，便于修正重发
+        return { ok: false, error: String(e), hex: hex };
     };
     if (isDesc) {
         logBle('[发送] 描述符 0x' + shortUuid(_bleWriteTarget.uuid) + ' ← 0x' + hex +
                '（' + (hexMode ? 'HEX' : '文本') + leLog + '）');
-        invoke('ble_write_descriptor', { charUuid: _bleWriteTarget.charUuid,
-                                         descUuid: _bleWriteTarget.uuid, data: bytes })
+        return invoke('ble_write_descriptor', { charUuid: _bleWriteTarget.charUuid,
+                                                descUuid: _bleWriteTarget.uuid, data: bytes })
             .then(onOk).catch(onFail);
-        return;
     }
     logBle('[发送] 0x' + shortUuid(_bleWriteTarget.uuid) + ' ← 0x' + hex +
            '（' + (hexMode ? 'HEX' : '文本') + ' · ' + (writeType === 'without_response' ? '无响应' : '写响应') + leLog + '）');
-    invoke('ble_write', { charUuid: _bleWriteTarget.uuid, data: bytes, writeType: writeType })
+    return invoke('ble_write', { charUuid: _bleWriteTarget.uuid, data: bytes, writeType: writeType })
         .then(onOk).catch(onFail);
 }
 
@@ -11208,31 +11391,40 @@ function bleMacLooksValid(s) {
 
 // 按 MAC 直连。用于「设备不广播、扫描列表里永远没有它」这种情况 ——
 // 从机被 Windows 配对过、或被另一台主机连走时最常见，也是"从机搜不到也连不上"的正解。
-function connectBleDirect() {
-    if (_bleConnecting) { showToast('正在连接，请稍候…', 'info'); return; }
+// `addrIn` 只有 MCP 的 ble_connect 会传（面板按钮不带参数、读输入框）；
+// 返回 Promise<{ok:true, addr, name} | {ok:false, error, invalidParams?}>（一律 resolve）。
+function connectBleDirect(addrIn) {
+    if (_bleConnecting) {
+        showToast('正在连接，请稍候…', 'info');
+        return Promise.resolve({ ok: false, error: '正在连接，请稍候…' });
+    }
     var inp = document.getElementById('bleDirectAddr');
-    var addr = inp ? String(inp.value || '').trim().toUpperCase() : '';
+    var addr = String(addrIn || (inp ? inp.value : '') || '').trim().toUpperCase();
     if (!bleMacLooksValid(addr)) {
         showToast('请输入 6 段 MAC，例如 A4:C1:38:11:14:2B', 'error');
         if (inp) inp.focus();
-        return;
+        return Promise.resolve({ ok: false, invalidParams: true,
+                                 error: '地址不是 6 段 MAC（例如 A4:C1:38:11:14:2B）' });
     }
+    if (inp) inp.value = addr;   // 回填输入框：用户看得见这次直连用的是哪个地址
     var btn = document.getElementById('bleDirectBtn');
     if (btn) btn.disabled = true;
     _bleConnecting = true;
     logBle('[直连] ' + addr + '（不依赖广播）');
-    invokeTimeout('ble_connect_direct', { address: addr }, BLE_CONNECT_TIMEOUT_MS).then(function() {
+    return invokeTimeout('ble_connect_direct', { address: addr }, BLE_CONNECT_TIMEOUT_MS).then(function() {
         _bleConnecting = false;
         if (btn) btn.disabled = false;
         return bleOnConnected(addr, '直连设备');
     }).then(function() {
         refreshBleDevices();
         showToast('已连接 ' + addr, 'success');
+        return { ok: true, addr: addr, name: '直连设备' };
     }).catch(function(e) {
         _bleConnecting = false;
         if (btn) btn.disabled = false;
         logBle('[直连失败] ' + e);
         showToast('直连失败: ' + e, 'error');
+        return { ok: false, error: String(e) };
     });
 }
 
@@ -12054,54 +12246,74 @@ function tryBlePairThenReconnect(address, label, origErr) {
         });
 }
 
+// 连接一台设备（面板「连接设备」按钮与 MCP 的 ble_connect 共用这一条路）：
+// 显式超时 + 门闩；失败时**只有确实"需要配对"才发起配对**再重连一次。
+// 返回 Promise<{ok:true, addr, name, paired?} | {ok:false, error}>——
+// 一律 resolve（不 reject）：按钮路径不必再包一层 catch，MCP 侧靠 ok 判断真实结果。
+function bleConnectTo(address, label) {
+    if (_bleConnecting) {
+        showToast('正在连接，请稍候…', 'info');
+        return Promise.resolve({ ok: false, error: '正在连接，请稍候…' });
+    }
+    logBle('[连接中] ' + label + ' (' + address + ')');
+    _bleConnecting = true;
+    var fail = function(e2) {
+        _bleConnecting = false;
+        logBle('[连接失败] ' + label + ' (' + address + ') · ' + e2);
+        console.warn('[BLE] 连接失败:', e2);
+        showToast('连接失败: ' + e2, 'error');
+        return { ok: false, error: String(e2) };
+    };
+    return invokeTimeout('ble_connect', { address: address }, BLE_CONNECT_TIMEOUT_MS).then(function() {
+        return bleOnConnected(address, label);
+    }).then(function() {
+        return { ok: true, addr: address, name: label };
+    }).catch(function(e) {
+        // 只有错误确实是「认证/加密不足」时才值得尝试配对。
+        // 早期版本对所有连接失败都发起配对 —— 而配对仪式会占用设备/打断链路，
+        // 把普通失败（如 connect: Not connected）的正常重连也搅了（用户反馈）。
+        if (!bleErrNeedsPairing(e)) return fail(e);
+        // 疑似需要配对：发起配对（用户要在配对弹窗上确认），成功后再重连一次
+        return tryBlePairThenReconnect(address, label, e).then(function() {
+            return { ok: true, addr: address, name: label, paired: true };
+        }).catch(fail);
+    });
+}
+
+// 断开当前设备（面板「断开设备」按钮与 MCP 的 ble_disconnect 共用）。
+// 返回 Promise<{ok:true} | {ok:false, error}>（同样一律 resolve）。
+function bleDisconnect() {
+    return invoke('ble_disconnect').then(function() {
+        var dev = getSelectedBleDev();
+        if (dev) dev.connected = false;
+        _bleConnAddr = null;
+        _bleConnInfo = null;   // 已连接设备的展示信息一并失效
+        _bleServices = [];
+        _bleSubs = {};   // 订阅随连接失效：不清会一直显示「启用」，实际已无订阅
+        stopBleNotifyPoll();
+        stopBleRssiPoll();
+        clearBleLog();   // 断开即清空：本次连接会话结束
+        closeBleWriteModal();   // 写入窗口随连接失效
+        renderBleDetail();
+        renderBleDeviceList();   // 去掉列表里的「已连接」提示
+        return { ok: true };
+    }).catch(function(e) {
+        logBle('[断开失败] ' + e);
+        console.warn('[BLE] 断开失败:', e);
+        showToast('断开失败: ' + e, 'error');
+        return { ok: false, error: String(e) };
+    });
+}
+
 function toggleBleConnect() {
     // 连接进行中门闩：连点会对同一设备重复 connect（后端会换掉底层设备对象）
     if (_bleConnecting) { showToast('正在连接，请稍候…', 'info'); return; }
     var dev = getSelectedBleDev();
     if (!dev) { console.warn('[BLE] 请先选择设备'); return; }
-    var address = dev.address;
-    var label = dev.name || '未知设备';
     if (!dev.connected) {
-        logBle('[连接中] ' + label + ' (' + address + ')');
-        _bleConnecting = true;
-        // 显式超时（TODO#3）+ 门闩：避免无限等待与重复连接
-        invokeTimeout('ble_connect', { address: address }, BLE_CONNECT_TIMEOUT_MS).then(function() {
-            bleOnConnected(address, label);
-        }).catch(function(e) {
-            // 只有错误确实是「认证/加密不足」时才值得尝试配对。
-            // 早期版本对所有连接失败都发起配对 —— 而配对仪式会占用设备/打断链路，
-            // 把普通失败（如 connect: Not connected）的正常重连也搅了（用户反馈）。
-            var fail = function(e2) {
-                _bleConnecting = false;
-                logBle('[连接失败] ' + label + ' (' + address + ') · ' + e2);
-                console.warn('[BLE] 连接失败:', e2);
-                showToast('连接失败: ' + e2, 'error');
-            };
-            if (!bleErrNeedsPairing(e)) {
-                fail(e);
-                return;
-            }
-            // 疑似需要配对：发起配对，成功后再重连一次
-            tryBlePairThenReconnect(address, label, e).catch(fail);
-        });
+        bleConnectTo(dev.address, dev.name || '未知设备');   // 提示与状态复位都在内部完成
     } else {
-        invoke('ble_disconnect').then(function() {
-            dev.connected = false;
-            _bleConnAddr = null;
-            _bleConnInfo = null;   // 已连接设备的展示信息一并失效
-            _bleServices = [];
-            _bleSubs = {};   // 订阅随连接失效：不清会一直显示「启用」，实际已无订阅
-            stopBleNotifyPoll();
-            stopBleRssiPoll();
-            clearBleLog();   // 断开即清空：本次连接会话结束
-            closeBleWriteModal();   // 写入窗口随连接失效
-            renderBleDetail();
-            renderBleDeviceList();   // 去掉列表里的「已连接」提示
-        }).catch(function(e) {
-            logBle('[断开失败] ' + e);
-            console.warn('[BLE] 断开失败:', e);
-            showToast('断开失败: ' + e, 'error');
-        });
+        bleDisconnect();
     }
 }
 

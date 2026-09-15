@@ -75,6 +75,9 @@ const META = {
   ble_stop_scan: ['写', '{scanning:false, deviceCount}', '同上：复用同一颗按钮的路径'],
   ble_read: ['读', '{pane, uuid, action, note}', '按特征 UUID 寻址，**点的是面板上那颗读按钮**；结果随后出现在 ble_get_output 里。特征没有 read 属性时直接说清'],
   ble_subscribe: ['写', '{pane, uuid, prop, on, changed}', '开/关通知订阅（notify/indicate）。**状态已经是目标值时不会重复点**（`changed:false`）—— 否则会把用户刚打开的订阅关掉'],
+  ble_write: ['写', '{pane, uuid, hex, bytes, writeType, format, lineEnding}', '**打开面板那个写入窗并点「发送」**：HEX/文本解析、行尾、写响应/无响应全用面板那套（写入窗会留在界面上）。单次最多 `maxBleWriteChars` 个字符；特征的写入方式不支持时要的错误里会把可选值列出来'],
+  ble_connect: ['写', '{pane, connected, addr, name, via, serviceCount, paired?}', '`via=list`（扫描列表里点卡片连）/ `direct`（列表里没有 → 按 MAC 直连，**不依赖广播**）/ `selected`（用面板已选中的那台）。**等连接真的成功才返回**；需要配对时会弹出配对窗等用户确认'],
+  ble_disconnect: ['写', '{pane, connected:false, addr, changed}', '断开后面板的服务树、订阅状态、本次会话数据日志一并清空（与点那颗「断开设备」按钮完全一样）'],
   ble_get_output: ['读', '{pane, count, total, channels:{rx}, items:[{seq,ts,kind,hex,text,dim}]}', '**本次会话的蓝牙数据日志**（切设备/断开就清空）。要跨会话用 `channels.rx` 去 log_tail；`sinceSeq` 增量跟进'],
   ble_refresh_rssi: ['读', '{addr, rssi, raw}', '只问一次射频、不改状态；没连设备时直接报"先连上"'],
   ble_get_services: ['读', '{connected, addr, serviceCount, services:[{uuid,name,chars:[{uuid,props,descs}]}]}', '**取的是面板已经拉到的那份服务树**（不会重新去问设备）；还没连设备时 `note` 会说明'],
@@ -84,7 +87,7 @@ const META = {
   mcp_danger: ['读', '{tools:[{name, consequence, confirm}], total, note}', '危险工具清单（会对外产生不可撤销影响的那些）。**先问后果再确认**：不带 confirm 调用它们不会执行'],  serial_quick_cmd: ['读', '{pane, items:[{index,label,value,seq,delayMs,hex}], usable, file, source}', '不带 index 只列；带 index 才执行（→ {pane, ran, label, value, hex}）。`seq`/`delayMs`/`hex` 是**每条自己的发送参数**（顺序号 > 0 才进面板上的「循环发送」列表，`delayMs` 默认 1000，`hex` 默认关闭）；`source=file` 表示这个列表来自外部文件（面板里增删改会写回该文件），`file` 是它的路径；`source=config` 才是纯配置里的列表'],
   app_info: ['读', '`{name, version, profile, os, arch, pid, uptimeSecs}`', ''],
   mcp_status: ['读', '打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/statusEmits/readOnly/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`', '**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新；**`readOnly` 必须先看** —— 为 true 时所有写操作会被拒（-32007）'],
-  mcp_limits: ['读', '`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels, maxQuickCmdItems, maxQuickCmdLabelChars, maxQuickCmdValueChars, maxQuickCmdFileBytes}`', '用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**'],
+  mcp_limits: ['读', '`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels, maxQuickCmdItems, maxQuickCmdLabelChars, maxQuickCmdValueChars, maxQuickCmdFileBytes, maxBleWriteChars}`', '用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**'],
   serial_list_ports: ['读', '`{count, ports:[{portName, friendlyName, productName}]}`', '不会打开端口；**端口名在 `portName`**（字段一律驼峰，别去猜 `port_name`）'],
   ui_list: ['读', '`{total, controls:[{path, kind, panel, group, label, enabled, disabledReason, value?, options?}], nextCursor?}`', '`enabled=false` 时 `disabledReason` 会说明原因（如"串口未连接"）；建议先枚举再操作'],
   ui_describe: ['读', '`{…控件公开字段…, description, inputSchema}`', '等于"这个控件怎么用"的说明书'],
@@ -106,7 +109,7 @@ const META = {
 
 const GROUPS = [
   ['串口语义工具（**优先用这些**，比 ui_* 通用桥更准）', ['serial_get_state', 'serial_select_port', 'serial_set_baud', 'serial_set_frame', 'serial_set_lines', 'serial_set_display', 'serial_open', 'serial_close', 'serial_send', 'serial_clear', 'serial_get_history', 'serial_get_output', 'serial_quick_cmd']],
-  ['蓝牙语义工具（BLE）', ['ble_get_state', 'ble_list_devices', 'ble_start_scan', 'ble_stop_scan', 'ble_get_services', 'ble_read', 'ble_subscribe', 'ble_get_output', 'ble_refresh_rssi',
+  ['蓝牙语义工具（BLE）', ['ble_get_state', 'ble_list_devices', 'ble_start_scan', 'ble_stop_scan', 'ble_connect', 'ble_disconnect', 'ble_get_services', 'ble_read', 'ble_write', 'ble_subscribe', 'ble_get_output', 'ble_refresh_rssi',
                     'ble_periph_status', 'ble_periph_start', 'ble_periph_stop']],
   ['安全与策略', ['mcp_danger']],
   ['应用与服务器', ['app_info', 'mcp_status', 'mcp_limits', 'serial_list_ports']],

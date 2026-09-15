@@ -891,8 +891,12 @@ console.log('preview ->', out);
     '用户取消配对时保留原始连接错误（不会只剩一句"配对失败"）');
   check(/\.catch\(function\(pe\) \{\s*throw \('配对失败: ' \+ pe \+ ' · 原连接错误: ' \+ origErr\);/.test(html),
     '配对本身失败时同样带上原始连接错误');
-  check(/tryBlePairThenReconnect\(address, label, e\)\.catch\(fail\);/.test(html),
-    '确认需要配对时，catch 分支接入配对重试，最终仍失败才报错');
+  check(/tryBlePairThenReconnect\(address, label, e\)\.then\([\s\S]{0,240}?\.catch\(fail\);/.test(html),
+    '确认需要配对时接入配对重试，最终仍失败才报错');
+  check(/function bleConnectTo\(address, label\)/.test(html)
+    && /function bleDisconnect\(\)/.test(html)
+    && /bleConnectTo\(dev\.address, dev\.name \|\| '未知设备'\)/.test(html),
+    '连接/断开的编排抽成了 bleConnectTo / bleDisconnect（面板按钮与 MCP 的 ble_connect/ble_disconnect 共用一条路）');
   const onConnCount = (html.match(/bleOnConnected\(address, label\)/g) || []).length;
   check(onConnCount >= 3, '成功路径复用同一个 bleOnConnected（含配对后重连）', String(onConnCount));
 
@@ -939,7 +943,7 @@ console.log('preview ->', out);
   check(needs('device not paired') === true, 'not paired 文案能识别');
   check(needs('设备未配对') === true, '中文未配对能识别');
   // 接线：catch 里必须先判定，普通失败直接走失败处理
-  check(/if \(!bleErrNeedsPairing\(e\)\) \{\s*fail\(e\);\s*return;\s*\}/.test(html),
+  check(/if \(!bleErrNeedsPairing\(e\)\) return fail\(e\);/.test(html),
     '连接失败先判定是否需要配对，不需要则直接失败（不发起配对、不打乱链路）');
   check(/配对仪式会占用设备\/打断链路/.test(html), '该约束的理由已写在代码注释里');
 
@@ -1455,7 +1459,7 @@ console.log('preview ->', out);
   check(/\.add_peripheral\(&pid\)/.test(mainRs),
     'G1 用了 btleplug add_peripheral —— 不依赖广播，这正是"设备不广播就永远连不上"的正解');
   check(/ble_connect_direct,/.test(mainRs), 'G1 命令已注册');
-  check(/id="bleDirectAddr"/.test(html) && /function connectBleDirect\(\)/.test(html),
+  check(/id="bleDirectAddr"/.test(html) && /function connectBleDirect\(addrIn\)/.test(html),
     'G1 界面有按 MAC 直连入口');
   check(/invokeTimeout\('ble_connect_direct'/.test(html), 'G1 直连也带超时调用');
   check(/解析失败|蓝牙地址格式不正确/.test(mainRs), 'G1 后端对坏地址给明确报错');
@@ -2691,7 +2695,7 @@ console.log('preview ->', out);
                        mcpSrc.indexOf('\n    ]', mcpSrc.indexOf('pub fn tool_defs()')))
         .matchAll(/"name":\s*"([a-z][a-z0-9_]*)"/g)].map((m) => m[1])
     )];
-    check(srcTools.length === 46, '源码里是 46 个内置工具（20 通用 + 13 串口语义 + 13 蓝牙语义）', srcTools.length);
+    check(srcTools.length === 49, '源码里是 49 个内置工具（20 通用 + 13 串口语义 + 16 蓝牙语义）', srcTools.length);
     const missing = srcTools.filter((n) => toolsDoc.indexOf('#### `' + n + '`') < 0);
     check(missing.length === 0, '工具参考文档 doc/MCP_TOOLS.md 列出了全部内置工具', '缺：' + missing.join(','));
     check((toolsDoc.match(/^#### `/gm) || []).length === srcTools.length,
@@ -4226,10 +4230,29 @@ console.log('preview ->', out);
       check(/if \(op === 'ble'\) return mcpBleOp\(payload\)/.test(html) && /function mcpBleOp\(payload\)/.test(html),
         'ui_call 的 ble 面板接上了 mcpBleOp（与 serial 同构）');
       for (const a of ['state', 'listDevices', 'startScan', 'stopScan', 'getServices', 'read', 'subscribe',
+                      'write', 'connect', 'disconnect',
                       'getOutput', 'refreshRssi',
                       'periphStatus', 'periphStart', 'periphStop']) {
         check(html.indexOf("action === '" + a + "'") >= 0, "mcpBleOp 有 " + a + " 分支");
       }
+      // 特征读写/连接都复用面板自己的那条路（DOM 合成事件 + 面板函数），不另写一份
+      check(/function bleCharActionBtn\(uuid, prop\)/.test(html)
+        && /var findBtn = function\(prop0\) \{ return bleFindCharBtn\(wantUuid, prop0\); \};/.test(html)
+        && /var wBtn = bleFindCharBtn\(wUuid, 'write'\);/.test(html),
+        '读/订阅/写共用同一个"按 UUID 找面板图标"的辅助函数');
+      check(/wBtn\.click\(\);\s*\/\/ 打开写入窗/.test(html)
+        && /return sendBleWriteCore\(\)\.then\(function\(r\)/.test(html),
+        'ble_write 点开面板写入窗并用同一个 sendBleWriteCore 发送（HEX/行尾/写响应复用弹窗那套）');
+      check(/function sendBleWrite\(\) \{ return sendBleWriteCore\(\); \}/.test(html)
+        && /function sendBleWriteCore\(\)/.test(html),
+        '写入逻辑抽成 sendBleWriteCore（按钮与 MCP 共用，MCP 拿得到真实成败）');
+      check(/var le = \(payload\.lineEnding === undefined\) \? 'none' : String\(payload\.lineEnding\)\.toLowerCase\(\);/.test(html),
+        'ble_write 省略 lineEnding 时按 none（协议帧不该被擅自补 CRLF）');
+      check(/return connectBleDirect\(cAddr\)\.then\(function \(r\) \{/.test(html)
+        && /function connectBleDirect\(addrIn\)/.test(html),
+        'ble_connect 对"扫描列表里没有的 MAC"走面板的按地址直连入口');
+      check(/return bleDisconnect\(\)\.then\(function \(r\) \{/.test(html),
+        'ble_disconnect 复用面板同一条断开路径（bleDisconnect）');
       // 启动/停止走面板那颗按钮的函数，不给 AI 另写一套
       check(/typeof startBlePeriph === 'function' \? startBlePeriph\(\)/.test(html)
         && /typeof stopBlePeriph === 'function' \? stopBlePeriph\(\)/.test(html),
@@ -4248,6 +4271,7 @@ console.log('preview ->', out);
       const pairs = [['ble_get_state', 'state'], ['ble_list_devices', 'listDevices'],
                      ['ble_start_scan', 'startScan'], ['ble_stop_scan', 'stopScan'],
                      ['ble_get_services', 'getServices'], ['ble_read', 'read'], ['ble_subscribe', 'subscribe'],
+                     ['ble_write', 'write'], ['ble_connect', 'connect'], ['ble_disconnect', 'disconnect'],
                      ['ble_get_output', 'getOutput'],
                      ['ble_refresh_rssi', 'refreshRssi'], ['ble_periph_status', 'periphStatus'],
                      ['ble_periph_start', 'periphStart'], ['ble_periph_stop', 'periphStop']];
@@ -4256,6 +4280,289 @@ console.log('preview ->', out);
       check(bad.length === 0, '每个 ble_* 工具都能映射到前端的 action', JSON.stringify(bad));
       check(/"mcp_danger"/.test(proto) && /pub const WRITE_TOOLS[\s\S]{0,700}"ble_periph_start"/.test(proto),
         'mcp_danger 工具在、BLE 启停也算写（只读模式拦得下）');
+      // Rust 侧**必须把参数放进 payload**：`ble_call` 只转 pane，光 require_str 校验不够
+      // （batch 4 的 ble_read 就是这么把 char 吞掉的 —— 前端永远收不到）
+      check(/ble_call\(core, "read", args, json!\(\{ "char": ch \}\)\)/.test(proto)
+        && /ble_call\(core, "subscribe", args, extra\)/.test(proto)
+        && /let mut extra = json!\(\{ "char": ch, "data": data \}\)/.test(proto),
+        '读/订阅/写的参数真的进了 payload（不是只校验、不转发）');
+      check(/MAX_BLE_WRITE_CHARS/.test(proto) && /maxBleWriteChars/.test(proto),
+        'ble_write 的单次上限有常量、也进了 mcp_limits（不做无界写入）');
+
+      // ---- mcpBleOp 行为（真 handler + 假 DOM）----
+      // AGENTS #11：假前端只证明 Rust 那一半，前端这一半必须用**真实 handler** 跑。
+      // 特征行由真实 renderCharRow 产出，onclick/data-modes 原样搬进假 DOM，
+      // 于是"渲染格式"与"按 UUID 找按钮"任一端漂移都会被抓出来。
+      const syncP = (v) => ({ _v: v, then(f) { return syncP(f ? f(v) : v); }, catch() { return syncP(v); } });
+      const settled = (x) => (x && typeof x.then === 'function') ? x._v : x;
+      const rowHtml = (() => {
+        const sbR = { console, _bleSubs: {}, _bleSelected: '', getSelectedBleDev: () => ({ connected: true }) };
+        vm.createContext(sbR);
+        vm.runInContext([
+          extractObject('BLE_PROP_META'), extractObject('BLE_ICONS'), extractObject('BLE_CHAR_NAMES'),
+          extractObject('BLE_DESC_META'),
+          extractFunction('shortUuid'), extractFunction('renderCharRow'), extractFunction('renderCharDescriptors'),
+        ].join('\n'), sbR);
+        return sbR.renderCharRow({ uuid: 'AAAA', name: 'X',
+                                   props: ['read', 'write', 'write_without_response', 'notify'] });
+      })();
+      const defs = [...rowHtml.matchAll(/class="(ble-ch-action[^"]*)"([^>]*?)onclick="bleCharAction\(this,'([^']+)'\)"/g)]
+        .map((m) => ({ key: m[3], modes: (/data-modes="([^"]+)"/.exec(m[2]) || [])[1] || '' }));
+      check(defs.map(d => d.key).join(',') === 'AAAA::read,AAAA::write,AAAA::notify',
+        '特征行的操作图标带 uuid::prop（查找逻辑依赖这个格式）', defs.map(d => d.key).join(','));
+
+      // 假 DOM：按真实渲染产物建按钮，其余控件够跑通写入弹窗那条路即可
+      const mkEl = (id, attrs) => {
+        const e = {
+          id, value: '', textContent: '', style: {}, dataset: {}, disabled: false,
+          _attrs: attrs || {}, _cls: {},
+          classList: {
+            add: (c) => { e._cls[c] = true; },
+            remove: (c) => { delete e._cls[c]; },
+            toggle: (c, on) => { const v = (on === undefined) ? !e._cls[c] : on; if (v) e._cls[c] = true; else delete e._cls[c]; },
+            contains: (c) => !!e._cls[c],
+          },
+          getAttribute(k) { return (k in e._attrs) ? e._attrs[k] : null; },
+          setAttribute(k, v) { e._attrs[k] = v; },
+          querySelector() { return null; }, querySelectorAll() { return []; },
+          closest() { return null; }, focus() {}, addEventListener() {}, click() { if (e.onclick) e.onclick(); },
+        };
+        return e;
+      };
+      const mkEnv = (opts) => {
+        opts = opts || {};
+        const calls = [];
+        const els = {
+          bleWriteTitle: mkEl('bleWriteTitle'), bleWriteValue: mkEl('bleWriteValue'),
+          bleWriteModeRow: mkEl('bleWriteModeRow'), bleWriteModeText: mkEl('bleWriteModeText'),
+          bleWriteAsText: mkEl('bleWriteAsText'), bleWriteLineEnd: mkEl('bleWriteLineEnd'),
+          bleWriteModal: mkEl('bleWriteModal'), bleDirectAddr: mkEl('bleDirectAddr'),
+          bleDirectBtn: mkEl('bleDirectBtn'),
+        };
+        const asOpts = ['text', 'hex'].map(v => mkEl('', { 'data-val': v }));
+        const modeOpts = ['write', 'write_without_response'].map(v => mkEl('', { 'data-val': v }));
+        const leOpts = ['crlf', 'lf', 'cr', 'none'].map(v => mkEl('', { 'data-val': v }));
+        els.bleWriteAsDrop = mkEl('bleWriteAsDrop');
+        els.bleWriteAsDrop.querySelectorAll = () => asOpts;
+        els.bleWriteModeDrop = mkEl('bleWriteModeDrop');
+        els.bleWriteModeDrop.querySelectorAll = () => modeOpts;
+        const leText = mkEl(''); const leDrop = mkEl('');
+        leDrop.querySelectorAll = () => leOpts;
+        leOpts.forEach(o => { o.closest = () => els.bleWriteLineEnd; });
+        els.bleWriteLineEnd.querySelector = (sel) => (sel === '.sel-text' ? leText : (sel === '.sel-drop' ? leDrop : null));
+        const icons = opts.noStaticIcons ? [] : defs.map((d) => {
+          const b = mkEl('', { onclick: "bleCharAction(this,'" + d.key + "')", 'data-modes': d.modes });
+          b.key = d.key;
+          return b;
+        });
+        const cards = (opts.cards || []).map((addr) => {
+          const c = mkEl('', { 'data-addr': addr });
+          c.address = addr;
+          return c;
+        });
+        // 服务抬头行：点它（= 用户展开服务）会把该服务的特征图标"渲染"出来 ——
+        // 真实面板里特征行就是展开时才进 DOM 的，这里仿真这一点
+        const svcRows = [];
+        const mkSvcRow = (uuid, lazy) => {
+          const r = mkEl('', { 'data-uuid': uuid });
+          r.onclick = () => {
+            if (r._cls.expanded) return;
+            r._cls.expanded = true;
+            svcRows.forEach(o => { if (o !== r) { delete o._cls.expanded; o._rendered = false; } });
+            if (lazy && !r._rendered) { r._rendered = true; lazy(); }
+          };
+          svcRows.push(r);
+          return r;
+        };
+        // 可选：一个"还没展开"的服务（它的特征图标只有展开后才进 DOM）
+        let svcTree = opts.svcTree || null;
+        if (svcTree) {
+          mkSvcRow(svcTree.uuid, () => {
+            const list = svcTree.chars || [];
+            list.forEach((ch) => {
+              const modes = ch.props.filter((x) => x === 'write' || x === 'write_without_response');
+              ch.props.forEach((p0) => {
+                const p = (p0 === 'write_without_response' && modes.indexOf('write') >= 0) ? '' : p0;
+                if (!p) return;
+                const key = ch.uuid + '::' + (p === 'write_without_response' ? 'write' : p);
+                if (icons.some((b) => b.key === key)) return;
+                const b = mkEl('', { onclick: "bleCharAction(this,'" + key + "')",
+                                     'data-modes': modes.join(',') });
+                b.key = key;
+                b.onclick = () => sb.bleCharAction(b, b.key);
+                icons.push(b);
+              });
+            });
+          });
+        }
+        const dev = opts.dev || null;
+        const sb = {
+          console, TextEncoder, Promise, Uint8Array, parseInt, isNaN, Error,
+          setTimeout: () => 0, clearTimeout() {},
+          document: {
+            getElementById: (id) => els[id] || null,
+            querySelector: (sel) => {
+              const m = /data-val="([^"]+)"/.exec(sel);
+              if (!m) return null;
+              const pool = sel.indexOf('bleWriteAsDrop') >= 0 ? asOpts
+                : (sel.indexOf('bleWriteModeDrop') >= 0 ? modeOpts : leOpts);
+              return pool.filter(o => o.getAttribute('data-val') === m[1])[0] || null;
+            },
+            querySelectorAll: (sel) => (sel === '.ble-ch-action' ? icons
+              : (sel === '.ble-dev-card' ? cards
+              : (sel === '.ble-svc' ? svcRows : []))),
+          },
+          invoke: (cmd, a) => { calls.push({ cmd, args: a }); return syncP({}); },
+          invokeTimeout: (cmd, a) => { calls.push({ cmd, args: a }); return syncP({}); },
+          getSelectedBleDev: () => dev,
+          showToast() {}, logBle() {}, logBleDim() {}, clearBleLog() {}, closeBleWriteModal() {},
+          scheduleConfigSave() {}, renderBleDetail() {}, renderBleDeviceList() {}, refreshBleDevices() {},
+          startBleNotifyPoll() {}, startBleRssiPoll() {}, stopBleNotifyPoll() {}, stopBleRssiPoll() {}, refreshBleMtu: () => syncP(0),
+          bleOnConnected: () => syncP(null), tryBlePairThenReconnect: () => syncP(true),
+          bleFindSvcOfChar: () => null, bleCanShowAsText: () => false, bleFmtBytes: () => '',
+          _bleSubs: opts.subs || {}, _bleLog: [], _bleDevices: cards,
+          _bleServices: svcTree ? [{ uuid: svcTree.uuid,
+                                     characteristics: (svcTree.chars || []).map((ch) => ({ uuid: ch.uuid, properties: ch.props })) }] : [],
+          _bleSelected: null, _bleConnAddr: opts.connAddr || null, _bleConnInfo: null,
+          _bleConnecting: false, _bleMtu: 0, _bleScanning: false,
+          BLE_CONNECT_TIMEOUT_MS: Number((/var BLE_CONNECT_TIMEOUT_MS = (\d+);/.exec(html) || [0, 0])[1]),
+          BLE_PAIR_TIMEOUT_MS: Number((/var BLE_PAIR_TIMEOUT_MS = (\d+);/.exec(html) || [0, 0])[1]),
+        };
+        sb.calls = calls; sb.els = els; sb.icons = icons; sb.cards = cards; sb.svcRows = svcRows;
+        const names = ['mcpBleOp', 'bleCharActionBtn', 'bleBtnUuid', 'bleDevCardEl', 'bleCharAction',
+                       'bleSvcRowEl', 'bleSvcUuidOfChar', 'bleFindCharBtn',
+                       'openBleWriteModal', 'setBleWriteAs', 'setBleWriteMode', 'setSel',
+                       'sendBleWrite', 'sendBleWriteCore', 'bleSendBytes', 'bleReadWriteModalInput',
+                       'leEscOf', 'bleBytesToHex', 'hexToBytes', 'parseEscapes', 'shortUuid',
+                       'bleConnectTo', 'bleDisconnect', 'connectBleDirect', 'bleMacLooksValid'];
+        vm.createContext(sb);
+        vm.runInContext([
+          extractObject('BLE_PROP_META'), extractObject('BLE_ICONS'), extractObject('BLE_CHAR_NAMES'),
+        ].join('\n'), sb);
+        vm.runInContext(names.map(extractFunction).join('\n'), sb);
+        icons.forEach((b) => { b.onclick = () => sb.bleCharAction(b, b.key); });
+        return sb;
+      };
+      const connectedDev = { address: 'AA:BB:CC:DD:EE:01', name: 'Ai-WB2', connected: true };
+
+      // read：点的是那颗读图标；char 缺失/没连设备都要说清
+      const envR = mkEnv({ dev: connectedDev });
+      const rRead = settled(envR.mcpBleOp({ action: 'read', char: 'aaaa' }));
+      check(rRead.ok === true && envR.calls.filter(c => c.cmd === 'ble_read').length === 1,
+        'ble_read：真的点了那颗读图标（走面板的 ble_read 命令）', JSON.stringify(envR.calls));
+      check(rRead.value.uuid === 'AAAA',
+        'ble_read 回的是服务树里那个真实 UUID（不是调用方传进来的大小写）', rRead.value.uuid);
+      const envR2 = mkEnv({ dev: connectedDev });
+      const rBad = envR2.mcpBleOp({ action: 'read' });
+      check(rBad.ok === false && rBad.invalidParams === true,
+        'ble_read 少 char → invalidParams（对应 -32602，让 AI 改参数重试）', JSON.stringify(rBad));
+      const envR3 = mkEnv({ dev: { address: 'AA:BB:CC:DD:EE:01', connected: false } });
+      check(envR3.mcpBleOp({ action: 'read', char: 'AAAA' }).ok === false
+        && envR3.calls.length === 0, '没连设备时读特征直接说清，不去点（按钮点了也没用）');
+
+      // 特征图标只在该服务"展开"时才在 DOM 里：没展开过也要能操作（先展开拥有它的服务）
+      const lazyTree = { uuid: '0000FFF0-0000-1000-8000-00805F9B34FB',
+                         chars: [{ uuid: '0000FFF1-0000-1000-8000-00805F9B34FB',
+                                   props: ['read', 'write', 'notify'] }] };
+      const envLazy = mkEnv({ dev: connectedDev, noStaticIcons: true, svcTree: lazyTree });
+      check(envLazy.icons.length === 0, '（前置）未展开的服务，特征图标确实不在 DOM 里');
+      const l1 = settled(envLazy.mcpBleOp({ action: 'read', char: '0000fff1-0000-1000-8000-00805f9b34fb' }));
+      check(l1.ok === true && envLazy.calls.filter(c => c.cmd === 'ble_read').length === 1
+        && envLazy.svcRows[0]._cls.expanded === true,
+        'ble_read：服务没展开时先展开拥有它的服务再点读图标（不误报"特征不支持"）',
+        JSON.stringify(envLazy.calls));
+      check(l1.value.uuid === '0000FFF1-0000-1000-8000-00805F9B34FB',
+        'ble_read：回执里的 uuid 是服务树里那个写法', l1.value.uuid);
+      const envLazy2 = mkEnv({ dev: connectedDev, noStaticIcons: true, svcTree: lazyTree });
+      const l2 = settled(envLazy2.mcpBleOp({ action: 'write', char: '0000fff1-0000-1000-8000-00805f9b34fb', data: 'AT' }));
+      check(l2.ok === true && envLazy2.calls.filter(c => c.cmd === 'ble_write').length === 1
+        && envLazy2.calls.filter(c => c.cmd === 'ble_write')[0].args.charUuid === '0000FFF1-0000-1000-8000-00805F9B34FB',
+        'ble_write：同理（服务未展开时自动展开，写入用的是服务树里的 UUID）', JSON.stringify(envLazy2.calls));
+      const envLazy3 = mkEnv({ dev: connectedDev, noStaticIcons: true, svcTree: lazyTree });
+      const l3 = envLazy3.mcpBleOp({ action: 'read', char: '0000ffff-0000-1000-8000-00805f9b34fb' });
+      check(l3.ok === false && l3.error.indexOf('服务树里没有这个特征') === 0,
+        'ble_read：服务树里真的没有这个特征 → 如实说明（并提示先 ble_get_services）', JSON.stringify(l3));
+
+      // subscribe：状态已就位就不重复点（否则会把用户刚开的订阅关掉）
+      const envS = mkEnv({ dev: connectedDev });
+      const s1 = settled(envS.mcpBleOp({ action: 'subscribe', char: 'AAAA' }));
+      check(s1.value.changed === true && envS.calls.filter(c => c.cmd === 'ble_subscribe').length === 1,
+        'ble_subscribe：未订阅时点一次订阅', JSON.stringify(envS.calls));
+      check(envS._bleSubs['AAAA::notify'] === true, '订阅状态记进 _bleSubs（与面板图标状态同一份）');
+      const s2 = settled(envS.mcpBleOp({ action: 'subscribe', char: 'AAAA' }));
+      check(s2.value.changed === false && envS.calls.filter(c => c.cmd === 'ble_subscribe').length === 1,
+        'ble_subscribe：已经订阅时**不再点**（changed:false）');
+      const s3 = settled(envS.mcpBleOp({ action: 'subscribe', char: 'aaaa', on: false }));
+      check(s3.value.changed === true && envS.calls.filter(c => c.cmd === 'ble_unsubscribe').length === 1,
+        'ble_subscribe on:false → 走退订（大小写不同的 UUID 也能对上服务树里的键）',
+        JSON.stringify(envS.calls));
+
+      // write：打开的是真写入窗，字节按面板那套解析，写方式取特征支持的那种
+      const envW = mkEnv({ dev: connectedDev });
+      const w1 = settled(envW.mcpBleOp({ action: 'write', char: 'AAAA', data: '01A0FF', format: 'hex' }));
+      const wCall = envW.calls.filter(c => c.cmd === 'ble_write')[0];
+      check(w1.ok === true && !!wCall && JSON.stringify(wCall.args.data) === '[1,160,255]',
+        'ble_write：HEX 内容按面板那套解析成字节（01 A0 FF → [1,160,255]）', JSON.stringify(envW.calls));
+      check(wCall.args.charUuid === 'AAAA' && wCall.args.writeType === 'with_response',
+        'ble_write：写响应（特征支持两种时的默认）且 uuid 用服务树里的写法', JSON.stringify(wCall.args));
+      check(w1.value.hex === '01A0FF' && w1.value.bytes === 3 && envW.els.bleWriteModal._cls.show === true,
+        'ble_write：返回真实 hex/字节数，写入窗真的打开了（用户看得见这次写）');
+      const envW2 = mkEnv({ dev: connectedDev });
+      const w2 = settled(envW2.mcpBleOp({ action: 'write', char: 'AAAA', data: 'AT', writeType: 'write_without_response' }));
+      check(envW2.calls.filter(c => c.cmd === 'ble_write')[0].args.writeType === 'without_response'
+        && JSON.stringify(envW2.calls.filter(c => c.cmd === 'ble_write')[0].args.data) === '[65,84]',
+        'ble_write：文本模式 + 省略 lineEnding → 原样写入（不擅自补 CRLF）', JSON.stringify(envW2.calls));
+      check(w2.value.lineEnding === 'none' && w2.value.format === 'text', 'ble_write 回执里说明实际用的格式/行尾');
+      const envW3 = mkEnv({ dev: connectedDev });
+      const w3 = settled(envW3.mcpBleOp({ action: 'write', char: 'AAAA', data: 'AT', lineEnding: 'crlf' }));
+      check(JSON.stringify(envW3.calls.filter(c => c.cmd === 'ble_write')[0].args.data) === '[65,84,13,10]',
+        'ble_write：显式 lineEnding=crlf 才补 CRLF', JSON.stringify(envW3.calls));
+      const envW4 = mkEnv({ dev: connectedDev });
+      const w4 = envW4.mcpBleOp({ action: 'write', char: 'AAAA', data: 'AT', writeType: 'nope' });
+      check(w4.ok === false && w4.invalidParams === true && w4.error.indexOf('write / write_without_response') > 0,
+        'ble_write：写了特征不支持的写方式 → 报错并列出可选值（不静默换一种写）', JSON.stringify(w4));
+      const envW5 = mkEnv({ dev: connectedDev });
+      check(envW5.mcpBleOp({ action: 'write', char: 'AAAA', data: 'AT', format: 'base64' }).invalidParams === true,
+        'ble_write：format 不合法 → invalidParams');
+      // 用面板自己的写入路径，所以写入失败必须如实回失败（不能乐观返回成功）
+      const envW6 = mkEnv({ dev: connectedDev });
+      envW6.invoke = (cmd, a) => { envW6.calls.push({ cmd, args: a });
+                                   return { then() { return this; }, catch(f) { return syncP(f('链路已断开')); } }; };
+      const w6 = settled(envW6.mcpBleOp({ action: 'write', char: 'AAAA', data: 'AT' }));
+      check(w6.ok === false && String(w6.error).indexOf('链路已断开') >= 0,
+        'ble_write：底层写失败 → ok:false（工具层据此给 isError，不谎报成功）', JSON.stringify(w6));
+
+      // connect / disconnect：列表里有卡片就点卡片，没有就按 MAC 直连
+      const envC = mkEnv({ cards: ['AA:BB:CC:DD:EE:01'], dev: connectedDev });
+      const c1 = settled(envC.mcpBleOp({ action: 'connect', addr: 'aa:bb:cc:dd:ee:01' }));
+      check(c1.ok === true && c1.value.via === 'list'
+        && envC.calls.filter(c => c.cmd === 'ble_connect')[0].args.address === 'AA:BB:CC:DD:EE:01',
+        'ble_connect：列表里有这台 → 点卡片后走 ble_connect', JSON.stringify(envC.calls));
+      const envC2 = mkEnv({ cards: [], dev: null });
+      const c2 = settled(envC2.mcpBleOp({ action: 'connect', addr: 'aa:bb:cc:dd:ee:02' }));
+      check(c2.ok === true && c2.value.via === 'direct'
+        && envC2.calls.filter(c => c.cmd === 'ble_connect_direct')[0].args.address === 'AA:BB:CC:DD:EE:02',
+        'ble_connect：列表里没有 → 走面板的按 MAC 直连（不依赖广播）', JSON.stringify(envC2.calls));
+      const envC3 = mkEnv({ dev: null });
+      const c3 = envC3.mcpBleOp({ action: 'connect' });
+      check(c3.ok === false && c3.invalidParams === true, 'ble_connect：既没 addr 也没选中设备 → invalidParams');
+      const envC4 = mkEnv({ dev: { address: 'AA:BB:CC:DD:EE:01', name: 'Ai-WB2', connected: false } });
+      const c4 = settled(envC4.mcpBleOp({ action: 'connect' }));
+      check(c4.ok === true && c4.value.via === 'selected'
+        && envC4.calls.filter(c => c.cmd === 'ble_connect')[0].args.address === 'AA:BB:CC:DD:EE:01',
+        'ble_connect：不给 addr 就用面板选中的那台', JSON.stringify(envC4.calls));
+      const envC5 = mkEnv({ dev: connectedDev });   // 选中的那台已经连着
+      const c5 = settled(envC5.mcpBleOp({ action: 'connect' }));
+      check(c5.ok === true && c5.value.changed === false && envC5.calls.length === 0,
+        'ble_connect：选中的设备本来就连着 → 幂等返回，不重复 connect', JSON.stringify(envC5.calls));
+      const envD = mkEnv({ dev: connectedDev, connAddr: 'AA:BB:CC:DD:EE:01' });
+      const d1 = settled(envD.mcpBleOp({ action: 'disconnect' }));
+      check(d1.ok === true && d1.value.changed === true && envD.calls.filter(c => c.cmd === 'ble_disconnect').length === 1,
+        'ble_disconnect：复用面板同一条断开路径', JSON.stringify(envD.calls));
+      const envD2 = mkEnv({ dev: connectedDev, connAddr: null });
+      const d2 = settled(envD2.mcpBleOp({ action: 'disconnect' }));
+      check(d2.ok === true && d2.value.changed === false && envD2.calls.length === 0,
+        'ble_disconnect：本来就没连 → 幂等返回，不去打后端', JSON.stringify(envD2.calls));
     }
     // ---- 跨端一致：前端上限必须与 Rust 侧常量一致 ----
     const protoSrc = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');

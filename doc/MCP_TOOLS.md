@@ -26,7 +26,7 @@
 
 - 运行时：`tools/list`（分页，每页 50，用 `nextCursor` 翻页）——这是**权威来源**，本页只是它的可读版本。
 - `mcp_limits` / `mcp_status` 里的 `toolCount` / `builtinToolCount` 能看到数量。
-- 内置工具 **46 个**；另有可选的 `ctl_*`（见 §4）。
+- 内置工具 **49 个**；另有可选的 `ctl_*`（见 §4）。
 
 ## 3. 一页速查
 
@@ -49,8 +49,11 @@
 | [`ble_list_devices`](#ble-list-devices) | 读 | 列出**已扫到**的蓝牙设备（不触发扫描）：MAC、名称、信号强度 RSSI、是否已配对、是否当前选中，以及扫描是否在进行中。列表空时会说明该先做什么。只读。 |
 | [`ble_start_scan`](#ble-start-scan) | **写** | 开始扫描蓝牙设备（面板那颗「开始/停止扫描」按钮的同一条路径）。默认按面板上设的时长自动停止；扫完用 ble_list_devices 取结果。写操作（会占用射频）。 |
 | [`ble_stop_scan`](#ble-stop-scan) | **写** | 停止蓝牙扫描（复用同一颗按钮的路径）。写操作。 |
+| [`ble_connect`](#ble-connect) | **写** | 连接一台 BLE 设备。给 addr 时：**扫描列表里有它**就点它的卡片再走「连接设备」（同一条路）；**列表里没有**就走「按 MAC 直连」（不依赖广播 —— 被 Windows 配对过、或被别的主机连走因而不广播的设备，只有这条路连得上）。不给 addr 就用面板当前选中的那台。**等连接真的成功才返回**（会带上服务数）。写操作。 |
+| [`ble_disconnect`](#ble-disconnect) | **写** | 断开当前已连接的设备（面板那颗「断开设备」按钮的同一条路）。断开后服务树、订阅状态、本次会话的数据日志一并清空。写操作。 |
 | [`ble_get_services`](#ble-get-services) | 读 | 当前已连接设备的 GATT 服务树（服务 UUID / 名称，每个服务下的特征 UUID、属性 props、描述符个数）。只读，取的是面板已经拉到的那份，不会重新去问设备。 |
 | [`ble_read`](#ble-read) | 读 | 读一个特征的值（按 UUID 寻址）——**点的是面板上那颗读按钮**，结果随后出现在 ble_get_output 里。需要设备已连接、且该特征有 read 属性（用 ble_get_services 看）。 |
+| [`ble_write`](#ble-write) | **写** | 往一个特征写数据（按 UUID 寻址）——**打开的就是面板那个写入窗并点「发送」**，HEX/文本解析、行尾、写响应/无响应全用面板那套（写入窗会留在界面上，数据日志里也能看到这一条）。需要设备已连接、且该特征有 write 属性（见 ble_get_services）。写操作。 |
 | [`ble_subscribe`](#ble-subscribe) | **写** | 开/关某个特征的通知订阅（notify / indicate）——点的是面板上那颗订阅按钮，数据随后出现在 ble_get_output 里。**状态已经在目标值时不会重复点**（不会把用户刚打开的订阅关掉）。 |
 | [`ble_get_output`](#ble-get-output) | 读 | 读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。只读。 |
 | [`ble_refresh_rssi`](#ble-refresh-rssi) | 读 | 读当前已连接设备的信号强度（RSSI，负数，越接近 0 越强）。只问一次射频、不改状态；还没连设备时会直接说明。 |
@@ -338,6 +341,30 @@
 
 无（不需要参数）
 
+#### `ble_connect`
+
+- **作用**：连接一台 BLE 设备。给 addr 时：**扫描列表里有它**就点它的卡片再走「连接设备」（同一条路）；**列表里没有**就走「按 MAC 直连」（不依赖广播 —— 被 Windows 配对过、或被别的主机连走因而不广播的设备，只有这条路连得上）。不给 addr 就用面板当前选中的那台。**等连接真的成功才返回**（会带上服务数）。写操作。
+- **读/写**：**写**（会改状态）
+- **返回**：{pane, connected, addr, name, via, serviceCount, paired?}
+- **注意**：`via=list`（扫描列表里点卡片连）/ `direct`（列表里没有 → 按 MAC 直连，**不依赖广播**）/ `selected`（用面板已选中的那台）。**等连接真的成功才返回**；需要配对时会弹出配对窗等用户确认
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `addr` | string | 否 | 设备 MAC，如 A4:C1:38:11:14:2B（省略=用面板已选中的设备） |
+
+#### `ble_disconnect`
+
+- **作用**：断开当前已连接的设备（面板那颗「断开设备」按钮的同一条路）。断开后服务树、订阅状态、本次会话的数据日志一并清空。写操作。
+- **读/写**：**写**（会改状态）
+- **返回**：{pane, connected:false, addr, changed}
+- **注意**：断开后面板的服务树、订阅状态、本次会话数据日志一并清空（与点那颗「断开设备」按钮完全一样）
+
+**入参**
+
+无（不需要参数）
+
 #### `ble_get_services`
 
 - **作用**：当前已连接设备的 GATT 服务树（服务 UUID / 名称，每个服务下的特征 UUID、属性 props、描述符个数）。只读，取的是面板已经拉到的那份，不会重新去问设备。
@@ -361,6 +388,23 @@
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `char` | string | **是** | 特征 UUID（见 ble_get_services 的 services[].chars[].uuid） |
+
+#### `ble_write`
+
+- **作用**：往一个特征写数据（按 UUID 寻址）——**打开的就是面板那个写入窗并点「发送」**，HEX/文本解析、行尾、写响应/无响应全用面板那套（写入窗会留在界面上，数据日志里也能看到这一条）。需要设备已连接、且该特征有 write 属性（见 ble_get_services）。写操作。
+- **读/写**：**写**（会改状态）
+- **返回**：{pane, uuid, hex, bytes, writeType, format, lineEnding}
+- **注意**：**打开面板那个写入窗并点「发送」**：HEX/文本解析、行尾、写响应/无响应全用面板那套（写入窗会留在界面上）。单次最多 `maxBleWriteChars` 个字符；特征的写入方式不支持时要的错误里会把可选值列出来
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `char` | string | **是** | 特征 UUID（见 ble_get_services 的 services[].chars[].uuid） |
+| `data` | string | **是** | 要写入的内容；format=hex 时是十六进制串（如 01A0FF 或 01 A0 FF） |
+| `format` | string | 否 | 枚举：`text` / `hex` 内容格式（省略=text） |
+| `lineEnding` | string | 否 | 枚举：`none` / `cr` / `lf` / `crlf` 文本模式追加的行尾（省略=none，即原样写入 —— 协议帧最不容易被写坏） |
+| `writeType` | string | 否 | 枚举：`write` / `write_without_response` 写响应 / 无响应（省略=用该特征的第一种；给了但该特征不支持会报错并把可选值列出来） |
 
 #### `ble_subscribe`
 
@@ -478,7 +522,7 @@
 
 - **作用**：MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。
 - **读/写**：只读，无副作用
-- **返回**：`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels, maxQuickCmdItems, maxQuickCmdLabelChars, maxQuickCmdValueChars, maxQuickCmdFileBytes}`
+- **返回**：`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels, maxQuickCmdItems, maxQuickCmdLabelChars, maxQuickCmdValueChars, maxQuickCmdFileBytes, maxBleWriteChars}`
 - **注意**：用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**
 
 **入参**

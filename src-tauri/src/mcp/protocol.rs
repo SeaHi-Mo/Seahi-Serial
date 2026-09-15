@@ -108,6 +108,10 @@ pub const WRITE_TOOLS: &[&str] = &[
     "ble_start_scan",
     "ble_stop_scan",
     "ble_subscribe",
+    // 连接/断开/写特征都会改设备侧或界面状态
+    "ble_connect",
+    "ble_disconnect",
+    "ble_write",
 ];
 
 /// 判断**这一次调用**算不算写操作。
@@ -431,6 +435,38 @@ pub fn tool_defs() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "ble_write",
+            "description": "往一个特征写数据（按 UUID 寻址）——**打开的就是面板那个写入窗并点「发送」**，HEX/文本解析、行尾、写响应/无响应全用面板那套（写入窗会留在界面上，数据日志里也能看到这一条）。需要设备已连接、且该特征有 write 属性（见 ble_get_services）。写操作。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "char": { "type": "string", "description": "特征 UUID（见 ble_get_services 的 services[].chars[].uuid）" },
+                    "data": { "type": "string", "description": "要写入的内容；format=hex 时是十六进制串（如 01A0FF 或 01 A0 FF）" },
+                    "format": { "type": "string", "enum": ["text", "hex"], "description": "内容格式（省略=text）" },
+                    "lineEnding": { "type": "string", "enum": ["none", "cr", "lf", "crlf"], "description": "文本模式追加的行尾（省略=none，即原样写入 —— 协议帧最不容易被写坏）" },
+                    "writeType": { "type": "string", "enum": ["write", "write_without_response"], "description": "写响应 / 无响应（省略=用该特征的第一种；给了但该特征不支持会报错并把可选值列出来）" }
+                },
+                "required": ["char", "data"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ble_connect",
+            "description": "连接一台 BLE 设备。给 addr 时：**扫描列表里有它**就点它的卡片再走「连接设备」（同一条路）；**列表里没有**就走「按 MAC 直连」（不依赖广播 —— 被 Windows 配对过、或被别的主机连走因而不广播的设备，只有这条路连得上）。不给 addr 就用面板当前选中的那台。**等连接真的成功才返回**（会带上服务数）。写操作。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "addr": { "type": "string", "description": "设备 MAC，如 A4:C1:38:11:14:2B（省略=用面板已选中的设备）" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ble_disconnect",
+            "description": "断开当前已连接的设备（面板那颗「断开设备」按钮的同一条路）。断开后服务树、订阅状态、本次会话的数据日志一并清空。写操作。",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        json!({
             "name": "ble_get_output",
             "description": "读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。只读。",
             "inputSchema": {
@@ -689,6 +725,12 @@ pub const MAX_UI_SET_ITEMS: usize = 200;
 /// **为什么必须有**：串口写是排队的，1 MiB 数据在 115200 波特下要发一分半钟，
 /// 期间写队列一直压着 —— 那是直接干扰用户的串口会话。要发大块数据应当分批。
 pub const MAX_SEND_CHARS: usize = 64 * 1024;
+
+/// `ble_write` 单次最多写多少**字符**（HEX 模式下两个字符=一个字节）。
+///
+/// **为什么必须有**：BLE 单次写受 MTU 限制（典型载荷 20~512 字节，长写要分段），
+/// 一次几百 KB 既写不进去、又会让 WebView 主线程先卡住（AGENTS #10）。
+pub const MAX_BLE_WRITE_CHARS: usize = 4096;
 
 /// 实际暴露的工具列表 = 内置工具 + （可选的）全量控件工具。
 /// `tools/list`、`mcp_status.toolCount`、客户端的配置提示词都用它，保证三处一致。
@@ -1010,9 +1052,74 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         "ble_start_scan" => ble_call(core, "startScan", args, json!({})).await,
         "ble_stop_scan" => ble_call(core, "stopScan", args, json!({})).await,
         // 必填入参**在碰界面之前**校验（AGENTS #10：校验要先于"碰主程序"，
-        // 缺参要报 -32602「改参数重试」而不是拖到最后变成 -32006「没有界面」）
-        "ble_read" => { require_str(args, "char")?; ble_call(core, "read", args, json!({})).await }
-        "ble_subscribe" => { require_str(args, "char")?; ble_call(core, "subscribe", args, json!({})).await }
+        // 缺参要报 -32602「改参数重试」而不是拖到最后变成 -32006「没有界面」）。
+        // ⚠️ `ble_call` 只把 `pane` 转进 payload，所以**要用的字段必须显式放进 extra** ——
+        // 光过校验不算数，不放进 payload 等于前端永远收不到它（batch 4 就这么漏过一次）。
+        "ble_read" => {
+            let ch = require_str(args, "char")?;
+            ble_call(core, "read", args, json!({ "char": ch })).await
+        }
+        "ble_subscribe" => {
+            let ch = require_str(args, "char")?;
+            let mut extra = json!({ "char": ch });
+            if let Some(on) = args.get("on").and_then(|v| v.as_bool()) {
+                extra["on"] = json!(on);
+            }
+            ble_call(core, "subscribe", args, extra).await
+        }
+        "ble_connect" => {
+            let mut extra = json!({});
+            if let Some(a) = opt_str(args, "addr") {
+                extra["addr"] = json!(a.to_uppercase());
+            }
+            ble_call(core, "connect", args, extra).await
+        }
+        "ble_disconnect" => ble_call(core, "disconnect", args, json!({})).await,
+        "ble_write" => {
+            let ch = require_str(args, "char")?;
+            let data = require_str(args, "data")?;
+            // 单次写入量上限：BLE 单次写最多 MTU-3 字节（典型 20~512），这里留足余量但仍必须有界
+            // —— 1 MiB 的请求体足够塞进几十万字符，那条链路会先卡在 WebView 上。
+            if data.chars().count() > MAX_BLE_WRITE_CHARS {
+                return Err(RpcError::new(
+                    E_INVALID_PARAMS,
+                    format!(
+                        "单次最多写 {} 个字符（收到 {} 个）。BLE 单次写受 MTU 限制，长数据请分段。",
+                        MAX_BLE_WRITE_CHARS,
+                        data.chars().count()
+                    ),
+                ));
+            }
+            let mut extra = json!({ "char": ch, "data": data });
+            if let Some(f) = opt_str(args, "format") {
+                let f = f.to_ascii_lowercase();
+                if f != "text" && f != "hex" {
+                    return Err(RpcError::new(E_INVALID_PARAMS, "format 只能是 text 或 hex"));
+                }
+                extra["format"] = json!(f);
+            }
+            if let Some(le) = opt_str(args, "lineEnding") {
+                let le = le.to_ascii_lowercase();
+                if !matches!(le.as_str(), "none" | "cr" | "lf" | "crlf") {
+                    return Err(RpcError::new(
+                        E_INVALID_PARAMS,
+                        "lineEnding 只能是 none / cr / lf / crlf",
+                    ));
+                }
+                extra["lineEnding"] = json!(le);
+            }
+            if let Some(wt) = opt_str(args, "writeType") {
+                let wt = wt.to_ascii_lowercase();
+                if wt != "write" && wt != "write_without_response" {
+                    return Err(RpcError::new(
+                        E_INVALID_PARAMS,
+                        "writeType 只能是 write 或 write_without_response",
+                    ));
+                }
+                extra["writeType"] = json!(wt);
+            }
+            ble_call(core, "write", args, extra).await
+        }
         "ble_get_output" => ble_call(core, "getOutput", args, json!({})).await,
         "ble_refresh_rssi" => ble_call(core, "refreshRssi", args, json!({})).await,
         "ble_get_services" => ble_call(core, "getServices", args, json!({})).await,
@@ -1223,6 +1330,7 @@ pub fn limits_json() -> Value {
         "maxBodyBytes": super::MAX_BODY_BYTES,
         "maxUiSetItems": MAX_UI_SET_ITEMS,
         "maxSendChars": MAX_SEND_CHARS,
+        "maxBleWriteChars": MAX_BLE_WRITE_CHARS,
         "toolsPage": super::TOOLS_PAGE,
         "idleTimeoutSecs": super::IDLE_TIMEOUT_SECS,
         "rateLimitPerMin": super::RATE_LIMIT_PER_MIN,
@@ -1997,6 +2105,8 @@ mod tests {
             assert_eq!(sc["maxQuickCmdLabelChars"], MAX_QUICK_CMD_LABEL_CHARS);
             assert_eq!(sc["maxQuickCmdValueChars"], MAX_QUICK_CMD_VALUE_CHARS);
             assert_eq!(sc["maxQuickCmdFileBytes"], MAX_QUICK_CMD_FILE_BYTES);
+            // ble_write 的单次上限（BLE 写受 MTU 限制，没有上限就等于让 AI 灌爆 WebView）
+            assert_eq!(sc["maxBleWriteChars"], MAX_BLE_WRITE_CHARS);
         });
     }
 
@@ -2324,7 +2434,7 @@ mod tests {
                 ("app_info", json!({}), Backend(&["arch", "name", "os", "pid", "profile", "uptimeSecs", "version"], &[])),
                 ("mcp_limits", json!({}), Backend(&[
                     "heartbeatSecs", "idleTimeoutSecs", "logMaxChannels", "logMaxLineBytes",
-                    "logTotalCapBytes", "maxBodyBytes", "maxSendChars", "maxSessions",
+                    "logTotalCapBytes", "maxBodyBytes", "maxBleWriteChars", "maxSendChars", "maxSessions",
                     "maxUiSetItems", "protocolFallback", "protocolVersion", "rateLimitPerMin",
                     "sessionQueue", "toolsPage",
                     // 快速指令外部文件的上限（加字段就要一起改这里，契约测试会拦）
@@ -2379,6 +2489,9 @@ mod tests {
                 ("ble_get_services", json!({}), NoGui),
                 ("ble_read", json!({ "char": "0x2a00" }), NoGui),
                 ("ble_subscribe", json!({ "char": "0x2a00", "on": true }), NoGui),
+                ("ble_write", json!({ "char": "0000fff1-0000-1000-8000-00805f9b34fb", "data": "AT", "format": "text" }), NoGui),
+                ("ble_connect", json!({ "addr": "AA:BB:CC:DD:EE:FF" }), NoGui),
+                ("ble_disconnect", json!({}), NoGui),
                 ("ble_get_output", json!({}), NoGui),
                 ("ble_refresh_rssi", json!({}), NoGui),
                 ("ble_start_scan", json!({}), NoGui),
@@ -2603,10 +2716,40 @@ mod tests {
                                                    "chars": [{ "uuid": "0000fff1-0000-1000-8000-00805f9b34fb", "props": ["read","notify"], "descs": 1 }] }],
                                 }}),
                                 "read" => json!({ "ok": true, "value": {
-                                    "pane": "ble", "uuid": "0x2a00", "action": "read", "note": "已触发读取",
+                                    "pane": "ble", "uuid": payload["char"], "action": "read", "note": "已触发读取",
                                 }}),
                                 "subscribe" => json!({ "ok": true, "value": {
-                                    "pane": "ble", "uuid": "0x2a00", "prop": "notify", "on": true, "changed": true,
+                                    "pane": "ble", "uuid": payload["char"], "prop": "notify",
+                                    "on": payload.get("on").and_then(|v| v.as_bool()).unwrap_or(true),
+                                    "changed": true,
+                                }}),
+                                // 写入：`char`/`data` 缺一个就报参数错 —— Rust 侧"校验了却没放进 payload"
+                                // 是 batch 4 真出现过的漏法（read 的 char 就被吞了），这里必须能抓住
+                                "write" => {
+                                    if payload["char"].as_str().unwrap_or("").is_empty()
+                                        || payload["data"].as_str().unwrap_or("").is_empty()
+                                    {
+                                        json!({ "ok": false, "invalidParams": true,
+                                                "error": "假前端：write 少了 char 或 data" })
+                                    } else {
+                                        json!({ "ok": true, "value": {
+                                            "pane": "ble", "uuid": payload["char"], "hex": "4154", "bytes": 2,
+                                            "writeType": if payload["writeType"] == "write_without_response" {
+                                                "without_response" } else { "with_response" },
+                                            "format": payload.get("format").and_then(|v| v.as_str()).unwrap_or("text"),
+                                            "lineEnding": payload.get("lineEnding").and_then(|v| v.as_str()).unwrap_or("none"),
+                                        }})
+                                    }
+                                }
+                                "connect" => json!({ "ok": true, "value": {
+                                    "pane": "ble", "connected": true,
+                                    "addr": payload.get("addr").and_then(|v| v.as_str())
+                                        .unwrap_or("AA:BB:CC:DD:EE:FF"),
+                                    "name": "Ai-WB2", "via": "list", "serviceCount": 1,
+                                }}),
+                                "disconnect" => json!({ "ok": true, "value": {
+                                    "pane": "ble", "connected": false, "addr": "AA:BB:CC:DD:EE:FF",
+                                    "changed": true,
                                 }}),
                                 "getOutput" => json!({ "ok": true, "value": {
                                     "pane": "ble", "count": 1, "total": 1, "channels": { "rx": "ble:rx" },
@@ -2786,14 +2929,48 @@ mod tests {
                     pre_connected: None,
                     calls: vec![("ble", json!({ "action": "getServices" }))],
                     keys: &["connected", "serviceCount", "services"] },
+                // 参数必须**真的到得了前端**：期望里钉住 char/on/data 这些字段，
+                // 光在 Rust 侧 require_str 校验、却忘了放进 payload，是 batch 4 真实踩过的坑
                 Case { tool: "ble_read", args: json!({ "char": "0x2a00" }),
                     pre_connected: None,
-                    calls: vec![("ble", json!({ "action": "read" }))],
+                    calls: vec![("ble", json!({ "action": "read", "char": "0x2a00" }))],
                     keys: &["pane", "uuid", "action", "note"] },
                 Case { tool: "ble_subscribe", args: json!({ "char": "0x2a00", "on": true }),
                     pre_connected: None,
-                    calls: vec![("ble", json!({ "action": "subscribe" }))],
+                    calls: vec![("ble", json!({ "action": "subscribe", "char": "0x2a00", "on": true }))],
                     keys: &["pane", "uuid", "prop", "on", "changed"] },
+                // 写入：格式/行尾/写方式都给上，钉住这几个字段原样透传（含归一化成小写）
+                Case { tool: "ble_write", args: json!({ "char": "0000FFF1-0000-1000-8000-00805F9B34FB",
+                                                        "data": "01A0FF", "format": "HEX",
+                                                        "lineEnding": "CRLF", "writeType": "write_without_response" }),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "write",
+                                                "char": "0000FFF1-0000-1000-8000-00805F9B34FB",
+                                                "data": "01A0FF", "format": "hex",
+                                                "lineEnding": "crlf", "writeType": "write_without_response" }))],
+                    keys: &["pane", "uuid", "hex", "bytes", "writeType", "format", "lineEnding"] },
+                // 写入不给 format/lineEnding/writeType 时：前端拿到的 payload 里就不该有它们
+                // （前端各自的默认值是 text / none / 特征支持的第一种）
+                Case { tool: "ble_write", args: json!({ "char": "0000fff1-0000-1000-8000-00805f9b34fb", "data": "AT" }),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "write",
+                                                "char": "0000fff1-0000-1000-8000-00805f9b34fb",
+                                                "data": "AT" }))],
+                    keys: &["pane", "uuid", "hex", "bytes", "writeType"] },
+                // 连接：addr 透传（前端再决定走列表还是按 MAC 直连）
+                Case { tool: "ble_connect", args: json!({ "addr": "aa:bb:cc:dd:ee:ff" }),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "connect", "addr": "AA:BB:CC:DD:EE:FF" }))],
+                    keys: &["pane", "connected", "addr", "name", "via", "serviceCount"] },
+                // 连接不给 addr：payload 里不能凭空多一个 addr（前端用面板选中的那台）
+                Case { tool: "ble_connect", args: json!({}),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "connect" }))],
+                    keys: &["pane", "connected", "addr", "via"] },
+                Case { tool: "ble_disconnect", args: json!({}),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "disconnect" }))],
+                    keys: &["pane", "connected", "addr", "changed"] },
                 Case { tool: "ble_get_output", args: json!({ "limit": 20 }),
                     pre_connected: None,
                     calls: vec![("ble", json!({ "action": "getOutput" }))],
@@ -2896,6 +3073,7 @@ mod tests {
                 "ble_get_state", "ble_periph_status", "ble_periph_start", "ble_periph_stop",
                 "ble_list_devices", "ble_start_scan", "ble_stop_scan", "ble_get_services",
                 "ble_get_output", "ble_refresh_rssi", "ble_read", "ble_subscribe",
+                "ble_write", "ble_connect", "ble_disconnect",
             ];
             // serial_get_output 只读日志中心，但**先要过前端拿分栏名与通道名**，所以也算界面工具
             want.push("serial_get_output");
