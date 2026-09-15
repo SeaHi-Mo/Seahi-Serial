@@ -169,7 +169,10 @@ for (const [, names] of GROUPS) {
   for (const n of names) {
     const t = byName[n];
     const rw = (META[n] || ['?'])[0];
-    md += '| [`' + n + '`](#' + n.replace(/_/g, '-') + ') | ' + (rw === '写' ? '**写**' : '读') + ' | ' + t.desc + ' |\n';
+    // `写⚠️`（危险写）也是写：原先只认 `rw === '写'`，于是 ble_periph_start/stop 在总表里
+    // 被标成了「读」—— 一眼看不出它会对外广播（2026-09 核对时发现）
+    const rwCell = rw.indexOf('写') === 0 ? ('**写**' + (rw.indexOf('⚠') > 0 ? ' ⚠️' : '')) : '读';
+    md += '| [`' + n + '`](#' + n.replace(/_/g, '-') + ') | ' + rwCell + ' | ' + t.desc + ' |\n';
   }
 }
 md += '\n> 「写」= 会改变程序状态（界面 / 日志缓存 / AI 配置）。AI 调用这些工具时请先确认意图。\n';

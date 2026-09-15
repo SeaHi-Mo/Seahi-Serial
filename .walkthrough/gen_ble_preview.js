@@ -2687,6 +2687,12 @@ console.log('preview ->', out);
   // （文档由 .walkthrough/gen_mcp_tools_doc.js 从 protocol.rs 生成，这里只防"加了工具忘了重跑"）
   {
     const toolsDoc = fs.readFileSync(path.join(root, 'doc', 'MCP_TOOLS.md'), 'utf8');
+    const mcpDoc = fs.readFileSync(path.join(root, 'doc', 'MCP.md'), 'utf8');
+    // 「看着重复的入口」必须有一张对照表，否则用户/模型会挨个试（用户 2026-09 问过"有没有重复的工具"）
+    check(/同一份数据的多条入口/.test(mcpDoc)
+      && /ble_list_devices`\s*·\s*`ui_get_state\{section:"bleDevices"\}/.test(mcpDoc)
+      && /ui_click\{path\}`\s*\*\*≡\*\*\s*`ui_set\{path, value:true\}/.test(mcpDoc),
+      'doc/MCP.md 有「同一份数据的多条入口」对照表（扫描结果两条路、ui_click ≡ ui_set 都写明）');
     const srcTools = [...new Set(
       // 用带捕获组的 matchAll 一次拿干净；上一版先 match 再 exec，每次都抓到 "name" 这个键名
       // 只扫 tool_defs() 函数体（到第一个 "    ]" 为止）。上一版扫到 limits_json()，
@@ -2768,6 +2774,21 @@ console.log('preview ->', out);
       'Rust=' + rustWrites.join(',') + ' / 文档=' + docWrites.join(','));
     check(/if name == "serial_quick_cmd"[\s\S]{0,120}?args\.get\("index"\)\.is_some\(\)/.test(mcpProd),
       'serial_quick_cmd 按**调用**判定（不带 index 是只读列举，带 index 才是真的发出去）');
+
+    // 一页速查表里的「读/写」列：`写⚠️` 必须也渲染成写
+    // （原先只认 rw === '写'，ble_periph_start/stop 这两个危险写被标成了「读」）
+    const dangerNames = [...(/pub const DANGER_TOOLS: &\[\(&str, &str\)\] = &\[([\s\S]*?)\n\];/.exec(mcpProd) || ['', ''])[1]
+      .matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    check(dangerNames.length >= 2, '扫到了危险动作表（不是空扫）', dangerNames.join(','));
+    const mislabeled = dangerNames.filter((n) => {
+      const row = new RegExp('^\\| \\[`' + n + '`\\]\\(#[a-z0-9-]+\\) \\| ([^|]*)\\|', 'm').exec(toolsDoc);
+      return !row || row[1].indexOf('写') < 0;
+    });
+    check(mislabeled.length === 0,
+      '危险工具（会对外广播等）在一页速查表里必须标成「写」（标成读会让人以为它没副作用）',
+      '标错：' + mislabeled.join(','));
+    const summaryOnly = toolsDoc.slice(0, toolsDoc.indexOf('## 4.'));
+    check(summaryOnly.indexOf('**写** ⚠️') >= 0, '危险工具在速查表里带 ⚠️ 标记');
 
     // ---- 「报得出来的开关，就必须设得了」----
     // 真机发现过的不对称：serial_get_state 报了 advOpen（更多设置栏展开），但 serial_set_display

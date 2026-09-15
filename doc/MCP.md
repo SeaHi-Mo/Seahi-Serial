@@ -192,6 +192,31 @@ npx seahi-serial-mcp uninstall  # 只移除它写的那一条
 
 > 默认关闭的原因：工具列表要进 AI 的上下文，几百个工具会明显拖累它选工具的准确率。
 
+### 同一份数据的多条入口（该用哪条）
+
+有几处**看着重复**，它们是故意的：语义工具与通用桥读同一份状态，便捷入口与日志中心读同一份存储。
+照这张表挑，别挨个试：
+
+| 数据 / 动作 | 入口 | 用哪条 |
+|---|---|---|
+| 串口分栏状态 | `serial_get_state` · `ui_get_state{section:"serial"}` | 有 `serial_*` 就用前者（字段名/默认分栏都更准） |
+| 蓝牙状态 | `ble_get_state` · `ui_get_state{section:"ble"}` | 同上，优先 `ble_get_state` |
+| **扫描结果（名称/MAC/RSSI）** | `ble_list_devices` · `ui_get_state{section:"bleDevices"}` | 有语义工具用前者；**工具列表还没刷新**的客户端用后者（两者都留着就是为了这个） |
+| **实际收发内容** | `serial_get_output` / `ble_get_output` · `log_tail`（要通道名） | 先用前两个：不用知道通道名，且"还没收到数据"返回空列表而不是报错；要跨会话 / 更多行再 `log_tail` |
+| 某个控件 | `ui_list` → `ui_describe` → `ui_get`/`ui_set`/`ui_click` | 枚举 → 看格式 → 操作 |
+| 点按钮 / 开关 | `ui_click{path}` **≡** `ui_set{path, value:true}` | **真的是同一条实现**（`click` 只是把 value 强制成 true）。留两个是让模型选工具更少出错，挑一个用即可 |
+| 日志通道概览 | `log_channels` · `log_stats` | `log_stats` 信息更全（速率/跨度/告警数）；两者都列通道 |
+| 调用记录 | `mcp_calls`（明细）· `mcp_stats`（按工具统计）· `mcp_status.callLog`（计数） | 查"谁调了什么"用 `mcp_calls`，看趋势用 `mcp_stats` |
+
+#### 看着像重复、其实不是（别搞混）
+
+| A | B | 区别 |
+|---|---|---|
+| `serial_clear`（清**界面**输出区） | `log_clear`（清**日志中心**某通道的缓存） | 一个动屏幕，一个动缓存；`serial_clear` 动不了通道，`log_clear` 清不掉屏幕上的字 |
+| `serial_get_history`（**自己发过**的指令，来自发送框历史） | `serial_get_output`（**链路上实际收发**了什么，含设备回包） | 前者"我发过什么"，后者"实际发生了什么" |
+| `serial_quick_cmd{index}`（发**列表里存着**的那条，带它自己的 hex/延时/顺序号） | `serial_send`（发**临时**数据） | 前者参与循环、会写回外部文件；后者一次性 |
+| `ble_get_state`（面板内存快照，便宜） | `ble_list_devices`（**现问后端**，最新） | 只要"扫没扫/连没连"用前者；要最新设备列表用后者 |
+
 ## 5. 日志与记录写在哪
 
 | 文件 | 内容 |
