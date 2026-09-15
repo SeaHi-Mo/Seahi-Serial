@@ -2105,6 +2105,7 @@ console.log('preview ->', out);
   vm.createContext(sbMcp);
   vm.runInContext([
     'var _mcpBusy = false;',
+    'var _mcpReadOnlyBusy = false;',
     extractFunction('_mcpDotClass'),
     extractFunction('renderMcpStatus'),
   ].join('\n'), sbMcp);
@@ -2186,6 +2187,76 @@ console.log('preview ->', out);
   sbMcp.renderMcpStatus({ running: false, lastError: '端口全被占用' });
   check(mcpEl('mcpError').style.display === 'block' && mcpEl('mcpError').textContent.indexOf('端口全被占用') > 0,
     '启动失败原因可见');
+
+  // ---- 只读（沙箱）模式开关：开启之后**必须还点得动** ----
+  // 真实故障（2026-09 用户报"只读模式开了之后无法关闭"）：mcpToggleReadOnly 为了挡连点
+  // 先把按钮置灰，而 renderMcpStatus 只改文案、**从不把 disabled 放回来** → 状态回来以后
+  // 那颗按钮仍是禁用态（CSS 只有 opacity:.45，肉眼看不出差别）→ 而它又是"关掉只读模式的
+  // 唯一入口"（只读下 AI 连 mcp_config_set 都会被拒）→ 用户只能重启应用或手改 ai-config.json。
+  // 断言集里当时只有"按钮存在""文案跟着状态"两条，恰好漏了"还点不点得动"。
+  {
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    const roToasts = [];
+    const sbRo = {
+      console, Promise, setTimeout,
+      document: { getElementById: (id) => mcpEl(id) },
+      showToast(m) { roToasts.push(m); },
+      _roFail: false,
+      // 假后端：mcp_set_read_only 把状态翻成入参那样，并原样回一份完整状态
+      invoke(name, args) {
+        if (sbRo._roFail) return Promise.reject(new Error('后端炸了'));
+        sbRo._mcpStatus = { running: true, host: '127.0.0.1', port: 7777, sessions: 0,
+          version: '0.9.9', toolCount: 4, requests: 0, dropped: 0, readOnly: !!args.enabled };
+        return Promise.resolve(sbRo._mcpStatus);
+      },
+    };
+    sbRo._mcpStatus = { readOnly: false };
+    sbRo.refreshMcpStatus = function() { sbRo.renderMcpStatus(sbRo._mcpStatus); };
+    vm.createContext(sbRo);
+    vm.runInContext([
+      'var _mcpBusy = false;',
+      'var _mcpReadOnlyBusy = false;',
+      extractFunction('_mcpDotClass'),
+      extractFunction('renderMcpStatus'),
+      extractFunction('mcpToggleReadOnly'),
+    ].join('\n'), sbRo);
+
+    check(mcpEl('mcpReadOnlyBtn').disabled === false, '初始只读开关可点（否则第一次就开不了）');
+    sbRo.mcpToggleReadOnly();
+    check(mcpEl('mcpReadOnlyBtn').disabled === true, '点下去立刻置灰（挡住连点发两条相反的 IPC）');
+    check(mcpEl('mcpReadOnlyBtn').textContent === '只读模式：处理中…', '在途时按钮说"处理中…"',
+      mcpEl('mcpReadOnlyBtn').textContent);
+    await flush();
+    check(sbRo._mcpStatus.readOnly === true, '第一次点：只读模式打开');
+    check(mcpEl('mcpReadOnlyBtn').textContent === '只读模式：开（AI 只能看）', '开完文案切到"开"',
+      mcpEl('mcpReadOnlyBtn').textContent);
+    check(mcpEl('mcpReadOnlyBtn').disabled === false,
+      '**开完必须解禁** —— 不禁用回来，用户就再也关不掉只读模式（本次回归的那一条）');
+
+    // 第二次点：关掉（就是用户报的那一步）
+    sbRo.mcpToggleReadOnly();
+    await flush();
+    check(sbRo._mcpStatus.readOnly === false, '**再点一下真的能关掉**（"开了之后无法关闭"回归）');
+    check(mcpEl('mcpReadOnlyBtn').textContent === '只读模式：关', '关完文案切回"关"',
+      mcpEl('mcpReadOnlyBtn').textContent);
+    check(mcpEl('mcpReadOnlyBtn').disabled === false, '关完照样还能再点（来回切不卡死）');
+    check(roToasts.length === 2 && /已关闭只读模式/.test(roToasts[1]), '关掉时给出反馈', roToasts.join(' / '));
+
+    // 在途期间后端推来的状态（'mcp-status-changed' 监听器会 render）不能把按钮提前解禁
+    sbRo._mcpReadOnlyBusy = true;
+    sbRo.renderMcpStatus({ readOnly: true });
+    check(mcpEl('mcpReadOnlyBtn').disabled === true, '在途期间推来的状态不会提前解禁（防连点）');
+    check(mcpEl('mcpReadOnlyBtn').textContent === '只读模式：处理中…', '在途期间文案仍是"处理中…"');
+    sbRo._mcpReadOnlyBusy = false;
+
+    // 失败路径：命令被拒/后端抖动也要解禁，否则一次失败就把这颗按钮永久锁死
+    sbRo._roFail = true;
+    sbRo.mcpToggleReadOnly();
+    await flush();
+    check(mcpEl('mcpReadOnlyBtn').disabled === false, '**命令失败也要解禁**（一次抖动不能锁死这颗按钮）');
+    check(roToasts.length === 3 && /只读模式切换失败/.test(roToasts[2]), '失败时把原因说出来',
+      roToasts.join(' / '));
+  }
 
   console.log('\n【MCP 控件注册表与界面桥（S4 / S5）】');
 
@@ -2758,8 +2829,15 @@ console.log('preview ->', out);
       '弹窗里有只读模式开关（否则打开后 AI 关不掉、用户也只能手改配置文件）');
     check(/function mcpToggleReadOnly\(\)[\s\S]{0,400}?invoke\('mcp_set_read_only'/.test(html),
       '开关调用 mcp_set_read_only');
-    check(/id="mcpReadOnlyBtn"[\s\S]{0,120}?readOnly/.test(html) || /ro\.textContent = on \?/.test(html),
-      '开关文案跟着 readOnly 状态更新');
+    check(/ro\.textContent = _mcpReadOnlyBusy \?/.test(html)
+      && /on \? '只读模式：开（AI 只能看）' : '只读模式：关'/.test(html),
+      '开关文案跟着 readOnly 状态更新（在途时另说）');
+    // 禁用态**只由在途标志决定**，且要在 render 里解禁：写死 `btn.disabled = true` 而没人放回来，
+    // 就是"只读模式开了之后无法关闭"（那颗按钮是关它的唯一入口）。行为断言在上面。
+    check(/var _mcpReadOnlyBusy = false;/.test(html) && /ro\.disabled = !!_mcpReadOnlyBusy/.test(html),
+      '只读开关的禁用态只认自己的在途标志，并在状态回来时解禁');
+    check(/function mcpToggleReadOnly\(\) \{\s*\n\s*if \(_mcpReadOnlyBusy\) return;/.test(html),
+      '在途时再点直接忽略（不靠 DOM 的 disabled 兜底）');
 
     // 文档的「读/写」列必须与 Rust 的 WRITE_TOOLS 一致（那列以前是手写的，没人核过）
     const genMeta = fs.readFileSync(path.join(root, '.walkthrough', 'gen_mcp_tools_doc.js'), 'utf8');

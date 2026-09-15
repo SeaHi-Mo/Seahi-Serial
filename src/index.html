@@ -4883,6 +4883,9 @@ var _mcpStatus = null;
 var _mcpConfig = null;
 // 正在发 mcp_set_enabled 的那一小会儿：按钮要禁用，否则连点会陆续发出两条相反的 IPC
 var _mcpBusy = false;
+// 同上，只读模式那颗按钮自己的在途标志。**必须独立一份**：共用一个标志的话，
+// 一边在处理中会把另一颗按钮也连带置灰（两个开关本来就是互不相干的命令）。
+var _mcpReadOnlyBusy = false;
 
 function openMcpModal() {
     var m = document.getElementById('mcpModal');
@@ -4951,7 +4954,14 @@ function renderMcpStatus(st) {
     var ro = document.getElementById('mcpReadOnlyBtn');
     if (ro) {
         var on = !!(st && st.readOnly);
-        ro.textContent = on ? '只读模式：开（AI 只能看）' : '只读模式：关';
+        // 处理中要禁用（连点两下会陆续发出两条相反的 IPC），**但处理完必须放回来**。
+        // 这里漏掉 `ro.disabled = false` 就是一类真实故障（2026-09 用户报"只读模式开了之后
+        // 无法关闭"）：点一下开启 → 按钮被置灰 → 状态回来时只改了文案、没解禁，
+        // 于是这颗"关它的唯一入口"永远点不动，只能重启应用（或手改 ai-config.json）。
+        // 所以禁用态**只认 `_mcpReadOnlyBusy`**，与 mcpToggleBtn 的 `_mcpBusy` 同一套口径。
+        ro.disabled = !!_mcpReadOnlyBusy;
+        ro.textContent = _mcpReadOnlyBusy ? '只读模式：处理中…'
+            : (on ? '只读模式：开（AI 只能看）' : '只读模式：关');
         ro.title = on ? '当前 AI 只能读、不能改（写操作一律被拒，界面与配置不变）。点一下放开设限'
                       : '打开后 AI 只能读、不能改：所有写操作被拒（错误码 -32007），界面与配置文件一个字都不变。适合"先让 AI 自由探索、确认无误再放开"';
     }
@@ -5011,14 +5021,19 @@ function refreshMcpStatus() {
 }
 
 function mcpToggleReadOnly() {
+    if (_mcpReadOnlyBusy) return;
     var next = !(_mcpStatus && _mcpStatus.readOnly);
-    var btn = document.getElementById('mcpReadOnlyBtn');
-    if (btn) { btn.disabled = true; btn.textContent = '只读模式：处理中…'; }
+    // 与 mcpToggleEnabled 一样：先自己置灰挡住连点，**回来后由 renderMcpStatus 统一解禁**
+    // （禁用态的唯一来源是 _mcpReadOnlyBusy，不在这里写死 true 之后就不管了）。
+    _mcpReadOnlyBusy = true;
+    renderMcpStatus(_mcpStatus);
     invoke('mcp_set_read_only', { enabled: next }).then(function(st) {
+        _mcpReadOnlyBusy = false;
         _mcpStatus = st;
         renderMcpStatus(st);
         showToast(next ? '已开启只读模式：AI 只能读，写操作会被拒' : '已关闭只读模式：AI 可以改界面/发串口了', 'info');
     }).catch(function(e) {
+        _mcpReadOnlyBusy = false;
         showToast('只读模式切换失败: ' + e, 'error');
         refreshMcpStatus();
     });

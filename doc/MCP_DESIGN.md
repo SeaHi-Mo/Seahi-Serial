@@ -1485,6 +1485,35 @@ BLE 面板有两套完全不同的东西：**主机**（当中央去连别人的
 
 ## 17. 实施记录
 
+### 2026-09-15 · 「只读模式开了之后无法关闭」—— 那颗按钮被永久置灰 ✅
+
+用户截图报障：打开只读模式后，弹窗里那颗开关**再也点不动**（一直显示"只读模式：开（AI 只能看）"），
+而它是**关掉只读的唯一入口**（只读下 AI 连 `mcp_config_set` 都会被拒，这是 2026-09-14 那条故意的不对称）。
+
+根因在界面这一段，一行之差：
+
+```js
+// mcpToggleReadOnly()（改前）
+var btn = document.getElementById('mcpReadOnlyBtn');
+if (btn) { btn.disabled = true; btn.textContent = '只读模式：处理中…'; }   // 置灰挡连点
+```
+
+`renderMcpStatus()` 随后只重写 `textContent` / `title`，**从来没有 `ro.disabled = false`** ——
+状态回来以后文案是对的、按钮却仍是禁用态。`.ble-modal-btn:disabled` 只有 `opacity:.45`，
+肉眼看不出多少差别，用户只会觉得"点了没反应"。此后只能重启应用（或手改 `ai-config.json`）恢复。
+
+修法与 `mcpToggleEnabled` 的 `_mcpBusy` 同一套口径：新增独立的 `_mcpReadOnlyBusy`，**禁用态只认它**，
+由 `renderMcpStatus` 统一给出（在途 = 置灰 + "处理中…"，回来 = 解禁）；`mcpToggleReadOnly` 开头
+`if (_mcpReadOnlyBusy) return;`，`then` 与 `catch` **两条路**都把标志放下（失败同样要解禁 ——
+一次后端抖动不能把这颗按钮永久锁死）。
+
+为什么断言集没守住：当时只有两条**源码扫描**（"按钮存在"、"文案跟着状态"），恰好没测"还点不点得动"；
+加上 2026-09-14 那条"故意没在真机上打开它"，这条路径从来没被真正走过。这次补的是**行为断言**
+（真函数 + 假 DOM + 假 `invoke` 丢进 vm 连点两次）：开完必须解禁、再点真的关掉、在途期间推来的状态
+不会提前解禁、命令失败也解禁，另有 3 条源码扫描。
+
+验证：`node .walkthrough/gen_ble_preview.js` → **1457 passed / 0 failed**（+17 条）。
+
 ### 2026-09-15 · 工具自检 + 三个"只有真跑才看得见"的 bug ✅
 
 用户连着报了三条现象：**"新建的工具客户端没看到"**、**"AI 在操控 BLE，但前端没切到 BLE 页"**、
