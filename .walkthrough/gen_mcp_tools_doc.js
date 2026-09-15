@@ -70,7 +70,7 @@ const META = {
   serial_get_output: ['读', '{pane, direction, isConnected, channels:{rx,tx}, count, items:[{seq,ts,dir,text,bytes}], truncated, note?}', '**串口监视器的核心：读设备回了什么**。默认收+发按时间归并；数据与 `log_tail` 同一份存储，但**不需要你知道通道名**，且"还没收到数据"返回空列表 + note 而不是报错'],
   // ===== BLE 语义（第一批：状态 + 从机）=====
   ble_get_state: ['读', '{scanning, deviceCount, selected, connected, addr, connName, serviceCount, notifySubs, logCount, monitorOpen}', '**操作蓝牙前先调它**；只反映面板内存里的状态，不会去碰适配器'],
-  ble_list_devices: ['读', '{scanning, total, devices:[{mac,name,rssi,paired,selected}], selected, note?}', '**每调一次都会现问一次后端**（不是只读面板缓存）—— 刚 ble_start_scan 完立刻问也拿得到。空列表时 `note` 会说下一步（含"设备不广播就只能按 MAC 直连"）；RSSI 是负数，越接近 0 越强'],
+  ble_list_devices: ['读', '{scanning, total, offset, limit, returned, hasMore, nextOffset, devices:[{mac,name,rssi,paired,selected}], selected, note?}', '**每调一次都会现问一次后端**（不是只读面板缓存）—— 刚 ble_start_scan 完立刻问也拿得到。**支持分页**：`limit` 每页几台（省略=全量）、`offset` 从第几台开始，返回里给 `hasMore`/`nextOffset` 接着翻。空列表时 `note` 会说下一步（含"设备不广播就只能按 MAC 直连"）；RSSI 是负数，越接近 0 越强'],
   ble_start_scan: ['写', '{scanning, seconds, deviceCount}', '走面板那颗「开始/停止扫描」按钮的同一路径；按面板上设的时长自动停止，扫完用 `ble_list_devices` 取结果'],
   ble_stop_scan: ['写', '{scanning:false, deviceCount}', '同上：复用同一颗按钮的路径'],
   ble_read: ['读', '{pane, uuid, action, note}', '按特征 UUID 寻址，**点的是面板上那颗读按钮**；结果随后出现在 ble_get_output 里。特征没有 read 属性时直接说清'],

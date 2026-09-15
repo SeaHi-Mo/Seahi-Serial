@@ -4450,7 +4450,7 @@ console.log('preview ->', out);
         sb.pane = pane; sb.paneStats = () => ({ toggles: paneToggles, kicks: paneKicks });
         const names = ['mcpBleOp', 'bleCharActionBtn', 'bleBtnUuid', 'bleDevCardEl', 'bleCharAction',
                        'bleSvcRowEl', 'bleSvcUuidOfChar', 'bleFindCharBtn', 'bleEnsurePaneVisible',
-                       'mcpRevealPaneFor', 'bleRefreshDevicesNow',
+                       'mcpRevealPaneFor', 'bleRefreshDevicesNow', 'mcpBleScanResult',
                        'openBleWriteModal', 'setBleWriteAs', 'setBleWriteMode', 'setSel',
                        'sendBleWrite', 'sendBleWriteCore', 'bleSendBytes', 'bleReadWriteModalInput',
                        'leEscOf', 'bleBytesToHex', 'hexToBytes', 'parseEscapes', 'shortUuid',
@@ -4744,19 +4744,42 @@ console.log('preview ->', out);
       check(r.devices[0].selected === false && r.devices[1].selected === true,
         'selected 跟着面板当前选中走', JSON.stringify(r.devices.map((d) => d.selected)));
       sbScan._bleDevices = new Array(30).fill(0).map((_, i) => ({ address: 'AA:BB:CC:DD:EE:' + i, rssi: -50 }));
-      const rl = sbScan.mcpBleScanResult(10);
-      check(rl.total === 30 && rl.returned === 10 && rl.truncated === true,
-        'limit=10 时只回前 10 台并标 truncated',
-        JSON.stringify({ total: rl.total, returned: rl.returned, truncated: rl.truncated }));
+      const rl = sbScan.mcpBleScanResult(10, 0);
+      check(rl.total === 30 && rl.returned === 10 && rl.truncated === true && rl.hasMore === true
+        && rl.nextOffset === 10,
+        'limit=10 时只回前 10 台，并给出 hasMore / nextOffset',
+        JSON.stringify({ total: rl.total, returned: rl.returned, next: rl.nextOffset }));
+      check(/还有 20 台：用 offset=10/.test(rl.note), 'note 直接给出下一页的 offset', rl.note);
+      // 翻页：**offset 真的换页**（用户 2026-09："limit 只能设上限，没有分页/offset"）
+      const rp = sbScan.mcpBleScanResult(10, 10);
+      check(rp.offset === 10 && rp.returned === 10 && rp.devices[0].mac === 'AA:BB:CC:DD:EE:10'
+        && rp.nextOffset === 20,
+        'offset=10 真的从第 11 台开始（不是又从头给一遍）', JSON.stringify(rp.devices[0]));
+      const rLast = sbScan.mcpBleScanResult(10, 25);
+      check(rLast.returned === 5 && rLast.hasMore === false && rLast.nextOffset === null
+        && rLast.note === null,
+        '最后一页：不足一页、hasMore=false、nextOffset=null',
+        JSON.stringify({ returned: rLast.returned, hasMore: rLast.hasMore }));
+      const rOver = sbScan.mcpBleScanResult(10, 999);
+      check(rOver.returned === 0 && rOver.total === 30 && /越界/.test(rOver.note),
+        'offset 越界时如实说清（不是静默空列表）', rOver.note);
       sbScan._bleDevices = [];
       sbScan._bleScanning = false;
-      const re = sbScan.mcpBleScanResult(0);
+      const re = sbScan.mcpBleScanResult(0, 0);
       check(re.total === 0 && /先开扫描/.test(re.note), '空列表的 note 说清下一步', re.note);
-      check(/sec === 'bleDevices'/.test(html) && /scanResult: mcpBleScanResult\(10\)/.test(html),
+      check(/sec === 'bleDevices'/.test(html) && /scanResult: mcpBleScanResult\(10, 0\)/.test(html),
         'ui_get_state 的 ble 段带精简扫描结果、bleDevices 段给全量（通用桥唯一的读取入口）');
+      check(/out = mcpBleScanResult\(parseInt\(payload\.limit, 10\), parseInt\(payload\.offset, 10\)\);/.test(html),
+        'bleDevices 段同样支持 limit / offset 分页（通用桥也要能一页页翻）');
       check(/可用：serial \/ wsl \/ ble \/ bleDevices \/ theme/.test(html)
         && /"bleDevices"/.test(fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8')),
         '区段写错时的报错与工具 schema 里都列出了 bleDevices（AI 靠它们发现这个入口）');
+      const protoPaging = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');
+      check(/"offset": \{ "type": "number"/.test(protoPaging)
+        && /extra\["offset"\] = json!\(off\)/.test(protoPaging)
+        && /pub const MAX_BLE_DEVICE_PAGE/.test(protoPaging)
+        && /lim > MAX_BLE_DEVICE_PAGE/.test(protoPaging),
+        'ble_list_devices 的 offset 有 schema、真进了 payload、页大小有上限');
     }
     const protoSrc = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');
     const usizeOf = name => {

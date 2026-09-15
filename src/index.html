@@ -5509,11 +5509,12 @@ function mcpHandleUiCmd(op, payload) {
             // 顺带把扫描结果带一份**精简版**：通用桥（ui_*）原先没有任何入口能读到它 ——
             // 设备卡片是动态生成的 div、不在控件注册表里，所以"面板上明明扫到了、AI 却读不到"
             // （用户 2026-09 报的"连接器读不到扫描结果列表"）。完整列表用 section=bleDevices。
-            out = Object.assign({}, snap.ble, { scanResult: mcpBleScanResult(10) });
+            out = Object.assign({}, snap.ble, { scanResult: mcpBleScanResult(10, 0) });
         } else if (sec === 'bleDevices') {
-            // 运行时数据（**不是配置**）：扫描结果全量。给只有通用桥、或工具列表还没刷新的客户端
+            // 运行时数据（**不是配置**）：扫描结果。给只有通用桥、或工具列表还没刷新的客户端
             // 一个读得到的入口；语义工具那边是 ble_list_devices（两者读的是同一份 _bleDevices）。
-            out = mcpBleScanResult(0);
+            // 同样支持 limit / offset 分页（payload 里给就行）。
+            out = mcpBleScanResult(parseInt(payload.limit, 10), parseInt(payload.offset, 10));
         } else if (sec === 'theme') {
             out = { theme: snap.theme, themeStyle: snap.themeStyle };
         } else if (sec === 'window') {
@@ -5609,10 +5610,13 @@ function bleCharActionBtn(uuid, prop) {
 // button/input/select/textarea/[onclick]），所以一个只有通用桥的客户端（或工具列表还没刷新的
 // 客户端）**没有任何入口**能读到扫描结果 —— 用户 2026-09 报的"连接器读不到扫描结果列表"就是它。
 // limit>0 时只回前 limit 台（精简版，避免把几十台设备塞进每个 ui_get_state 响应）。
-function mcpBleScanResult(limit) {
+function mcpBleScanResult(limit, offset) {
     var all = _bleDevices || [];
-    var n = (limit > 0) ? Math.min(limit, all.length) : all.length;
-    var devices = all.slice(0, n).map(function (d) {
+    var off = Math.max(0, parseInt(offset, 10) || 0);
+    var lim = Math.max(0, parseInt(limit, 10) || 0);           // 0 = 不限
+    var end = lim > 0 ? Math.min(all.length, off + lim) : all.length;
+    var page = all.slice(off, end);
+    var devices = page.map(function (d) {
         return {
             mac: d.address || d.mac || null,
             name: d.name || null,
@@ -5621,15 +5625,27 @@ function mcpBleScanResult(limit) {
             selected: !!(_bleSelected && (d.address || d.mac) === _bleSelected),
         };
     });
+    var hasMore = end < all.length;
+    var note = null;
+    if (!all.length) {
+        note = _bleScanning ? '正在扫描，稍后再读（扫描时长见 ble 段/面板左上角）'
+                            : '还没有扫描结果：先开扫描（语义工具 ble_start_scan，或点面板上的「开始扫描」）';
+    } else if (!devices.length) {
+        note = 'offset=' + off + ' 越界：一共只有 ' + all.length + ' 台（offset 从 0 起）';
+    } else if (hasMore) {
+        note = '还有 ' + (all.length - end) + ' 台：用 offset=' + end + ' 接着翻（每页 ' + lim + ' 台）';
+    }
     return {
         scanning: !!_bleScanning,
         total: all.length,
+        offset: off,
+        limit: lim,                       // 0 = 不限（一次全给）
         returned: devices.length,
+        hasMore: hasMore,
+        nextOffset: hasMore ? end : null, // 下一页直接拿它接着调
         truncated: devices.length < all.length,
         devices: devices,
-        note: all.length ? null
-            : (_bleScanning ? '正在扫描，稍后再读（扫描时长见 ble 段/面板左上角）'
-                            : '还没有扫描结果：先开扫描（语义工具 ble_start_scan，或点面板上的「开始扫描」）'),
+        note: note,
     };
 }
 
@@ -5806,27 +5822,19 @@ function mcpBleOp(payload) {
         // "扫描结果没有返回给 MCP 客户端"就是这个）——所以先让面板自己刷新一遍
         // （refreshBleDevices 就是那颗扫描按钮走的同一条路），再读。
         return bleRefreshDevicesNow().then(function () {
-            var lim = parseInt(payload.limit, 10);
-            var all = (_bleDevices || []);
-            var list = (lim > 0 ? all.slice(0, lim) : all).map(function (d) {
-                return {
-                    mac: d.address || d.mac || null,
-                    name: d.name || d.localName || null,
-                    rssi: (typeof d.rssi === 'number') ? d.rssi : null,
-                    paired: !!d.paired,
-                    selected: !!(_bleSelected && (d.address || d.mac) === _bleSelected),
-                };
-            });
-            return { ok: true, value: {
-                scanning: !!_bleScanning,
-                total: all.length,
-                devices: list,
-                selected: _bleSelected || null,
-                note: all.length ? null
-                    : (_bleScanning ? ('正在扫描（' + bleScanSecsLabel() + '），已扫到 ' + all.length + ' 台：稍后再问一次')
-                                    : '还没扫到设备：先 ble_start_scan；设备不广播时（被配对过/被别的主机连走）'
-                                      + '扫描永远搜不到，改用 ble_connect + addr 直连'),
-            } };
+            // 分页：limit 每页几台（0/省略=全部）、offset 从第几台开始（0 起）。
+            // **必须有 offset**：几十上百台设备一次全塞进一次响应，客户端既读不完也没法翻页
+            // （用户 2026-09："limit 只能设上限，没有分页/offset，没法一页页翻完剩下的 88 台"）。
+            var r = mcpBleScanResult(parseInt(payload.limit, 10), parseInt(payload.offset, 10));
+            r.selected = _bleSelected || null;
+            if (!r.total) {
+                // 一台都没有：用面板那条更完整的说明（含"设备不广播就只能按 MAC 直连"的出路）
+                r.note = _bleScanning
+                    ? ('正在扫描（' + bleScanSecsLabel() + '）：稍后再问一次')
+                    : '还没扫到设备：先 ble_start_scan；设备不广播时（被配对过/被别的主机连走）'
+                      + '扫描永远搜不到，改用 ble_connect + addr 直连';
+            }
+            return { ok: true, value: r };
         });
     }
     if (action === 'startScan' || action === 'stopScan') {

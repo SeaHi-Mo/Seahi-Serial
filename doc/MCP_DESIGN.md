@@ -1562,9 +1562,27 @@ listener 与生产同一条路）。修完后同一个工具在真机上返回�
    `ble_list_devices` 的 SSE 帧 5087 字节、`"mac":` 出现 **51 次** = 51 台全在报文里；
    `structuredContent` 4381 字、文本摘要 575 字。`ui_get_state{bleDevices}` 同理（4959 字节 / 51 次）。
 
-**验证**：`cargo test` **177** 通过（+4：设备摘要列出≥8 台且带名称、空列表给 note、
-通用桥同形状也走紧凑格式、通用数组按预算展开）；前端 **1431** 通过（+7）。
-MCP 侧实测（真机 51 台）：文本与结构都能看到 MAC / 名称 / RSSI。
+**⑦ 没有分页、文本还装不下全量**（用户："MCP 返回的文本在约 400 字符处被截断，所以我只能看到前 17 台；
+`ble_list_devices` 的 limit 只能设上限，没有分页/offset，没法一页页翻完剩下的 88 台"）
+
+- `ble_list_devices`（与通用桥的 `bleDevices`）新增 **`offset`**：返回 `{offset, limit, returned,
+  hasMore, nextOffset, devices}`，`nextOffset` 直接当下一页的 offset；页大小上限
+  `MAX_BLE_DEVICE_PAGE = 200`（超了 -32602），省略 limit 仍是一次全给。
+- 文本摘要改成**说清页码与下一页**：`共 105 台（第 21-40 台）：…（下一页 offset=40）`；
+  一页里列不完的写"本页还有 N 台没列出"，翻到底就不提下一页。
+- 语义工具与通用桥两条路都支持分页（`ui_get_state{section:"bleDevices", limit, offset}`）。
+
+**验证**：`cargo test` **178** 通过（+1：页码/下一页文案、最后一页不提翻页；
+另加一条"通用桥的 limit/offset 必须真的转发到前端"的调用情况用例 —— 真机上第一次就踩到了：
+Rust 只转 `section`，前端收不到 offset，`offset=15` 却回了全量 47 台，与 batch 4 的 `char` 同一类漏法）；
+前端 **1437** 通过（+6：offset 真的换页、最后一页 hasMore=false、offset 越界如实说清、
+note 给下一页 offset、通用桥分页、offset 的 schema+payload+上限）。
+
+真机实测（`ble_list_devices` limit=15 一页页翻）：47 台 → 4 页翻完、47 个不同 MAC、末页 `nextOffset=null`；
+`limit=9999` → `-32602 最多 200 台一页`；通用桥 `ui_get_state{section:"bleDevices",limit:15,offset:15}`
+→ `returned=15 hasMore=true nextOffset=30`。
+⚠️ 顺带发现一个**口径事实**（已写进文档）：扫描进行中列表仍在增长，按 offset 翻页可能重复/漏掉个别设备
+（实测 45 台翻 3 页去重后 43 个 MAC）——要稳定完整的名单得等 `scanning=false` 再翻。
 
 ⚠️ 仍未验证：`ble_write` / `ble_subscribe` / `ble_read` 的**真机**结果（自检里需要先连设备；
 真机上请用 `--full` 或让 AI 连一台再跑）。

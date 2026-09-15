@@ -135,9 +135,27 @@ npx seahi-serial-mcp uninstall  # 只移除它写的那一条
 
 | 你是哪种客户端 | 怎么读 | 拿到什么 |
 |---|---|---|
-| 有 BLE 语义工具 | `ble_list_devices` | `structuredContent.devices[]`：**每台都有 MAC / 名称 / RSSI / 是否配对 / 是否选中**（全量） |
-| 只有通用桥（`ui_*`） | `ui_get_state` + `{"section":"bleDevices"}` | 同上（全量）；`section:"ble"` 里另有一份前 10 台的 `scanResult` |
-| 只想看文本 | 任意一条的 `content[].text` | **一行一台**：`共 51 台（扫描中）：5F:90:0F:46:28:28 -80dBm \| …`（列不下的会说"还有 N 台"，全量始终在 `structuredContent`） |
+| 有 BLE 语义工具 | `ble_list_devices` | `structuredContent.devices[]`：**每台都有 MAC / 名称 / RSSI / 是否配对 / 是否选中**（全量或按页） |
+| 只有通用桥（`ui_*`） | `ui_get_state` + `{"section":"bleDevices"}` | 同上（全量）；`{"section":"ble"}` 里另有一份前 10 台的 `scanResult` |
+| 只想看文本 | 任意一条的 `content[].text` | **一行一台**：`共 105 台（第 1-20 台，扫描中）：5F:90:0F:46:28:28 -80dBm \| …（下一页 offset=20）` |
+
+**设备多的时候要分页翻**（几十上百台别指望一次全塞进文本）：
+
+```json
+// 第 1 页（每页 20 台）
+{"name": "ble_list_devices", "arguments": {"limit": 20, "offset": 0}}
+// 返回里带 hasMore / nextOffset —— 直接拿 nextOffset 当下一页的 offset
+{"name": "ble_list_devices", "arguments": {"limit": 20, "offset": 20}}
+// 通用桥同理（只有 ui_* 的客户端也能翻页）
+{"name": "ui_get_state", "arguments": {"section": "bleDevices", "limit": 20, "offset": 20}}
+```
+
+> 一页最多 200 台（超了报 `-32602`）；省略 `limit` 就是一次全给（响应体可能十几 KB）。
+> 文本摘要只有 600 字预算、客户端可能还要再截一刀，所以**翻页看全**才是正路。
+>
+> ⚠️ **扫描还在进行时翻页会对不齐**：列表每 2 秒还在长，`offset` 是按"当前这份列表"数的，
+> 所以可能重复或漏掉个别设备（真机实测：45 台翻 3 页，去重后 43 个不同 MAC）。
+> 要一份稳定完整的名单，就先等扫描结束（`ble_get_state.scanning=false`）再翻页，或一次给个大 `limit`。
 
 > ⚠️ 为什么要有第二条路：面板上的设备卡片是**动态生成的 div**，不在控件注册表里
 > （注册表只收 button/input/select/textarea/`[onclick]`），所以一个**只有通用桥**的客户端

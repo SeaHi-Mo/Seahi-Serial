@@ -390,11 +390,12 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "ble_list_devices",
-            "description": "读蓝牙扫描结果（不触发扫描）：MAC、名称、信号强度 RSSI、是否已配对、是否当前选中，以及扫描是否在进行中。**每次都会现问一次后端**（不是只读面板那个 2 秒轮询的缓存），所以刚 ble_start_scan 完立刻问也拿得到；一台都没有时会说明下一步 —— 设备不广播（被 Windows 配对过 / 被别的主机连走）时扫描永远为空，得用 ble_connect + addr 按 MAC 直连。只读。",
+            "description": "读蓝牙扫描结果（不触发扫描）：MAC、名称、信号强度 RSSI、是否已配对、是否当前选中，以及扫描是否在进行中。**支持分页**：`limit` 每页几台、`offset` 从第几台开始（返回里给 `hasMore` / `nextOffset`，拿它接着翻）。⚠️ 扫描还在进行时列表仍在增长，翻页可能重复/漏掉个别设备；要稳定完整的名单就等 `scanning=false` 再翻，或一次给个大 `limit`。**每次都会现问一次后端**（不是只读面板那个 2 秒轮询的缓存），所以刚 ble_start_scan 完立刻问也拿得到；一台都没有时会说明下一步 —— 设备不广播（被 Windows 配对过 / 被别的主机连走）时扫描永远为空，得用 ble_connect + addr 按 MAC 直连。只读。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "limit": { "type": "number", "description": "最多返回几台（省略=全部）" }
+                    "limit": { "type": "number", "description": "每页最多几台（省略/0=不限，一次全给）" },
+                    "offset": { "type": "number", "description": "从第几台开始（0 起，默认 0）；翻页时用返回的 nextOffset" }
                 },
                 "additionalProperties": false
             }
@@ -732,6 +733,13 @@ pub const MAX_SEND_CHARS: usize = 64 * 1024;
 /// 一次几百 KB 既写不进去、又会让 WebView 主线程先卡住（AGENTS #10）。
 pub const MAX_BLE_WRITE_CHARS: usize = 4096;
 
+/// `ble_list_devices` 一页最多多少台。
+///
+/// **为什么要有**：一次全量（几十上百台）会让响应体冲到十几 KB，客户端那边既显示不完、
+/// 也没法"接着翻"（2026-09 用户："limit 只能设上限，没有分页/offset，没法一页页翻完剩下的 88 台"）。
+/// 现在有了 `offset`/`nextOffset`，但页大小仍要有界（AGENTS #10：接受外部数值的参数必须有上限）。
+pub const MAX_BLE_DEVICE_PAGE: u64 = 200;
+
 /// 实际暴露的工具列表 = 内置工具 + （可选的）全量控件工具。
 /// `tools/list`、`mcp_status.toolCount`、客户端的配置提示词都用它，保证三处一致。
 pub fn exposed_tools(core: &McpCore) -> Vec<Value> {
@@ -1058,7 +1066,26 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         }
         // ===== BLE 语义工具（前端 mcpBleOp；与 serial_* 同构）=====
         "ble_get_state" => ble_call(core, "state", args, json!({})).await,
-        "ble_list_devices" => ble_call(core, "listDevices", args, json!({})).await,
+        "ble_list_devices" => {
+            // limit / offset **必须真的放进 payload**（batch 4 的教训：只校验不转发 = 前端收不到）
+            let mut extra = json!({});
+            if let Some(lim) = opt_u64(args, "limit") {
+                if lim > MAX_BLE_DEVICE_PAGE {
+                    return Err(RpcError::new(
+                        E_INVALID_PARAMS,
+                        format!(
+                            "limit 最多 {} 台一页（收到 {}）。要全量就不给 limit，或按 offset 翻页。",
+                            MAX_BLE_DEVICE_PAGE, lim
+                        ),
+                    ));
+                }
+                extra["limit"] = json!(lim);
+            }
+            if let Some(off) = opt_u64(args, "offset") {
+                extra["offset"] = json!(off);
+            }
+            ble_call(core, "listDevices", args, extra).await
+        }
         "ble_start_scan" => ble_call(core, "startScan", args, json!({})).await,
         "ble_stop_scan" => ble_call(core, "stopScan", args, json!({})).await,
         // 必填入参**在碰界面之前**校验（AGENTS #10：校验要先于"碰主程序"，
@@ -1188,7 +1215,25 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         }
         "ui_get_state" => {
             let section = opt_str(args, "section");
-            core.ui_call("getState", json!({ "section": section })).await
+            let mut payload = json!({ "section": section });
+            // `section:"bleDevices"` 时这两个才起作用，但**必须转发**：不转发 = 前端收不到，
+            // 分页就静默失效（真机上第一次就踩到了：通用桥 offset=15 却回了全量 47 台）。
+            if let Some(lim) = opt_u64(args, "limit") {
+                if lim > MAX_BLE_DEVICE_PAGE {
+                    return Err(RpcError::new(
+                        E_INVALID_PARAMS,
+                        format!(
+                            "limit 最多 {}（收到 {}）；要全量就不给 limit，或用 offset 翻页。",
+                            MAX_BLE_DEVICE_PAGE, lim
+                        ),
+                    ));
+                }
+                payload["limit"] = json!(lim);
+            }
+            if let Some(off) = opt_u64(args, "offset") {
+                payload["offset"] = json!(off);
+            }
+            core.ui_call("getState", payload).await
         }
         // ===== 全量控件工具（S6）：一个控件一个工具，走同一条界面桥 =====
         n if n.starts_with("ctl_") => match core.registry.path_for_tool(n) {
@@ -1639,12 +1684,29 @@ fn summarize_for_tool(tool: &str, v: &Value) -> String {
     summarize_for_text(v)
 }
 
-/// 蓝牙扫描结果的紧凑摘要：`共 45 台（扫描中）：MAC 名称 -79dBm | …`（尽可能多列，整体仍限长）
+/// 蓝牙扫描结果的紧凑摘要：`共 105 台（第 1-20 台，扫描中）：MAC 名称 -79dBm | …`
+///
+/// 文本预算只有 600 字（客户端还可能自己再截），所以：
+/// ① 一行一台、尽量多列；② **说清这是第几台到第几台、下一页的 offset 是多少** ——
+/// 否则用户看到"只有前 17 台"就以为到头了（2026-09 用户原话：
+/// "MCP 返回的文本在约 400 字符处被截断，所以我只能看到前 17 台"）。
 fn summarize_ble_devices(v: &Value) -> String {
     let total = v["total"].as_u64().unwrap_or(0);
+    let offset = v["offset"].as_u64().unwrap_or(0);
     let scanning = v["scanning"].as_bool().unwrap_or(false);
     let devices = v["devices"].as_array().cloned().unwrap_or_default();
-    let mut out = format!("共 {} 台{}", total, if scanning { "（扫描中）" } else { "" });
+    let head = if devices.is_empty() {
+        format!("共 {} 台{}", total, if scanning { "（扫描中）" } else { "" })
+    } else {
+        format!(
+            "共 {} 台（第 {}-{} 台{}）",
+            total,
+            offset + 1,
+            offset + devices.len() as u64,
+            if scanning { "，扫描中" } else { "" }
+        )
+    };
+    let mut out = head;
     if devices.is_empty() {
         if let Some(n) = v["note"].as_str().filter(|s| !s.is_empty()) {
             out.push_str(" · ");
@@ -1665,9 +1727,9 @@ fn summarize_ble_devices(v: &Value) -> String {
             Some(n) => format!("{} {} {}", mac, n, rssi),
             None => format!("{} {}", mac, rssi),
         };
-        // 留 40 字给"…还有 N 台"那句
+        // 留 60 字给尾巴（"…本页还有 N 台；下一页 offset=…"）
         let used = out.chars().count() + one.chars().count() + 3;
-        if used + 40 > TEXT_SUMMARY_MAX_CHARS {
+        if used + 60 > TEXT_SUMMARY_MAX_CHARS {
             break;
         }
         if shown > 0 {
@@ -1676,8 +1738,17 @@ fn summarize_ble_devices(v: &Value) -> String {
         out.push_str(&one);
         shown += 1;
     }
-    if shown < devices.len() {
-        out.push_str(&format!(" …还有 {} 台（全量在 structuredContent.devices）", devices.len() - shown));
+    let hidden_in_page = devices.len() - shown;
+    match (hidden_in_page, v["nextOffset"].as_u64()) {
+        (0, Some(next)) => out.push_str(&format!("（下一页 offset={}）", next)),
+        (n, Some(next)) => out.push_str(&format!(
+            " …本页还有 {} 台没列出；下一页 offset={}（全量在 structuredContent.devices）",
+            n, next
+        )),
+        (n, None) => out.push_str(&format!(
+            " …本页还有 {} 台没列出（全量在 structuredContent.devices）",
+            n
+        )),
     }
     out
 }
@@ -2789,7 +2860,11 @@ mod tests {
                                     "serviceCount": 0, "notifySubs": 0, "logCount": 0, "monitorOpen": false,
                                 }}),
                                 "listDevices" => json!({ "ok": true, "value": {
-                                    "scanning": false, "total": 2, "selected": null,
+                                    "scanning": false, "total": 105,
+                                    "offset": payload.get("offset").and_then(|v| v.as_u64()).unwrap_or(0),
+                                    "limit": payload.get("limit").and_then(|v| v.as_u64()).unwrap_or(0),
+                                    "returned": 2, "hasMore": false, "nextOffset": null, "truncated": false,
+                                    "selected": null,
                                     "devices": [{ "mac": "AA:BB:CC:DD:EE:FF", "name": "Ai-WB2", "rssi": -55,
                                                   "paired": false, "selected": false }],
                                 }}),
@@ -3002,10 +3077,10 @@ mod tests {
                     pre_connected: None,
                     calls: vec![("ble", json!({ "action": "state" }))],
                     keys: &["scanning", "deviceCount", "connected", "serviceCount", "notifySubs", "logCount"] },
-                Case { tool: "ble_list_devices", args: json!({ "limit": 5 }),
+                Case { tool: "ble_list_devices", args: json!({ "limit": 5, "offset": 10 }),
                     pre_connected: None,
-                    calls: vec![("ble", json!({ "action": "listDevices" }))],
-                    keys: &["scanning", "total", "devices", "selected"] },
+                    calls: vec![("ble", json!({ "action": "listDevices", "limit": 5, "offset": 10 }))],
+                    keys: &["scanning", "total", "offset", "limit", "returned", "hasMore", "devices", "selected"] },
                 Case { tool: "ble_start_scan", args: json!({}),
                     pre_connected: None,
                     calls: vec![("ble", json!({ "action": "startScan" }))],
@@ -3103,6 +3178,11 @@ mod tests {
                 Case { tool: "ui_get_state", args: json!({ "section": "theme" }),
                     pre_connected: None,
                     calls: vec![("getState", json!({ "section": "theme" }))],
+                    keys: &["theme"] },
+                // 分页参数必须**转发到前端**（不转发 = 通用桥的分页静默失效，真机上踩到过）
+                Case { tool: "ui_get_state", args: json!({ "section": "bleDevices", "limit": 20, "offset": 40 }),
+                    pre_connected: None,
+                    calls: vec![("getState", json!({ "section": "bleDevices", "limit": 20, "offset": 40 }))],
                     keys: &["theme"] },
             ];
 
@@ -3262,16 +3342,17 @@ mod tests {
                 })
             })
             .collect();
-        let v = json!({ "scanning": true, "total": 45, "returned": 45, "truncated": false,
+        let v = json!({ "scanning": true, "total": 45, "offset": 0, "limit": 0, "returned": 45,
+                        "hasMore": false, "nextOffset": null, "truncated": false,
                         "devices": devices, "note": null });
         let s = summarize_for_tool("ble_list_devices", &v);
-        assert!(s.starts_with("共 45 台（扫描中）："), "{}", s);
+        assert!(s.starts_with("共 45 台（第 1-45 台，扫描中）："), "{}", s);
         let listed = (0..45u32)
             .filter(|i| s.contains(&format!("AA:BB:CC:DD:EE:{:02X}", i)))
             .count();
         assert!(listed >= 8, "文本摘要里该列出至少 8 台设备（实际 {} 台）：{}", listed, s);
         assert!(s.contains("Dev1"), "设备名要一起列出来：{}", s);
-        assert!(s.contains("还有"), "列不下的要说清还剩多少台：{}", s);
+        assert!(s.contains("本页还有"), "列不下的要说清本页还剩几台：{}", s);
         assert!(
             s.chars().count() <= TEXT_SUMMARY_MAX_CHARS,
             "摘要不能超长（{} 字）：{}",
@@ -3280,25 +3361,53 @@ mod tests {
         );
     }
 
+    /// 分页：文本里必须**说清这是第几台到第几台、下一页 offset 是多少**。
+    /// 用户 2026-09："MCP 返回的文本在约 400 字符处被截断，所以我只能看到前 17 台" ——
+    /// 看不到"还有多少、怎么接着翻"就会以为到头了。
+    #[test]
+    fn ble_devices_summary_says_which_page_and_whats_next() {
+        let devices: Vec<Value> = (0..20u32)
+            .map(|i| json!({ "mac": format!("AA:BB:CC:DD:EE:{:02X}", i), "name": Value::Null,
+                             "rssi": -50, "paired": false, "selected": false }))
+            .collect();
+        let v = json!({ "scanning": false, "total": 105, "offset": 20, "limit": 20, "returned": 20,
+                        "hasMore": true, "nextOffset": 40, "truncated": true, "devices": devices, "note": null });
+        let s = summarize_for_tool("ble_list_devices", &v);
+        assert!(s.starts_with("共 105 台（第 21-40 台）"), "{}", s);
+        assert!(s.contains("下一页 offset=40"), "翻页指令没给出来：{}", s);
+        assert!(s.chars().count() <= TEXT_SUMMARY_MAX_CHARS, "{}", s.chars().count());
+
+        // 最后一页：不该再提"下一页"
+        let v2 = json!({ "scanning": false, "total": 21, "offset": 20, "limit": 20, "returned": 1,
+                         "hasMore": false, "nextOffset": null, "truncated": false,
+                         "devices": [devices[0].clone()], "note": null });
+        let s2 = summarize_for_tool("ble_list_devices", &v2);
+        assert!(s2.starts_with("共 21 台（第 21-21 台）"), "{}", s2);
+        assert!(!s2.contains("下一页"), "已经翻到底了不该再说下一页：{}", s2);
+    }
+
     /// 通用桥那条路（`ui_get_state{section:"bleDevices"}`）是同一张设备表 → 同样走紧凑格式。
     /// 按形状判断，所以将来再有工具返回设备表也自动受益。
     #[test]
     fn device_list_shape_gets_compact_summary_for_any_tool() {
-        let v = json!({ "scanning": false, "total": 2, "returned": 2, "truncated": false,
+        let v = json!({ "scanning": false, "total": 2, "offset": 0, "limit": 10, "returned": 2,
+                        "hasMore": false, "nextOffset": null, "truncated": false,
                         "devices": [ { "mac": "AA:BB:CC:DD:EE:01", "name": "Ai-WB2", "rssi": -55,
                                        "paired": false, "selected": true },
                                      { "mac": "AA:BB:CC:DD:EE:02", "name": null, "rssi": -70,
                                        "paired": true, "selected": false } ],
                         "note": null });
         let s = summarize_for_tool("ui_get_state", &v);
-        assert!(s.starts_with("共 2 台："), "{}", s);
+        assert!(s.starts_with("共 2 台（第 1-2 台）："), "{}", s);
         assert!(s.contains("AA:BB:CC:DD:EE:01 Ai-WB2 -55dBm"), "{}", s);
         assert!(s.contains("AA:BB:CC:DD:EE:02 -70dBm"), "{}", s);
-        assert!(!s.contains("还有"), "两台都列得下，不该说还有：{}", s);
+        assert!(!s.contains("下一页"), "两台都列得下、也没下一页，不该说翻页：{}", s);
     }
 
     #[test]
-    fn ble_devices_summary_handles_empty_and_note() {        let v = json!({ "scanning": false, "total": 0, "devices": [],
+    fn ble_devices_summary_handles_empty_and_note() {
+        let v = json!({ "scanning": false, "total": 0, "offset": 0, "limit": 0, "returned": 0,
+                        "hasMore": false, "nextOffset": null, "devices": [],
                         "note": "还没扫到设备：先 ble_start_scan" });
         let s = summarize_for_tool("ble_list_devices", &v);
         assert!(s.contains("共 0 台") && s.contains("ble_start_scan"), "{}", s);
