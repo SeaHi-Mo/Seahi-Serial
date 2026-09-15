@@ -2339,6 +2339,48 @@ fn kill_wsl_session(session: &WslSerialSession) {
     let _ = c.wait();
 }
 
+/// bridge 没就绪时的错误文案（纯函数，便于单测）。
+///
+/// 为什么必须把两种分开：`deploy_bridge` 成功之后，bridge 脚本**导入完就立刻**往 stderr 打一行
+/// `ready`（正常在百毫秒级）。所以"5 秒没等到"其实是两类完全不同的事：
+///   ① `exited = true`：进程**已经退出** —— `python3` 不在、`sg dialout` 切组失败、脚本没落地…
+///      这时 stderr 的最后几行就是真正的原因，必须原样带给用户；
+///   ② `exited = false`：进程还活着但没打 ready（真的卡住/极慢）—— 罕见。
+/// 原先两者都只报一句"bridge 启动超时"，用户拿着这句话没有任何下手处（2026-09 真实反馈）。
+fn bridge_startup_error(exited: bool, stderr_tail: &str) -> String {
+    let head = if exited {
+        "bridge 启动失败（进程已退出）"
+    } else {
+        "bridge 启动超时（5 秒内没等到 ready）"
+    };
+    let tail = stderr_tail.trim();
+    let mut msg = if tail.is_empty() {
+        head.to_string()
+    } else {
+        format!("{}: {}", head, tail)
+    };
+    if let Some(h) = bridge_stderr_hint(tail) {
+        msg.push_str("【");
+        msg.push_str(h);
+        msg.push('】');
+    }
+    msg
+}
+
+/// stderr 里最常见的三种"起不来"给一句可执行的提示（纯函数）
+fn bridge_stderr_hint(tail: &str) -> Option<&'static str> {
+    let t = tail.to_ascii_lowercase();
+    if t.contains("python3: command not found") || t.contains("python3: not found") {
+        Some("这个发行版里没有 python3：Debian/Ubuntu 上先 sudo apt install -y python3 python3-serial")
+    } else if t.contains("can't open file") || t.contains("cannot open") {
+        Some("脚本没落到 /tmp：重新连接会重新部署；也可以看 /tmp 是否可写、是否已满")
+    } else if t.contains("sg:") || (t.contains("dialout") && t.contains("group")) {
+        Some("sg 切 dialout 组失败：有些发行版串口组叫 uucp/tty，或当前用户不在组里")
+    } else {
+        None
+    }
+}
+
 /// 打开 WSL 串口（通过 bridge 管道）。整体移入 spawn_blocking：get_or_start_wsl_distro(可达13s)
 /// + deploy_bridge(5s) + ready(5s) + bridge(5s) 均不阻塞主线程。
 #[tauri::command]
@@ -2360,29 +2402,42 @@ async fn open_wsl_serial(
         deploy_bridge(&distro)?;
         let mut child = spawn_bridge(&distro)?;
         let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
-        // 等待 bridge 就绪（最多 5 秒）：用 channel + recv_timeout 替代无超时 join，避免永久阻塞；
-        // 超时后由下方 !ready 分支 kill + wait，且就绪线程因 stderr EOF 自行退出。
-        let ready = {
+        // 等待 bridge 就绪（最多 5 秒）：用 channel + recv_timeout 替代无超时 join，避免永久阻塞。
+        // 通道里带的是"为什么没就绪"：`Err(stderr 尾部)` = 进程已退出（那就是原因），
+        // 超时（recv_timeout 到期）= 进程还活着但一直没打 ready。
+        let not_ready = {
             use std::sync::mpsc;
-            let (tx, rx) = mpsc::channel::<bool>();
+            let (tx, rx) = mpsc::channel::<Result<(), String>>();
             std::thread::spawn(move || {
                 use std::io::BufRead;
+                // 留着 stderr 的最后几行：进程起不来时它就是唯一的原因说明
+                let mut tail: Vec<String> = Vec::new();
                 for line in std::io::BufReader::new(stderr).lines() {
                     match line {
-                        Ok(l) if l.trim() == "ready" => { let _ = tx.send(true); return; }
-                        Err(_) => { let _ = tx.send(false); return; }
-                        _ => {}
+                        Ok(l) if l.trim() == "ready" => { let _ = tx.send(Ok(())); return; }
+                        Ok(l) => {
+                            let t = l.trim();
+                            if !t.is_empty() {
+                                tail.push(t.to_string());
+                                if tail.len() > 5 { tail.remove(0); }
+                            }
+                        }
+                        Err(_) => break,   // stderr 断了：按"进程已退出"处理
                     }
                 }
-                let _ = tx.send(false);
+                let _ = tx.send(Err(tail.join(" | ")));
             });
-            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or(false)
+            match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(Ok(())) => None,
+                Ok(Err(tail)) => Some(bridge_startup_error(true, &tail)),
+                Err(_) => Some(bridge_startup_error(false, "")),
+            }
         };
-        if !ready {
+        if let Some(msg) = not_ready {
             let _ = child.kill();
             let _ = child.wait();
-            report_error("bridge 启动超时", "open_wsl_serial");
-            return Err("bridge 启动超时".into());
+            report_error(&msg, "open_wsl_serial");
+            return Err(msg);
         }
         let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
         let stdin = child.stdin.take().ok_or("无法获取 stdin")?;
@@ -6176,6 +6231,40 @@ fn ble_periph_save_config_file(text: String) -> Result<Option<String>, String> {
 #[cfg(test)]
 mod log_maintenance_tests {
     use super::*;
+
+    // ===== WSL bridge 起不来时的报错文案 =====
+    // 这两种情况原先都只报一句"bridge 启动超时"，用户完全没有下手处。
+
+    #[test]
+    fn bridge_startup_error_separates_exited_from_slow() {
+        assert_eq!(
+            bridge_startup_error(true, ""),
+            "bridge 启动失败（进程已退出）",
+            "进程已退出但 stderr 空着时也要说清是「退出」而不是「超时」"
+        );
+        assert_eq!(
+            bridge_startup_error(false, "   "),
+            "bridge 启动超时（5 秒内没等到 ready）",
+            "还活着没打 ready 才是真的超时"
+        );
+    }
+
+    #[test]
+    fn bridge_startup_error_carries_stderr_and_hint() {
+        let m = bridge_startup_error(true, "python3: command not found");
+        assert!(m.contains("python3: command not found"), "原始 stderr 必须带上: {}", m);
+        assert!(m.contains("apt install -y python3"), "缺 python3 时给可执行提示: {}", m);
+
+        let m2 = bridge_startup_error(true, "sg: group 'dialout' does not exist");
+        assert!(m2.contains("sg: group"), "{}", m2);
+        assert!(m2.contains("uucp"), "dialout 组不存在时指出发行版差异: {}", m2);
+
+        let m3 = bridge_startup_error(true, "python3: can't open file '/tmp/seahi_serial_bridge.py'");
+        assert!(m3.contains("/tmp"), "脚本没落地时提示 /tmp: {}", m3);
+
+        let m4 = bridge_startup_error(true, "some unexpected failure");
+        assert!(!m4.contains("【"), "认不出的 stderr 不乱猜原因: {}", m4);
+    }
 
     /// 每个测试用独立临时目录（带 tag + pid），避免并行执行时互相踩
     fn tmp_dir(tag: &str) -> std::path::PathBuf {
