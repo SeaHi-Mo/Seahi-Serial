@@ -120,6 +120,8 @@ npx seahi-serial-mcp uninstall  # 只移除它写的那一条
 | `ble_list_devices` | 已扫到的设备列表（MAC / 名称 / RSSI / 是否配对 / 是否选中） | 读 |
 | `ble_start_scan` / `ble_stop_scan` | 开始 / 停止扫描（面板那颗按钮的同一条路径） | 写 |
 | `ble_get_services` | 已连设备的 GATT 服务树（服务 → 特征 + 属性 props + 描述符数） | 读 |
+| `ble_read` | 读一个特征的值（按 UUID 寻址，点的是面板那颗读按钮；结果进 `ble_get_output`） | 读 |
+| `ble_subscribe` | 开/关某个特征的通知订阅（**状态已经对时不会重复点**） | 写 |
 | `ble_get_output` | **本次会话**的蓝牙数据日志（收到的通知/读回的内容、发出的写）；要跨会话历史用 `channels.rx` 去 `log_tail` | 读 |
 | `ble_refresh_rssi` | 已连设备的信号强度（只问一次射频，不改状态） | 读 |
 | `ble_periph_status` | **从机**（本机当外设）状态：是否真的在对外广播、服务 UUID、特征数、可发现/可连接、手动应答、后端告警 | 读 |

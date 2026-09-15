@@ -107,6 +107,7 @@ pub const WRITE_TOOLS: &[&str] = &[
     // 扫描占用射频、会让附近设备应答 —— 算写（只读模式下不该开）
     "ble_start_scan",
     "ble_stop_scan",
+    "ble_subscribe",
 ];
 
 /// 判断**这一次调用**算不算写操作。
@@ -403,6 +404,31 @@ pub fn tool_defs() -> Vec<Value> {
             "name": "ble_stop_scan",
             "description": "停止蓝牙扫描（复用同一颗按钮的路径）。写操作。",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        json!({
+            "name": "ble_read",
+            "description": "读一个特征的值（按 UUID 寻址）——**点的是面板上那颗读按钮**，结果随后出现在 ble_get_output 里。需要设备已连接、且该特征有 read 属性（用 ble_get_services 看）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "char": { "type": "string", "description": "特征 UUID（见 ble_get_services 的 services[].chars[].uuid）" }
+                },
+                "required": ["char"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ble_subscribe",
+            "description": "开/关某个特征的通知订阅（notify / indicate）——点的是面板上那颗订阅按钮，数据随后出现在 ble_get_output 里。**状态已经在目标值时不会重复点**（不会把用户刚打开的订阅关掉）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "char": { "type": "string", "description": "特征 UUID（见 ble_get_services 的 services[].chars[].uuid）" },
+                    "on": { "type": "boolean", "description": "true=订阅、false=退订（省略=true）" }
+                },
+                "required": ["char"],
+                "additionalProperties": false
+            }
         }),
         json!({
             "name": "ble_get_output",
@@ -983,8 +1009,14 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         "ble_list_devices" => ble_call(core, "listDevices", args, json!({})).await,
         "ble_start_scan" => ble_call(core, "startScan", args, json!({})).await,
         "ble_stop_scan" => ble_call(core, "stopScan", args, json!({})).await,
+        // 必填入参**在碰界面之前**校验（AGENTS #10：校验要先于"碰主程序"，
+        // 缺参要报 -32602「改参数重试」而不是拖到最后变成 -32006「没有界面」）
+        "ble_read" => { require_str(args, "char")?; ble_call(core, "read", args, json!({})).await }
+        "ble_subscribe" => { require_str(args, "char")?; ble_call(core, "subscribe", args, json!({})).await }
         "ble_get_output" => ble_call(core, "getOutput", args, json!({})).await,
-        "ble_refresh_rssi" => ble_call(core, "refreshRssi", args, json!({})).await,        "ble_get_services" => ble_call(core, "getServices", args, json!({})).await,        "ble_periph_status" => ble_call(core, "periphStatus", args, json!({})).await,
+        "ble_refresh_rssi" => ble_call(core, "refreshRssi", args, json!({})).await,
+        "ble_get_services" => ble_call(core, "getServices", args, json!({})).await,
+        "ble_periph_status" => ble_call(core, "periphStatus", args, json!({})).await,
         "ble_periph_start" => ble_call(core, "periphStart", args, json!({})).await,
         "ble_periph_stop" => ble_call(core, "periphStop", args, json!({})).await,
         "mcp_danger" => Ok(json!({
@@ -2345,6 +2377,8 @@ mod tests {
                 ("ble_get_state", json!({}), NoGui),
                 ("ble_list_devices", json!({}), NoGui),
                 ("ble_get_services", json!({}), NoGui),
+                ("ble_read", json!({ "char": "0x2a00" }), NoGui),
+                ("ble_subscribe", json!({ "char": "0x2a00", "on": true }), NoGui),
                 ("ble_get_output", json!({}), NoGui),
                 ("ble_refresh_rssi", json!({}), NoGui),
                 ("ble_start_scan", json!({}), NoGui),
@@ -2568,6 +2602,12 @@ mod tests {
                                     "services": [{ "uuid": "0000fff0-0000-1000-8000-00805f9b34fb", "name": null,
                                                    "chars": [{ "uuid": "0000fff1-0000-1000-8000-00805f9b34fb", "props": ["read","notify"], "descs": 1 }] }],
                                 }}),
+                                "read" => json!({ "ok": true, "value": {
+                                    "pane": "ble", "uuid": "0x2a00", "action": "read", "note": "已触发读取",
+                                }}),
+                                "subscribe" => json!({ "ok": true, "value": {
+                                    "pane": "ble", "uuid": "0x2a00", "prop": "notify", "on": true, "changed": true,
+                                }}),
                                 "getOutput" => json!({ "ok": true, "value": {
                                     "pane": "ble", "count": 1, "total": 1, "channels": { "rx": "ble:rx" },
                                     "items": [{ "seq": 0, "ts": 1, "kind": "rx", "hex": "01 02", "text": "", "dim": "" }],
@@ -2746,6 +2786,14 @@ mod tests {
                     pre_connected: None,
                     calls: vec![("ble", json!({ "action": "getServices" }))],
                     keys: &["connected", "serviceCount", "services"] },
+                Case { tool: "ble_read", args: json!({ "char": "0x2a00" }),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "read" }))],
+                    keys: &["pane", "uuid", "action", "note"] },
+                Case { tool: "ble_subscribe", args: json!({ "char": "0x2a00", "on": true }),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "subscribe" }))],
+                    keys: &["pane", "uuid", "prop", "on", "changed"] },
                 Case { tool: "ble_get_output", args: json!({ "limit": 20 }),
                     pre_connected: None,
                     calls: vec![("ble", json!({ "action": "getOutput" }))],
@@ -2847,7 +2895,7 @@ mod tests {
                 // BLE 第一批（都经前端 mcpBleOp）
                 "ble_get_state", "ble_periph_status", "ble_periph_start", "ble_periph_stop",
                 "ble_list_devices", "ble_start_scan", "ble_stop_scan", "ble_get_services",
-                "ble_get_output", "ble_refresh_rssi",
+                "ble_get_output", "ble_refresh_rssi", "ble_read", "ble_subscribe",
             ];
             // serial_get_output 只读日志中心，但**先要过前端拿分栏名与通道名**，所以也算界面工具
             want.push("serial_get_output");

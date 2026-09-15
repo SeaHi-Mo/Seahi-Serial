@@ -2691,7 +2691,7 @@ console.log('preview ->', out);
                        mcpSrc.indexOf('\n    ]', mcpSrc.indexOf('pub fn tool_defs()')))
         .matchAll(/"name":\s*"([a-z][a-z0-9_]*)"/g)].map((m) => m[1])
     )];
-    check(srcTools.length === 44, '源码里是 44 个内置工具（20 通用 + 13 串口语义 + 11 蓝牙语义）', srcTools.length);
+    check(srcTools.length === 46, '源码里是 46 个内置工具（20 通用 + 13 串口语义 + 13 蓝牙语义）', srcTools.length);
     const missing = srcTools.filter((n) => toolsDoc.indexOf('#### `' + n + '`') < 0);
     check(missing.length === 0, '工具参考文档 doc/MCP_TOOLS.md 列出了全部内置工具', '缺：' + missing.join(','));
     check((toolsDoc.match(/^#### `/gm) || []).length === srcTools.length,
@@ -2756,7 +2756,7 @@ console.log('preview ->', out);
     const rustWrites = [...(/pub const WRITE_TOOLS: &\[&str\] = &\[([\s\S]*?)\];/.exec(mcpProd) || ['', ''])[1]
       .matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort();
     // 「写⚠️」也算写（⚠️ 只是给读者的危险动作提示，不改变读写分类）
-  const docWrites = [...genMeta.matchAll(/^\s{2}([a-z_]+): \['写/gm)].map((m) => m[1]).sort();
+    const docWrites = [...genMeta.matchAll(/^\s{2}([a-z_]+): \['写/gm)].map((m) => m[1]).sort();
     check(rustWrites.length >= 10, '扫到了 Rust 的写工具表（不是空扫）', rustWrites.join(','));
     check(JSON.stringify(rustWrites.filter((n) => n !== 'serial_quick_cmd'))
         === JSON.stringify(docWrites.filter((n) => n !== 'serial_quick_cmd')),
@@ -4225,7 +4225,8 @@ console.log('preview ->', out);
       const proto = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');
       check(/if \(op === 'ble'\) return mcpBleOp\(payload\)/.test(html) && /function mcpBleOp\(payload\)/.test(html),
         'ui_call 的 ble 面板接上了 mcpBleOp（与 serial 同构）');
-      for (const a of ['state', 'listDevices', 'startScan', 'stopScan', 'getServices', 'getOutput', 'refreshRssi',
+      for (const a of ['state', 'listDevices', 'startScan', 'stopScan', 'getServices', 'read', 'subscribe',
+                      'getOutput', 'refreshRssi',
                       'periphStatus', 'periphStart', 'periphStop']) {
         check(html.indexOf("action === '" + a + "'") >= 0, "mcpBleOp 有 " + a + " 分支");
       }
@@ -4246,7 +4247,8 @@ console.log('preview ->', out);
       // 跨端：Rust 的 ble_* 工具 ↔ 前端 action
       const pairs = [['ble_get_state', 'state'], ['ble_list_devices', 'listDevices'],
                      ['ble_start_scan', 'startScan'], ['ble_stop_scan', 'stopScan'],
-                     ['ble_get_services', 'getServices'], ['ble_get_output', 'getOutput'],
+                     ['ble_get_services', 'getServices'], ['ble_read', 'read'], ['ble_subscribe', 'subscribe'],
+                     ['ble_get_output', 'getOutput'],
                      ['ble_refresh_rssi', 'refreshRssi'], ['ble_periph_status', 'periphStatus'],
                      ['ble_periph_start', 'periphStart'], ['ble_periph_stop', 'periphStop']];
       const bad = pairs.filter(p => proto.indexOf('"' + p[0] + '"') < 0

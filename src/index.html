@@ -5696,9 +5696,50 @@ function mcpBleOp(payload) {
             } };
         }).catch(function (e) { return { ok: false, error: '读 RSSI 失败: ' + e }; });
     }
+    if (action === 'read' || action === 'subscribe') {
+        // 按特征 UUID 找到**面板上那颗按钮**并点它 —— 与用户点击同一条路
+        // （日志、图标状态、_bleSubs 都会跟着变；不给 AI 另写一套读取/订阅逻辑）
+        var wantUuid = String(payload.char || '').toLowerCase();
+        if (!wantUuid) {
+            return { ok: false, invalidParams: true,
+                     error: '要给 char：特征 UUID（见 ble_get_services 的 services[].chars[].uuid）' };
+        }
+        var devSel = (typeof getSelectedBleDev === 'function') ? getSelectedBleDev() : null;
+        if (!devSel || !devSel.connected) return { ok: false, error: '还没连设备：先连上再操作特征' };
+        var findBtn = function(prop0) {
+            var btns = document.querySelectorAll ? document.querySelectorAll('.ble-ch-action') : [];
+            for (var i = 0; i < btns.length; i++) {
+                var key = String(btns[i].getAttribute('onclick') || '').toLowerCase();
+                if (key.indexOf(wantUuid + '::' + prop0) >= 0) return btns[i];
+            }
+            return null;
+        };
+        if (action === 'read') {
+            var rbtn = findBtn('read');
+            if (!rbtn) return { ok: false, error: '这个特征没有 read 属性（或服务树还没展开到它）' };
+            rbtn.click();
+            return { ok: true, value: { pane: 'ble', uuid: wantUuid, action: 'read',
+                                        note: '已触发读取（结果随后出现在 ble_get_output 里）' } };
+        }
+        // subscribe：订阅开关（notify / indicate 都算）。**只在状态不一致时点**，
+        // 否则会把用户刚打开的订阅又关掉。
+        var btn = findBtn('notify') || findBtn('indicate');
+        if (!btn) return { ok: false, error: '这个特征不支持订阅（没有 notify / indicate 属性）' };
+        var propName = (String(btn.getAttribute('onclick')).toLowerCase().indexOf('::indicate') >= 0) ? 'indicate' : 'notify';
+        var subKey = wantUuid + '::' + propName;
+        var wantOn = (payload.on === undefined) ? true : !!payload.on;
+        var already = !!_bleSubs[subKey];
+        if (already !== wantOn) {
+            btn.click();
+            return { ok: true, value: { pane: 'ble', uuid: wantUuid, prop: propName, on: wantOn,
+                                        changed: true, note: '已' + (wantOn ? '订阅' : '退订') + '（数据随后出现在 ble_get_output）' } };
+        }
+        return { ok: true, value: { pane: 'ble', uuid: wantUuid, prop: propName, on: already,
+                                    changed: false, note: '本来就是' + (already ? '订阅中' : '未订阅') } };
+    }
     return { ok: false, invalidParams: true, error: '未知的 ble action: ' + action
-        + '（可用：state / listDevices / startScan / stopScan / getServices / getOutput / refreshRssi'
-        + ' / periphStatus / periphStart / periphStop）' };
+        + '（可用：state / listDevices / startScan / stopScan / getServices / read / subscribe'
+        + ' / getOutput / refreshRssi / periphStatus / periphStart / periphStop）' };
 }
 
 /* ===== 串口语义层（给 MCP 的 serial_* 工具用）=====
