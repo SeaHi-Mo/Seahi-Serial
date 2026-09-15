@@ -131,6 +131,21 @@ npx seahi-serial-mcp uninstall  # 只移除它写的那一条
 | `ble_periph_start` | 按面板上已配置的服务/特征**对外广播** | **写 ⚠️ 危险** |
 | `ble_periph_stop` | 停掉对外广播 | **写 ⚠️ 危险** |
 
+#### 扫描结果怎么读（三条路，读的是同一份数据）
+
+| 你是哪种客户端 | 怎么读 | 拿到什么 |
+|---|---|---|
+| 有 BLE 语义工具 | `ble_list_devices` | `structuredContent.devices[]`：**每台都有 MAC / 名称 / RSSI / 是否配对 / 是否选中**（全量） |
+| 只有通用桥（`ui_*`） | `ui_get_state` + `{"section":"bleDevices"}` | 同上（全量）；`section:"ble"` 里另有一份前 10 台的 `scanResult` |
+| 只想看文本 | 任意一条的 `content[].text` | **一行一台**：`共 51 台（扫描中）：5F:90:0F:46:28:28 -80dBm \| …`（列不下的会说"还有 N 台"，全量始终在 `structuredContent`） |
+
+> ⚠️ 为什么要有第二条路：面板上的设备卡片是**动态生成的 div**，不在控件注册表里
+> （注册表只收 button/input/select/textarea/`[onclick]`），所以一个**只有通用桥**的客户端
+> 原先没有任何入口能读到扫描结果 —— 只能靠 `ui_list` 满面板找，然后得到"读不到"的结论。
+>
+> `ble_list_devices` 每次都会**现问一次后端**（不是读面板那个 2 秒轮询的缓存），
+> 所以刚开完扫描立刻问也拿得到。
+
 ### 危险动作要二次确认（`confirm:true`）
 
 有些动作**撤不回来**：对外广播（附近设备都能看到并连上来）、在别人的设备上执行命令、

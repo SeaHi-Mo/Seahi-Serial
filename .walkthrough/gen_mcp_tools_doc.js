@@ -93,7 +93,7 @@ const META = {
   ui_describe: ['读', '`{…控件公开字段…, description, inputSchema}`', '等于"这个控件怎么用"的说明书'],
   ui_get: ['读', '`{path, value, enabled, disabledReason}`', ''],
   ui_set: ['写', '`{results:[{path, ok, notFound?, error?, from?, to?}], effects:[{path, from, to}]}`（**单目标失败时不会有这个结构**：整个调用直接失败）', '**会真的改界面**；支持批量 `items:[{path,value}]`（整批一次回执）；只给一个 `path`/`value` 时按**单目标语义**——失败即整次调用失败（路径不存在 → `-32602`；控件被禁用 → `isError`+`-32006`）'],
-  ui_get_state: ['读', '当前会话配置快照（与界面「保存配置」同一份真源）', ''],
+  ui_get_state: ['读', '当前会话配置快照（与界面「保存配置」同一份真源）；**section 给 bleDevices 时返回蓝牙扫描结果全量**（设备卡片是动态 div、不在控件注册表里，只有通用桥的客户端就从这里读），`ble` 段里带一份前 10 台的 `scanResult`', ''],
   ui_click: ['写', '`{results:[{path, ok, notFound?, error?}], effects:[…]}`（**单目标失败时不会有这个结构**：整个调用直接失败）', '**会真的点下去**（例如"开始监控"）；用于 setter 够不到的动作；点击不存在/不可用的控件 → `-32602` / `isError`+`-32006`，**不会**假装成功'],
   log_channels: ['读', '`{enabled, channelCount, channels:[{channel, lines, bytes, capBytes, seqFrom, seqTo, dropped, lastTs}], totalBytes, totalCapBytes, maxChannels, lockSkips, channelSkips, reclaims, reclaimedBytes}`', '不确定去哪找日志时先调它'],
   log_tail: ['读', '`{channel, lines:[{seq, ts, level, dir, text, rawBytes}], returned, dropped, seqTo, mayBeIncomplete, truncated}`', '给了 `sinceSeq` 就是增量拉取（旧拼写 `since_seq` 也认）；`mayBeIncomplete=true` 表示该通道丢过最旧的行'],

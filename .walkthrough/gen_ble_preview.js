@@ -4720,6 +4720,44 @@ console.log('preview ->', out);
         && /mcpUiCmdReply\(\(ev && ev\.payload\) \|\| \{\}/.test(html),
         'listener 走同一个 mcpUiCmdReply（生产与单测同一条路）');
     }
+
+    // ---- 通用桥也能读到扫描结果（用户 2026-09："连接器读不到扫描结果列表"）----
+    // 设备卡片是动态 div、不在控件注册表里，所以只有通用桥的客户端原先没有任何入口。
+    {
+      const sbScan = {
+        console,
+        _bleScanning: true,
+        _bleSelected: 'AA:BB:CC:DD:EE:02',
+        _bleDevices: [
+          { address: 'AA:BB:CC:DD:EE:01', name: 'Ai-WB2', rssi: -55 },
+          { address: 'AA:BB:CC:DD:EE:02', name: '', rssi: null },
+        ],
+      };
+      vm.createContext(sbScan);
+      vm.runInContext(extractFunction('mcpBleScanResult'), sbScan);
+      const r = sbScan.mcpBleScanResult(0);
+      check(r.total === 2 && r.returned === 2 && r.scanning === true && r.note === null,
+        'mcpBleScanResult：全量给出扫描结果（含 scanning / total）', JSON.stringify(r));
+      check(r.devices[0].mac === 'AA:BB:CC:DD:EE:01' && r.devices[0].name === 'Ai-WB2'
+        && r.devices[0].rssi === -55,
+        '**每台设备都带 MAC / 名称 / RSSI**（不是只给数量）', JSON.stringify(r.devices[0]));
+      check(r.devices[0].selected === false && r.devices[1].selected === true,
+        'selected 跟着面板当前选中走', JSON.stringify(r.devices.map((d) => d.selected)));
+      sbScan._bleDevices = new Array(30).fill(0).map((_, i) => ({ address: 'AA:BB:CC:DD:EE:' + i, rssi: -50 }));
+      const rl = sbScan.mcpBleScanResult(10);
+      check(rl.total === 30 && rl.returned === 10 && rl.truncated === true,
+        'limit=10 时只回前 10 台并标 truncated',
+        JSON.stringify({ total: rl.total, returned: rl.returned, truncated: rl.truncated }));
+      sbScan._bleDevices = [];
+      sbScan._bleScanning = false;
+      const re = sbScan.mcpBleScanResult(0);
+      check(re.total === 0 && /先开扫描/.test(re.note), '空列表的 note 说清下一步', re.note);
+      check(/sec === 'bleDevices'/.test(html) && /scanResult: mcpBleScanResult\(10\)/.test(html),
+        'ui_get_state 的 ble 段带精简扫描结果、bleDevices 段给全量（通用桥唯一的读取入口）');
+      check(/可用：serial \/ wsl \/ ble \/ bleDevices \/ theme/.test(html)
+        && /"bleDevices"/.test(fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8')),
+        '区段写错时的报错与工具 schema 里都列出了 bleDevices（AI 靠它们发现这个入口）');
+    }
     const protoSrc = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');
     const usizeOf = name => {
       const m = new RegExp(name + '\\s*:\\s*usize\\s*=\\s*([0-9_]+)').exec(protoSrc);

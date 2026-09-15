@@ -585,8 +585,8 @@ pub fn tool_defs() -> Vec<Value> {
                 "properties": {
                     "section": {
                         "type": "string",
-                        "description": "serial / wsl / ble / theme / window / monitors；省略=全部",
-                        "enum": ["serial", "wsl", "ble", "theme", "window", "monitors"]
+                        "description": "serial / wsl / ble / bleDevices / theme / window / monitors；省略=全部。**扫描结果**读 `bleDevices`（全量）或 `ble.scanResult`（前 10 台）—— 设备卡片是动态 div、不在控件注册表里，只有通用桥的客户端得从这两处读",
+                        "enum": ["serial", "wsl", "ble", "bleDevices", "theme", "window", "monitors"]
                     }
                 },
                 "additionalProperties": false
@@ -1567,7 +1567,7 @@ fn err_response(id: Value, err: &RpcError) -> String {
 
 /// 工具执行失败必须返回**正常 result** + `isError: true`（MCP 规范要求），
 /// 只有协议级错误才用 JSON-RPC error —— 弄混会让客户端把工具错误当成连接故障。
-fn tool_result_ok(value: Value) -> Value {
+fn tool_result_ok(tool: &str, value: Value) -> Value {
     // 规范要求 `structuredContent` 是**对象**。工具直接返回数组的话，严格客户端
     // （官方 Python SDK 走 pydantic）会把整条结果判为非法 —— 用户看到的是"这个工具坏了"。
     // 这里兜一层：不是对象就包成 `{"value": …}` 并上报，免得某天新加的工具再踩一次。
@@ -1588,7 +1588,7 @@ fn tool_result_ok(value: Value) -> Value {
         json!({ "value": value })
     };
     json!({
-        "content": [{ "type": "text", "text": summarize_for_text(&structured) }],
+        "content": [{ "type": "text", "text": summarize_for_tool(tool, &structured) }],
         "structuredContent": structured,
         "isError": false
     })
@@ -1618,6 +1618,70 @@ fn summarize_for_text(v: &Value) -> String {
     }
 }
 
+/// 工具感知的文本摘要：默认走通用渲染，少数"载荷就是一张表"的工具用紧凑格式。
+///
+/// 为什么要有这一层：通用渲染对数组只展开前几个元素（JSON 对象形式很占字数），
+/// 于是 45 台设备的扫描结果在文本里成了 `[3 台] …共 45 项` ——
+/// **看起来就像"这个工具只回了设备数量"**（用户 2026-09 原话：
+/// "只有设备数量吗？没有设备名称列表？包含 MAC 地址的"）。设备列表改成一行一台，
+/// 同样的 600 字预算里能放下十几台（MAC + 名称 + RSSI），结构化数据照旧全量在
+/// `structuredContent` 里。
+fn summarize_for_tool(tool: &str, v: &Value) -> String {
+    // 按**载荷形状**判断而不是只按工具名：`ble_list_devices` 与通用桥的
+    // `ui_get_state{section:"bleDevices"}` 返回的是同一张设备表，两条路都该看到设备名/MAC。
+    let looks_like_device_list = v["devices"]
+        .as_array()
+        .map(|a| a.iter().any(|d| d.get("mac").is_some()))
+        .unwrap_or(false);
+    if tool == "ble_list_devices" || looks_like_device_list {
+        return summarize_ble_devices(v);
+    }
+    summarize_for_text(v)
+}
+
+/// 蓝牙扫描结果的紧凑摘要：`共 45 台（扫描中）：MAC 名称 -79dBm | …`（尽可能多列，整体仍限长）
+fn summarize_ble_devices(v: &Value) -> String {
+    let total = v["total"].as_u64().unwrap_or(0);
+    let scanning = v["scanning"].as_bool().unwrap_or(false);
+    let devices = v["devices"].as_array().cloned().unwrap_or_default();
+    let mut out = format!("共 {} 台{}", total, if scanning { "（扫描中）" } else { "" });
+    if devices.is_empty() {
+        if let Some(n) = v["note"].as_str().filter(|s| !s.is_empty()) {
+            out.push_str(" · ");
+            out.push_str(n);
+        }
+        return out;
+    }
+    out.push_str("：");
+    let mut shown = 0usize;
+    for d in &devices {
+        let mac = d["mac"].as_str().unwrap_or("?");
+        let name = d["name"].as_str().filter(|s| !s.is_empty());
+        let rssi = d["rssi"]
+            .as_i64()
+            .map(|r| format!("{}dBm", r))
+            .unwrap_or_else(|| "—".to_string());
+        let one = match name {
+            Some(n) => format!("{} {} {}", mac, n, rssi),
+            None => format!("{} {}", mac, rssi),
+        };
+        // 留 40 字给"…还有 N 台"那句
+        let used = out.chars().count() + one.chars().count() + 3;
+        if used + 40 > TEXT_SUMMARY_MAX_CHARS {
+            break;
+        }
+        if shown > 0 {
+            out.push_str(" | ");
+        }
+        out.push_str(&one);
+        shown += 1;
+    }
+    if shown < devices.len() {
+        out.push_str(&format!(" …还有 {} 台（全量在 structuredContent.devices）", devices.len() - shown));
+    }
+    out
+}
+
 /// 文本摘要的总长上限：它是**重复**信息（structuredContent 里都有），
 /// 太长会白占模型上下文，所以宁可截断并指路。
 const TEXT_SUMMARY_MAX_CHARS: usize = 600;
@@ -1641,7 +1705,20 @@ fn render_brief(v: &Value, depth: usize) -> String {
             if a.is_empty() {
                 return "[]".to_string();
             }
-            let shown: Vec<String> = a.iter().take(3).map(|x| render_brief(x, depth + 1)).collect();
+            // **按字数预算展开**，不是死板地只取 3 个：JSON 形态每个元素占几十字，
+            // 硬性 3 个会让"有 40 项的列表"在文本里看着像"只回了 3 项"。
+            // 预算之内尽量多列（最多 12 个），超出部分仍用"…共 N 项"指路。
+            const ARRAY_BRIEF_BUDGET: usize = 420;
+            let mut shown: Vec<String> = Vec::new();
+            let mut used = 0usize;
+            for x in a.iter().take(12) {
+                let s = render_brief(x, depth + 1);
+                if !shown.is_empty() && used + s.chars().count() + 3 > ARRAY_BRIEF_BUDGET {
+                    break;
+                }
+                used += s.chars().count() + 3;
+                shown.push(s);
+            }
             let tail = if a.len() > shown.len() {
                 format!(" …共 {} 项", a.len())
             } else {
@@ -1830,7 +1907,7 @@ pub async fn handle_raw_with_session(
                 result_val.as_ref(),
             );
             match outcome {
-                Ok(v) => Ok(tool_result_ok(v)),
+                Ok(v) => Ok(tool_result_ok(&name, v)),
                 Err(e) if e.code == E_INVALID_PARAMS || e.code == E_METHOD_NOT_FOUND => Err(e),
                 Err(e) => Ok(tool_result_err(&e)),
             }
@@ -3138,7 +3215,6 @@ mod tests {
     }
 
     /// 扫描结果**必须真的到客户端**：`ble_list_devices` 的文本摘要里要有设备 MAC 与名称。
-    ///
     /// 2026-09 用户报"扫描结果没有返回给 MCP 客户端"。那条有三层原因，这条断言守最后一层：
     /// ① 当时运行的是没有 `ble_*` 的旧构建（`mcp_smoke.js` 用"源码工具清单 vs 应用里的清单"守）；
     /// ② 前端只读面板缓存、可能落在两次轮询之间（前端断言集守）；
@@ -3170,6 +3246,73 @@ mod tests {
                 "AA:BB:CC:DD:EE:FF"
             );
         });
+    }
+
+    /// 45 台设备**不能只回一句"共 45 项"**。用户 2026-09 的原话：**"只有设备数量吗？
+    /// 没有设备名称列表？包含 MAC 地址的"** —— 通用渲染只展开前几个元素，看着就像只回了数量。
+    /// 现在设备列表一行一台（MAC + 名称 + RSSI），列不下的才用"还有 N 台"指路。
+    #[test]
+    fn ble_devices_summary_lists_devices_not_just_a_count() {
+        let devices: Vec<Value> = (0..45u32)
+            .map(|i| {
+                json!({
+                    "mac": format!("AA:BB:CC:DD:EE:{:02X}", i),
+                    "name": if i % 3 == 0 { Value::Null } else { json!(format!("Dev{}", i)) },
+                    "rssi": -50 - (i as i64), "paired": false, "selected": false
+                })
+            })
+            .collect();
+        let v = json!({ "scanning": true, "total": 45, "returned": 45, "truncated": false,
+                        "devices": devices, "note": null });
+        let s = summarize_for_tool("ble_list_devices", &v);
+        assert!(s.starts_with("共 45 台（扫描中）："), "{}", s);
+        let listed = (0..45u32)
+            .filter(|i| s.contains(&format!("AA:BB:CC:DD:EE:{:02X}", i)))
+            .count();
+        assert!(listed >= 8, "文本摘要里该列出至少 8 台设备（实际 {} 台）：{}", listed, s);
+        assert!(s.contains("Dev1"), "设备名要一起列出来：{}", s);
+        assert!(s.contains("还有"), "列不下的要说清还剩多少台：{}", s);
+        assert!(
+            s.chars().count() <= TEXT_SUMMARY_MAX_CHARS,
+            "摘要不能超长（{} 字）：{}",
+            s.chars().count(),
+            s
+        );
+    }
+
+    /// 通用桥那条路（`ui_get_state{section:"bleDevices"}`）是同一张设备表 → 同样走紧凑格式。
+    /// 按形状判断，所以将来再有工具返回设备表也自动受益。
+    #[test]
+    fn device_list_shape_gets_compact_summary_for_any_tool() {
+        let v = json!({ "scanning": false, "total": 2, "returned": 2, "truncated": false,
+                        "devices": [ { "mac": "AA:BB:CC:DD:EE:01", "name": "Ai-WB2", "rssi": -55,
+                                       "paired": false, "selected": true },
+                                     { "mac": "AA:BB:CC:DD:EE:02", "name": null, "rssi": -70,
+                                       "paired": true, "selected": false } ],
+                        "note": null });
+        let s = summarize_for_tool("ui_get_state", &v);
+        assert!(s.starts_with("共 2 台："), "{}", s);
+        assert!(s.contains("AA:BB:CC:DD:EE:01 Ai-WB2 -55dBm"), "{}", s);
+        assert!(s.contains("AA:BB:CC:DD:EE:02 -70dBm"), "{}", s);
+        assert!(!s.contains("还有"), "两台都列得下，不该说还有：{}", s);
+    }
+
+    #[test]
+    fn ble_devices_summary_handles_empty_and_note() {        let v = json!({ "scanning": false, "total": 0, "devices": [],
+                        "note": "还没扫到设备：先 ble_start_scan" });
+        let s = summarize_for_tool("ble_list_devices", &v);
+        assert!(s.contains("共 0 台") && s.contains("ble_start_scan"), "{}", s);
+    }
+
+    /// 通用数组展开也要按**字数预算**（原先死板只取 3 个，"有 20 项的列表"看着像只回了 3 项）
+    #[test]
+    fn array_brief_expands_within_budget() {
+        let arr: Vec<Value> = (0..20).map(|i| json!(format!("item{:02}", i))).collect();
+        let s = render_brief(&json!({ "items": arr }), 0);
+        let shown = (0..20).filter(|i| s.contains(&format!("item{:02}", i))).count();
+        assert!(shown >= 10, "预算内该尽量多列（实际 {} 个）：{}", shown, s);
+        assert!(s.contains("共 20 项"), "{}", s);
+        assert!(s.chars().count() <= TEXT_SUMMARY_MAX_CHARS, "{}", s.chars().count());
     }
 
     /// Agent 的效率取决于"第一次就做对"：`initialize.instructions` 一次性把工作方式告诉它，

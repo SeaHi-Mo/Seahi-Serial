@@ -616,13 +616,13 @@
 
 - **作用**：读整个界面状态的快照（就是随用户配置持久化的那份：各监视器的端口/波特率/行尾/显示模式/开关、主题、蓝牙选中项等）。可用 section 只取子树。
 - **读/写**：只读，无副作用
-- **返回**：当前会话配置快照（与界面「保存配置」同一份真源）
+- **返回**：当前会话配置快照（与界面「保存配置」同一份真源）；**section 给 bleDevices 时返回蓝牙扫描结果全量**（设备卡片是动态 div、不在控件注册表里，只有通用桥的客户端就从这里读），`ble` 段里带一份前 10 台的 `scanResult`
 
 **入参**
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `section` | string | 否 | 枚举：`serial` / `wsl` / `ble` / `theme` / `window` / `monitors` serial / wsl / ble / theme / window / monitors；省略=全部 |
+| `section` | string | 否 | 枚举：`serial` / `wsl` / `ble` / `bleDevices` / `theme` / `window` / `monitors` serial / wsl / ble / bleDevices / theme / window / monitors；省略=全部。**扫描结果**读 `bleDevices`（全量）或 `ble.scanResult`（前 10 台）—— 设备卡片是动态 div、不在控件注册表里，只有通用桥的客户端得从这两处读 |
 
 ### 日志中心
 

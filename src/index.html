@@ -5506,7 +5506,14 @@ function mcpHandleUiCmd(op, payload) {
                 if ((sec === 'wsl') === isWsl) out[mid] = snap.monitors[mid];
             });
         } else if (sec === 'ble') {
-            out = snap.ble;
+            // 顺带把扫描结果带一份**精简版**：通用桥（ui_*）原先没有任何入口能读到它 ——
+            // 设备卡片是动态生成的 div、不在控件注册表里，所以"面板上明明扫到了、AI 却读不到"
+            // （用户 2026-09 报的"连接器读不到扫描结果列表"）。完整列表用 section=bleDevices。
+            out = Object.assign({}, snap.ble, { scanResult: mcpBleScanResult(10) });
+        } else if (sec === 'bleDevices') {
+            // 运行时数据（**不是配置**）：扫描结果全量。给只有通用桥、或工具列表还没刷新的客户端
+            // 一个读得到的入口；语义工具那边是 ble_list_devices（两者读的是同一份 _bleDevices）。
+            out = mcpBleScanResult(0);
         } else if (sec === 'theme') {
             out = { theme: snap.theme, themeStyle: snap.themeStyle };
         } else if (sec === 'window') {
@@ -5514,7 +5521,8 @@ function mcpHandleUiCmd(op, payload) {
         } else {
             return {
                 ok: false, notFound: true,
-                error: '没有这个区段: ' + sec + '（可用：serial / wsl / ble / theme / window / monitors）',
+                error: '没有这个区段: ' + sec
+                    + '（可用：serial / wsl / ble / bleDevices / theme / window / monitors）',
             };
         }
         return { ok: true, value: out };
@@ -5592,6 +5600,37 @@ function bleCharActionBtn(uuid, prop) {
         if (key.indexOf(want) >= 0) return btns[i];
     }
     return null;
+}
+
+// 扫描结果的"通用桥可读"版本（`ui_get_state` 的 ble / bleDevices 两段都用它，
+// 语义工具那边是 ble_list_devices —— 三者读的是同一份 `_bleDevices`，不另存一份）。
+//
+// 为什么需要它：面板上的设备卡片是**动态生成的 div**，不在控件注册表里（注册表只收
+// button/input/select/textarea/[onclick]），所以一个只有通用桥的客户端（或工具列表还没刷新的
+// 客户端）**没有任何入口**能读到扫描结果 —— 用户 2026-09 报的"连接器读不到扫描结果列表"就是它。
+// limit>0 时只回前 limit 台（精简版，避免把几十台设备塞进每个 ui_get_state 响应）。
+function mcpBleScanResult(limit) {
+    var all = _bleDevices || [];
+    var n = (limit > 0) ? Math.min(limit, all.length) : all.length;
+    var devices = all.slice(0, n).map(function (d) {
+        return {
+            mac: d.address || d.mac || null,
+            name: d.name || null,
+            rssi: (typeof d.rssi === 'number') ? d.rssi : null,
+            paired: !!d.paired,
+            selected: !!(_bleSelected && (d.address || d.mac) === _bleSelected),
+        };
+    });
+    return {
+        scanning: !!_bleScanning,
+        total: all.length,
+        returned: devices.length,
+        truncated: devices.length < all.length,
+        devices: devices,
+        note: all.length ? null
+            : (_bleScanning ? '正在扫描，稍后再读（扫描时长见 ble 段/面板左上角）'
+                            : '还没有扫描结果：先开扫描（语义工具 ble_start_scan，或点面板上的「开始扫描」）'),
+    };
 }
 
 // 图标 onclick（`bleCharAction(this,'<uuid>::<prop>')`）里的**真实 UUID**。
