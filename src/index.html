@@ -5419,6 +5419,40 @@ function mcpEntryPublic(entry) {
  * 执行走的就是上面的合成 DOM 事件路径，所以界面必然会跟着变。 */
 var _mcpUiOrigin = 0;   // >0 表示当前变更由 AI 触发（用于回声抑制）
 
+// AI 下发的界面命令 → 执行 → 回执（后端在等这个 ack，5s 超时）。
+//
+// **必须能等 Promise**：不少分支返回的是 Promise（连设备 / 读写特征 / 从机启停 / 读 RSSI…），
+// 而这里原先直接读 `res.ok` —— Promise 上没有 ok，于是回执变成 `ok:false` + `error:null`，
+// 客户端只看到一句没头没尾的"前端执行失败"（2026-09 实测：`ble_periph_status` 就是这样，
+// 明明是"从机模式没开"，AI 却拿到一句无信息量的错误）。
+// ackFn(ack) 由调用方给出（生产里是 `invoke('mcp_ui_ack', …)`），便于无头断言"到底等了没等"。
+function mcpUiCmdReply(cmd, ackFn) {
+    var p = cmd || {};
+    var send = function(res) {
+        ackFn({
+            cmdId: p.cmdId,
+            ok: !!(res && res.ok),
+            value: (res && res.value !== undefined) ? res.value : null,
+            error: (res && res.error) || null,
+            // notFound / invalidParams 必须回传：后端靠它们把"路径或取值不存在"判成
+            // 协议级 -32602（丢了会一律退化成 -32006"没有界面"，AI 会误解成应用没开界面）
+            notFound: !!(res && res.notFound),
+            invalidParams: !!(res && res.invalidParams),
+            disabledReason: (res && res.disabledReason) || null,
+        });
+    };
+    var res;
+    try {
+        res = mcpHandleUiCmd(p.op, p.payload);
+    } catch (e) {
+        send({ ok: false, error: String((e && e.message) || e) });
+        return;
+    }
+    Promise.resolve(res).then(send, function(e) {
+        send({ ok: false, error: String((e && e.message) || e) });
+    });
+}
+
 function mcpHandleUiCmd(op, payload) {
     payload = payload || {};
     mcpEnsureRegistry(false);
@@ -5498,6 +5532,8 @@ function mcpHandleUiCmd(op, payload) {
                     results.push({ path: it.path, ok: false, notFound: true, error: '未找到控件: ' + it.path });
                     continue;
                 }
+                // 先把控件所在的面板显示出来：用户得看得见 AI 正在动哪个页面
+                mcpRevealPaneFor(ent.panel);
                 if (!ent.enabled()) {
                     // 不可用就明确说原因，不要假装成功
                     results.push({
@@ -5599,6 +5635,11 @@ function bleFindCharBtn(uuid, prop) {
     var svcUuid = bleSvcUuidOfChar(uuid);
     if (!svcUuid) return null;
     var row = bleSvcRowEl(svcUuid);
+    if (!row) {
+        // 整个服务树还没渲染（例如蓝牙页是刚被 AI 打开的）：让面板自己渲染一遍再找
+        if (typeof renderBleDetail === 'function') renderBleDetail();
+        row = bleSvcRowEl(svcUuid);
+    }
     if (!row) return null;
     // 已经展开说明这个特征确实没有该属性：别再点一下把人家收起来
     if (!(row.classList && row.classList.contains('expanded'))) row.click();
@@ -5616,9 +5657,55 @@ function bleDevCardEl(addr) {
     return null;
 }
 
+// 通用桥（ui_set / ui_click）要动某个面板里的控件时，先把那个面板显示出来 ——
+// 否则用户看到的是"AI 在操控蓝牙页，界面上却还停在串口页"（用户 2026-09 反馈：
+// AI 明明点了扫描，界面上什么都没切，等于看不见 AI 在干什么）。
+// 一律走用户自己的入口按钮（合成点击）；**已经在目标页时一个点都不发**：
+// 那几个按钮都是开关，盲点一下会把用户从当前页踢回串口页。
+// 返回是否真的切了页。
+function mcpRevealPaneFor(panel) {
+    if (!panel || panel === 'global' || panel === 'mcp' || panel === 'dialog') return false;
+    var idOf = { serial: 'paneContainer', wsl: 'wsl-pane', adb: 'adb-pane', ble: 'ble-pane' };
+    var pane = document.getElementById(idOf[panel] || '');
+    if (pane && pane.style.display !== 'none') return false;   // 已经在目标页
+    if (panel === 'serial') {
+        // 回串口页 = 点"当前打开那个面板"的按钮（它此刻的 onclick 已是「返回到串口调试器」）
+        var open = ['ble', 'wsl', 'adb'].filter(function(p) {
+            var el = document.getElementById(idOf[p]);
+            return el && el.style.display !== 'none';
+        })[0];
+        var back = open ? document.getElementById(open + 'ToggleBtn') : null;
+        if (!back || !back.click) return false;
+        back.click();
+        return true;
+    }
+    var btn = document.getElementById(panel + 'ToggleBtn');
+    if (!btn || !btn.click) return false;
+    btn.click();
+    return true;
+}
+
+// 让蓝牙页真的显示出来（与用户点那颗蓝牙按钮同一条路：DOM 合成点击 → openBle()）。
+// 返回调用后是否处于蓝牙页。
+function bleEnsurePaneVisible() {
+    var pane = document.getElementById('ble-pane');
+    if (pane && pane.style.display !== 'none') return true;   // 已经在蓝牙页
+    mcpRevealPaneFor('ble');
+    pane = document.getElementById('ble-pane');
+    return !!(pane && pane.style.display !== 'none');
+}
+
 function mcpBleOp(payload) {
     payload = payload || {};
     var action = payload.action;
+    // AI **动手**时先把蓝牙页显示出来（用户得看得见 AI 在干什么）。
+    // 纯读状态那几条（state / listDevices / getServices / getOutput / refreshRssi / periphStatus）
+    // **不切页**：客户端一 poll 就把用户从别的页面拽走，比看不见更烦人。
+    if (action === 'startScan' || action === 'stopScan' || action === 'connect' || action === 'disconnect'
+        || action === 'read' || action === 'write' || action === 'subscribe'
+        || action === 'periphStart' || action === 'periphStop') {
+        bleEnsurePaneVisible();
+    }
 
     if (action === 'state') {
         // 只读：全部来自面板已有的内存状态（_ble* 那几个模块级变量），不多打一次后端
@@ -5675,25 +5762,33 @@ function mcpBleOp(payload) {
         }
     }
     if (action === 'listDevices') {
-        // 只读：扫描结果（不触发扫描）；limit 省略=全部
-        var lim = parseInt(payload.limit, 10);
-        var all = (_bleDevices || []);
-        var list = (lim > 0 ? all.slice(0, lim) : all).map(function (d) {
-            return {
-                mac: d.address || d.mac || null,
-                name: d.name || d.localName || null,
-                rssi: (typeof d.rssi === 'number') ? d.rssi : null,
-                paired: !!d.paired,
-                selected: !!(_bleSelected && (d.address || d.mac) === _bleSelected),
-            };
+        // 读扫描结果。**不能只读面板缓存** `_bleDevices`：它由面板每 2 秒的轮询刷新，
+        // 而"AI 刚开完扫描就来问"完全可能落在两次轮询之间（用户 2026-09 报的
+        // "扫描结果没有返回给 MCP 客户端"就是这个）——所以先让面板自己刷新一遍
+        // （refreshBleDevices 就是那颗扫描按钮走的同一条路），再读。
+        return bleRefreshDevicesNow().then(function () {
+            var lim = parseInt(payload.limit, 10);
+            var all = (_bleDevices || []);
+            var list = (lim > 0 ? all.slice(0, lim) : all).map(function (d) {
+                return {
+                    mac: d.address || d.mac || null,
+                    name: d.name || d.localName || null,
+                    rssi: (typeof d.rssi === 'number') ? d.rssi : null,
+                    paired: !!d.paired,
+                    selected: !!(_bleSelected && (d.address || d.mac) === _bleSelected),
+                };
+            });
+            return { ok: true, value: {
+                scanning: !!_bleScanning,
+                total: all.length,
+                devices: list,
+                selected: _bleSelected || null,
+                note: all.length ? null
+                    : (_bleScanning ? ('正在扫描（' + bleScanSecsLabel() + '），已扫到 ' + all.length + ' 台：稍后再问一次')
+                                    : '还没扫到设备：先 ble_start_scan；设备不广播时（被配对过/被别的主机连走）'
+                                      + '扫描永远搜不到，改用 ble_connect + addr 直连'),
+            } };
         });
-        return { ok: true, value: {
-            scanning: !!_bleScanning,
-            total: all.length,
-            devices: list,
-            selected: _bleSelected || null,
-            note: all.length ? null : (_bleScanning ? '正在扫描，稍后再问' : '还没扫到设备：先 ble_start_scan'),
-        } };
     }
     if (action === 'startScan' || action === 'stopScan') {
         // 复用面板那颗"开始/停止扫描"按钮的函数（toggleBleScan 内部按 _bleScanning 分流）
@@ -5808,6 +5903,11 @@ function mcpBleOp(payload) {
         var cAddr = String(payload.addr || '').trim().toUpperCase();
         if (cAddr) {
             var card = bleDevCardEl(cAddr);
+            if (!card && typeof renderBleDeviceList === 'function') {
+                // 列表还没渲染（蓝牙页刚被 AI 打开 / 扫完还没刷）：让面板自己渲染一遍再找
+                renderBleDeviceList();
+                card = bleDevCardEl(cAddr);
+            }
             if (card) {
                 card.click();                        // 选中它（与用户点列表卡片同一条路）
                 var selDev = (typeof getSelectedBleDev === 'function') ? getSelectedBleDev() : null;
@@ -11814,7 +11914,9 @@ function enableBleScanAutoStop() {
 function refreshBleDevices() {
     // 连接态以后端为准：每次刷新都带上真实已连接地址，
     // 否则重建列表时会把 connected 硬编码成 false（切页回来显示成未连接）
-    Promise.all([
+    // 返回 promise 只为让 MCP 的 ble_list_devices 能"等刷新完再读"
+    // （面板自己 fire-and-forget 调用，行为一个字没变）
+    return Promise.all([
         invoke('ble_get_devices'),
         invoke('ble_get_connection').catch(function() { return null; })
     ]).then(function(res) {
@@ -11876,6 +11978,19 @@ function refreshBleDevices() {
         _bleDevices = [];
         renderBleDeviceList();
     });
+}
+
+// 让面板刷新一次设备列表并**等它刷完**（MCP 的 ble_list_devices 用）。
+// 为什么要有它：`_bleDevices` 是面板每 2 秒轮询的结果，AI 刚开完扫描就来问，
+// 完全可能落在两次轮询之间 —— 那时读到的是空列表，AI 会得出"没搜到设备"的错误结论。
+// 刷新失败不该让"读列表"整个失败（照旧读缓存，并把当时的情况如实说清）。
+function bleRefreshDevicesNow() {
+    try {
+        var p = refreshBleDevices();
+        return (p && typeof p.then === 'function') ? p.catch(function() {}) : Promise.resolve();
+    } catch (e) {
+        return Promise.resolve();
+    }
 }
 
 function renderBleDeviceList() {
@@ -14029,24 +14144,9 @@ document.addEventListener('DOMContentLoaded', function() {
             });
             // AI 下发的界面操作：执行后回执（后端在等这个 ack，5s 超时）
             window.__TAURI__.event.listen('mcp-ui-cmd', function(ev) {
-                var p = (ev && ev.payload) || {};
-                var res;
-                try {
-                    res = mcpHandleUiCmd(p.op, p.payload);
-                } catch (e) {
-                    res = { ok: false, error: String((e && e.message) || e) };
-                }
-                invoke('mcp_ui_ack', {
-                    cmdId: p.cmdId,
-                    ok: !!(res && res.ok),
-                    value: (res && res.value !== undefined) ? res.value : null,
-                    error: (res && res.error) || null,
-                    // notFound / invalidParams 必须回传：后端靠它们把"路径或取值不存在"判成
-                    // 协议级 -32602（丢了会一律退化成 -32006"没有界面"，AI 会误解成应用没开界面）
-                    notFound: !!(res && res.notFound),
-                    invalidParams: !!(res && res.invalidParams),
-                    disabledReason: (res && res.disabledReason) || null,
-                }).catch(function() {});
+                mcpUiCmdReply((ev && ev.payload) || {}, function(ack) {
+                    invoke('mcp_ui_ack', ack).catch(function() {});
+                });
             });
             // MCP 服务器状态变化（启用/停用/会话增减）：更新标题栏图标上的状态点
             window.__TAURI__.event.listen('mcp-status-changed', function(ev) {

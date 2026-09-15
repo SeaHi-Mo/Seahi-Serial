@@ -126,7 +126,9 @@ impl Default for CallLog {
 }
 
 impl CallLog {
-    /// 指向某个目录下的 `ai-calls.jsonl`（单测用临时目录，生产用 `%APPDATA%\seahi-serial`）
+    /// 指向某个目录下的 `ai-calls.jsonl`（**单测专用**：生产走 `set_path`，
+    /// 路径由程序按 `%APPDATA%\seahi-serial` 给出）。
+    #[cfg(test)]
     pub fn in_dir(dir: &Path) -> Self {
         let s = Self::default();
         *s.path.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.join(CALL_LOG_FILE));

@@ -1485,6 +1485,69 @@ BLE 面板有两套完全不同的东西：**主机**（当中央去连别人的
 
 ## 17. 实施记录
 
+### 2026-09-15 · 工具自检 + 三个"只有真跑才看得见"的 bug ✅
+
+用户连着报了三条现象：**"新建的工具客户端没看到"**、**"AI 在操控 BLE，但前端没切到 BLE 页"**、
+**"扫描结果没有返回给 MCP 客户端"**。三条都不是"工具没写"，而是**跑起来才暴露**的问题 ——
+所以这一轮的重点不是加工具，而是**把"跑起来"这件事变成可复现的检查**。
+
+**① 新增 `node .walkthrough/mcp_smoke.js`（工具自检，用户要求"每个工具都要测调用结果"）**
+
+连上**正在运行的应用**，`tools/list` 后把 49 个内置工具**逐个真调**并打印结果，然后单独跑一遍
+"开扫 → 等 → 读列表 → 停"的扫描链路。安全模式（默认）的分级：
+只读工具真调；写工具用**"必填缺失 → 应报 -32602"**探针；危险工具用**"不带 confirm → 应报 -32006"**探针；
+其余有副作用的（`serial_open` / `ble_connect` / `log_clear`…）**跳过并标注**（绝不关用户的串口、断用户的设备）。
+它开头就会对"源码里的工具清单 vs 应用里的清单"报差异 —— 这直接回答了第一个问题：
+**当时运行的是装好的 v0.5.3（33 个工具、0 个 `ble_*`）**，AI 只能退回去用通用 `ui_*` 桥（调用记录里
+确实全是 `ui_click ble.ui.bleScanBtn` / `ui_set bleScanSecs`），而 `ble_list_devices` 这类工具
+**在那个 exe 里根本不存在**（`ok:false`）。
+
+> ⚠️ 自检脚本第一版自己有两个 bug，都当场暴露并被修掉：`DANGER_TOOLS` 的元素类型是
+> `&[(&str, &str)]`（不是 `&[&str]`），导致读写分类整个失效 —— 于是"安全模式"真的去调了
+> `serial_open` / `ui_set`。教训：**探针脚本自己的分类也要能被验证**，所以现在解析失败会直接退出。
+
+**② 回执那一跳没等 Promise → 客户端只看到"前端执行失败"**
+
+`mcp-ui-cmd` 的 listener 里直接读 `res.ok`，但 `mcpHandleUiCmd` 有不少分支**返回 Promise**
+（连设备 / 读写特征 / 从机启停 / 读 RSSI…）→ Promise 上没有 `ok` → 回执成了 `ok:false` + `error:null`
+→ `unwrap_ui_result` 的兜底文案就是那句没头没尾的 **"前端执行失败"**。真机实测 `ble_periph_status`
+正是如此（真实原因是"从机模式没开"，AI 却什么都拿不到）。
+修法：抽成 `mcpUiCmdReply(cmd, ackFn)`，用 `Promise.resolve(res).then(send, fail)`；
+断言集补 7 条（同步返回 / Promise / 同步抛 / Promise 被拒 / `notFound`+`invalidParams` 回传 /
+listener 与生产同一条路）。修完后同一个工具在真机上返回了真字段（`advertising=false` 等）。
+
+**③ 扫描结果读的是面板缓存**
+
+`ble_list_devices` 原先只读 `_bleDevices`，而它由面板**每 2 秒的轮询**刷新 —— "AI 刚开完扫描就来问"
+完全可能落在两次轮询之间，读到空列表再得出"没搜到设备"的错误结论。
+修法：`refreshBleDevices()` 返回它的 promise（面板自己 fire-and-forget 不受影响），
+新增 `bleRefreshDevicesNow()`，`ble_list_devices` **先现问一次后端再读**；空列表时的 `note` 也写清了
+下一步（含"设备不广播就只能 `ble_connect` + addr 直连"）。
+真机自检：`ble_start_scan` 之后 `ble_list_devices` 拿到 **37 台设备**（含 MAC/RSSI）。
+
+**④ AI 动哪个面板，就把那个面板显示出来**
+
+`ui_set` / `ui_click` 原先能在**隐藏的**面板上操作控件 —— 用户看到的是"AI 在操控蓝牙页，
+界面上却还停在串口页"。现在写操作前先 `mcpRevealPaneFor(ent.panel)`：走用户自己的入口按钮切页
+（BLE / WSL / ADB 各一颗；回串口页 = 点"当前打开那个面板"的按钮），**已经在目标页时一个点都不发**
+（那几颗按钮都是开关，盲点会把用户踢回串口页）。`ble_*` 语义工具同理：动手类 action 先切页，
+纯读状态（`state`/`listDevices`/`getOutput`…）**不切**（客户端一 poll 就把用户从别的页面拽走更烦人）。
+
+**⑤ 顺手清掉 6 条 dead_code 警告**（用户要求）
+`calllog::in_dir` / `loghub::handle` / `protocol::handle_raw` / `registry::replace` → `#[cfg(test)]`
+（都确实是单测专用，生产各有对应入口）；`MAX_TOOL_NAME_LEN` → 用它推导 `NAME_BUDGET`
+（"名字不会超上限"由常量保证，而不是两处各写一个数字）；`report::guard` → **真的用起来**：
+`exposed_tools` 生成控件工具定义时兜住 panic（那段是"外部数据进到我们自己的生成逻辑"，
+跑在应答 `tools/list` 的任务上，panic 一次就会把连接打死）—— 出问题就只给内置工具 + 上报。
+
+**验证**：`cargo test` **171** 通过（+1 扫描结果文本断言；并给调用情况表的**每个**工具加了
+"文本摘要里必须出现至少一个真实取值"的断言）；前端 **1424** 通过（+30 条：切页 8、惰性展开 3、
+写入/连接/断开 15、回执 7、listDevices 3）；npm 62 通过；
+`node .walkthrough/mcp_smoke.js` 对真机实例：**49/49 工具都有结果，0 硬失败**，扫描拿到 37 台设备。
+
+⚠️ 仍未验证：`ble_write` / `ble_subscribe` / `ble_read` 的**真机**结果（自检里需要先连设备；
+真机上请用 `--full` 或让 AI 连一台再跑）。
+
 ### 2026-09-14 · BLE 语义工具第五批（写入 / 连接 / 断开）✅ —— 顺手逮到上一批的真 bug
 
 按 §16.6.1 收尾主机方向：`ble_write`、`ble_connect`、`ble_disconnect`（46 → 49 个工具）。

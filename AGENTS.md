@@ -13,7 +13,7 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/从机属性/busid 白名单/MCP 协议与日志中心）
 ```
 
-无 lint 与类型检查；后端有单测（`main.rs` 里的 `#[cfg(test)]` 模块，169 条 + 4 条 `#[ignore]`
+无 lint 与类型检查；后端有单测（`main.rs` 里的 `#[cfg(test)]` 模块，171 条 + 4 条 `#[ignore]`
 真机/诊断）。BLE 从机相关的三条（需蓝牙硬件）：
 
 ```bash
@@ -25,12 +25,25 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_builds -- --ignored -
 cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
 ```
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1401 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1424 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，62 条）：直接从
 `src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，也有把渲染函数丢进假 DOM
 跑行为断言），改前端后应先跑
 `node .walkthrough/gen_ble_preview.js`。`.walkthrough/` 已纳入版本库（仅忽略 `__pycache__`）。
 改了 MCP 工具定义后，顺手重跑 `node .walkthrough/gen_mcp_tools_doc.js` 重新生成 `doc/MCP_TOOLS.md`（断言集里有一条守着"文档必须列出全部内置工具"）。
+
+**改了 MCP 工具/前端桥之后，还要对"正在跑的那个应用"跑一遍工具自检**（用户的要求：
+"每个工具你都需要测试工具调用结果"）：
+
+```bash
+node .walkthrough/mcp_smoke.js          # 连上运行中的应用，把 49 个内置工具逐个真调一遍并打印结果
+node .walkthrough/mcp_smoke.js --full   # 连有副作用的写工具也真调（会动界面/发数据，自己确认）
+```
+
+它会先对"源码里的工具清单 vs 应用里 `tools/list` 的清单"报差异 —— **客户端看不到新工具时，
+十有八九是运行的是旧构建**（工具定义编译在 exe 里，不重新编译/重启就永远是旧的；客户端还要重连
+才会重读 `tools/list`）。安全模式下：只读工具真调；写工具用"必填缺失 → -32602"探针；
+危险工具用"不带 confirm → -32006"探针；其余有副作用的跳过并标注（绝不关用户的串口 / 断用户的设备）。
 
 ## BLE 主机方向的三个关键约定（别改回去）
 
@@ -91,6 +104,11 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
    （2026-09 真机检查：`notFound` 就是这么丢的，`unwrap_ui_result` 里那条 `-32602` 分支
    在真机上从未生效）。加字段时三处必须一起改：前端 ack → `mcp_ui_ack` 入参 → `ui_ack_payload`，
    并由 `ui_ack_reply_shape_is_complete` 从 ack 入参**一路测到错误码**。
+   ⚠️ **而且这一跳必须能等 Promise**：`mcpHandleUiCmd` 有不少分支返回 Promise（连设备 / 读写特征 /
+   从机启停 / 读 RSSI…），直接读 `res.ok` 会永远是 `undefined` → 回执变成 `ok:false` + `error:null`
+   → 客户端只看到一句没头没尾的**"前端执行失败"**（2026-09 真机实测 `ble_periph_status` 就是这样：
+   真实原因是"从机模式没开"，AI 却什么都不知道）。现在统一走 `mcpUiCmdReply(cmd, ackFn)`
+   （`Promise.resolve(res).then(send, …)`），断言集里 7 条守着它（同步/异步/抛错/被拒/字段回传）。
 10. **MCP 的运行不得影响主程序**（用户明确要求的硬约束，不是"尽量"）。落实到代码是这几条：
     ① 串口收发热路径上只有一次**非阻塞**日志旁路（`LogHub::push` 用 `try_lock`，拿不到锁就丢一条并计数；
     全局回收也是 `try_lock` + 单次最多 4 个通道，收不动就等下一条）；② 错误上报走**独立上报线程的
@@ -115,6 +133,11 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
     ③ **跨边界**：断言集里扫 protocol.rs 发出的每个 `op`/`action`，要求 index.html 真有对应分支 ——
     "后端发了、前端没有"会静默失败，而两边各自测自己那一半时全是绿的。
     ⚠️ 假前端只证明 Rust 这一半；前端那一半必须由 `.walkthrough` 用**真实 handler** 跑。两边成对，缺一边就是假的安心。
+    ④ **端到端**：`node .walkthrough/mcp_smoke.js` 对着**正在跑的应用**把每个工具真调一遍并打印结果
+    （安全模式下写工具用"必填缺失/无 confirm"探针，不产生副作用）。它还能一眼看出"客户端为什么看不到
+    新工具"——**运行的是旧构建**。Rust 侧另有两条守着"结果真的说出来了"：每个工具的文本摘要里必须
+    出现 structuredContent 里的至少一个真实取值（`leaf_scalars`），以及 `ble_list_devices` 的摘要里
+    必须有设备 MAC 与名称。
 
 
 

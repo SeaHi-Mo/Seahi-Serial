@@ -390,7 +390,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "ble_list_devices",
-            "description": "列出**已扫到**的蓝牙设备（不触发扫描）：MAC、名称、信号强度 RSSI、是否已配对、是否当前选中，以及扫描是否在进行中。列表空时会说明该先做什么。只读。",
+            "description": "读蓝牙扫描结果（不触发扫描）：MAC、名称、信号强度 RSSI、是否已配对、是否当前选中，以及扫描是否在进行中。**每次都会现问一次后端**（不是只读面板那个 2 秒轮询的缓存），所以刚 ble_start_scan 完立刻问也拿得到；一台都没有时会说明下一步 —— 设备不广播（被 Windows 配对过 / 被别的主机连走）时扫描永远为空，得用 ble_connect + addr 按 MAC 直连。只读。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -738,10 +738,20 @@ pub fn exposed_tools(core: &McpCore) -> Vec<Value> {
     let mut v = tool_defs();
     let cfg = core.cfg.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if cfg.expose.auto_control_tools && !core.registry.is_empty() {
-        let (tools, _, _) = core
-            .registry
-            .tools(&cfg.expose.namespaces, 0, MAX_CTL_TOOLS);
-        v.extend(tools);
+        // 这一段是**由前端上报的注册表**生成工具定义（名字清洗/去重/截断），
+        // 也就是"外部数据进到我们自己的生成逻辑里"。它跑在应答 `tools/list` 的那条任务上，
+        // 一旦 panic 就会把这条连接打死（AGENTS #2 / #10：MCP 绝不能被一次异常拖垮）。
+        // 用 report::guard 兜住：出问题时**只给内置工具**并上报，而不是静默死掉。
+        let built = super::report::guard("exposed_tools.registry", std::panic::AssertUnwindSafe(|| {
+            core.registry.tools(&cfg.expose.namespaces, 0, MAX_CTL_TOOLS)
+        }));
+        match built {
+            Ok((tools, _, _)) => v.extend(tools),
+            Err(e) => {
+                // 已经在 guard 里上报过一次；这里再写一条本地日志，便于对着界面排查
+                eprintln!("[mcp] 生成控件工具定义失败，本次只暴露内置工具: {}", e);
+            }
+        }
     }
     v
 }
@@ -1644,8 +1654,10 @@ fn render_brief(v: &Value, depth: usize) -> String {
     }
 }
 
-/// 处理一条原始 JSON-RPC 报文。
+/// 处理一条原始 JSON-RPC 报文（**单测专用的简写**：生产入口是下面带 panic 兜底的
+/// `handle_raw_guarded`，会话名由传输层给出）。
 /// 返回 `None` 表示这是**通知**（notification，无 id），按规范不应回包。
+#[cfg(test)]
 pub async fn handle_raw(core: &Arc<McpCore>, raw: &str) -> Option<String> {
     handle_raw_with_session(core, raw, "unknown").await
 }
@@ -3058,6 +3070,24 @@ mod tests {
                 for k in case.keys {
                     assert!(sc.get(k).is_some(), "{} 返回里少了 {}（实际: {}）", case.tool, k, sc);
                 }
+
+                // ③ **文本摘要必须真的把数据说出来**（AGENTS #11）。
+                // 很多客户端只把 `content[].text` 给模型看，人也是先看这一行；只写"N 项"
+                // 就等于把数据藏起来（`serial_list_ports` 的端口名就是这么消失过一次的）。
+                // 这里是**每个工具都测**：摘要里必须出现 structuredContent 里至少一个真实取值。
+                let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+                assert!(!text.is_empty(), "{} 的文本摘要不能为空", case.tool);
+                let leaves = leaf_scalars(sc);
+                if !leaves.is_empty() {
+                    assert!(
+                        leaves.iter().any(|v| text.contains(v.as_str())),
+                        "{} 的文本摘要里看不到任何真实取值（只报了个空壳？）\n  文本: {}\n  数据: {}",
+                        case.tool,
+                        text,
+                        sc
+                    );
+                }
+
                 seen.push(case.tool);
             }
 
@@ -3079,6 +3109,66 @@ mod tests {
             want.push("serial_get_output");
             want.sort_unstable();
             assert_eq!(seen, want, "界面工具的调用测试列表与契约表不一致");
+        });
+    }
+
+    /// 取出结构里的**叶子标量**（字符串/数字），用来验证"文本摘要真的把数据说出来了"。
+    /// 只向下两层、最多 12 个：这是给断言用的，不是给渲染用的。
+    fn leaf_scalars(v: &Value) -> Vec<String> {
+        fn walk(v: &Value, depth: usize, out: &mut Vec<String>) {
+            if out.len() >= 12 || depth > 3 {
+                return;
+            }
+            match v {
+                Value::String(s) => {
+                    if s.chars().count() >= 2 {
+                        out.push(s.clone());
+                    }
+                }
+                Value::Number(n) => out.push(n.to_string()),
+                Value::Bool(b) => out.push(b.to_string()),
+                Value::Array(a) => a.iter().take(4).for_each(|x| walk(x, depth + 1, out)),
+                Value::Object(m) => m.values().take(8).for_each(|x| walk(x, depth + 1, out)),
+                Value::Null => {}
+            }
+        }
+        let mut out = Vec::new();
+        walk(v, 0, &mut out);
+        out
+    }
+
+    /// 扫描结果**必须真的到客户端**：`ble_list_devices` 的文本摘要里要有设备 MAC 与名称。
+    ///
+    /// 2026-09 用户报"扫描结果没有返回给 MCP 客户端"。那条有三层原因，这条断言守最后一层：
+    /// ① 当时运行的是没有 `ble_*` 的旧构建（`mcp_smoke.js` 用"源码工具清单 vs 应用里的清单"守）；
+    /// ② 前端只读面板缓存、可能落在两次轮询之间（前端断言集守）；
+    /// ③ 文本摘要很容易退化成"N 项" —— 那样即使 structuredContent 里有设备，模型和人也看不到。
+    #[test]
+    fn ble_list_devices_text_carries_mac_and_name() {
+        block_on(async {
+            let c = core();
+            {
+                let mut slot = c.test_ui.lock().unwrap_or_else(|e| e.into_inner());
+                *slot = Some(Box::new(|op: &str, payload: &Value| {
+                    assert_eq!(op, "ble", "ble_list_devices 该走 ble 面板");
+                    assert_eq!(payload["action"], "listDevices");
+                    json!({ "ok": true, "value": {
+                        "scanning": false, "total": 1, "selected": null,
+                        "devices": [{ "mac": "AA:BB:CC:DD:EE:FF", "name": "Ai-WB2", "rssi": -55,
+                                      "paired": false, "selected": false }],
+                        "note": null,
+                    }})
+                }));
+            }
+            let r = call(&c, &raw_call("ble_list_devices", &json!({}))).await;
+            assert_eq!(r["result"]["isError"], false, "{}", r);
+            let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+            assert!(text.contains("AA:BB:CC:DD:EE:FF"), "文本摘要里没有设备 MAC: {}", text);
+            assert!(text.contains("Ai-WB2"), "文本摘要里没有设备名: {}", text);
+            assert_eq!(
+                r["result"]["structuredContent"]["devices"][0]["mac"],
+                "AA:BB:CC:DD:EE:FF"
+            );
         });
     }
 

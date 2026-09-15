@@ -42,8 +42,9 @@ fn default_true() -> bool {
 
 /// 工具名上限（MCP 客户端约束）
 pub const MAX_TOOL_NAME_LEN: usize = 64;
-/// 留出加序号的余量
-const NAME_BUDGET: usize = 58;
+/// 截断预算 = 上限减去加序号的余量（`_2` / `_10` …；`tool_name_for` 用它截断，
+/// 于是"名字不会超上限"这件事由常量本身保证，而不是靠两处各写一个数字）
+const NAME_BUDGET: usize = MAX_TOOL_NAME_LEN - 6;
 
 /// 路径 → 工具名（纯函数，便于单测）
 pub fn tool_name_for(path: &str) -> String {
@@ -126,6 +127,9 @@ pub struct RegistryCache {
 
 impl RegistryCache {
     /// 用前端上报的整份列表替换缓存。返回条目数。
+    /// **单测专用**：生产走 [`Self::replace_and_diff`] —— 工具名集合变没变决定了要不要
+    /// 给客户端发 `notifications/tools/list_changed`，只回条目数会漏掉那一步。
+    #[cfg(test)]
     pub fn replace(&self, entries: Vec<RegistryEntry>) -> usize {
         self.replace_and_diff(entries).0
     }

@@ -232,6 +232,9 @@ impl LogHub {
         self.channels.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
+    /// 取通道句柄（**单测专用**：生产只用下面的 `handle_capped` —— 它会尊重通道数上限，
+    /// 而 `handle` 会无条件建通道，正是 `MAX_CHANNELS` 要防的那件事）。
+    #[cfg(test)]
     fn handle(&self, name: &str) -> Arc<Mutex<Channel>> {
         let mut map = self.channels.lock().unwrap_or_else(|e| e.into_inner());
         map.entry(name.to_string())

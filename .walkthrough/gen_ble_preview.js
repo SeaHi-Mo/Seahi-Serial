@@ -2267,7 +2267,7 @@ console.log('preview ->', out);
 
   const sbReg = {
     console,
-    document: { querySelectorAll: () => mcpNodes },
+    document: { querySelectorAll: () => mcpNodes, getElementById: () => null },
     scheduleConfigSave() {},
     invoke() { return Promise.resolve({}); },
     showToast() {},
@@ -2281,7 +2281,7 @@ console.log('preview ->', out);
         'mcpKindOf', 'mcpReadEl', '_mcpDispatch', '_mcpFindOption', 'mcpWriteEl',
         'mcpElEnabled', 'mcpDisabledReason', 'mcpEntryFor', 'mcpBuildRegistry',
         'mcpEnsureRegistry', 'mcpInputSchemaFor', 'mcpEntryPublic', 'mcpHandleUiCmd',
-        'mcpNotifyState'].map(extractFunction),
+        'mcpRevealPaneFor', 'mcpNotifyState'].map(extractFunction),
   ].join('\n'), sbReg);
 
   // ---- 纯函数：路径派生 ----
@@ -4396,11 +4396,23 @@ console.log('preview ->', out);
           });
         }
         const dev = opts.dev || null;
+        // 蓝牙页与那颗开关按钮：openBle() 会把 onclick 换成 closeBle，
+        // 这里仿真这个开关语义 —— "已经显示时再点一下"会被记成一次 kick
+        const pane = mkEl('ble-pane');
+        pane.style.display = opts.paneVisible === false ? 'none' : (opts.paneVisible ? 'flex' : 'none');
+        const toggleBtn = mkEl('bleToggleBtn');
+        let paneToggles = 0, paneKicks = 0;
+        toggleBtn.click = () => {
+          paneToggles++;
+          if (pane.style.display === 'none') pane.style.display = 'flex';
+          else { pane.style.display = 'none'; paneKicks++; }
+        };
+        const docEls = Object.assign({}, els, { 'ble-pane': pane, bleToggleBtn: toggleBtn });
         const sb = {
           console, TextEncoder, Promise, Uint8Array, parseInt, isNaN, Error,
           setTimeout: () => 0, clearTimeout() {},
           document: {
-            getElementById: (id) => els[id] || null,
+            getElementById: (id) => docEls[id] || null,
             querySelector: (sel) => {
               const m = /data-val="([^"]+)"/.exec(sel);
               if (!m) return null;
@@ -4415,8 +4427,14 @@ console.log('preview ->', out);
           invoke: (cmd, a) => { calls.push({ cmd, args: a }); return syncP({}); },
           invokeTimeout: (cmd, a) => { calls.push({ cmd, args: a }); return syncP({}); },
           getSelectedBleDev: () => dev,
+          // 面板那颗「开始/停止扫描」按钮的函数（真面板里它按 _bleScanning 分流）
+          toggleBleScan: () => { sb._bleScanning = !sb._bleScanning; },
           showToast() {}, logBle() {}, logBleDim() {}, clearBleLog() {}, closeBleWriteModal() {},
-          scheduleConfigSave() {}, renderBleDetail() {}, renderBleDeviceList() {}, refreshBleDevices() {},
+          scheduleConfigSave() {}, renderBleDetail() {}, renderBleDeviceList() {}, refreshBleDevices() {
+            // 真面板里它去问后端并填 _bleDevices；这里用 opts.scanDevices 仿真"后端扫到了什么"
+            if (opts.scanDevices) sb._bleDevices = opts.scanDevices.slice();
+            return syncP(null);
+          },
           startBleNotifyPoll() {}, startBleRssiPoll() {}, stopBleNotifyPoll() {}, stopBleRssiPoll() {}, refreshBleMtu: () => syncP(0),
           bleOnConnected: () => syncP(null), tryBlePairThenReconnect: () => syncP(true),
           bleFindSvcOfChar: () => null, bleCanShowAsText: () => false, bleFmtBytes: () => '',
@@ -4424,13 +4442,15 @@ console.log('preview ->', out);
           _bleServices: svcTree ? [{ uuid: svcTree.uuid,
                                      characteristics: (svcTree.chars || []).map((ch) => ({ uuid: ch.uuid, properties: ch.props })) }] : [],
           _bleSelected: null, _bleConnAddr: opts.connAddr || null, _bleConnInfo: null,
-          _bleConnecting: false, _bleMtu: 0, _bleScanning: false,
+          _bleConnecting: false, _bleMtu: 0, _bleScanning: false, _bleExtraMon: false, _bleScanSecs: 15,
           BLE_CONNECT_TIMEOUT_MS: Number((/var BLE_CONNECT_TIMEOUT_MS = (\d+);/.exec(html) || [0, 0])[1]),
           BLE_PAIR_TIMEOUT_MS: Number((/var BLE_PAIR_TIMEOUT_MS = (\d+);/.exec(html) || [0, 0])[1]),
         };
         sb.calls = calls; sb.els = els; sb.icons = icons; sb.cards = cards; sb.svcRows = svcRows;
+        sb.pane = pane; sb.paneStats = () => ({ toggles: paneToggles, kicks: paneKicks });
         const names = ['mcpBleOp', 'bleCharActionBtn', 'bleBtnUuid', 'bleDevCardEl', 'bleCharAction',
-                       'bleSvcRowEl', 'bleSvcUuidOfChar', 'bleFindCharBtn',
+                       'bleSvcRowEl', 'bleSvcUuidOfChar', 'bleFindCharBtn', 'bleEnsurePaneVisible',
+                       'mcpRevealPaneFor', 'bleRefreshDevicesNow',
                        'openBleWriteModal', 'setBleWriteAs', 'setBleWriteMode', 'setSel',
                        'sendBleWrite', 'sendBleWriteCore', 'bleSendBytes', 'bleReadWriteModalInput',
                        'leEscOf', 'bleBytesToHex', 'hexToBytes', 'parseEscapes', 'shortUuid',
@@ -4563,8 +4583,143 @@ console.log('preview ->', out);
       const d2 = settled(envD2.mcpBleOp({ action: 'disconnect' }));
       check(d2.ok === true && d2.value.changed === false && envD2.calls.length === 0,
         'ble_disconnect：本来就没连 → 幂等返回，不去打后端', JSON.stringify(envD2.calls));
+
+      // 切页：AI 动手时把蓝牙页显示出来（否则用户在界面上什么都看不见）
+      const envPane = mkEnv({ dev: connectedDev, paneVisible: false });
+      const p1 = settled(envPane.mcpBleOp({ action: 'startScan' }));
+      check(p1.ok === true && envPane.pane.style.display === 'flex'
+        && envPane.paneStats().toggles === 1 && envPane.paneStats().kicks === 0,
+        'AI 动手（扫描）时自动切到蓝牙页（走那颗按钮 = openBle）', JSON.stringify(envPane.paneStats()));
+      settled(envPane.mcpBleOp({ action: 'stopScan' }));
+      check(envPane.paneStats().toggles === 1 && envPane.paneStats().kicks === 0,
+        '蓝牙页已经显示时不再点那颗开关（再点一下会把用户踢回串口页，它是个 toggle）',
+        JSON.stringify(envPane.paneStats()));
+      const envPane2 = mkEnv({ dev: connectedDev, paneVisible: false });
+      envPane2.mcpBleOp({ action: 'state' });
+      check(envPane2.paneStats().toggles === 0 && envPane2.pane.style.display === 'none',
+        '纯读状态（state）不切页（客户端一 poll 就把用户从别的页面拽走，更烦人）',
+        JSON.stringify(envPane2.paneStats()));
+      const envPane3 = mkEnv({ dev: connectedDev, connAddr: 'AA:BB:CC:DD:EE:01', paneVisible: false });
+      settled(envPane3.mcpBleOp({ action: 'disconnect' }));
+      const envPane4 = mkEnv({ dev: connectedDev, paneVisible: false });
+      settled(envPane4.mcpBleOp({ action: 'read', char: 'AAAA' }));
+      const envPane5 = mkEnv({ dev: connectedDev, paneVisible: true });
+      settled(envPane5.mcpBleOp({ action: 'read', char: 'AAAA' }));
+      check(envPane3.pane.style.display === 'flex' && envPane4.pane.style.display === 'flex',
+        '断开 / 读特征同样会把蓝牙页显示出来（AI 的动作都看得见）');
+      check(envPane5.paneStats().toggles === 0 && envPane5.pane.style.display === 'flex',
+        '本来就在蓝牙页时一个多余的点都不发（toggles===0）', JSON.stringify(envPane5.paneStats()));
+
+      // ble_list_devices：**先让面板刷新一遍再读**，不吃"2 秒轮询空窗"
+      // （用户 2026-09 报的"扫描结果没有返回给 MCP 客户端"就是这个空窗）
+      const envLD = mkEnv({ dev: connectedDev,
+                            scanDevices: [{ address: 'AA:BB:CC:DD:EE:09', name: 'Ai-WB2', rssi: -60 }] });
+      const ld = settled(envLD.mcpBleOp({ action: 'listDevices' }));
+      check(ld.ok === true && ld.value.total === 1 && ld.value.devices[0].mac === 'AA:BB:CC:DD:EE:09'
+        && ld.value.devices[0].rssi === -60 && ld.value.note === null,
+        'ble_list_devices 先刷新再读（面板缓存空、后端有设备时也拿得到）', JSON.stringify(ld.value));
+      const ldEmpty = settled(mkEnv({ dev: connectedDev, scanDevices: [] }).mcpBleOp({ action: 'listDevices' }));
+      check(ldEmpty.value.total === 0 && /先 ble_start_scan/.test(ldEmpty.value.note)
+        && /不广播/.test(ldEmpty.value.note),
+        '空列表的 note 说清下一步，并指出"设备不广播时扫描永远搜不到"的出路', ldEmpty.value.note);
+      check(/return Promise\.all\(\[/.test(html) && /function bleRefreshDevicesNow\(\)/.test(html),
+        'refreshBleDevices 返回 promise（面板自己 fire-and-forget 不受影响）');
+
+      // 通用桥（ui_set / ui_click）也要切页：AI 用 ui_click 点扫描按钮时，
+      // 界面上得真的跳到蓝牙页（用户 2026-09 反馈：AI 在操控 BLE，界面却停在串口页）
+      check(/mcpRevealPaneFor\(ent\.panel\);[\s\S]{0,240}?if \(!ent\.enabled\(\)\)/.test(html),
+        'ui_set / ui_click 先把控件所在的面板显示出来（在可用性判定之前）');
+      check(!/if \(op === 'get'\)[\s\S]{0,400}?mcpRevealPaneFor/.test(html)
+        && !/if \(op === 'list'\)[\s\S]{0,600}?mcpRevealPaneFor/.test(html),
+        '纯读（list/get）不切页：客户端一 poll 就把用户从别的页面拽走，比看不见更烦人');
+      {
+        const paneEls = {
+          paneContainer: { style: { display: 'flex' } },
+          'wsl-pane': { style: { display: 'none' } },
+          'adb-pane': { style: { display: 'none' } },
+          'ble-pane': { style: { display: 'none' } },
+        };
+        const clicks = { ble: 0, wsl: 0, adb: 0 };
+        const btnOf = (p) => ({
+          click() {
+            clicks[p]++;
+            const id = p + '-pane';
+            if (paneEls[id].style.display === 'none') {
+              paneEls[id].style.display = 'flex'; paneEls.paneContainer.style.display = 'none';
+            } else {
+              paneEls[id].style.display = 'none'; paneEls.paneContainer.style.display = 'flex';
+            }
+          },
+        });
+        const btns = { bleToggleBtn: btnOf('ble'), wslToggleBtn: btnOf('wsl'), adbToggleBtn: btnOf('adb') };
+        const sbP = {
+          console,
+          document: { getElementById: (id) => paneEls[id] || btns[id] || null },
+        };
+        vm.createContext(sbP);
+        vm.runInContext(extractFunction('mcpRevealPaneFor'), sbP);
+        check(sbP.mcpRevealPaneFor('ble') === true && paneEls['ble-pane'].style.display === 'flex'
+          && clicks.ble === 1, '目标面板藏着 → 点它的入口按钮切过去（与用户点那颗按钮同一条路）');
+        check(sbP.mcpRevealPaneFor('ble') === false && clicks.ble === 1,
+          '已经在目标面板 → 一个点都不发（那几个按钮都是开关，盲点会把人踢回串口页）',
+          JSON.stringify(clicks));
+        check(sbP.mcpRevealPaneFor('serial') === true && paneEls.paneContainer.style.display === 'flex'
+          && paneEls['ble-pane'].style.display === 'none' && clicks.ble === 2,
+          '回串口页 = 点"当前打开那个面板"的按钮（此刻它的 onclick 已是「返回到串口调试器」）');
+        check(sbP.mcpRevealPaneFor('wsl') === true && paneEls['wsl-pane'].style.display === 'flex'
+          && clicks.wsl === 1 && clicks.adb === 0, 'WSL / ADB 同理（各自那颗入口按钮）');
+        check(sbP.mcpRevealPaneFor('global') === false && sbP.mcpRevealPaneFor('dialog') === false
+          && sbP.mcpRevealPaneFor('mcp') === false && sbP.mcpRevealPaneFor('') === false,
+          'global / 弹窗 / MCP 弹窗里的控件没有"面板"可切 → 原样返回 false（不误点）');
+      }
     }
-    // ---- 跨端一致：前端上限必须与 Rust 侧常量一致 ----
+    // ---- 回执那一跳（mcpUiCmdReply）必须能等 Promise ----
+    // 真实事故（2026-09）：这一跳原先直接读 `res.ok`，而不少分支返回的是 Promise
+    // （连设备 / 读写特征 / 从机启停 / 读 RSSI…）→ Promise 上没有 ok → 回执成了
+    // ok:false + error:null → 客户端只看到一句没头没尾的"前端执行失败"
+    // （ble_periph_status 实测就是这样，明明原因是"从机模式没开"）。
+    {
+      const flush = () => new Promise((r) => setTimeout(r, 0));
+      const mkReply = (impl) => {
+        const acks = [];
+        const sb = { console, Promise, setTimeout, mcpHandleUiCmd: impl };
+        vm.createContext(sb);
+        vm.runInContext(extractFunction('mcpUiCmdReply'), sb);
+        sb.mcpUiCmdReply({ cmdId: 7, op: 'ble', payload: {} }, (a) => acks.push(a));
+        return acks;
+      };
+      const a1 = mkReply(() => ({ ok: true, value: { n: 1 } }));
+      await flush();
+      check(a1.length === 1 && a1[0].ok === true && a1[0].value.n === 1 && a1[0].cmdId === 7,
+        '同步返回的分支：回执原样带上 ok / value / cmdId', JSON.stringify(a1));
+      const a2 = mkReply(() => Promise.resolve({ ok: true, value: { prop: 'notify', changed: true } }));
+      await flush();
+      check(a2.length === 1 && a2[0].ok === true && a2[0].value.changed === true,
+        '**返回 Promise 的分支也要回执真实结果**（不 await 就会变成"前端执行失败"）', JSON.stringify(a2));
+      const a3 = mkReply(() => Promise.resolve({ ok: false, error: '读从机状态失败: 从机模式未启用' }));
+      await flush();
+      check(a3.length === 1 && a3[0].ok === false && /从机模式未启用/.test(a3[0].error),
+        '返回 Promise 的失败分支：错误原因要原样带给客户端', JSON.stringify(a3));
+      const a4 = mkReply(() => { throw new Error('同步炸了'); });
+      await flush();
+      check(a4.length === 1 && a4[0].ok === false && /同步炸了/.test(a4[0].error),
+        '同步抛异常 → 回执里带原因（不再是一句无信息量的失败）', JSON.stringify(a4));
+      const a5 = mkReply(() => Promise.reject(new Error('异步炸了')));
+      await flush();
+      check(a5.length === 1 && a5[0].ok === false && /异步炸了/.test(a5[0].error),
+        'Promise 被拒 → 同样回执原因（绝不让后端干等到 5 秒超时）', JSON.stringify(a5));
+      const a6 = mkReply(() => ({ ok: false, invalidParams: true, error: 'char 不能为空' }));
+      await flush();
+      check(a6.length === 1 && a6[0].invalidParams === true && a6[0].ok === false,
+        'notFound / invalidParams 照旧回传（后端靠它们判 -32602）', JSON.stringify(a6));
+      const a7 = mkReply(() => ({ ok: false }));
+      await flush();
+      check(a7.length === 1 && a7[0].ok === false && a7[0].error === null,
+        '（边界）前端没给原因时 error 就是 null —— 后端会兜成"前端执行失败"，这是最后一手');
+      check(/Promise\.resolve\(res\)\.then\(send, function\(e\)/.test(html)
+        && /mcpUiCmdReply\(\(ev && ev\.payload\) \|\| \{\}/.test(html),
+        'listener 走同一个 mcpUiCmdReply（生产与单测同一条路）');
+    }
     const protoSrc = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');
     const usizeOf = name => {
       const m = new RegExp(name + '\\s*:\\s*usize\\s*=\\s*([0-9_]+)').exec(protoSrc);
