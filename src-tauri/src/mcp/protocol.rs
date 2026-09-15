@@ -405,6 +405,23 @@ pub fn tool_defs() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
         json!({
+            "name": "ble_get_output",
+            "description": "读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。只读。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "number", "description": "只要最后 N 条（省略=全部）" },
+                    "sinceSeq": { "type": "number", "description": "增量：只要 seq 大于它的（与返回的 items[].seq 对齐）" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ble_refresh_rssi",
+            "description": "读当前已连接设备的信号强度（RSSI，负数，越接近 0 越强）。只问一次射频、不改状态；还没连设备时会直接说明。",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        json!({
             "name": "ble_get_services",
             "description": "当前已连接设备的 GATT 服务树（服务 UUID / 名称，每个服务下的特征 UUID、属性 props、描述符个数）。只读，取的是面板已经拉到的那份，不会重新去问设备。",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
@@ -966,7 +983,8 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         "ble_list_devices" => ble_call(core, "listDevices", args, json!({})).await,
         "ble_start_scan" => ble_call(core, "startScan", args, json!({})).await,
         "ble_stop_scan" => ble_call(core, "stopScan", args, json!({})).await,
-        "ble_get_services" => ble_call(core, "getServices", args, json!({})).await,        "ble_periph_status" => ble_call(core, "periphStatus", args, json!({})).await,
+        "ble_get_output" => ble_call(core, "getOutput", args, json!({})).await,
+        "ble_refresh_rssi" => ble_call(core, "refreshRssi", args, json!({})).await,        "ble_get_services" => ble_call(core, "getServices", args, json!({})).await,        "ble_periph_status" => ble_call(core, "periphStatus", args, json!({})).await,
         "ble_periph_start" => ble_call(core, "periphStart", args, json!({})).await,
         "ble_periph_stop" => ble_call(core, "periphStop", args, json!({})).await,
         "mcp_danger" => Ok(json!({
@@ -2327,6 +2345,8 @@ mod tests {
                 ("ble_get_state", json!({}), NoGui),
                 ("ble_list_devices", json!({}), NoGui),
                 ("ble_get_services", json!({}), NoGui),
+                ("ble_get_output", json!({}), NoGui),
+                ("ble_refresh_rssi", json!({}), NoGui),
                 ("ble_start_scan", json!({}), NoGui),
                 ("ble_stop_scan", json!({}), NoGui),
                 ("ble_periph_status", json!({}), NoGui),
@@ -2548,6 +2568,13 @@ mod tests {
                                     "services": [{ "uuid": "0000fff0-0000-1000-8000-00805f9b34fb", "name": null,
                                                    "chars": [{ "uuid": "0000fff1-0000-1000-8000-00805f9b34fb", "props": ["read","notify"], "descs": 1 }] }],
                                 }}),
+                                "getOutput" => json!({ "ok": true, "value": {
+                                    "pane": "ble", "count": 1, "total": 1, "channels": { "rx": "ble:rx" },
+                                    "items": [{ "seq": 0, "ts": 1, "kind": "rx", "hex": "01 02", "text": "", "dim": "" }],
+                                }}),
+                                "refreshRssi" => json!({ "ok": true, "value": {
+                                    "addr": "AA:BB:CC:DD:EE:FF", "rssi": -55, "raw": { "rssi": -55 },
+                                }}),
                                 "periphStatus" => json!({ "ok": true, "value": {
                                     "advertising": false,
                                     "serviceUuid": "0000fff0-0000-1000-8000-00805f9b34fb",
@@ -2719,6 +2746,14 @@ mod tests {
                     pre_connected: None,
                     calls: vec![("ble", json!({ "action": "getServices" }))],
                     keys: &["connected", "serviceCount", "services"] },
+                Case { tool: "ble_get_output", args: json!({ "limit": 20 }),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "getOutput" }))],
+                    keys: &["pane", "count", "total", "channels", "items"] },
+                Case { tool: "ble_refresh_rssi", args: json!({}),
+                    pre_connected: None,
+                    calls: vec![("ble", json!({ "action": "refreshRssi" }))],
+                    keys: &["addr", "rssi", "raw"] },
                 Case { tool: "ble_periph_status", args: json!({}),
                     pre_connected: None,
                     calls: vec![("ble", json!({ "action": "periphStatus" }))],
@@ -2812,6 +2847,7 @@ mod tests {
                 // BLE 第一批（都经前端 mcpBleOp）
                 "ble_get_state", "ble_periph_status", "ble_periph_start", "ble_periph_stop",
                 "ble_list_devices", "ble_start_scan", "ble_stop_scan", "ble_get_services",
+                "ble_get_output", "ble_refresh_rssi",
             ];
             // serial_get_output 只读日志中心，但**先要过前端拿分栏名与通道名**，所以也算界面工具
             want.push("serial_get_output");

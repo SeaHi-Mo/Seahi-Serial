@@ -2691,7 +2691,7 @@ console.log('preview ->', out);
                        mcpSrc.indexOf('\n    ]', mcpSrc.indexOf('pub fn tool_defs()')))
         .matchAll(/"name":\s*"([a-z][a-z0-9_]*)"/g)].map((m) => m[1])
     )];
-    check(srcTools.length === 42, '源码里是 42 个内置工具（20 通用 + 13 串口语义 + 9 蓝牙语义）', srcTools.length);
+    check(srcTools.length === 44, '源码里是 44 个内置工具（20 通用 + 13 串口语义 + 11 蓝牙语义）', srcTools.length);
     const missing = srcTools.filter((n) => toolsDoc.indexOf('#### `' + n + '`') < 0);
     check(missing.length === 0, '工具参考文档 doc/MCP_TOOLS.md 列出了全部内置工具', '缺：' + missing.join(','));
     check((toolsDoc.match(/^#### `/gm) || []).length === srcTools.length,
@@ -4225,7 +4225,8 @@ console.log('preview ->', out);
       const proto = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');
       check(/if \(op === 'ble'\) return mcpBleOp\(payload\)/.test(html) && /function mcpBleOp\(payload\)/.test(html),
         'ui_call 的 ble 面板接上了 mcpBleOp（与 serial 同构）');
-      for (const a of ['state', 'listDevices', 'startScan', 'stopScan', 'getServices', 'periphStatus', 'periphStart', 'periphStop']) {
+      for (const a of ['state', 'listDevices', 'startScan', 'stopScan', 'getServices', 'getOutput', 'refreshRssi',
+                      'periphStatus', 'periphStart', 'periphStop']) {
         check(html.indexOf("action === '" + a + "'") >= 0, "mcpBleOp 有 " + a + " 分支");
       }
       // 启动/停止走面板那颗按钮的函数，不给 AI 另写一套
@@ -4245,7 +4246,8 @@ console.log('preview ->', out);
       // 跨端：Rust 的 ble_* 工具 ↔ 前端 action
       const pairs = [['ble_get_state', 'state'], ['ble_list_devices', 'listDevices'],
                      ['ble_start_scan', 'startScan'], ['ble_stop_scan', 'stopScan'],
-                     ['ble_get_services', 'getServices'], ['ble_periph_status', 'periphStatus'],
+                     ['ble_get_services', 'getServices'], ['ble_get_output', 'getOutput'],
+                     ['ble_refresh_rssi', 'refreshRssi'], ['ble_periph_status', 'periphStatus'],
                      ['ble_periph_start', 'periphStart'], ['ble_periph_stop', 'periphStop']];
       const bad = pairs.filter(p => proto.indexOf('"' + p[0] + '"') < 0
         || proto.indexOf('ble_call(core, "' + p[1] + '"') < 0);

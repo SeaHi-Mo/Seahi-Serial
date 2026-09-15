@@ -5657,8 +5657,48 @@ function mcpBleOp(payload) {
             note: svcs.length ? null : (_bleConnInfo ? '设备已连但还没服务树：稍后重试' : '还没连设备：先 ble_connect'),
         } };
     }
+    if (action === 'getOutput') {
+        // 只读：面板**本次会话**的数据日志缓冲（切设备/断开都会清空 —— 这与串口那套不同：
+        // 串口读的是 LogHub 的通道，BLE 这里先给"面板上看到的那份"，并附上 LogHub 通道名，
+        // 想要跨会话的完整历史就用 log_tail 去读那个通道）
+        var lim = parseInt(payload.limit, 10);
+        var logs = (_bleLog || []);
+        var since = parseInt(payload.sinceSeq, 10);
+        var from = (since >= 0) ? since + 1 : 0;
+        var slice = (lim > 0 ? logs.slice(Math.max(0, logs.length - lim)) : logs.slice(from));
+        return { ok: true, value: {
+            pane: 'ble',
+            count: slice.length,
+            total: logs.length,
+            channels: { rx: 'ble:rx' },      // 给 log_tail 用（跨会话/更多条）
+            items: slice.map(function (l, i) {
+                return {
+                    seq: from + i,
+                    ts: l.ts || null,
+                    kind: l.kind || null,     // 'rx' / 'tx' / 'info' / 'err'
+                    hex: l.hex || null,
+                    text: l.text || '',
+                    dim: l.dim || '',
+                };
+            }),
+        } };
+    }
+    if (action === 'refreshRssi') {
+        // 只读（只问一次射频，不改任何状态）：当前已连设备的信号强度
+        if (!_bleConnAddr) {
+            return { ok: false, error: '还没连设备：先连上再读 RSSI（当前没有已连接地址）' };
+        }
+        return invoke('ble_refresh_rssi').then(function (info) {
+            return { ok: true, value: {
+                addr: _bleConnAddr,
+                rssi: (info && typeof info.rssi === 'number') ? info.rssi : null,
+                raw: info || null,
+            } };
+        }).catch(function (e) { return { ok: false, error: '读 RSSI 失败: ' + e }; });
+    }
     return { ok: false, invalidParams: true, error: '未知的 ble action: ' + action
-        + '（可用：state / listDevices / startScan / stopScan / getServices / periphStatus / periphStart / periphStop）' };
+        + '（可用：state / listDevices / startScan / stopScan / getServices / getOutput / refreshRssi'
+        + ' / periphStatus / periphStart / periphStop）' };
 }
 
 /* ===== 串口语义层（给 MCP 的 serial_* 工具用）=====

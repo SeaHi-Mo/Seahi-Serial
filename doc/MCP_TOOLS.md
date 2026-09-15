@@ -26,7 +26,7 @@
 
 - 运行时：`tools/list`（分页，每页 50，用 `nextCursor` 翻页）——这是**权威来源**，本页只是它的可读版本。
 - `mcp_limits` / `mcp_status` 里的 `toolCount` / `builtinToolCount` 能看到数量。
-- 内置工具 **42 个**；另有可选的 `ctl_*`（见 §4）。
+- 内置工具 **44 个**；另有可选的 `ctl_*`（见 §4）。
 
 ## 3. 一页速查
 
@@ -50,6 +50,8 @@
 | [`ble_start_scan`](#ble-start-scan) | **写** | 开始扫描蓝牙设备（面板那颗「开始/停止扫描」按钮的同一条路径）。默认按面板上设的时长自动停止；扫完用 ble_list_devices 取结果。写操作（会占用射频）。 |
 | [`ble_stop_scan`](#ble-stop-scan) | **写** | 停止蓝牙扫描（复用同一颗按钮的路径）。写操作。 |
 | [`ble_get_services`](#ble-get-services) | 读 | 当前已连接设备的 GATT 服务树（服务 UUID / 名称，每个服务下的特征 UUID、属性 props、描述符个数）。只读，取的是面板已经拉到的那份，不会重新去问设备。 |
+| [`ble_get_output`](#ble-get-output) | 读 | 读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。只读。 |
+| [`ble_refresh_rssi`](#ble-refresh-rssi) | 读 | 读当前已连接设备的信号强度（RSSI，负数，越接近 0 越强）。只问一次射频、不改状态；还没连设备时会直接说明。 |
 | [`ble_periph_status`](#ble-periph-status) | 读 | BLE **从机**（把本机变成外设）的状态：是否真的在对外广播、服务 UUID、特征数、是否可被发现/可连接、是否手动应答写请求、以及后端给出的告警（蓝牙关着 / 不支持外设角色等）。只读。 |
 | [`ble_periph_start`](#ble-periph-start) | 读 | 启动 BLE 从机：按面板上已配置好的服务/特征**对外广播**。⚠️ 这是危险动作（附近设备都能看到并连上来），必须带 confirm:true；不带时不会执行，并返回 -32006 说明后果。 |
 | [`ble_periph_stop`](#ble-periph-stop) | 读 | 停止 BLE 从机广播。⚠️ 危险动作（已连上来的中心设备会断开），必须带 confirm:true。 |
@@ -340,6 +342,31 @@
 - **读/写**：只读，无副作用
 - **返回**：{connected, addr, serviceCount, services:[{uuid,name,chars:[{uuid,props,descs}]}]}
 - **注意**：**取的是面板已经拉到的那份服务树**（不会重新去问设备）；还没连设备时 `note` 会说明
+
+**入参**
+
+无（不需要参数）
+
+#### `ble_get_output`
+
+- **作用**：读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。只读。
+- **读/写**：只读，无副作用
+- **返回**：{pane, count, total, channels:{rx}, items:[{seq,ts,kind,hex,text,dim}]}
+- **注意**：**本次会话的蓝牙数据日志**（切设备/断开就清空）。要跨会话用 `channels.rx` 去 log_tail；`sinceSeq` 增量跟进
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `limit` | number | 否 | 只要最后 N 条（省略=全部） |
+| `sinceSeq` | number | 否 | 增量：只要 seq 大于它的（与返回的 items[].seq 对齐） |
+
+#### `ble_refresh_rssi`
+
+- **作用**：读当前已连接设备的信号强度（RSSI，负数，越接近 0 越强）。只问一次射频、不改状态；还没连设备时会直接说明。
+- **读/写**：只读，无副作用
+- **返回**：{addr, rssi, raw}
+- **注意**：只问一次射频、不改状态；没连设备时直接报"先连上"
 
 **入参**
 
