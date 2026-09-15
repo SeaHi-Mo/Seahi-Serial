@@ -18,10 +18,42 @@ use tokio::sync::oneshot;
 
 use super::protocol::{RpcError, E_INTERNAL, E_UI_BUSY, E_UI_TIMEOUT};
 
-/// 等前端回执的超时（§4.5）
+/// 等前端回执的超时（§4.5）。**这是"界面动作"的默认值**：绝大多数 op 是同步 DOM 操作。
 pub const UI_TIMEOUT_MS: u64 = 5_000;
 /// 在途界面命令上限（§4.7 铁律 2）
 pub const MAX_IN_FLIGHT: usize = 32;
+
+/// `ble connect` 的桥超时：**不能按界面动作的 5 秒算**。
+///
+/// 为什么必须单独放宽（2026-09 口径核对）：前端那条 `connect` 分支返回的是
+/// **只有连上才 resolve 的 Promise**（`index.html` 的 `bleConnectTo`），而回执只在 Promise
+/// settle 时才发出。它自己的最坏路径 = 首连 15s（`BLE_CONNECT_TIMEOUT_MS`）
+/// + 配对 75s（`BLE_PAIR_TIMEOUT_MS`，会弹 Windows 配对框**等用户点**）+ 重连 15s ≈ 105s。
+/// 桥只等 5s 的话，AI 必然拿到 `-32004`「界面可能正忙或已关闭」—— 而操作其实还在正常进行：
+/// 这是纯粹的假失败，还会把一场正常的慢连接记进错误库。
+pub const UI_TIMEOUT_CONNECT_MS: u64 = 130_000;
+/// 要过射频/协议栈的 BLE 动作（读写特征、订阅、读 RSSI、GATT 服务树、从机启停）：
+/// 比界面动作慢，但远不到"连接+配对"那个量级，所以给一个中间值。
+pub const UI_TIMEOUT_DEVICE_MS: u64 = 30_000;
+
+/// 这次界面命令该等多久。
+///
+/// **默认仍是 5 秒**：放宽超时是有代价的（真卡死时 AI 要多等），所以只给"确实要等设备"的
+/// 那几个动作加长，且在这里逐个列名 —— 不允许出现"某个 op 顺手被放宽、没人知道"。
+pub fn timeout_for(op: &str, payload: &Value) -> u64 {
+    if op != "ble" {
+        return UI_TIMEOUT_MS;
+    }
+    match payload.get("action").and_then(|a| a.as_str()).unwrap_or("") {
+        // 最坏路径见 UI_TIMEOUT_CONNECT_MS 的注释
+        "connect" => UI_TIMEOUT_CONNECT_MS,
+        "read" | "write" | "subscribe" | "refreshRssi" | "getServices" | "periphStart"
+        | "periphStop" => UI_TIMEOUT_DEVICE_MS,
+        // state / listDevices / getOutput / periphStatus / startScan / stopScan 都是读内存/发个指令，
+        // 与前端的同步分支等价 —— 仍按界面动作的 5 秒算
+        _ => UI_TIMEOUT_MS,
+    }
+}
 
 /// 前后端桥的关联表
 #[derive(Default)]
@@ -53,11 +85,13 @@ impl UiBridge {
 
     /// 与 [`Self::call`] 同样的逻辑，但把"下发"抽象成一个闭包。
     /// 这样单测不需要真的 AppHandle，就能验证"回执解挂 / 超时回收 / 饱和拒绝"这些关键语义。
+    /// 超时按 op 分档（见 [`timeout_for`]），而不是一律 5 秒。
     pub async fn call_with<F>(&self, emit: F, op: &str, payload: Value) -> Result<Value, RpcError>
     where
         F: FnOnce(Value) -> Result<(), String>,
     {
-        self.call_with_timeout(emit, op, payload, UI_TIMEOUT_MS).await
+        let ms = timeout_for(op, &payload);
+        self.call_with_timeout(emit, op, payload, ms).await
     }
 
     /// 带可注入超时的版本（测试用短超时，避免每个用例都等 5 秒）
@@ -112,9 +146,16 @@ impl UiBridge {
                     "ui_bridge_timeout",
                     &format!("{}ms 内未收到前端回执（op={}）", timeout_ms, op),
                 );
+                // 文案要分清"等的是设备还是界面"：设备动作本来就慢，把它说成"界面可能已关闭"
+                // 会把排查方向整个带偏（这也是本次把超时分档的原因之一）。
+                let why = if timeout_ms > UI_TIMEOUT_MS {
+                    "设备动作未在超时内返回，它可能还在进行中（连接/配对尤其慢）"
+                } else {
+                    "界面可能正忙或已关闭"
+                };
                 Err(RpcError::new(
                     E_UI_TIMEOUT,
-                    format!("前端 {}ms 内未回执（界面可能正忙或已关闭）", timeout_ms),
+                    format!("前端 {}ms 内未回执（{}）", timeout_ms, why),
                 ))
             }
         }
@@ -279,6 +320,44 @@ mod tests {
             );
             assert_eq!(b.in_flight(), 0, "完成后不能残留条目");
         });
+    }
+
+    #[test]
+    fn device_ops_get_a_longer_bridge_timeout_than_ui_ops() {
+        // 连接的最坏路径 = 首连 15s + 配对 75s + 重连 15s（前端的三个常量，见 index.html）。
+        // 桥若按界面动作的 5 秒算，这条路**必然**假失败 —— 这条断言就是防它被改回去。
+        assert!(
+            UI_TIMEOUT_CONNECT_MS >= 15_000 + 75_000 + 15_000,
+            "connect 的桥超时必须容得下前端最坏连接+配对路径，当前 {}ms",
+            UI_TIMEOUT_CONNECT_MS
+        );
+        assert_eq!(
+            timeout_for("ble", &json!({ "action": "connect" })),
+            UI_TIMEOUT_CONNECT_MS
+        );
+        assert_eq!(
+            timeout_for("ble", &json!({ "action": "read" })),
+            UI_TIMEOUT_DEVICE_MS
+        );
+        // 反过来也要钉住：**不能顺手把所有 op 都放宽**（真卡死时 AI 要多等）
+        for (op, payload) in [
+            ("list", json!({})),
+            ("get", json!({ "path": "a.b" })),
+            ("set", json!({ "path": "a.b", "value": 1 })),
+            ("serial", json!({ "action": "state" })),
+            ("ble", json!({ "action": "state" })),
+            ("ble", json!({ "action": "listDevices" })),
+            ("ble", json!({})),
+        ] {
+            assert_eq!(
+                timeout_for(op, &payload),
+                UI_TIMEOUT_MS,
+                "{} {:?} 仍应是界面动作的 5 秒",
+                op,
+                payload
+            );
+        }
+        assert!(UI_TIMEOUT_DEVICE_MS > UI_TIMEOUT_MS);
     }
 
     #[test]

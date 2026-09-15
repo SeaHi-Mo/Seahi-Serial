@@ -40,6 +40,9 @@ pub const TOOLS_PAGE: usize = 50;
 pub const IDLE_TIMEOUT_SECS: u64 = 30 * 60;
 /// 每会话每分钟请求上限
 pub const RATE_LIMIT_PER_MIN: u32 = 60;
+/// 前端一次回灌最多多少条（前端自己按 200 条一批发，这里是防"节流失效"的后手）。
+/// 超出的**不静默丢**：逐条按通道记进 `dropped`（见 `log_push_batch`）。
+pub const MAX_LOG_BATCH_LINES: usize = 500;
 
 /// 与 Tauri 无关的核心状态（因此可以在单测里直接构造，不需要 AppHandle）
 pub struct McpCore {
@@ -883,15 +886,40 @@ pub fn mcp_notify_state(
 
 /// 前端回灌日志（界面专有的行：sys/err/串口收发/toast 等）。
 /// 前端按 200ms 批量调用，避免高频串口数据把 IPC 打爆；单次也有条数上限。
+///
+/// `dropped_by_channel`：前端**自己**因为待发队列满而丢掉的条数（`{通道名: 条数}`）。
+/// 必须收下来并记进各通道的 `dropped` —— 否则 `log_tail` 的 `mayBeIncomplete` 是假的，
+/// AI 会把"被丢过的日志"当成完整证据（2026-09 审计发现）。
 #[tauri::command]
-pub fn log_push_batch(lines: Vec<Value>) -> usize {
-    let hub = loghub::hub();
+pub fn log_push_batch(lines: Vec<Value>, dropped_by_channel: Option<Value>) -> usize {
+    push_batch_into(loghub::hub(), &lines, dropped_by_channel.as_ref())
+}
+
+/// `log_push_batch` 的实现体。**把 hub 作为参数**而不是直接拿全局单例 ——
+/// 单测就能用自己那个 hub 验证"丢了多少、记在哪"，不必去碰全局状态
+/// （全局 LogHub 是进程级的，cargo 并行跑测试时会互相影响）。
+fn push_batch_into(hub: &loghub::LogHub, lines: &[Value], dropped_by_channel: Option<&Value>) -> usize {
     if !hub.is_enabled() {
         return 0;
     }
+    // 前端丢的那部分：按通道记账（通道名不认得就计入 channelSkips）
+    if let Some(map) = dropped_by_channel.and_then(|v| v.as_object()) {
+        for (ch, n) in map {
+            if let Some(n) = n.as_u64() {
+                hub.note_dropped(ch, n);
+            }
+        }
+    }
     let mut n = 0usize;
-    // 单次上限：一次灌太多说明前端节流失效，宁可丢弃也不要把写路径压垮
-    for l in lines.iter().take(500) {
+    // 单次上限：一次灌太多说明前端节流失效（前端自己按 200 条一批发，正常到不了这里）。
+    // 超出的部分**也要记账** —— 否则"丢弃不记账"的老毛病会从后端这一侧重演。
+    let take = lines.len().min(MAX_LOG_BATCH_LINES);
+    for l in lines.iter().skip(take) {
+        if let Some(ch) = l.get("channel").and_then(|v| v.as_str()) {
+            hub.note_dropped(ch, 1);
+        }
+    }
+    for l in lines.iter().take(take) {
         let channel = l.get("channel").and_then(|v| v.as_str()).unwrap_or("ui");
         let text = l.get("text").and_then(|v| v.as_str()).unwrap_or("");
         if text.is_empty() {
@@ -960,6 +988,40 @@ mod tests {
         let mut cfg = aiconfig::AiConfig::default();
         cfg.server.token = "testtoken".to_string();
         Arc::new(McpCore::from_cfg(cfg))
+    }
+
+    /// 前端回灌：**收不下的部分必须记账**，前端报上来的丢弃数也要落到通道上。
+    /// 用独立的 hub（不碰全局单例），否则 cargo 并行跑测试时互相串。
+    #[test]
+    fn log_push_batch_accounts_for_everything_it_drops() {
+        let hub = loghub::LogHub::default();
+        hub.set_enabled(true);
+        let dropped = |ch: &str| hub.tail(ch, None, 10).unwrap()["dropped"].as_u64().unwrap_or(0);
+
+        // ① 一次给超过单批上限：收下的入通道，收不下的**按通道计一笔**（不是静默丢）
+        let many: Vec<Value> = (0..(MAX_LOG_BATCH_LINES + 3))
+            .map(|i| json!({ "channel": "ui:sys", "text": format!("l{}", i) }))
+            .collect();
+        let n = push_batch_into(&hub, &many, None);
+        assert_eq!(n, MAX_LOG_BATCH_LINES, "单批只收上限那么多");
+        assert_eq!(dropped("ui:sys"), 3, "多出来的 3 条要记账（否则 dropped 会撒谎）");
+
+        // ② 前端自己丢的那部分：按它报的通道分别记账
+        let drops = json!({ "serial:main:rx": 5, "ui:err": 2 });
+        let one = vec![json!({ "channel": "ui:sys", "text": "x" })];
+        push_batch_into(&hub, &one, Some(&drops));
+        assert_eq!(dropped("serial:main:rx"), 5);
+        assert_eq!(dropped("ui:err"), 2);
+        assert_eq!(dropped("ui:sys"), 3, "只有被丢的那两个通道 +3 之外的旧账不变");
+
+        // ③ 没有丢弃时不能凭空记一笔
+        push_batch_into(&hub, &one, Some(&json!({ "ui:sys": 0 })));
+        assert_eq!(dropped("ui:sys"), 3);
+
+        // ④ 停用时零成本：直接返回 0（停用会 drop_all 释放通道，所以这里不能再查旧通道的账）
+        hub.set_enabled(false);
+        assert_eq!(push_batch_into(&hub, &many, Some(&drops)), 0);
+        assert_eq!(hub.channel_count(), 0, "停用会真正释放通道（drop_all）");
     }
 
     struct Sse {
@@ -1154,6 +1216,27 @@ mod tests {
             assert!(bad.starts_with("HTTP/1.1 404"), "未知会话应 404: {}", bad);
 
             core.shutdown.store(true, Ordering::Relaxed);
+        });
+    }
+
+    /// 请求体上限必须**边收边生效**（先看 Content-Length），不能"先全收进内存再判大小"。
+    /// 这里故意声明一个远超上限的长度、却只发几个字节：新实现在看到请求头那一刻就回 413；
+    /// 老实现会傻等剩下的字节（测试只能等到超时），而真来 1 GB 就会先在进程里分配 1 GB ——
+    /// 那个 1 MiB 的上限等于没写（2026-09 审计发现）。
+    #[test]
+    fn oversized_body_is_rejected_without_buffering_it() {
+        let rt = rt();
+        let core = test_core();
+        rt.block_on(async {
+            let port = serve(core.clone(), "127.0.0.1", 0).await.expect("起服务");
+            let req = format!(
+                "POST /messages?sessionId=x&token=testtoken HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+                 Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{{}}",
+                MAX_BODY_BYTES + 1
+            );
+            let resp = one_shot(port, &req).await;
+            assert!(resp.contains("413"), "应回 413（不用等 body 读完），实际: {}", resp);
+            assert!(resp.contains("body too large"), "要说清是请求体太大: {}", resp);
         });
     }
 

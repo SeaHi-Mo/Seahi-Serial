@@ -101,7 +101,7 @@ const META = {
   log_stats: ['读', '`{enabled, channels:[{channel, lines, bytes, dropped, warnOrError, spanSecs, linesPerSec}], totalBytes, totalCapBytes, maxChannels, lockSkips, channelSkips, reclaims, reclaimedBytes}`', '用来判断"是不是在刷屏"'],
   log_clear: ['写', '`{clearedChannels, channel}`', '省略 `channel` 清全部；**通道名不存在会报 -32602**（不静默成功）；清空后通道仍在，`log_tail` 返回 0 行而不是报错'],
   log_export: ['读', '`{channels, lines, text, truncated}`', '只返回文本，不写文件'],
-  mcp_calls: ['读', '`{calls:[{seq, ts, session, tool, args, ok, error, durationMs, effects}], returned, file, enabled, note}`', '返回值默认不记（`includeResults` 打开才记）；只读文件尾部窗口'],
+  mcp_calls: ['读', '`{calls:[{seq, ts, session, tool, args, ok, error, durationMs, effects}], returned, scanned, tailOnly, file, enabled, note}`', '返回值默认不记（`includeResults` 打开才记）；只读文件尾部窗口 —— `tailOnly=true` 表示更早的记录**没被扫到**，`returned` 小于 `limit` 时别当成"历史上就这么多"（用 export 或直接读文件）'],
   mcp_stats: ['读', '`{callLog:{totalCalls, seq, dropped, byTool, firstAt, lastAt, settings, enabled, file, fileBytes}, sessionToolCalls:{工具名: 次数}}`', ''],
   mcp_config_get: ['读', '`{server:{host, port, tokenMasked, …}, callLog:{…}, expose:{autoControlTools, namespaces, readOnly}, version}`', 'token 打码；`expose.readOnly` 是只读（沙箱）模式的开关状态'],
   mcp_config_set: ['写', '`{applied:[生效的键路径], needRestart:bool}`', '只接受 `server` / `callLog` 两类键；**不接受改 token**；`host` 只允许回环；改 `server.*` 只保存，需在界面关闭再启用才生效'],
@@ -212,7 +212,7 @@ md += '| 情况 | 表现 |\n|---|---|\n';
 md += '| 参数错误（缺必填 / 类型错 / 不存在的控件路径 / **取值不在可选集里**（如端口名给错）/ 不存在的日志通道 / 非法正则 / 未知工具名） | JSON-RPC `error.code = -32602`（`E_INVALID_PARAMS`）|\n';
 md += '| 工具执行失败（控件被禁用、**前置状态没满足**（如没开监控就发数据）、写盘失败…） | 正常 `result` + `isError: true`，原因在文本内容里（**不是** JSON-RPC error）|\n';
 md += '| 没有界面上下文（服务器脱离 GUI 跑，只有开发/测试会遇到） | `isError: true`，文本为 `错误 -32006: MCP 服务器没有界面上下文` |\n';
-md += '| 前端桥超时（界面 5 秒没回执） | `-32004`（`E_UI_TIMEOUT`）|\n';
+md += '| 前端桥超时（界面动作 5 秒没回执） | `-32004`（`E_UI_TIMEOUT`）|\n';
 md += '| 前端桥在途请求过多 | `-32005`（`E_UI_BUSY`）|\n';
 md += '| 超过 60 次/分 | `-32000`（`E_RATE_LIMITED`）|\n';
 md += '| 工具内部 panic | `-32603`，消息里写明"已上报"；连接**不会**被打死，且会上报错误库 |\n';
@@ -224,18 +224,21 @@ md += '| 同时会话数 | 4（客户端断开**立刻**回收，不等空闲超
 md += '| 每会话出站队列 / 心跳 / 空闲回收 / 限流 | 256 条丢最旧 · 15s · 30 分钟 · 60 次/分 |\n';
 md += '| 请求体上限 | 1 MiB |\n';
 md += '| `ui_set` 单次 items | **200**（超了 -32602；这条链路跑在界面主线程上）|\n';
+md += '| `ui_set` 单条 `value` | **8192 字符**（超了 -32602；只挡条数挡不住"一条巨型字符串"）|\n';
+md += '| 快速指令 `value` / 组名 / 条目数 | 4096 / 64 字符 · 500 条（超长 -32602；**条目满了是 -32006**，先删几条）|\n';
 md += '| `serial_send` 单次字符数 | **64K**（超了 -32602；串口写是排队的）|\n';
 md += '| 工具列表每页 | 50 |\n';
 md += '| `ctl_*` 上限 | 400 |\n';
 md += '| 日志单条 / 每通道 / 总量 / 通道数 | 8 KiB 截断 · 128 KiB~1 MiB · 16 MiB（超了裁最大通道）· 64 个 |\n';
-md += '| 桥回执超时 / 在途上限 | 5 秒 · 32 |\n\n';
+md += '| 桥回执超时 / 在途上限 | **界面动作 5 秒**、设备动作 30 秒、`ble_connect` 130 秒 · 32 |\n';
+md += '| `ble_list_devices` / `ui_get_state(bleDevices)` 每页 | 200 台（`limit` 只能是 **1~200**，0 与超限都是 -32602；要全量就**不给** limit，或用 `offset` 翻页）|\n\n';
 md += '安全边界：\n\n';
 md += '1. **只监听回环**，`server.host` 只接受 `127.0.0.1`/`::1`/`localhost`；\n';
 md += '2. 必须带 token；`/healthz` 是唯一免鉴权端点且只回 `{"ok":true}`；`/status` 需 token 且**不回显 token 与完整 URL**；\n';
 md += '3. **工具不能改 token**（必须在界面点「重置令牌」）；\n';
 md += '4. AI 记录写独立的 `ai-calls.jsonl`，**用户配置 `config.json` 里不会出现任何 AI 痕迹**；\n';
 md += '5. 运行期错误走程序既有的错误上报（LogHub → 本地日志 → Sentry/自建服务），**上报前 token 打码**，同类错误 5 分钟只报一次；\n';
-md += '6. **MCP 的运行不得拖慢主程序**：串口收发热路径上只有一次非阻塞的日志旁路（`try_lock`，拿不到锁就丢并计数），上报走独立线程的 channel，SSE 出站是「有界队列 + `try_send`」（生产者绝不阻塞，慢客户端直接断开），界面命令有在途上限（32）与超时（5s），**所有外部输入都有上限**（见上表）。\n\n';
+md += '6. **MCP 的运行不得拖慢主程序**：串口收发热路径上只有一次非阻塞的日志旁路（`try_lock`，拿不到锁就丢并计数），上报走独立线程的 channel，SSE 出站是「有界队列 + `try_send`」（生产者绝不阻塞，慢客户端直接断开），界面命令有在途上限（32）与**分档超时**（界面动作 5s、设备动作 30s、连接 130s —— 连接要等用户点配对弹窗，按 5s 算必然假失败），**所有外部输入都有上限**（见上表）。\n\n';
 
 md += '## 8. 手测示例（curl）\n\n';
 md += '```bash\n';

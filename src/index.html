@@ -4828,12 +4828,20 @@ function trimOutputDom(mid, el, force) {
     var prevScrollHeight = el.scrollHeight;
     var prevScrollTop = el.scrollTop;
     var removedNonEmpty = 0;
-    for (var r = 0; r < removeCount; r++) {
-        if (!el.firstChild) break;
-        if (!el.firstChild.classList.contains('empty-line')) removedNonEmpty++;
-        el.removeChild(el.firstChild);
+    // 按**元素行数**收敛（而不是"删 removeCount 个节点"）：输出区是 contenteditable，
+    // 用户打字/粘贴可能给它插进**文本节点**，而文本节点没有 classList —— 老代码直接
+    // `el.firstChild.classList.contains(...)` 会抛 TypeError，调用方的 catch 又只 console.warn，
+    // 结果是**裁剪永久失效、DOM 无上限增长**（M29 修过的那个缺陷会这样复活）。
+    // 所以：没有 classList 的节点照删，但不计行数；循环条件盯住 children.length（只数元素）。
+    while (el.firstChild && el.children.length > target) {
+        var first = el.firstChild;
+        if (first.classList && !first.classList.contains('empty-line')) removedNonEmpty++;
+        el.removeChild(first);
     }
-    if (el._lineCount > removedNonEmpty) el._lineCount -= removedNonEmpty; else el._lineCount = 0;
+    // ⚠️ **不要**因为裁掉了 N 行就把 `_lineCount` 减回去：它是"本次会话已输出过多少行"的
+    // 全局计数器，残留行的行号就是按它写死的（见 appendOutput 里的 lnSpan）。减回去会让**新行
+    // 复用仍然留在屏幕上的行号** —— 就是"行号重复"（2026-09 审计发现；历史行那条路另有
+    // 重排行号的处理，见 rebuildOutput 附近的 P1-15）。裁掉的只是 DOM，不是"行号的历史"。
     if (m) {
         m._bufferStart += removedNonEmpty;
         // 还有选区且仍超标：标记待补裁，等 selectionchange 再裁到正常上限
@@ -5482,7 +5490,10 @@ function mcpHandleUiCmd(op, payload) {
             }
             return true;
         });
-        var cursor = payload.cursor ? parseInt(payload.cursor, 10) || 0 : 0;
+        // 游标必须夹到**非负整数**：JS `slice` 对负数是从末尾算的 —— `cursor:-5` 会静默返回
+        // 末尾几条，并把负游标当 `nextCursor` 回传（客户端此后每页都空，还永久跳过前面的控件）。
+        // 与 Rust 侧 tools/list 的游标夹取是同一条纪律（非法输入要么报错、要么按确定语义处理）。
+        var cursor = Math.max(0, parseInt(payload.cursor, 10) || 0);
         var limit = payload.limit ? Math.max(1, Math.min(500, parseInt(payload.limit, 10) || 100)) : 100;
         var page = all.slice(cursor, cursor + limit);
         var out = {
@@ -5524,7 +5535,15 @@ function mcpHandleUiCmd(op, payload) {
             // 顺带把扫描结果带一份**精简版**：通用桥（ui_*）原先没有任何入口能读到它 ——
             // 设备卡片是动态生成的 div、不在控件注册表里，所以"面板上明明扫到了、AI 却读不到"
             // （用户 2026-09 报的"连接器读不到扫描结果列表"）。完整列表用 section=bleDevices。
-            out = Object.assign({}, snap.ble, { scanResult: mcpBleScanResult(10, 0) });
+            // ⚠️ limit/offset 要**透传**（原来写死 (10, 0)）：`ui_get_state` 的 schema 里就带着这两个
+            // 参数，写死等于"传了没用"—— 调用方按 bleDevices 那套翻页时会一直拿到前 10 台
+            // （2026-09 审计发现）。省略时仍保持原来的精简口径（前 10 台）。
+            var bleLim = parseInt(payload.limit, 10);
+            var bleOff = parseInt(payload.offset, 10);
+            out = Object.assign({}, snap.ble, {
+                scanResult: mcpBleScanResult(isNaN(bleLim) ? 10 : bleLim,
+                                             isNaN(bleOff) ? 0 : bleOff)
+            });
         } else if (sec === 'bleDevices') {
             // 运行时数据（**不是配置**）：扫描结果。给只有通用桥、或工具列表还没刷新的客户端
             // 一个读得到的入口；语义工具那边是 ble_list_devices（两者读的是同一份 _bleDevices）。
@@ -5658,7 +5677,10 @@ function mcpBleScanResult(limit, offset) {
         returned: devices.length,
         hasMore: hasMore,
         nextOffset: hasMore ? end : null, // 下一页直接拿它接着调
-        truncated: devices.length < all.length,
+        // `truncated` 保留（老客户端在用），但含义**必须与 hasMore 一致**：
+        // 原来算的是 `devices.length < all.length`，offset>0 时最后一页也会是 true ——
+        // 同一个响应里"后面没有了"和"这条被截断了"自相矛盾（2026-09 审计发现）。
+        truncated: hasMore,
         devices: devices,
         note: note,
     };
@@ -5891,16 +5913,22 @@ function mcpBleOp(payload) {
         var lim = parseInt(payload.limit, 10);
         var logs = (_bleLog || []);
         var since = parseInt(payload.sinceSeq, 10);
-        var from = (since >= 0) ? since + 1 : 0;
-        var slice = (lim > 0 ? logs.slice(Math.max(0, logs.length - lim)) : logs.slice(from));
+        // `sinceSeq` 认的是**条目自己的稳定编号**（`l.seq`），不是数组下标：
+        // 缓冲满 400 条会丢最旧的，下标随之整体前移 —— 老实现拿 `from + i` 当下标算 seq，
+        // 于是"返回第 380-399 条却标成 seq 0-19"，客户端按 sinceSeq 跟进时会重复拉几百条
+        // （2026-09 审计发现）。lim 与 sinceSeq 同时给时：先按 seq 增量，再取最后 lim 条。
+        var after = (since >= 0)
+            ? logs.filter(function (l) { return (typeof l.seq === 'number' ? l.seq : -1) > since; })
+            : logs;
+        var slice = (lim > 0) ? after.slice(Math.max(0, after.length - lim)) : after;
         return { ok: true, value: {
             pane: 'ble',
             count: slice.length,
             total: logs.length,
             channels: { rx: 'ble:rx' },      // 给 log_tail 用（跨会话/更多条）
-            items: slice.map(function (l, i) {
+            items: slice.map(function (l) {
                 return {
-                    seq: from + i,
+                    seq: (typeof l.seq === 'number') ? l.seq : 0,
                     ts: l.ts || null,
                     kind: l.kind || null,     // 'rx' / 'tx' / 'info' / 'err'
                     hex: l.hex || null,
@@ -6324,7 +6352,11 @@ function mcpSerialOp(payload) {
     }
     if (action === 'history') {
         var limit = Math.max(1, Math.min(200, parseInt(payload.limit, 10) || 20));
-        var hist = (m.sendHistory || []).slice(-limit).reverse();
+        // sendHistory 是**新→旧**（send 时 unshift），所以"最近的在前"就是取前 limit 条。
+        // 原来是 `slice(-limit).reverse()`：拿到的是**最旧**的 limit 条、还倒过来 ——
+        // 与工具描述「最近的在前」（protocol.rs serial_get_history）正好相反，
+        // 历史超过 limit 条时最近发送的根本不返回（AI 会以为刚才发的是很久以前那条）。
+        var hist = (m.sendHistory || []).slice(0, limit);
         return { ok: true, value: { pane: mid, total: (m.sendHistory || []).length, items: hist } };
     }
     if (action === 'quickList') {
@@ -6373,7 +6405,16 @@ function mcpSerialOp(payload) {
     if (action === 'quickAdd') {
         var gt = qcmdResolveGroup(mid, payload.group);
         if (!gt) return { ok: false, invalidParams: true, error: 'group 不认得：给组序号（0 起，见 quickList 的 groups[].index）或组名' };
-        addQcmdItem(mid, gt.id);
+        // 内容长度是**请求本身**的问题 → invalidParams（后端据此翻成 -32602「改参数重试」）。
+        // 必须在 addQcmdItem **之前**判：否则被拒的调用会留下一条空指令。
+        var tooLongAdd = qcmdValueTooLong(payload.value);
+        if (tooLongAdd) return { ok: false, invalidParams: true, error: tooLongAdd };
+        if (addQcmdItem(mid, gt.id) !== true) {
+            // 满员是**前置状态**问题（先删几条再重试），不是参数错 → 不带 invalidParams
+            // （后端据此翻成 -32006「先做前置操作」，见 AGENTS #9 的错误码分工）
+            return { ok: false, error: '指令条目已达上限 ' + QCMD_FILE_MAX_ITEMS
+                 + ' 条（先 quickRemove 删几条，或换一个分栏）。再加会让写回的文件超限、重载被截断。' };
+        }
         var newIdx = (gt.items || []).length - 1;
         var applied = qcmdApplyItemPatch(mid, gt.id, newIdx, payload);
         var flatAdd = qcmdAllItems(mid);
@@ -6385,6 +6426,8 @@ function mcpSerialOp(payload) {
     if (action === 'quickUpdate') {
         var cellU = qcmdResolveItem(mid, payload.index);
         if (!cellU) return { ok: false, invalidParams: true, error: 'index 越界（见 quickList 的 items[].index）' };
+        var tooLongUpd = qcmdValueTooLong(payload.value);
+        if (tooLongUpd) return { ok: false, invalidParams: true, error: tooLongUpd };
         var appliedU = qcmdApplyItemPatch(mid, cellU.gid, cellU.ii, payload);
         if (!appliedU.length) return { ok: false, invalidParams: true, error: '没给要改的字段（value / seq / delayMs / hex 至少一个）' };
         return { ok: true, value: { pane: mid, index: parseInt(payload.index, 10), group: cellU.group.name || '',
@@ -6485,6 +6528,9 @@ var _mcpLogTimer = null;
 var _mcpLogFlushMs = 200;
 var _mcpLogBatchMax = 200;
 var _mcpLogQueueMax = 2000;
+// 待发队列满时丢掉的条数（**按通道**）：丢弃必须记账，否则 log_tail 的
+// `dropped`/`mayBeIncomplete` 会撒谎（说"日志完整"，实际丢了九成）—— 2026-09 审计发现。
+var _mcpLogDropByCh = {};
 
 function mcpLogSchedule() {
     if (_mcpLogTimer) return;
@@ -6498,14 +6544,31 @@ function mcpLogFlush() {
     if (!_mcpLogPending.length) return;
     var batch = _mcpLogPending;
     _mcpLogPending = [];
-    if (batch.length > _mcpLogBatchMax) batch = batch.slice(batch.length - _mcpLogBatchMax);
-    invoke('log_push_batch', { lines: batch }).catch(function() {});
+    var drops = _mcpLogDropByCh;
+    _mcpLogDropByCh = {};
+    // **一批都不许丢**：老实现是 `batch.slice(batch.length - 200)` —— 只发最后 200 条，
+    // 其余静默丢掉且不计数。定时器被浏览器节流（后台窗口 ≥1s）时队列能攒到 2000 条，
+    // 于是一次丢掉 1800 条、而 Rust 侧的 dropped 仍是 0 → AI 被明确告知"日志是完整的"。
+    // 现在按单批上限拆成多批**按顺序**发（invoke 按调用顺序到达，seq 不会乱）。
+    var chunks = [];
+    while (batch.length) chunks.push(batch.splice(0, _mcpLogBatchMax));
+    for (var i = 0; i < chunks.length; i++) {
+        var payload = { lines: chunks[i] };
+        if (i === 0) payload.droppedByChannel = drops;   // 丢弃计数跟第一批一起报
+        invoke('log_push_batch', payload).catch(function() {});
+    }
 }
 
 function mcpLogPush(channel, level, dir, text, bytes) {
     if (!text) return;
-    // 队列也有硬上限：万一定时器被浏览器节流，不能无界堆积
-    if (_mcpLogPending.length >= _mcpLogQueueMax) _mcpLogPending.shift();
+    // 队列也有硬上限：万一定时器被浏览器节流，不能无界堆积。
+    // ⚠️ 丢最旧的那条时要**按通道记账**（少了这一步，"丢弃"就变成静默的数据丢失）。
+    if (_mcpLogPending.length >= _mcpLogQueueMax) {
+        var gone = _mcpLogPending.shift();
+        if (gone && gone.channel) {
+            _mcpLogDropByCh[gone.channel] = (_mcpLogDropByCh[gone.channel] || 0) + 1;
+        }
+    }
     _mcpLogPending.push({
         channel: channel,
         level: level,
@@ -7137,7 +7200,11 @@ function qcmdApplyItemPatch(mid, gid, idx, patch) {
         return false;
     };
     if (patch.value !== undefined) {
-        if (!put('val', 'text', String(patch.value))) it.value = String(patch.value);
+        // 兜底夹取：任何入口都不许把超长内容写进内存 —— 走 MCP 的两个分支已经提前报错了，
+        // 这里是防"以后新加的调用方忘了判"（写进去也活不过一次重载：读入端会截断，写回时就永久丢了尾部）。
+        var vNew = String(patch.value);
+        if (vNew.length > QCMD_FILE_MAX_VALUE) vNew = vNew.slice(0, QCMD_FILE_MAX_VALUE);
+        if (!put('val', 'text', vNew)) it.value = vNew;
         applied.push('value');
     }
     if (patch.seq !== undefined) {
@@ -7168,7 +7235,12 @@ function qcmdMoveGroup(mid, gid, to) {
     var list = qcmdGroups(mid);
     var from = qcmdGroupIndex(mid, gid);
     if (from < 0) return false;
-    to = Math.max(0, Math.min(list.length - 1, parseInt(to, 10)));
+    var toIdx = parseInt(to, 10);
+    // 非法目标（NaN / 非数字）**什么都不做**并返回 false：原来 `Math.min(n, NaN)` 恒为 NaN，
+    // 再 `Math.max(0, NaN)` 还是 NaN，`splice(NaN, 0, …)` 会被当成 0 —— 于是"参数写错"
+    // 静默变成了"把这组挪到最前面"（最上面那组是循环起点，后果不是纯视觉的）。2026-09 审计发现。
+    if (isNaN(toIdx)) return false;
+    to = Math.max(0, Math.min(list.length - 1, toIdx));
     if (to === from) return true;
     qcmdReorderBoxes(mid, function() {
         var moved = list.splice(from, 1)[0];
@@ -7369,6 +7441,24 @@ function toggleQcmdSide(mid) {
 var QCMD_FILE_MAX_ITEMS = 500;     // 与后端/文档一致的条目上限
 var QCMD_FILE_MAX_LABEL = 64;      // 名称上限（字符）
 var QCMD_FILE_MAX_VALUE = 4096;    // 单条指令上限（字符）
+
+// 一个分栏里**指令条目总数**（跨组摊平）—— 与文件读入端 500 条的上限同一个口径。
+function qcmdItemTotal(mid) {
+    return (typeof qcmdAllItems === 'function') ? qcmdAllItems(mid).length : 0;
+}
+
+// 指令内容长度检查：返回错误文案；没问题返回 null。
+//
+// 为什么**写入口也要拦**（不只是读入端截断）：文件读入时超过 4096 字符会被截断/跳过，
+// 而写回端一个字都不截 —— 于是"内存里 1 万字符 → 重载被截到 4096 → 下一次写回用截断后的
+// 模型整份覆盖文件"会把尾巴永久丢掉（用户数据不可逆）。所以宁可在这里明确报错。
+function qcmdValueTooLong(v) {
+    if (v === undefined || v === null) return null;
+    var s = String(v);
+    if (s.length <= QCMD_FILE_MAX_VALUE) return null;
+    return '指令内容太长：' + s.length + ' 字符，上限 ' + QCMD_FILE_MAX_VALUE
+         + ' 字符（外部文件也按这个上限读回）。请拆成多条。';
+}
 
 /// Markdown 表格行 → 单元格数组（单元格内的 \| 先藏起来再切分）
 function qcmdMdCells(line) {
@@ -8506,9 +8596,17 @@ function makeQcmdItem(mid, gid, idx, label, value) {
     return item;
 }
 
+// 返回 true = 真的加上了；false = 被条目上限挡下（调用方必须**如实报失败**，别假装成功）。
 function addQcmdItem(mid, gid) {
     var g = qcmdGroupById(mid, gid);
-    if (!g) return;
+    if (!g) return false;
+    // 条目总数上限：文件读入端在 500 条处截断（超出部分 skipped），所以内存里**绝不能**越过这条线 ——
+    // 否则写回的文件超限 → 重载被截断到 500 → 之后每次写回都用"截断后的模型"整份覆盖文件，
+    // 用户多出来的那些指令就永久没了（与 AGENTS 里"文件与面板对不上"同一类事故）。
+    if (qcmdItemTotal(mid) >= QCMD_FILE_MAX_ITEMS) {
+        showToast('指令太多了（上限 ' + QCMD_FILE_MAX_ITEMS + ' 条）：先删掉几条再加', 'error');
+        return false;
+    }
     var idx = (g.items || []).length;
     // 名称按用户要求退出界面：新条目不再取「指令N」这种占位名，label 留空
     g.items.push({label: '', value: '', seq: 0, delay: QCMD_DELAY_DEFAULT, hex: false});
@@ -8517,6 +8615,7 @@ function addQcmdItem(mid, gid) {
     qcmdInsertItemBlock(mid, gid, g.items[idx]);   // 挂了文件：块的插入点要跟上，否则写回时漏掉这条
     scheduleConfigSave();
     scheduleQcmdFileSave(mid);             // 新增的这条也要落在目标文件里
+    return true;
 }
 
 function removeQcmdItem(mid, gid, idx) {
@@ -10551,6 +10650,8 @@ var _bleConnAddr = null;   // 后端真实已连接设备地址（ble_get_connec
 var _bleConnecting = false; // 连接进行中门闩：防止连点对同一设备重复 connect
 var _bleLog = [];          // 数据日志缓冲（只反映「当前设备本次会话」，切设备/断开都会清空）
 var _bleLogMax = 400;      // 日志上限，避免长时间运行无限增长
+var _bleLogSeq = 0;        // 条目的**稳定编号**：缓冲满会丢最旧，数组下标会整体前移，
+                           // 所以 seq 必须在**写入时**发号（ble_get_output 的 sinceSeq 认它）
 var _bleDevTimer = null;   // 扫描期间设备列表刷新定时器
 var _bleNotifyTimer = null;  // 通知轮询定时器
 var _bleRssiTimer = null;    // 已连接设备的 RSSI 刷新定时器
@@ -10871,14 +10972,14 @@ function bleCharAction(el, key) {
 // 条目形态：字符串，或 { text, dim }（dim 是 text 的结尾部分，显示为灰色，
 // 目前用于「文本 + 灰色十六进制」）。
 function logBle(text) {
-    _bleLog.push({ text: text });
+    _bleLog.push({ text: text, seq: _bleLogSeq++ });
     if (_bleLog.length > _bleLogMax) _bleLog.splice(0, _bleLog.length - _bleLogMax);
     renderBleLog();
 }
 // 末尾灰显的日志：dim 会**追加**在 text 之后（保证 dim 一定是整条 text 的后缀 ——
 // 渲染时靠这个不变式切分；调用方只需传"前半段"和"后半段"，不必自己拼）。
 function logBleDim(text, dim) {
-    _bleLog.push({ text: (text || '') + (dim || ''), dim: dim || '' });
+    _bleLog.push({ text: (text || '') + (dim || ''), dim: dim || '', seq: _bleLogSeq++ });
     if (_bleLog.length > _bleLogMax) _bleLog.splice(0, _bleLog.length - _bleLogMax);
     renderBleLog();
 }
@@ -10903,6 +11004,7 @@ function renderBleLog() {
 }
 function clearBleLog() {
     _bleLog = [];
+    _bleLogSeq = 0;          // 新会话的编号从头开始（seq 只保证"同一次会话内单调"）
     renderBleLog();
 }
 function bleBytesToHex(arr) {
@@ -11306,13 +11408,22 @@ function applyLiveRssi(address, rssi) {
     if (dev) dev.rssi = rssi;
     var isActive = (address === _bleSelected);
     var color = bleRssiColor(rssi, isActive);
-    var pct = Math.max(0, Math.min(100, Math.round((rssi + 100) / 90 * 100)));
+    // typeof 守卫：非数字（读 RSSI 失败 / null）时给 null，让调用方按"无读数"处理。
+    // 少了它 `(undefined + 100) / 90 * 100` → NaN，`Math.round(NaN)` 也是 NaN，
+    // 最后画出一条 width:NaN% 的进度条（另一处 12193 一直有守卫，这里是漏的）。2026-09 审计发现。
+    var pct = (typeof rssi === 'number' && isFinite(rssi))
+        ? Math.max(0, Math.min(100, Math.round((rssi + 100) / 90 * 100)))
+        : null;
     var card = document.querySelector('.ble-dev-card[data-addr="' + address + '"]');
     if (card) {
         var txt = card.querySelector('.ble-dev-rssi');
-        if (txt) { txt.textContent = rssi + ' dBm'; txt.style.color = color; }
+        // 没有读数就说"没有读数"：`null + ' dBm'` 会显示成 "null dBm"
+        if (txt) {
+            txt.textContent = (typeof rssi === 'number') ? (rssi + ' dBm') : '—';
+            txt.style.color = color;
+        }
         var bar = card.querySelector('.ble-dev-rssi-bar > span');
-        if (bar) { bar.style.width = pct + '%'; bar.style.background = color; }
+        if (bar) { bar.style.width = (pct === null ? '0%' : pct + '%'); bar.style.background = color; }
     }
     if (isActive && dev) {
         var meta = document.querySelector('#ble-detail .ble-detail-meta');
@@ -13505,9 +13616,18 @@ function adbPtyPoll(el) {
     if (!el._adbPtyId) return;
     var term = el._adbTerm;
     if (!term) return;
-    invoke('adb_shell_read', { sessionId: el._adbPtyId }).then(function(bytes) {
-        if (bytes && bytes.length) {
+    invoke('adb_shell_read', { sessionId: el._adbPtyId }).then(function(res) {
+        if (!res) return;
+        var bytes = res.bytes || [];
+        if (bytes.length) {
             term.write(new Uint8Array(bytes));
+            term.scrollToBottom();
+        }
+        // 积压丢弃要**说出来**（后端在 release 下没有控制台，只打 stderr 等于没提示）。
+        // 与串口那路的"已丢弃 N 字节"同一条纪律：宁可提示一行，也不让用户以为设备就输出这么多。
+        if (res.dropped) {
+            term.write('\r\n\x1b[33m[提示] 前端消费不及时，已丢弃 ' + res.dropped
+                + ' 块输出（后台命令刷得太快时可切走页面减少输出）\x1b[0m\r\n');
             term.scrollToBottom();
         }
     }).catch(function() {});

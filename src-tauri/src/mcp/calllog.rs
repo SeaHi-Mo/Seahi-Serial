@@ -261,43 +261,51 @@ impl CallLog {
         Ok(())
     }
 
-    /// 读尾部若干行（从文件末尾回溯有限字节，避免把整个文件读进来）
-    fn read_tail_lines(&self, max_bytes: u64, max_lines: usize) -> Vec<Value> {
+    /// 读尾部若干行（从文件末尾回溯有限字节，避免把整个文件读进来）。
+    ///
+    /// 返回 `(行, 是否只读到了尾部窗口)`：后者为 true 表示**文件开头那段没被扫到**
+    /// （字节窗口或行数窗口被切过）。调用方要据此说明"结果可能不全" ——
+    /// 别让 `returned` 被当成"历史上就这么多"（2026-09 审计发现）。
+    fn read_tail_lines(&self, max_bytes: u64, max_lines: usize) -> (Vec<Value>, bool) {
         let path = match self.path.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             Some(p) => p,
-            None => return Vec::new(),
+            None => return (Vec::new(), false),
         };
         let mut f = match std::fs::File::open(&path) {
             Ok(f) => f,
-            Err(_) => return Vec::new(),
+            Err(_) => return (Vec::new(), false),
         };
         let len = f.metadata().map(|m| m.len()).unwrap_or(0);
         let start = len.saturating_sub(max_bytes);
-        if start > 0 {
+        let byte_cut = start > 0;
+        if byte_cut {
             let _ = f.seek(SeekFrom::Start(start));
         }
         let mut buf = String::new();
         if f.read_to_string(&mut buf).is_err() {
-            return Vec::new();
+            return (Vec::new(), false);
         }
         let mut lines: Vec<&str> = buf.lines().filter(|l| !l.trim().is_empty()).collect();
         // 从中间切进来的第一行可能是半行，丢掉
-        if start > 0 && !lines.is_empty() {
+        if byte_cut && !lines.is_empty() {
             lines.remove(0);
         }
+        let line_cut = lines.len() > max_lines;
         let skip = lines.len().saturating_sub(max_lines);
-        lines
+        let out = lines
             .into_iter()
             .skip(skip)
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .collect()
+            .collect();
+        (out, byte_cut || line_cut)
     }
 
     /// 查最近的调用记录（可按工具/成败过滤）
     pub fn recent(&self, limit: usize, tool: Option<&str>, ok_only: Option<bool>) -> Value {
         let limit = limit.clamp(1, MAX_QUERY_LIMIT);
-        // 过滤后再取 limit 条：先多读一些
-        let raw = self.read_tail_lines(READ_TAIL_BYTES, limit * 8);
+        // 过滤后再取 limit 条：先多读一些（按工具/成败筛时可能大半不匹配）
+        let (raw, tail_only) = self.read_tail_lines(READ_TAIL_BYTES, limit * 8);
+        let scanned = raw.len();
         let filtered: Vec<Value> = raw
             .into_iter()
             .filter(|r| match tool {
@@ -312,12 +320,25 @@ impl CallLog {
             .collect();
         let skip = filtered.len().saturating_sub(limit);
         let out: Vec<Value> = filtered.into_iter().skip(skip).collect();
+        // `returned < limit` **不等于**"历史上就这么多"：窗口外可能还有匹配。
+        // 老实说出来，否则调用方会拿一个被截断的结果当全量（2026-09 审计发现）。
+        let note = if tail_only && out.len() < limit {
+            format!(
+                "只扫了文件尾部的 {} 条（按工具/成败筛过），符合的比 limit 少 —— 更早的记录里可能还有；\
+                 要看全量请用 export 或直接读文件",
+                scanned
+            )
+        } else {
+            "只读文件尾部窗口；更长历史请用 export 或直接读文件".to_string()
+        };
         json!({
             "calls": out,
             "returned": out.len(),
+            "scanned": scanned,
+            "tailOnly": tail_only,
             "file": self.path_string(),
             "enabled": self.enabled(),
-            "note": "只读文件尾部窗口；更长历史请用 export 或直接读文件",
+            "note": note,
         })
     }
 
@@ -363,7 +384,7 @@ impl CallLog {
     /// 导出为纯文本（`jsonl` 原文 / `md` 表格）
     pub fn export(&self, format: &str, limit: usize) -> Value {
         let limit = limit.clamp(1, MAX_QUERY_LIMIT);
-        let raw = self.read_tail_lines(READ_TAIL_BYTES, limit);
+        let (raw, _tail_only) = self.read_tail_lines(READ_TAIL_BYTES, limit);
         let mut out = String::new();
         match format {
             "md" => {
@@ -600,12 +621,14 @@ mod tests {
         let log = CallLog::in_dir(&dir);
         log.record("s", "t", &json!({}), true, None, 1, None, None);
         // 极小的读窗口会从中间切进来，必须丢掉那半行而不是解析失败就崩
-        let raw = log.read_tail_lines(30, 10);
+        let (raw, tail_only) = log.read_tail_lines(30, 10);
         // 不要求一定有结果，但绝不能 panic、也不能返回半个对象
-        for r in raw {
+        for r in &raw {
             assert!(r.is_object());
             assert!(r["tool"].as_str().is_some());
         }
+        // 30 字节的窗口必然只读到尾部 → 标志必须为真（调用方据此说清"结果可能不全"）
+        assert!(tail_only, "窗口被切过就要如实报出来");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

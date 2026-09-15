@@ -101,11 +101,18 @@ fn should_report(key: &str, window: Duration, now: Instant) -> bool {
         }
     }
     if m.len() >= MAX_TRACKED {
-        // 表满：清掉所有已过窗口的条目；还满就直接清空（宁可多报一次也不无限增长）
+        // 表满：先清掉已过窗口的条目；**还满就只淘汰最旧的那一条**（LRU）。
+        //
+        // 原来是"还满就整表 clear()"（注释写着"宁可多报一次"）—— 代价是**所有其它 kind 的
+        // 去重状态一起失效**：一次 64 种不同 key 的噪声就能把 `rate_limited`、`start_failed`
+        // 这些重要错误的 5 分钟窗口全部归零，等于给"错误上报洪水"开了一道口子
+        // （2026-09 审计发现；去重是网络与错误库的最后一道闸，见 AGENTS #8）。
         let w = window;
         m.retain(|_, t| now.duration_since(*t) < w);
         if m.len() >= MAX_TRACKED {
-            m.clear();
+            if let Some(oldest) = m.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) {
+                m.remove(&oldest);
+            }
         }
     }
     m.insert(key.to_string(), now);
@@ -257,5 +264,48 @@ mod tests {
         }
         let n = last_seen().lock().unwrap().len();
         assert!(n <= MAX_TRACKED, "去重表必须有界，实际 {}", n);
+    }
+
+    /// 表满时只淘汰**最旧的一条**（LRU），而不是整表清空。
+    ///
+    /// 为什么重要：去重是网络与错误库的最后一道闸（AGENTS #8），整表清空意味着"一次 64 种
+    /// 不同 key 的噪声洪水"就能把 `rate_limited` / `start_failed` 这些重要错误的 5 分钟窗口
+    /// 一起归零。2026-09 审计发现（原注释写的是"宁可多报一次"）。
+    #[test]
+    fn full_dedup_table_evicts_only_the_oldest() {
+        let _g = lock();
+        let seen = Mutex::new(Vec::new());
+        const OLD: (&str, &str) = ("最旧的错误", "它会被挤掉");
+        const RECENT: (&str, &str) = ("近期的错误", "它必须留下");
+
+        hit(OLD.0, OLD.1, &seen);
+        hit(RECENT.0, RECENT.1, &seen);
+        // 刚好填满，再多插一条就触发一次淘汰
+        for i in 0..(MAX_TRACKED - 2) {
+            hit("噪声", &format!("第 {} 种", i), &seen);
+        }
+        hit("噪声", "再挤一条", &seen);
+
+        // ① 最近报过的那条仍在表里 → 必须继续被挡住（整表清空会把它一起冲掉，于是这里会放行）
+        let before = seen.lock().unwrap().len();
+        hit(RECENT.0, RECENT.1, &seen);
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            before,
+            "最近报过的 kind 必须继续去重（整表清空会把它冲掉）"
+        );
+
+        // ② 最旧的那条已被淘汰 → 允许再报一次（LRU 的预期代价）
+        hit(OLD.0, OLD.1, &seen);
+        let times = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.as_str() == format!("{}|{}", OLD.0, OLD.1))
+            .count();
+        assert_eq!(times, 2, "被淘汰的条目应能重新上报一次");
+
+        // ③ 表仍然有界
+        assert!(last_seen().lock().unwrap().len() <= MAX_TRACKED);
     }
 }

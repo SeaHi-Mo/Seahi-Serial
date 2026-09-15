@@ -3868,16 +3868,54 @@ fn enforce_log_cache_limit_in(
     }
 }
 
-/// 用默认预算执行清理
-fn enforce_log_cache_limit(dir: &std::path::Path, active: &std::collections::HashSet<std::path::PathBuf>) {
-    enforce_log_cache_limit_in(dir, LOG_CACHE_MAX_COUNT, LOG_CACHE_MAX_TOTAL_BYTES, active);
+/// **创建新缓存文件之前**腾位：紧接着还要多出一个文件，所以目标数是 `LOG_CACHE_MAX_COUNT - 1`
+/// —— 建完正好 ≤ `LOG_CACHE_MAX_COUNT`。
+///
+/// 为什么不在 `enforce_log_cache_limit_in` 里把比较符改成 `<`：那个函数的语义是
+/// "这个目录里最多留 N 个"（单测直接按这个语义用它），把"马上还要再建一个"这层意图
+/// 藏进比较符里，会让两个调用点的含义都变模糊。这里用一个名字把意图写明白。
+///
+/// 2026-09 审计发现的真实缺陷：原来在建文件**之前**直接调 `enforce_log_cache_limit`（目标 10），
+/// 目录里恰好有 10 个时就 break 不删，紧接着建出第 11 个 —— 声明为硬上限的"最多 10 个"
+/// 从来就没成立过（单测从 12 个文件起步，正好绕过了 `count == max_count` 这个边界）。
+fn make_room_for_new_log_cache(
+    dir: &std::path::Path,
+    active: &std::collections::HashSet<std::path::PathBuf>,
+) {
+    enforce_log_cache_limit_in(
+        dir,
+        LOG_CACHE_MAX_COUNT.saturating_sub(1),
+        LOG_CACHE_MAX_TOTAL_BYTES,
+        active,
+    );
+}
+
+/// 开一次会话缓存时对**已存在**会话的处理。
+///
+/// 正常情况下幂等：保留原文件，自动重连时日志连续。
+/// 但**触顶（capped）的会话必须换一个新文件**（返回 `true`）—— 否则那个面板的日志缓存
+/// 会永久失效且不再通知：`start_log_cache` 原来是 `or_insert_with`，把 `capped` 一起保住了，
+/// 之后 `append_log_cache` 每次都静默 `return`，只有把整个监视器关掉才释放（2026-09 审计发现）。
+fn restart_capped_log_cache_session(sess: &mut LogCacheSession) -> bool {
+    if !sess.capped {
+        return false;
+    }
+    sess.file = None;                       // → append 时会新建文件（并先腾位）
+    sess.path = std::path::PathBuf::new();
+    sess.bytes = 0;
+    sess.capped = false;
+    true
 }
 
 /// 标记一次串口会话开始（幂等：已存在则保留原文件，自动重连时日志连续）
 #[tauri::command]
 fn start_log_cache(state: tauri::State<'_, LogCacheState>, monitor_id: String, port_name: String) -> Result<(), String> {
     let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
-    sessions.entry(monitor_id).or_insert_with(|| LogCacheSession {
+    if let Some(sess) = sessions.get_mut(&monitor_id) {
+        restart_capped_log_cache_session(sess);
+        return Ok(());
+    }
+    sessions.insert(monitor_id, LogCacheSession {
         port_name,
         file: None,
         path: std::path::PathBuf::new(),
@@ -3929,7 +3967,8 @@ fn append_log_cache(
                 .filter(|s| !s.path.as_os_str().is_empty())
                 .map(|s| s.path.clone())
                 .collect();
-            enforce_log_cache_limit(&dir, &active);
+            // 建文件**之前**腾位（目标 = 上限 - 1，建完正好 ≤ 上限，见函数注释）
+            make_room_for_new_log_cache(&dir, &active);
             let port_name = sessions
                 .get(&monitor_id)
                 .map(|s| s.port_name.clone())
@@ -4678,6 +4717,8 @@ struct AdbPtySession {
     writer: std::sync::Mutex<Box<dyn std::io::Write + Send>>,
     /// 常驻读取线程推送的原始输出块
     output: crossbeam_channel::Receiver<Vec<u8>>,
+    /// 因通道积压而丢掉的**块数**（读线程累加，`adb_shell_read` 取增量回传前端）
+    dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
     dead: std::sync::atomic::AtomicBool,
     /// 保活：保存 PTY master/slave，避免 pair drop 导致 shell 退出
     _master: std::sync::Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>,
@@ -4718,22 +4759,22 @@ async fn adb_open_shell(
         // 读线程：读 PTY 输出并推送到 channel
         let mut reader = pair.master.try_clone_reader().map_err(|e| format!("克隆reader失败: {}", e))?;
         let (tx, rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+        // 丢弃计数放在**会话上**（而不是读取线程的局部变量）：前端每次 read 都要能拿到增量，
+        // 否则"设备就输出了这么多"是假象（release 构建没有控制台，eprintln 谁也看不见）。
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let dropped_thread = dropped.clone();
         std::thread::spawn(move || {
             use std::io::Read;
             /// 通道积压上限：ADB 侧若刷得很快（logcat/top）而前端没及时取走，
-            /// 无上限通道会让内存线性增长。超限丢弃本块并提示，避免 OOM。
+            /// 无上限通道会让内存线性增长。超限丢弃本块并计数（计数由 adb_shell_read 回传前端）。
             const ADB_PTY_QUEUE_MAX: usize = 512;
             let mut buf = [0u8; 8192];
-            let mut dropped: u64 = 0;
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => { println!("[ADB-PTY] reader EOF"); let _ = tx.send(Vec::new()); break; }
                     Ok(n) => {
                         if tx.len() >= ADB_PTY_QUEUE_MAX {
-                            dropped += 1;
-                            if dropped == 1 || dropped % 200 == 0 {
-                                eprintln!("[ADB-PTY] 前端消费不及时，已丢弃 {} 块输出", dropped);
-                            }
+                            dropped_thread.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             continue;
                         }
                         if tx.send(buf[..n].to_vec()).is_err() { break; }
@@ -4749,6 +4790,7 @@ async fn adb_open_shell(
             child: std::sync::Arc::new(std::sync::Mutex::new(child)),
             writer: std::sync::Mutex::new(writer),
             output: rx,
+            dropped: dropped.clone(),
             dead: std::sync::atomic::AtomicBool::new(false),
             _master: std::sync::Mutex::new(Some(pair.master)),
             _slave: std::sync::Mutex::new(Some(pair.slave)),
@@ -4779,12 +4821,17 @@ async fn adb_shell_write(
     }).await.map_err(|e| format!("任务错误: {}", e))?
 }
 
-/// 读取会话输出（非阻塞：立即返回当前累积的数据）
+/// 读取会话输出（非阻塞：立即返回当前累积的数据）。
+///
+/// 回 `{ bytes, dropped }`：`dropped` 是"自上次 read 以来因积压被丢掉的**块数**"（取增量并清零）。
+/// 形状与串口的 `ReadDataResult`、BLE 通知的 `{items, dropped}` 一致 —— 丢弃必须能传到界面上，
+/// 否则用户会以为"设备就输出了这么多"（2026-09 审计发现：ADB 这一路原来只在 stderr 上打日志，
+/// 而 release 构建没有控制台）。
 #[tauri::command]
 async fn adb_shell_read(
     state: tauri::State<'_, AdbPtyState>,
     session_id: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<serde_json::Value, String> {
     let sessions = state.sessions.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let session = { let s = sessions.lock().unwrap_or_else(|e| e.into_inner()); s.get(&session_id).cloned() };
@@ -4793,7 +4840,8 @@ async fn adb_shell_read(
         while let Ok(chunk) = session.output.try_recv() {
             buf.extend_from_slice(&chunk);
         }
-        Ok(buf)
+        let dropped = session.dropped.swap(0, std::sync::atomic::Ordering::Relaxed);
+        Ok(serde_json::json!({ "bytes": buf, "dropped": dropped }))
     }).await.map_err(|e| format!("任务错误: {}", e))?
 }
 
@@ -6360,6 +6408,77 @@ mod log_maintenance_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 边界：目录里**恰好**等于上限时，建新文件之前必须先腾出一格 —— 否则建完就是 `上限 + 1` 个，
+    /// 声明的硬上限根本不成立。老单测从 12 个文件起步，正好绕过了 `count == max_count` 这个点。
+    #[test]
+    fn log_cache_makes_room_before_creating() {
+        let dir = tmp_dir("cache-make-room");
+        for i in 0..LOG_CACHE_MAX_COUNT {
+            touch_cache_file(&dir, i as u32, 1024);
+        }
+        assert_eq!(cache_file_names(&dir).len(), LOG_CACHE_MAX_COUNT);
+        let active = std::collections::HashSet::new();
+
+        // 这一步正是 `append_log_cache` 建新文件之前做的事
+        make_room_for_new_log_cache(&dir, &active);
+
+        let files = cache_file_names(&dir);
+        assert_eq!(
+            files.len(),
+            LOG_CACHE_MAX_COUNT - 1,
+            "必须腾出一格：建完新文件才正好 ≤ {} 个",
+            LOG_CACHE_MAX_COUNT
+        );
+        assert!(
+            !files.iter().any(|f| f.contains("000000000")),
+            "腾位时删掉的应是最旧的那个，实际: {:?}",
+            files
+        );
+
+        // 模拟"建新文件"：腾位 + 新建之后，总数仍不得超过声明的硬上限
+        touch_cache_file(&dir, 999, 1024);
+        assert!(
+            cache_file_names(&dir).len() <= LOG_CACHE_MAX_COUNT,
+            "腾位 + 新建之后不得超过声明的硬上限"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 触顶（capped）的会话在**重连**时必须换一个新文件：
+    /// 老实现是 `or_insert_with`，把 `capped` 一起保住了 —— 于是那个面板的日志缓存
+    /// 永久失效、而且再也不会通知（只有关掉整个监视器才释放）。2026-09 审计发现。
+    #[test]
+    fn capped_log_cache_session_starts_a_new_file_on_reconnect() {
+        let mut s = LogCacheSession {
+            port_name: "COM3".into(),
+            file: None,
+            path: std::path::PathBuf::from("C:\\logs\\session-1-COM3.log"),
+            bytes: 7 * 1024 * 1024,
+            capped: true,
+        };
+        assert!(
+            restart_capped_log_cache_session(&mut s),
+            "触顶过的会话必须换新文件（否则永久静默停写）"
+        );
+        assert!(s.path.as_os_str().is_empty() && s.file.is_none());
+        assert_eq!(s.bytes, 0);
+        assert!(!s.capped, "换新文件后要能继续写（下一轮触顶还会再通知一次）");
+        assert_eq!(s.port_name, "COM3", "端口名不该被这次重置弄丢");
+
+        // 没触顶的会话保持幂等：自动重连继续写同一个文件（日志连续，这是原设计要的）
+        let mut n = LogCacheSession {
+            port_name: "COM3".into(),
+            file: None,
+            path: std::path::PathBuf::from("C:\\logs\\session-2-COM3.log"),
+            bytes: 1234,
+            capped: false,
+        };
+        let before = n.path.clone();
+        assert!(!restart_capped_log_cache_session(&mut n), "没触顶就该继续用原文件");
+        assert_eq!(n.path, before);
+        assert_eq!(n.bytes, 1234);
+    }
+
     #[test]
     fn log_cache_enforces_total_bytes() {
         let dir = tmp_dir("cache-bytes");
@@ -7235,7 +7354,11 @@ async fn ble_notify_loop(
                 "service_uuid": n.service_uuid.to_string(),
                 "value_hex": hex,
             });
-            if let Ok(mut b) = buf.lock() {
+            {
+                // 锁中毒也照常写（`unwrap_or_else(into_inner)`）：写成 `if let Ok(..)` 会把一次中毒
+                // 变成"静默丢一条**且不计入 dropped**" —— 与"丢弃要记账"的纪律相悖
+                // （2026-09 审计发现；同一函数的其它锁都用了 into_inner）。
+                let mut b = buf.lock().unwrap_or_else(|e| e.into_inner());
                 while b.len() >= NOTIFY_BUF_MAX {
                     b.pop_front();
                     dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

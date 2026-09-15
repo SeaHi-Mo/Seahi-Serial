@@ -415,6 +415,37 @@ impl LogHub {
         }
     }
 
+    /// 记一笔"**前端**因为自己的待发队列满而丢掉的日志"（按通道）。
+    ///
+    /// 为什么需要：前端的待发队列在定时器被节流时会丢最旧的，而 `log_tail` 的 `dropped` /
+    /// `mayBeIncomplete` 读的是**这里**的计数。不记的话 AI 会被明确告知"日志是完整的"，
+    /// 而实际可能丢了九成 —— 串口缓冲与 BLE 通知两路都记账，只有前端回灌这一路漏了
+    /// （2026-09 审计发现）。
+    ///
+    /// 与 [`Self::push`] 同样的纪律：**非阻塞**，拿不到锁就跳过（丢的是一个计数，
+    /// 绝不能让调用方在这里等）。
+    pub fn note_dropped(&self, name: &str, n: u64) {
+        if n == 0 || !self.enabled.load(Ordering::Relaxed) {
+            return;
+        }
+        let ch = match self.handle_capped(name) {
+            Some(c) => c,
+            None => {
+                self.channel_skips.fetch_add(n, Ordering::Relaxed);
+                return;
+            }
+        };
+        // 分号不能省：不留分号时 `Result<MutexGuard>` 这个临时量会活到**本块结束**，
+        // 于是和 `ch` 的析构顺序冲突（E0597）。`push` 那边因为把 guard 绑进了变量所以没事。
+        match ch.try_lock() {
+            Ok(mut c) => c.dropped += n,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                self.lock_skips.fetch_add(n, Ordering::Relaxed);
+            }
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner().dropped += n,
+        };
+    }
+
     fn with_channel<R>(&self, name: &str, f: impl FnOnce(&Channel) -> R) -> Option<R> {
         let ch = {
             let map = self.channels.lock().unwrap_or_else(|e| e.into_inner());
@@ -646,6 +677,10 @@ impl LogHub {
             let mut c = ch.lock().unwrap_or_else(|e| e.into_inner());
             c.lines.clear();
             c.bytes = 0;
+            // 丢弃计数也要归零：`log_tail` 用它算 `mayBeIncomplete`，而清空之后缓冲区是
+            // **完整的空** —— 把"清空之前丢过"的旧账算到当前窗口头上，那个标志就永远为真、
+            // 再也不传递任何信息（2026-09 审计发现）。
+            c.dropped = 0;
         }
         self.total_bytes.store(0, Ordering::Relaxed);
         n
@@ -941,6 +976,23 @@ mod tests {
         assert_eq!(h.tail("app", None, 10).unwrap()["lines"].as_array().unwrap().len(), 0);
         assert_eq!(h.tail("ui:sys", None, 10).unwrap()["lines"].as_array().unwrap().len(), 0);
         assert_eq!(h.total_bytes(), 0);
+    }
+
+    /// 清空要把"丢弃账"一起归零：否则 `mayBeIncomplete` 永远是 true，这个标志就废了。
+    #[test]
+    fn clear_resets_the_drop_counter_so_the_flag_means_something() {
+        let h = fresh();
+        h.set_enabled(true);
+        h.push("app", LEVEL_INFO, DIR_NONE, "a", 0);
+        h.note_dropped("app", 5);
+        assert_eq!(h.tail("app", None, 10).unwrap()["dropped"], 5);
+        assert_eq!(h.tail("app", None, 10).unwrap()["mayBeIncomplete"], true);
+
+        h.clear(Some("app"));
+
+        let t = h.tail("app", None, 10).unwrap();
+        assert_eq!(t["dropped"], 0, "清空后旧账不该继续挂在通道上");
+        assert_eq!(t["mayBeIncomplete"], false, "空缓冲是完整的空，不是'可能不完整'");
     }
 
     #[test]

@@ -346,6 +346,17 @@ console.log('preview ->', out);
   check(sb2._meta.textContent.indexOf('MTU 185') > 0,
     'RSSI 刷新后 MTU 仍在（两处共用同一个纯函数）', sb2._meta.textContent);
 
+  // 没有读数（读 RSSI 失败给 null/undefined）时不能画 NaN：进度条会变成 width:NaN%，文字会成 "null dBm"
+  // （另一处按设备算百分比的地方一直有守卫，这里是漏的。2026-09 审计发现）
+  sb2._bar.style.width = '';
+  sb2._txt.textContent = '';
+  sb2.applyLiveRssi('AA:BB:CC:DD:EE:01', null);
+  check(sb2._bar.style.width === '0%', '没有 RSSI 读数时进度条给 0%（不是 NaN%）', sb2._bar.style.width);
+  check(sb2._txt.textContent === '—', '没有读数时文字是「—」（不是 "null dBm"）', sb2._txt.textContent);
+  sb2.applyLiveRssi('AA:BB:CC:DD:EE:01', undefined);
+  check(sb2._bar.style.width === '0%' && sb2._txt.textContent === '—',
+    'undefined 与 null 一样处理（typeof 守卫而不是真值判断）');
+
   // ---- 5b) 订阅状态必须随连接复位（未连接清空；连接仍在则保留）----
   const mkSync = (connAddr) => {
     const s = {
@@ -381,7 +392,7 @@ console.log('preview ->', out);
   check(s1._started === 0, '未连接时不启动通知轮询');
 
   // ---- 5c) 数据日志：追加 / 清空（切设备、断开时调用 clearBleLog）----
-  const sb3 = { console, _bleLog: [], _bleLogMax: 400, _bleSelected: 'AA:BB:CC:DD:EE:01' };
+  const sb3 = { console, _bleLog: [], _bleLogMax: 400, _bleLogSeq: 0, _bleSelected: 'AA:BB:CC:DD:EE:01' };
   const logEl = { textContent: '', innerHTML: '', scrollTop: 0, scrollHeight: 10 };
   sb3.document = { getElementById: (id) => (id === 'ble-log' ? logEl : null) };
   vm.createContext(sb3);
@@ -748,7 +759,7 @@ console.log('preview ->', out);
     console, _bleConnAddr: 'CC:DD:EE:FF:00:11', _bleConnInfo: { address: 'CC:DD:EE:FF:00:11' },
     _bleServices: [{ uuid: 'AAAA' }], _bleSubs: { 'AAAA::notify': true }, _bleSelected: 'CC:DD:EE:FF:00:11',
     _bleDevices: [{ address: 'CC:DD:EE:FF:00:11', connected: true }],
-    _bleLog: [], _bleLogMax: 400, _toasts: [], _stopped: 0,
+    _bleLog: [], _bleLogMax: 400, _bleLogSeq: 0, _toasts: [], _stopped: 0,
     document: { getElementById: () => null },
   };
   sb6.stopBleNotifyPoll = () => {};
@@ -906,8 +917,8 @@ console.log('preview ->', out);
     '文本可读时：文本 + 灰色十六进制（用 logBleDim 追加灰显段）');
   check(/\.ble-log-dim \{ color:var\(--text-d\); \}/.test(html), '灰色段有对应样式 .ble-log-dim');
   check(/logBle\(label \+ '  ' \+ hex\);/.test(html), '二进制/解析失败时仍直接显示十六进制');
-  check(/function logBleDim\(text, dim\)/.test(html) && /_bleLog\.push\(\{ text: \(text \|\| ''\) \+ \(dim \|\| ''\), dim: dim \|\| '' \}\)/.test(html),
-    'logBleDim 以结构化条目入缓冲，并把 dim 追加成 text 的后缀');
+  check(/function logBleDim\(text, dim\)/.test(html) && /_bleLog\.push\(\{ text: \(text \|\| ''\) \+ \(dim \|\| ''\), dim: dim \|\| '', seq: _bleLogSeq\+\+ \}\)/.test(html),
+    'logBleDim 以结构化条目入缓冲，并把 dim 追加成 text 的后缀（seq 在写入时发号）');
   // 日志渲染改成 innerHTML → 必须全部转义（设备数据是注入面）
   check(/log\.innerHTML = bleLogToHtml\(_bleLog, escapeHtml\) \+ '\\n';/.test(html),
     '日志渲染经 bleLogToHtml + escapeHtml（内容全部转义后才插入）');
@@ -1084,6 +1095,16 @@ console.log('preview ->', out);
     '前端在丢弃时输出一行提示（不再让用户误以为日志就这些）');
   check(/var data = \(res && res\.bytes\) \? res\.bytes : res;/.test(html),
     '前端兼容新的对象返回与旧的纯数组返回');
+  // ADB PTY：积压丢弃原来只在 stderr 上打一行（release 构建没有控制台 → 谁也看不见），
+  // 于是"设备就输出了这么多"是假象。现在按与串口/BLE 相同的 { bytes, dropped } 口径回传。
+  check(/dropped: std::sync::Arc<std::sync::atomic::AtomicU64>/.test(mainRs)
+    && /let dropped = session\.dropped\.swap\(0, std::sync::atomic::Ordering::Relaxed\);/.test(mainRs)
+    && /json!\(\{ "bytes": buf, "dropped": dropped \}\)/.test(mainRs),
+    'ADB 读会话按 { bytes, dropped } 回传（丢弃按块计数、取增量）');
+  check(!/eprintln!\("\[ADB-PTY\]/.test(mainRs),
+    'ADB 丢块不再只打 stderr（release 下等于没提示）');
+  check(/var bytes = res\.bytes \|\| \[\];/.test(html) && /前端消费不及时，已丢弃 /.test(html),
+    'ADB 前端按新形状取值，并在丢弃时提示一行');
   const sbFmt = { console, TextDecoder };
   vm.createContext(sbFmt);
   vm.runInContext([
@@ -1864,6 +1885,9 @@ console.log('preview ->', out);
   const removedA = sbD.trimOutputDom('main', elA);
   check(elA.children.length === 10000, '正常：超过 15000 行裁到 10000', elA.children.length);
   check(removedA === 10000 && sbD.monitors.main._bufferStart === 10000, '返回并累计移除的非空行数', removedA);
+  // 行号计数器**不能**因为裁剪而回退：残留行的行号是按它写死的，减回去就会让新行复用
+  // 屏幕上的行号（行号重复）。裁掉的只是 DOM，不是"行号的历史"。（2026-09 审计发现）
+  check(elA._lineCount === 20000, '裁剪不改行号计数器（减回去会让新行与残留行重号）', elA._lineCount);
   check(elA.scrollTop === 0, '移除高度远超滚动位置时 scrollTop 收敛到 0', elA.scrollTop);
 
   // B. 用户在顶部看历史：只裁到硬上限，不再无限跳过
@@ -1901,6 +1925,20 @@ console.log('preview ->', out);
   sbD.monitors.main = { _bufferStart: 0 };
   sbD.trimOutputDom('main', elD, true);
   check(elD.children.length === 10000, 'force=true（滚回底部）时忽略保护直接裁到 10000', elD.children.length);
+
+  // E. 首节点是被插进来的**文本节点**（输出区是 contenteditable，用户打字/粘贴就会有）：
+  //    老代码直接取 `el.firstChild.classList` 会抛 TypeError，而调用方的 catch 只 console.warn
+  //    → 裁剪永久失效、DOM 无上限增长（M29 修过的缺陷会这样复活）。2026-09 修。
+  const elE = fakeOut(20000);
+  elE.children.unshift({ nodeType: 3 });     // 文本节点：没有 classList
+  elE.scrollTop = 5000;                      // 不在顶部 → 走"正常裁剪"那条路
+  sbD.monitors.main = { _bufferStart: 0 };
+  let trimThrew = null;
+  try { sbD.trimOutputDom('main', elE); } catch (e) { trimThrew = String(e); }
+  check(trimThrew === null, '首节点是文本节点时不能抛异常（抛了裁剪就永久失效）', trimThrew);
+  check(elE.children.length === 10000, '文本节点被一并清掉，元素行数仍收敛到上限', elE.children.length);
+  check(sbD.monitors.main._bufferStart === 10000, '文本节点不算「非空行」（行号/缓冲区起点不能虚增）',
+    sbD.monitors.main._bufferStart);
 
   console.log('\n【MCP 服务器（入口 / 协议 / 配置隔离）】');
 
@@ -2448,6 +2486,18 @@ console.log('preview ->', out);
   const page2 = sbReg.mcpHandleUiCmd('list', { limit: 2, cursor: page1.value.nextCursor });
   check(page2.value.controls[0].path !== page1.value.controls[0].path, '第二页与第一页不重复');
 
+  // 游标必须夹到非负：JS `slice` 对负数是从末尾算的，`cursor:-5` 会静默返回末尾几条，
+  // 还把负数当 nextCursor 回传（客户端此后每页都空、并永久跳过前半段控件）。2026-09 修。
+  const negCur = sbReg.mcpHandleUiCmd('list', { limit: 2, cursor: -5 });
+  check(negCur.ok === true
+      && negCur.value.controls[0].path === all.value.controls[0].path
+      && Number(negCur.value.nextCursor) > 0,
+    'cursor 为负数时按 0 处理（不能走"负数从末尾算"的语义）',
+    JSON.stringify({ first: negCur.value.controls[0] && negCur.value.controls[0].path, next: negCur.value.nextCursor }));
+  check(sbReg.mcpHandleUiCmd('list', { limit: 2, cursor: '-5' }).value.controls[0].path
+      === all.value.controls[0].path,
+    'cursor 传字符串负数同样夹到 0');
+
   const desc = sbReg.mcpHandleUiCmd('describe', { path: 'serial.conn.portSelect' });
   check(desc.ok === true && desc.value.inputSchema, 'ui_describe 返回输入格式');
   check(Array.isArray(desc.value.inputSchema.properties.value.enum)
@@ -2509,14 +2559,28 @@ console.log('preview ->', out);
   // 「MCP 不能影响主程序」落到代码上 = 外部输入必须有界，且校验必须在**碰主程序之前**。
   // 用 mcpSrc 而不是 mcpProd：protocol.rs 的 cfg(test) 截断点落在**常量声明之后、分派之前**，
   // 所以"常量 + 分派"跨不过去（这不是要测测试代码，是截断点的限制）。
+  // 用**下标比较**而不是"900 字符窗口"：窗口一旦被新增校验撑破，这条断言就会假红，
+  // 而它真正想说的是"校验代码在下发到界面之前"。
+  const uiSetCheckAt = mcpSrc.indexOf('n > MAX_UI_SET_ITEMS');
+  const uiCallSetAt = mcpSrc.indexOf('core.ui_call("set", payload)');
   check(/pub const MAX_UI_SET_ITEMS: usize = 200;/.test(mcpSrc)
-    && /n > MAX_UI_SET_ITEMS[\s\S]{0,900}?core\.ui_call\("set", payload\)/.test(mcpSrc),
+    && uiSetCheckAt > 0 && uiCallSetAt > uiSetCheckAt,
     'ui_set.items 有上限，且在**下发到界面之前**就被挡住（那条链路跑在 WebView 主线程上）');
   check(/pub const MAX_SEND_CHARS: usize = 64 \* 1024;/.test(mcpSrc)
     && /chars\(\)\.count\(\) > MAX_SEND_CHARS/.test(mcpSrc),
     'serial_send.data 有上限（串口写队列不能被一次灌满）');
   check(/maxUiSetItems/.test(mcpSrc) && /maxSendChars/.test(mcpSrc),
     '两条上限都在 mcp_limits 里对客户端公开（不让人靠撞墙发现）');
+  // 只挡"条数"挡不住"一条巨型字符串"：单条 value 也得有界，且同样校验在碰界面之前
+  check(/pub const MAX_UI_SET_VALUE_CHARS: usize = 8192;/.test(mcpSrc)
+    && /check_text_len\(it, "value", MAX_UI_SET_VALUE_CHARS/.test(mcpSrc)
+    && /maxUiSetValueChars/.test(mcpSrc),
+    'ui_set 单条 value 也有上限、也发生在下发之前、也进 mcp_limits');
+  // 快速指令的"只报告不执行"缺陷：这三个常量原来只出现在常量声明与 limits_json 里
+  check(/fn check_text_len\(/.test(mcpSrc)
+    && /check_text_len\(args, "value", MAX_QUICK_CMD_VALUE_CHARS/.test(mcpSrc)
+    && /check_text_len\(args, "name", MAX_QUICK_CMD_LABEL_CHARS/.test(mcpSrc),
+    '快速指令的 value / 组名长度上限**真的被执行**（原来只报告不执行）');
   check(/mcpLogPush\(mcpCh/.test(html), 'bufferPush 里接了回灌（所有输出行的唯一漏斗）');
   // 通道名规则**只允许有一处**（mcpSerialLogChannels）：写侧（bufferPush）与读侧
   // （serial_get_output 拿 mcpSerialState 里的 logChannels）必须用同一套名字。
@@ -2567,7 +2631,7 @@ console.log('preview ->', out);
   vm.createContext(sbHub);
   vm.runInContext([
     'var _mcpLogPending = []; var _mcpLogTimer = null; var _mcpLogFlushMs = 200;',
-    'var _mcpLogBatchMax = 200; var _mcpLogQueueMax = 2000;',
+    'var _mcpLogBatchMax = 200; var _mcpLogQueueMax = 2000; var _mcpLogDropByCh = {};',
     extractFunction('mcpLogSchedule'),
     extractFunction('mcpLogFlush'),
     extractFunction('mcpLogPush'),
@@ -2586,9 +2650,16 @@ console.log('preview ->', out);
   for (let i = 0; i < 2500; i++) sbHub.mcpLogPush('ui:sys', 'info', 'none', 'l' + i, 1);
   check(sbHub._mcpLogPending.length === 2000, '待发队列有硬上限（防无界堆积）', sbHub._mcpLogPending.length);
   sbHub.mcpLogFlush();
-  check(logCalls[0].args.lines.length === 200, '单批上限 200', logCalls[0].args.lines.length);
-  check(logCalls[0].args.lines[199].text === 'l2499', '超限时丢最旧、保留最新',
-    logCalls[0].args.lines[199].text);
+  // 老实现只发最后 200 条、其余 1800 条静默丢掉且不计数（log_tail 会说"日志完整"）——
+  // 现在拆成多批全部发出，队列丢弃的部分按通道记账。
+  check(logCalls.length === 10, '2000 条按单批 200 拆成 10 批**全部**发出（不再只发最后 200 条）', logCalls.length);
+  check(logCalls[0].args.lines.length === 200 && logCalls[9].args.lines.length === 200, '每批 200 条');
+  check(logCalls[0].args.lines[0].text === 'l500',
+    '队列满时丢的是最旧的（l0..l499 被丢，所以第一批从 l500 起）', logCalls[0].args.lines[0].text);
+  check(logCalls[9].args.lines[199].text === 'l2499', '最新的那条一定发得出去', logCalls[9].args.lines[199].text);
+  check(logCalls[0].args.droppedByChannel && logCalls[0].args.droppedByChannel['ui:sys'] === 500,
+    '队列丢掉的那 500 条**按通道记了账**（log_tail 的 mayBeIncomplete 才会说真话）',
+    JSON.stringify(logCalls[0].args.droppedByChannel));
 
   console.log('\n【MCP AI 调用记录与配置（S8）】');
 
@@ -3222,8 +3293,22 @@ console.log('preview ->', out);
     check(sent.ok && sent.value.sent === true && els['main-sendInput'].value === 'AT+GMR' && els['main-btnSend']._clicks === 1,
       '发数据：写发送框 + 点发送按钮（与用户操作同一条路）');
 
+    // 发送历史：sendHistory 是**新→旧**（send 里 unshift），所以"最近的在前"= 取前 limit 条。
+    // ⚠️ 老断言（items[0] === 'AT+GMR'）配着 `slice(-limit).reverse()` 的实现恰好也能通过 ——
+    // 假数据两义 + 实现反向，两条错误互相盖住了，所以这条要显式写清 index 0 是最新的那条。
     const hist = sbSer.mcpSerialOp({ action: 'history', limit: 5 });
-    check(hist.ok && hist.value.items[0] === 'AT+GMR' && hist.value.total === 2, '发送历史最新在前');
+    check(hist.ok && hist.value.total === 2 && hist.value.items[0] === 'AT'
+        && hist.value.items[1] === 'AT+GMR',
+      '发送历史最新在前（items[0] 就是最近发的那条）', JSON.stringify(hist.value.items));
+
+    const savedHist = monitorMap.main.sendHistory;
+    monitorMap.main.sendHistory = Array.from({ length: 25 }, (_, i) => 'cmd' + (25 - i)); // cmd25 最新
+    const histN = sbSer.mcpSerialOp({ action: 'history', limit: 5 });
+    check(histN.value.items.length === 5 && histN.value.items[0] === 'cmd25'
+        && histN.value.items[4] === 'cmd21',
+      '历史多于 limit 时给的是**最近的** limit 条（不是最旧的那几条倒序）',
+      JSON.stringify(histN.value.items));
+    monitorMap.main.sendHistory = savedHist;
 
     const ql = sbSer.mcpSerialOp({ action: 'quickList' });
     check(ql.ok && ql.value.items.length === 2 && ql.value.usable === 1, '快速指令：列出全部并标出哪条可用', JSON.stringify(ql.value));
@@ -3372,6 +3457,7 @@ console.log('preview ->', out);
        'qcmdCurrentText', 'scheduleQcmdFileSave', 'qcmdFileSaveNow',
        'qcmdFlushPendingFileSaves', 'qcmdFileMountedBy', 'collectConfigForMonitor',
        'qcmdNewGroupId', 'qcmdGroups', 'qcmdGroupById', 'qcmdGroupIndex', 'qcmdAllItems', 'qcmdItemAt',
+       'qcmdItemTotal', 'qcmdValueTooLong',
        'qcmdGroupOn', 'setQcmdGroupOn', 'qcmdItemElId', 'qcmdLoopRefusal', 'qcmdResolveGroup',
        'qcmdResolveItem', 'qcmdApplyItemPatch', 'qcmdMoveGroup', 'setQcmdGroupFold',
        'mcpWriteEl', 'mcpKindOf', '_mcpDispatch',
@@ -4596,6 +4682,26 @@ console.log('preview ->', out);
       check(envR3.mcpBleOp({ action: 'read', char: 'AAAA' }).ok === false
         && envR3.calls.length === 0, '没连设备时读特征直接说清，不去点（按钮点了也没用）');
 
+      // getOutput 的 seq：必须是**条目自己的稳定编号**（数组下标会因为丢最旧而整体前移，
+      // 拿下标当 seq 会让客户端按 sinceSeq 跟进时重复拉几百条 —— 2026-09 审计发现）
+      const envO = mkEnv({ dev: connectedDev });
+      envO._bleLog = [];
+      for (let i = 380; i < 400; i++) envO._bleLog.push({ text: 'line' + i, seq: i });
+      const oAll = envO.mcpBleOp({ action: 'getOutput', limit: 5 });
+      check(oAll.ok === true && oAll.value.count === 5
+        && oAll.value.items[0].seq === 395 && oAll.value.items[4].seq === 399,
+        'getOutput 的 seq 是条目自己的编号（不是 0..4 这种切片下标）',
+        JSON.stringify(oAll.value.items.map(x => x.seq)));
+      const oSince = envO.mcpBleOp({ action: 'getOutput', sinceSeq: 397 });
+      check(oSince.value.count === 2 && oSince.value.items[0].seq === 398
+        && oSince.value.items[1].seq === 399,
+        'sinceSeq 按稳定编号做增量：只要比它新的（不把旧的又发一遍）',
+        JSON.stringify(oSince.value.items.map(x => x.seq)));
+      const oBoth = envO.mcpBleOp({ action: 'getOutput', sinceSeq: 390, limit: 2 });
+      check(oBoth.value.count === 2 && oBoth.value.items[0].seq === 398,
+        'limit 与 sinceSeq 同时给：先按 seq 增量、再取最后 limit 条',
+        JSON.stringify(oBoth.value.items.map(x => x.seq)));
+
       // 特征图标只在该服务"展开"时才在 DOM 里：没展开过也要能操作（先展开拥有它的服务）
       const lazyTree = { uuid: '0000FFF0-0000-1000-8000-00805F9B34FB',
                          chars: [{ uuid: '0000FFF1-0000-1000-8000-00805F9B34FB',
@@ -4876,6 +4982,11 @@ console.log('preview ->', out);
         && rLast.note === null,
         '最后一页：不足一页、hasMore=false、nextOffset=null',
         JSON.stringify({ returned: rLast.returned, hasMore: rLast.hasMore }));
+      // truncated 与 hasMore 必须是**同一个含义**：原来 truncated 算的是"返回条数 < 总数"，
+      // offset>0 时最后一页也会是 true —— 同一个响应里"后面没有了"和"这条被截断了"自相矛盾。
+      check(rLast.truncated === false && rp.truncated === true,
+        'truncated 与 hasMore 同义（最后一页不能又说"还有"又说"被截断"）',
+        JSON.stringify({ lastPage: rLast.truncated, page2: rp.truncated }));
       const rOver = sbScan.mcpBleScanResult(10, 999);
       check(rOver.returned === 0 && rOver.total === 30 && /越界/.test(rOver.note),
         'offset 越界时如实说清（不是静默空列表）', rOver.note);
@@ -4883,8 +4994,11 @@ console.log('preview ->', out);
       sbScan._bleScanning = false;
       const re = sbScan.mcpBleScanResult(0, 0);
       check(re.total === 0 && /先开扫描/.test(re.note), '空列表的 note 说清下一步', re.note);
-      check(/sec === 'bleDevices'/.test(html) && /scanResult: mcpBleScanResult\(10, 0\)/.test(html),
-        'ui_get_state 的 ble 段带精简扫描结果、bleDevices 段给全量（通用桥唯一的读取入口）');
+      check(/sec === 'bleDevices'/.test(html)
+        && !/scanResult: mcpBleScanResult\(10, 0\)/.test(html)
+        && /mcpBleScanResult\(isNaN\(bleLim\) \? 10 : bleLim,/.test(html)
+        && /isNaN\(bleOff\) \? 0 : bleOff/.test(html),
+        'ui_get_state 的 ble 段：默认仍是精简的前 10 台，但 limit/offset **真的透传**（原来写死 (10,0)）');
       check(/out = mcpBleScanResult\(parseInt\(payload\.limit, 10\), parseInt\(payload\.offset, 10\)\);/.test(html),
         'bleDevices 段同样支持 limit / offset 分页（通用桥也要能一页页翻）');
       check(/可用：serial \/ wsl \/ ble \/ bleDevices \/ theme/.test(html)
@@ -4907,6 +5021,78 @@ console.log('preview ->', out);
           sbSide.QCMD_FILE_MAX_VALUE === usizeOf('MAX_QUICK_CMD_VALUE_CHARS'),
       '前端 QCMD_FILE_* 与 mcp 侧 MAX_QUICK_CMD_* 数值一致（跨端漂移当场红）',
       [sbSide.QCMD_FILE_MAX_ITEMS, sbSide.QCMD_FILE_MAX_LABEL, sbSide.QCMD_FILE_MAX_VALUE].join(','));
+
+    // ---- 指令上限：**写入口**也要把关（2026-09）----
+    // 原来这三个上限只有**读入端**在执行（超过 500 条 / 4096 字符时截断或跳过），写入口完全不拦：
+    // 内存里越过这条线 → 写回的文件超限 → 重载被截断 → 之后每次写回都用"截断后的模型"整份覆盖
+    // 用户的文件 = 不可逆丢数据。所以新增/改名/改内容都要在入口处挡住，并**如实报失败**。
+    {
+      sbSide.monitors.limitTest = { quickGroups: [{ id: 'lg1', name: '循环 1',
+        items: new Array(sbSide.QCMD_FILE_MAX_ITEMS).fill(0)
+          .map(() => ({ label: '', value: 'x', seq: 0, delay: 1000, hex: false })) }] };
+      check(sbSide.qcmdItemTotal('limitTest') === sbSide.QCMD_FILE_MAX_ITEMS,
+        'qcmdItemTotal 数的是跨组条目总数', sbSide.qcmdItemTotal('limitTest'));
+      check(sbSide.addQcmdItem('limitTest', 'lg1') === false,
+        '到上限时 addQcmdItem 必须拒绝并返回 false（调用方据此如实报失败）');
+      check(sbSide.qcmdItemTotal('limitTest') === sbSide.QCMD_FILE_MAX_ITEMS,
+        '被拒绝之后条数不能变（没留下空条目）', sbSide.qcmdItemTotal('limitTest'));
+      sbSide.monitors.limitTest.quickGroups[0].items.pop();
+      check(sbSide.addQcmdItem('limitTest', 'lg1') === true,
+        '少一条之后又能加（上限是"最多 N 条"，不是"到 N 条就永久锁死"）');
+
+      // 排序目标非法时**什么都不做**：`splice(NaN, 0, …)` 会被当成 0，于是"参数写错"
+      // 静默变成"把这一组挪到最前面"——最上面那组是循环起点，后果不是纯视觉的。
+      sbSide.monitors.mvTest = { quickGroups: [{ id: 'ga', name: 'A', items: [] },
+                                              { id: 'gb', name: 'B', items: [] }] };
+      const mvBad = sbSide.qcmdMoveGroup('mvTest', 'gb', '不是数字');
+      check(mvBad === false && sbSide.monitors.mvTest.quickGroups[0].id === 'ga',
+        '排序目标非法时不动列表（原来会把组挪到第 0 位 = 循环起点）',
+        JSON.stringify(sbSide.monitors.mvTest.quickGroups.map(g => g.id)));
+
+      check(sbSide.qcmdValueTooLong('A'.repeat(sbSide.QCMD_FILE_MAX_VALUE)) === null,
+        '内容正好等于上限要放行（边界不多拦一个字符）');
+      const vTooLong = sbSide.qcmdValueTooLong('A'.repeat(sbSide.QCMD_FILE_MAX_VALUE + 1));
+      check(!!vTooLong && vTooLong.indexOf(String(sbSide.QCMD_FILE_MAX_VALUE)) > 0,
+        '内容超一个字符就报错，且报错里说清上限是多少', vTooLong);
+
+      // 接线：MCP 的两个改列表分支都要用上（满员 → 无 invalidParams → 后端 -32006"先删几条"；
+      // 内容超长 → invalidParams → -32602"改参数重试"，两者语义不同，别混）
+      check(/if \(addQcmdItem\(mid, gt\.id\) !== true\)/.test(html) && /指令条目已达上限/.test(html),
+        'MCP quickAdd 满员时如实报失败（不是假装加上了）');
+      check(/var tooLongAdd = qcmdValueTooLong\(payload\.value\);[\s\S]{0,260}?if \(addQcmdItem/.test(html),
+        '内容长度先于 addQcmdItem 校验（否则被拒的调用会留下一条空指令）');
+      check(/var tooLongUpd = qcmdValueTooLong\(payload\.value\)/.test(html),
+        'MCP quickUpdate 同样拦超长内容');
+      check(/if \(vNew\.length > QCMD_FILE_MAX_VALUE\) vNew = vNew\.slice\(0, QCMD_FILE_MAX_VALUE\);/.test(html),
+        'qcmdApplyItemPatch 里还有一道兜底夹取（以后新加的调用方忘了判也不会把超长值写进内存）');
+    }
+
+    // ---- 超时值的跨端一致性（2026-09 补）----
+    // 桥等的时间必须**容得下前端自己的最坏路径**：`ble connect` 会依次走到
+    // 首连（BLE_CONNECT_TIMEOUT_MS）+ 配对（BLE_PAIR_TIMEOUT_MS，等用户点弹窗）+ 重连。
+    // 这条断言存在的原因：桥的 5 秒对着前端的 15s/75s，AI **必然**拿到假失败（-32004），
+    // 而两端各自的单测都是绿的 —— 与"回执丢字段"同一类中间地带。
+    {
+      const bridgeSrc = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'bridge.rs'), 'utf8');
+      const rustU64 = (src, name) => {
+        const m = new RegExp(name + '\\s*:\\s*u64\\s*=\\s*([0-9_]+)').exec(src);
+        return m ? Number(m[1].replace(/_/g, '')) : -1;
+      };
+      const pick = (re) => { const m = re.exec(html); return m ? Number(m[1]) : -1; };
+      const uiMs = rustU64(bridgeSrc, 'UI_TIMEOUT_MS');
+      const connectMs = rustU64(bridgeSrc, 'UI_TIMEOUT_CONNECT_MS');
+      const deviceMs = rustU64(bridgeSrc, 'UI_TIMEOUT_DEVICE_MS');
+      const feConnect = pick(/var BLE_CONNECT_TIMEOUT_MS = (\d+);/);
+      const fePair = pick(/var BLE_PAIR_TIMEOUT_MS = (\d+);/);
+      check(uiMs === 5000 && feConnect > 0 && fePair > 0 && connectMs >= feConnect + fePair + feConnect,
+        '桥的 connect 超时容得下前端的「首连 + 配对 + 重连」最坏路径',
+        JSON.stringify({ uiMs, connectMs, feConnect, fePair }));
+      check(deviceMs > uiMs && deviceMs <= connectMs,
+        '设备动作的超时夹在「界面动作」与「连接」之间（分档，而不是一律放宽）',
+        JSON.stringify({ deviceMs, uiMs, connectMs }));
+      check(/fn timeout_for\(/.test(bridgeSrc) && /timeout_for\(op, &payload\)/.test(bridgeSrc),
+        '桥真的按 op 分档取超时（只定义不调用等于没改）');
+    }
 
     // ---- 导入：走真实 qcmdImportFile ----
     const baseHandler = cmd => {

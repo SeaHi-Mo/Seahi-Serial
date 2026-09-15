@@ -721,6 +721,13 @@ pub const MAX_CTL_TOOLS: usize = 400;
 /// 上限按"批量操作"的实际需要给（远大于人类会手写的量），超了就报 -32602 让调用方分批。
 pub const MAX_UI_SET_ITEMS: usize = 200;
 
+/// `ui_set` **单条** item 的 `value` 最多多少字符。
+///
+/// **为什么必须有**：`MAX_UI_SET_ITEMS` 只挡住了"条数"，单条 `value` 却是无界的 ——
+/// 1 MiB 的请求体可以塞进**一条** 100 万字符的字符串，而它最终会被写进 WebView 主线程上的
+/// 输入框（`el.value = String(v)`）并触发一次配置落盘。上限按"人要往输入框里填多少"给足余量。
+pub const MAX_UI_SET_VALUE_CHARS: usize = 8192;
+
 /// `serial_send` 单次最多发多少**字符**（HEX 模式下两个字符=一个字节）。
 ///
 /// **为什么必须有**：串口写是排队的，1 MiB 数据在 115200 波特下要发一分半钟，
@@ -739,6 +746,25 @@ pub const MAX_BLE_WRITE_CHARS: usize = 4096;
 /// 也没法"接着翻"（2026-09 用户："limit 只能设上限，没有分页/offset，没法一页页翻完剩下的 88 台"）。
 /// 现在有了 `offset`/`nextOffset`，但页大小仍要有界（AGENTS #10：接受外部数值的参数必须有上限）。
 pub const MAX_BLE_DEVICE_PAGE: u64 = 200;
+
+/// `limit` 的合法区间：**1..=MAX_BLE_DEVICE_PAGE**。
+///
+/// 为什么连 0 也要拒：前端的 `mcpBleScanResult` 把 `limit=0` 当成"不限"（`ble` 段那个精简口径
+/// 也走同一条路），所以客户端只要传 `limit: 0` 就能**绕过"每页最多 200 台"的上限**、一次把
+/// 全部设备拉走 —— 而 schema 与文档的写法都是"要全量就不给 limit"（2026-09 审计发现）。
+fn check_page_limit(lim: u64) -> Result<(), RpcError> {
+    if lim == 0 || lim > MAX_BLE_DEVICE_PAGE {
+        return Err(RpcError::new(
+            E_INVALID_PARAMS,
+            format!(
+                "limit 只能是 1~{}（收到 {}）。要看全部就**不给 limit**，或按 offset 翻页 —— \
+                 0 在界面侧的含义是「不限」，会绕过每页上限。",
+                MAX_BLE_DEVICE_PAGE, lim
+            ),
+        ));
+    }
+    Ok(())
+}
 
 /// 实际暴露的工具列表 = 内置工具 + （可选的）全量控件工具。
 /// `tools/list`、`mcp_status.toolCount`、客户端的配置提示词都用它，保证三处一致。
@@ -1050,10 +1076,22 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
                     let on = args.get("on").cloned().unwrap_or(json!(true));
                     serial_call(core, "quickLoop", args, json!({ "on": on })).await
                 }
-                Some("add") => serial_call(core, "quickAdd", args, json!({})).await,
-                Some("update") => serial_call(core, "quickUpdate", args, json!({})).await,
+                Some("add") => {
+                    check_text_len(args, "value", MAX_QUICK_CMD_VALUE_CHARS, "指令内容")?;
+                    // 条数上限由**前端**把关（列表归它所有）：满了会回一条明确的失败，
+                    // 后端翻成 -32006「先做前置操作（删几条）」。这里不做前置探测 ——
+                    // 多问一次列表既多一个来回、又挡不住并发。
+                    serial_call(core, "quickAdd", args, json!({})).await
+                }
+                Some("update") => {
+                    check_text_len(args, "value", MAX_QUICK_CMD_VALUE_CHARS, "指令内容")?;
+                    serial_call(core, "quickUpdate", args, json!({})).await
+                }
                 Some("remove") => serial_call(core, "quickRemove", args, json!({})).await,
-                Some("group") => serial_call(core, "quickGroup", args, json!({})).await,
+                Some("group") => {
+                    check_text_len(args, "name", MAX_QUICK_CMD_LABEL_CHARS, "组名")?;
+                    serial_call(core, "quickGroup", args, json!({})).await
+                }
                 Some(other) => Err(RpcError::new(E_INVALID_PARAMS, format!(
                     "不认识的 action「{other}」：可用 loop / add / update / remove / group；\
                      想执行某一条就传 index，想列出来就两个都不传"
@@ -1070,15 +1108,7 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
             // limit / offset **必须真的放进 payload**（batch 4 的教训：只校验不转发 = 前端收不到）
             let mut extra = json!({});
             if let Some(lim) = opt_u64(args, "limit") {
-                if lim > MAX_BLE_DEVICE_PAGE {
-                    return Err(RpcError::new(
-                        E_INVALID_PARAMS,
-                        format!(
-                            "limit 最多 {} 台一页（收到 {}）。要全量就不给 limit，或按 offset 翻页。",
-                            MAX_BLE_DEVICE_PAGE, lim
-                        ),
-                    ));
-                }
+                check_page_limit(lim)?;
                 extra["limit"] = json!(lim);
             }
             if let Some(off) = opt_u64(args, "offset") {
@@ -1197,6 +1227,11 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
                             ),
                         ));
                     }
+                    // 单条 value 的长度同样要有界：只挡条数挡不住"一条巨型字符串"
+                    // （写进输入框的是 WebView 主线程，见 MAX_UI_SET_VALUE_CHARS 的注释）
+                    for it in items.as_array().into_iter().flatten() {
+                        check_text_len(it, "value", MAX_UI_SET_VALUE_CHARS, "ui_set 的 value")?;
+                    }
                     json!({ "items": items })
                 }
                 Some(_) => {
@@ -1219,15 +1254,7 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
             // `section:"bleDevices"` 时这两个才起作用，但**必须转发**：不转发 = 前端收不到，
             // 分页就静默失效（真机上第一次就踩到了：通用桥 offset=15 却回了全量 47 台）。
             if let Some(lim) = opt_u64(args, "limit") {
-                if lim > MAX_BLE_DEVICE_PAGE {
-                    return Err(RpcError::new(
-                        E_INVALID_PARAMS,
-                        format!(
-                            "limit 最多 {}（收到 {}）；要全量就不给 limit，或用 offset 翻页。",
-                            MAX_BLE_DEVICE_PAGE, lim
-                        ),
-                    ));
-                }
+                check_page_limit(lim)?;
                 payload["limit"] = json!(lim);
             }
             if let Some(off) = opt_u64(args, "offset") {
@@ -1375,6 +1402,32 @@ pub const MAX_QUICK_CMD_LABEL_CHARS: usize = 64;
 pub const MAX_QUICK_CMD_VALUE_CHARS: usize = 4096;
 pub const MAX_QUICK_CMD_FILE_BYTES: u64 = 256 * 1024;
 
+/// 某个字符串入参的长度闸门：超了报 `-32602`（**请求**的问题 → 改参数重试）。
+///
+/// 为什么要有它：`MAX_QUICK_CMD_*` 这三个常量一直在 `mcp_limits` 里报给客户端，
+/// 却**从来没有被执行过**（2026-09 审计发现）—— 超长的指令内容会一路写到 WebView 主线程上的
+/// 输入框里（与 `MAX_UI_SET_ITEMS` 同类问题），更糟的是写回文件时会撞上 256 KB 的文件上限：
+/// 工具已经回了 ok，改动却没落盘（前端只弹一个 toast，调用方完全不知道）。
+///
+/// 校验发生在**碰界面之前**（AGENTS #10 的硬要求）：没界面时超长入参也必须先得到 -32602，
+/// 而不是含糊的"没有界面"。
+fn check_text_len(args: &Value, key: &str, max: usize, what: &str) -> Result<(), RpcError> {
+    let Some(v) = args.get(key) else { return Ok(()) };
+    // 非字符串（数字/布尔/数组）交给后端与前端各自按原样处理，这里只管字符串长度
+    let Some(s) = v.as_str() else { return Ok(()) };
+    let n = s.chars().count();
+    if n > max {
+        return Err(RpcError::new(
+            E_INVALID_PARAMS,
+            format!(
+                "{what}太长：{n} 个字符，上限 {max} 个。外部文件也按这个上限读回，\
+                 超出的部分重载时会被截断 —— 请拆成多条。"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// 这里的每一项都是"**别让 MCP 伤到主程序**"的具体手段：限制外部输入的大小/频率，
 /// 而不是靠"客户端应该守规矩"。新增任何接受外部数组/字符串的工具时，都该在这里有一条。
 pub fn limits_json() -> Value {
@@ -1384,6 +1437,7 @@ pub fn limits_json() -> Value {
         "heartbeatSecs": super::HEARTBEAT_SECS,
         "maxBodyBytes": super::MAX_BODY_BYTES,
         "maxUiSetItems": MAX_UI_SET_ITEMS,
+        "maxUiSetValueChars": MAX_UI_SET_VALUE_CHARS,
         "maxSendChars": MAX_SEND_CHARS,
         "maxBleWriteChars": MAX_BLE_WRITE_CHARS,
         "toolsPage": super::TOOLS_PAGE,
@@ -1923,7 +1977,12 @@ pub async fn handle_raw_with_session(
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(0);
             let page = super::TOOLS_PAGE;
-            let end = (cursor + page).min(all.len());
+            // 游标**先夹后加**：`cursor` 是客户端给的字符串，可以是任意 usize。
+            // 原来直接 `cursor + page`：debug 构建会 overflow panic（被 handle_raw_guarded 兜成错误），
+            // release 会回绕成小数字 → `cursor >= all.len()` 成立 → 返回空工具表**且不给 nextCursor**，
+            // 客户端据此认为"这个服务器没有工具"。夹到 all.len() 之后，"越界 = 空页"才是确定行为。
+            let cursor = cursor.min(all.len());
+            let end = cursor.saturating_add(page).min(all.len());
             let slice: Vec<Value> = if cursor >= all.len() {
                 Vec::new()
             } else {
@@ -2595,7 +2654,7 @@ mod tests {
                 ("mcp_limits", json!({}), Backend(&[
                     "heartbeatSecs", "idleTimeoutSecs", "logMaxChannels", "logMaxLineBytes",
                     "logTotalCapBytes", "maxBodyBytes", "maxBleWriteChars", "maxSendChars", "maxSessions",
-                    "maxUiSetItems", "protocolFallback", "protocolVersion", "rateLimitPerMin",
+                    "maxUiSetItems", "maxUiSetValueChars", "protocolFallback", "protocolVersion", "rateLimitPerMin",
                     "sessionQueue", "toolsPage",
                     // 快速指令外部文件的上限（加字段就要一起改这里，契约测试会拦）
                     "maxQuickCmdItems", "maxQuickCmdLabelChars", "maxQuickCmdValueChars",
@@ -2626,7 +2685,7 @@ mod tests {
                 ("log_export", json!({ "maxLinesPerChannel": 3 }), Backend(&[
                     "channels", "lines", "text", "truncated",
                 ], &[])),
-                ("mcp_calls", json!({ "limit": 2 }), Backend(&["calls", "enabled", "file", "note", "returned"], &[])),
+                ("mcp_calls", json!({ "limit": 2 }), Backend(&["calls", "enabled", "file", "note", "returned", "scanned", "tailOnly"], &[])),
                 ("mcp_stats", json!({}), Backend(&["callLog", "sessionToolCalls"], &[])),
                 ("mcp_config_get", json!({}), Backend(&["callLog", "expose", "server", "version"], &[])),
                 // ===== 依赖界面（单测里没有 AppHandle）=====
@@ -4165,6 +4224,173 @@ mod tests {
             let page2 = r2["result"]["tools"].as_array().unwrap();
             assert!(!page2.is_empty());
             assert_ne!(page1[0]["name"], page2[0]["name"], "第二页不能与第一页重复");
+        });
+    }
+
+    /// 分页游标是客户端给的字符串，可以是任意 usize —— 夹取缺失会让 `cursor + page` 溢出。
+    #[test]
+    fn tools_list_tolerates_a_hostile_cursor() {
+        block_on(async {
+            let c = core();
+            c.cfg.lock().unwrap().expose.auto_control_tools = true;
+            c.registry
+                .replace(vec![reg_entry("serial.conn.c0", "button", "serial")]);
+
+            // 前两个会让 `cursor + page` 溢出：夹取缺失时 debug 直接 panic、
+            // release 回绕成小数字 → 空工具表且不给 nextCursor（客户端会以为"服务器没有工具"）
+            for bad in [
+                "18446744073709551615", // usize::MAX
+                "18446744073709551600", // usize::MAX - 15：加一页必溢出
+                "99999999999999999999", // 超出 usize：parse 失败 → 当作 0
+                "-5",                   // 负数：parse 失败 → 当作 0
+                "abc",
+            ] {
+                let raw = format!(
+                    r#"{{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{{"cursor":"{}"}}}}"#,
+                    bad
+                );
+                let r = call(&c, &raw).await;
+                assert!(
+                    r["result"]["tools"].is_array(),
+                    "游标 {} 不能让 tools/list 出错（应为正常响应）：{}",
+                    bad,
+                    r
+                );
+            }
+
+            // 越界游标 = 确定性的空页，而不是 panic、也不是把第一页再给一遍
+            let raw =
+                r#"{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{"cursor":"100000"}}"#;
+            let r = call(&c, &raw).await;
+            assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 0);
+            assert!(r["result"]["nextCursor"].is_null(), "最后一页不该再给游标");
+        });
+    }
+
+    /// 长度闸门必须发生在**碰界面之前**（AGENTS #10）：没有界面上下文时，超长入参也得先拿到
+    /// `-32602`（"改参数重试"），而不是含糊的 `-32006`（"没有界面"）—— 后者会让调用方以为
+    /// 是 GUI 的锅，从而去重试同一个超长请求。边界值（正好等于上限）必须放行。
+    #[test]
+    fn overlong_input_is_rejected_before_touching_the_ui() {
+        block_on(async {
+            let c = core(); // 没有界面上下文
+
+            // ① 快速指令内容超长 → -32602
+            let long_value = "A".repeat(MAX_QUICK_CMD_VALUE_CHARS + 1);
+            let r = call(
+                &c,
+                &raw_call("serial_quick_cmd", &json!({ "action": "add", "value": long_value })),
+            )
+            .await;
+            assert_eq!(
+                r["error"]["code"], E_INVALID_PARAMS,
+                "超长指令内容应先报 -32602：{}",
+                r
+            );
+            assert!(
+                r["error"]["message"].as_str().unwrap_or("").contains("上限"),
+                "错误信息要说清上限：{}",
+                r
+            );
+
+            // ② 组名超长 → -32602
+            let long_name = "组".repeat(MAX_QUICK_CMD_LABEL_CHARS + 1);
+            let r = call(
+                &c,
+                &raw_call(
+                    "serial_quick_cmd",
+                    &json!({ "action": "group", "op": "rename", "name": long_name }),
+                ),
+            )
+            .await;
+            assert_eq!(r["error"]["code"], E_INVALID_PARAMS, "超长组名应先报 -32602：{}", r);
+
+            // ③ 正好等于上限：长度校验放行 → 这才轮到"没有界面"
+            let just_ok = "A".repeat(MAX_QUICK_CMD_VALUE_CHARS);
+            let r = call(
+                &c,
+                &raw_call("serial_quick_cmd", &json!({ "action": "add", "value": just_ok })),
+            )
+            .await;
+            assert_eq!(r["result"]["isError"], true, "边界值应放行到界面层：{}", r);
+            assert!(
+                r["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("-32006"),
+                "放行后应报「没有界面」：{}",
+                r
+            );
+
+            // ④ `ui_set` 单条 value 也要有界（只挡条数挡不住"一条巨型字符串"）
+            let huge = "A".repeat(MAX_UI_SET_VALUE_CHARS + 1);
+            let r = call(
+                &c,
+                &raw_call("ui_set", &json!({ "items": [{ "path": "a.b", "value": huge }] })),
+            )
+            .await;
+            assert_eq!(
+                r["error"]["code"], E_INVALID_PARAMS,
+                "ui_set 单条 value 超长应先报 -32602：{}",
+                r
+            );
+            let ui_ok = "A".repeat(MAX_UI_SET_VALUE_CHARS);
+            let r = call(
+                &c,
+                &raw_call("ui_set", &json!({ "items": [{ "path": "a.b", "value": ui_ok }] })),
+            )
+            .await;
+            assert_eq!(r["result"]["isError"], true, "ui_set 的边界值应放行：{}", r);
+
+            // ⑤ 上限必须对客户端公开（别让人靠撞墙发现）
+            let lim = call(&c, &raw_call("mcp_limits", &json!({}))).await;
+            assert_eq!(
+                lim["result"]["structuredContent"]["maxUiSetValueChars"],
+                json!(MAX_UI_SET_VALUE_CHARS)
+            );
+            assert_eq!(
+                lim["result"]["structuredContent"]["maxQuickCmdValueChars"],
+                json!(MAX_QUICK_CMD_VALUE_CHARS)
+            );
+        });
+    }
+
+    /// 页大小必须严格落在 `1..=MAX_BLE_DEVICE_PAGE`。
+    ///
+    /// `limit: 0` 在界面侧的含义是"不限"（`mcpBleScanResult` 就这么实现的），放它过去就等于
+    /// 客户端绕过"每页最多 200 台"、一次把全部拉走（2026-09 审计发现）。
+    /// 校验同样要在**碰界面之前**：所以没界面时也必须是 -32602，而不是"没有界面"。
+    #[test]
+    fn device_page_limit_rejects_zero_and_too_large() {
+        block_on(async {
+            let c = core();
+            for bad in [0u64, MAX_BLE_DEVICE_PAGE + 1] {
+                let r = call(&c, &raw_call("ble_list_devices", &json!({ "limit": bad }))).await;
+                assert_eq!(
+                    r["error"]["code"], E_INVALID_PARAMS,
+                    "ble_list_devices limit={} 应先报 -32602：{}",
+                    bad, r
+                );
+                let r2 = call(
+                    &c,
+                    &raw_call("ui_get_state", &json!({ "section": "bleDevices", "limit": bad })),
+                )
+                .await;
+                assert_eq!(
+                    r2["error"]["code"], E_INVALID_PARAMS,
+                    "ui_get_state limit={} 同样要拦：{}",
+                    bad, r2
+                );
+            }
+            // 边界值与"干脆不给 limit"都要放行（放行后才会走到"没有界面"那一层）
+            let r = call(
+                &c,
+                &raw_call("ble_list_devices", &json!({ "limit": MAX_BLE_DEVICE_PAGE })),
+            )
+            .await;
+            assert_eq!(r["result"]["isError"], true, "上限值应放行：{}", r);
+            let r = call(&c, &raw_call("ble_list_devices", &json!({}))).await;
+            assert_eq!(r["result"]["isError"], true, "不给 limit 也应放行：{}", r);
         });
     }
 

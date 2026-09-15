@@ -13,7 +13,7 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/从机属性/busid 白名单/MCP 协议与日志中心）
 ```
 
-无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，178 条 + 4 条 `#[ignore]`
+无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，188 条 + 4 条 `#[ignore]`
 真机/诊断）。BLE 从机相关的三条（需蓝牙硬件）：
 
 ```bash
@@ -25,7 +25,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_builds -- --ignored -
 cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
 ```
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1457 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1494 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，62 条）：直接从
 `src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，也有把渲染函数丢进假 DOM
 跑行为断言），改前端后应先跑
@@ -90,6 +90,12 @@ node .walkthrough/mcp_smoke.js --full   # 连有副作用的写工具也真调�
    通道名是动态的（`serial:<面板>:<方向>`，开 N 个监视器就多 2N 个通道），所以除了每通道上限，
    还必须有**全局** `TOTAL_CAP_BYTES`（超了按"裁最大的通道"尽力回收，`try_lock` + 单次最多 4 个通道）
    与 `MAX_CHANNELS`（到顶不建新通道，丢弃计入 `channelSkips`）。
+   ⚠️ **丢弃必须记账，而且要能被读出来**（这条已经踩过四次）：串口缓冲丢的字节（`ReadDataResult.dropped`）、
+   BLE 通知丢的条数（`{items, dropped}`）、ADB PTY 丢的块数（`{bytes, dropped}`）、
+   前端待发队列丢的条数（`log_push_batch` 的 `droppedByChannel` → 各通道 `dropped`）——
+   四路都要传回界面/工具并提示一行。只有 LogHub 内部的 `channelSkips`/`lockSkips` 是纯内部计数。
+   不做这件事的后果不是"少几条日志"，而是**工具明确告诉调用方"日志是完整的"**（`mayBeIncomplete:false`），
+   于是 AI 拿被截断的证据下结论（2026-09 审计在 ADB 与前端回灌两路上都发现了）。
 7. **`expose.autoControlTools` 默认关闭**：几百个 `ctl_*` 工具会明显拖累模型选工具的准确率。
    要打开就打开，但别改成默认开。
 8. **运行期错误必须进错误上报**（不只是写本地日志）：MCP 出问题以前只写 `dbg_log`，用户报障时
@@ -113,12 +119,22 @@ node .walkthrough/mcp_smoke.js --full   # 连有副作用的写工具也真调�
     ① 串口收发热路径上只有一次**非阻塞**日志旁路（`LogHub::push` 用 `try_lock`，拿不到锁就丢一条并计数；
     全局回收也是 `try_lock` + 单次最多 4 个通道，收不动就等下一条）；② 错误上报走**独立上报线程的
     channel**（`ERROR_SENDER`），Sentry SDK 自己缓冲；③ SSE 出站是「**有界队列 + `try_send`**」——
-    生产者绝不 `await`、绝不阻塞，慢客户端直接断开；④ 界面命令有在途上限（32）与超时（5s）；
+    生产者绝不 `await`、绝不阻塞，慢客户端直接断开；④ 界面命令有在途上限（32）与**分档超时**
+    （界面动作 5s、要过设备的 BLE 动作 30s、`ble_connect` 130s）。**别把桥超时改回一律 5s**：
+    前端的连接路径是"首连 15s + 配对 75s（**等用户在 Windows 配对框上点确认**）+ 重连 15s"，
+    桥按 5s 算必然给 AI 一个假失败（`-32004` + 误导性的"界面可能正忙"），而操作其实还在正常进行。
+    分档在 `bridge.rs::timeout_for`，`.walkthrough` 里有跨端断言守着这三者的相对关系；
     ⑤ 工具 panic 由 `catch_unwind` 兜住（见 #2）。
     ⚠️ **加新工具时先问一句"它的输入有上限吗"**：任何接受外部数组/字符串的参数都必须在
     `mcp_limits` 里有对应上限，且校验要发生在**碰主程序之前**。`MAX_UI_SET_ITEMS` 就是教训 ——
     `ui_set` 最终跑在 **WebView 主线程**上，请求体虽有 1 MiB 上限，但一条 item 才 40 多字节，
     1 MiB 能塞两万多条，等于"AI 一句请求把界面冻住几秒"。
+    ⚠️ **而且"在 `mcp_limits` 里报出来"≠"被执行"**：`MAX_QUICK_CMD_*`（500 条 / 64 / 4096 字符）
+    曾经只在 `limits_json` 与文档里出现、代码里一次都没校验过（2026-09 审计发现）—— 超长的指令内容
+    会一路写进 WebView 的输入框，还会撞上 256 KB 的写回上限：工具已回 ok，改动却没落盘。
+    另外**单条数据的长度也要有上限**：只挡条数挡不住"一条 100 万字符的字符串"
+    （`MAX_UI_SET_VALUE_CHARS` 就是补的这一块）。校验只在**写入口**做是不够的 —— 同一个上限
+    要同时出现在读入端与写入口，否则"内存里有、写回时被截断"会让用户数据不可逆丢失。
 11. **每个工具都必须有"返回值契约"和"调用情况"测试**（用户的要求："不然预期的结果怎么确定
     是否已经完成？"）。三条一起才叫测过：
     ① **返回值契约**（`every_tool_has_a_tested_return_contract`）：49 个工具每个都要在表里交代

@@ -400,14 +400,49 @@ async fn post_message(
         }
     };
 
-    // 读取请求体（带上限）
-    let body = match req.into_body().collect().await {
+    // 读取请求体（带上限）。
+    //
+    // ⚠️ 上限必须**在收 body 的同时**生效，不能"先全收进内存再判大小"：
+    // 老实现是 `req.into_body().collect()` 之后再比 `body.len() > MAX_BODY_BYTES`，
+    // 于是一次 1 GB 的 POST 会先在进程里分配 1 GB —— 那个 1 MiB 的上限等于没写
+    // （2026-09 审计发现）。现在两道：① 先看 `Content-Length`（一上来就报大数的最常见情形，
+    // 连读都不读）；② 用 `Limited` 包住 body，没给长度或长度撒谎的 chunked 请求也会在
+    // 超出的那一刻断开。
+    if let Some(len) = headers
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+    {
+        if len > super::MAX_BODY_BYTES as u64 {
+            return json_resp(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                serde_json::json!({ "error": "body too large", "max": super::MAX_BODY_BYTES }),
+            );
+        }
+    }
+    let body = match http_body_util::Limited::new(req.into_body(), super::MAX_BODY_BYTES)
+        .collect()
+        .await
+    {
         Ok(c) => c.to_bytes(),
         Err(e) => {
+            // 超过上限与"读取出错"要分开说：前者是调用方的问题（少发点），后者是链路问题
+            let too_large = e.is::<http_body_util::LengthLimitError>();
             return json_resp(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({ "error": format!("读取请求体失败: {}", e) }),
-            )
+                if too_large {
+                    StatusCode::PAYLOAD_TOO_LARGE
+                } else {
+                    StatusCode::BAD_REQUEST
+                },
+                serde_json::json!({
+                    "error": if too_large {
+                        "body too large".to_string()
+                    } else {
+                        format!("读取请求体失败: {}", e)
+                    },
+                    "max": super::MAX_BODY_BYTES,
+                }),
+            );
         }
     };
     if body.len() > super::MAX_BODY_BYTES {
