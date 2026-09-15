@@ -1228,7 +1228,19 @@ fn open_port(
     let mut port: Box<dyn SerialPort> = serialport::open(&port_name)
             .map_err(|e| format!("打开失败: {}", e))?;
 
-    port.set_baud_rate(baud_rate).map_err(|e| format!("设置波特率失败: {}", e))?;
+    port.set_baud_rate(baud_rate).map_err(|e| {
+        // Windows 对不支持的波特率回 ERROR_INVALID_PARAMETER(87)，serialport 只给出一句中文「参数错误」，
+        // 用户看不出是「这个串口不吃这个波特率」（板载 / 虚拟 COM1 上填 2000000 就会撞上）。
+        let raw = e.to_string();
+        if raw.contains("参数错误") || raw.contains("Incorrect parameter") || raw.contains("Invalid argument") {
+            format!(
+                "设置波特率失败: 这个串口不接受 {} 波特率，请换 USB 转串口设备，或把波特率降到 115200 及以下（原始错误: {}）",
+                baud_rate, raw
+            )
+        } else {
+            format!("设置波特率失败: {}", raw)
+        }
+    })?;
 
     let db = match data_bits {
         5 => DataBits::Five, 6 => DataBits::Six, 7 => DataBits::Seven, _ => DataBits::Eight,

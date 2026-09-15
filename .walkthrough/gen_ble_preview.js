@@ -1696,6 +1696,23 @@ console.log('preview ->', out);
   check(/fn enforce_log_cache_limit_in\(/.test(mainRs) && /active\.contains\(p\)/.test(mainRs),
     'M28：清理时跳过正在写入的文件');
 
+  // ---- 主题：下拉面板容器的底色只许用不透明的 var(--surface-1) ----
+  // v0.5.6 踩过：5 套深色主题把「发送历史选中项」的 rgba 底色误并进下拉容器选择器组，
+  // 整个面板变成半透明 —— 底下的工具栏/日志区直接透出来（波特率列表里能看见「选择日志目录」）。
+  {
+    const styleText = (html.match(/<style>([\s\S]*?)<\/style>/) || ['', ''])[1].replace(/\/\*[\s\S]*?\*\//g, '');
+    const bad = [];
+    for (const m of styleText.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!/\.(?:sel-drop|baud-dropdown|send-as-drop|send-hist)(?![\w-])/.test(m[1])) continue;
+      for (const d of m[2].matchAll(/(?:^|;)\s*background(?:-color)?\s*:\s*([^;]+)/g)) {
+        if (!/^var\(--surface-1\)$/.test(d[1].trim())) {
+          bad.push(m[1].trim().split('\n').pop().trim() + ' => ' + d[1].trim());
+        }
+      }
+    }
+    check(bad.length === 0,
+      '下拉面板容器只许用不透明的 var(--surface-1)（写过 rgba 就是整块面板半透明）', bad.join(' | '));
+  }
   // ---------- 行为级：紧凑缓冲按字节裁剪 ----------
   const sbM = {
     console,
