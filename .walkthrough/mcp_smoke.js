@@ -143,7 +143,20 @@ function txtOf(r) {
     console.log('   要验证它们，请在应用弹窗里关掉「只读模式」再跑一遍这个脚本。');
   }
 
-  const listed = (await rpc('tools/list', {})).result || {};
+  // ⚠️ `tools/list` 是**分页**的（每页 TOOLS_PAGE=50，返回 `nextCursor`）：
+  // 只拉第一页的话，工具数一旦超过 50，自检就会误报"运行中缺少 N 个工具"，而且**那 N 个根本没被测到**
+  // （2026-09 真机踩到：55 个工具时报"缺少 log_export / mcp_calls / mcp_stats / mcp_config_get /
+  //  mcp_config_set"，其实它们在第二页）。这里跟着游标把页翻完。
+  const liveAll = [];
+  let cursor = null;
+  for (let page = 0; page < 20; page++) {
+    const pr = await rpc('tools/list', cursor ? { cursor: cursor } : {});
+    const pres = pr.result || {};
+    liveAll.push(...(pres.tools || []));
+    cursor = pres.nextCursor || null;
+    if (!cursor) break;
+  }
+  const listed = { tools: liveAll };
   const live = (listed.tools || []).map((t) => ({
     name: t.name,
     required: (t.inputSchema && t.inputSchema.required) || [],
