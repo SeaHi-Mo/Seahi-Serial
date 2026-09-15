@@ -26,7 +26,7 @@
 
 - 运行时：`tools/list`（分页，每页 50，用 `nextCursor` 翻页）——这是**权威来源**，本页只是它的可读版本。
 - `mcp_limits` / `mcp_status` 里的 `toolCount` / `builtinToolCount` 能看到数量。
-- 内置工具 **49 个**；另有可选的 `ctl_*`（见 §4）。
+- 内置工具 **55 个**；另有可选的 `ctl_*`（见 §4）。
 
 ## 3. 一页速查
 
@@ -60,6 +60,12 @@
 | [`ble_periph_status`](#ble-periph-status) | 读 | BLE **从机**（把本机变成外设）的状态：是否真的在对外广播、服务 UUID、特征数、是否可被发现/可连接、是否手动应答写请求、以及后端给出的告警（蓝牙关着 / 不支持外设角色等）。只读。 |
 | [`ble_periph_start`](#ble-periph-start) | **写** ⚠️ | 启动 BLE 从机：按面板上已配置好的服务/特征**对外广播**。⚠️ 这是危险动作（附近设备都能看到并连上来），必须带 confirm:true；不带时不会执行，并返回 -32006 说明后果。 |
 | [`ble_periph_stop`](#ble-periph-stop) | **写** ⚠️ | 停止 BLE 从机广播。⚠️ 危险动作（已连上来的中心设备会断开），必须带 confirm:true。 |
+| [`adb_list_devices`](#adb-list-devices) | 读 | 列出 `adb devices -l` 看到的设备（序列号 / 状态 / 型号）。只读，不会开 shell。**只有 state=device 的那台才可用**；unauthorized 表示还没在设备上点「允许 USB 调试」。 |
+| [`adb_open_shell`](#adb-open-shell) | **写** ⚠️ | 在设备上开一个交互式 shell 会话（等价于点面板上那台设备的卡片：建 xterm + PTY）。开之前先确认设备在且 state=device；**等 PTY 真的建出来才返回**（最长 10 秒）。⚠️ 危险动作（之后能在设备上执行任意命令），必须带 confirm:true；不带时不会执行并返回 -32006。开完用 adb_shell_write 发命令、adb_shell_read 读输出。 |
+| [`adb_shell_write`](#adb-shell-write) | **写** ⚠️ | 往已打开的 ADB shell 写入内容（与在面板终端里敲键盘同一条路：字节会进设备 shell 的 stdin）。**命令要自己带上 \n**，不带就只是填在命令行上不会执行。⚠️ 危险动作（写进去的内容会被设备真的执行），必须带 confirm:true。单次最多 4096 字符（mcp_limits.maxAdbWriteChars），超了报 -32602。 |
+| [`adb_shell_read`](#adb-shell-read) | 读 | 读 ADB shell 已经产生的输出（日志中心 adb:rx 通道：PTY 读线程在生产端旁路的一份副本，**不会抢走界面终端要显示的队列**）。**items 是 PTY 的输出块、不是按行切好的文本**（终端输出本来就没有行边界，ANSI 光标序列会跨块）。用 sinceSeq 增量跟进：下一次传返回 items 里最后一条的 seq。只读，不需要界面。 |
+| [`adb_shell_resize`](#adb-shell-resize) | **写** | 调整已打开 ADB shell 会话的 PTY 尺寸（与面板跟着容器尺寸自动推的是同一个后端命令）。cols/rows 都是 2~1000（mcp_limits.maxAdbCols / maxAdbRows）。注意：面板自己的尺寸同步（窗口/容器变化时）可能随后把它改回真实容器尺寸。写操作。 |
+| [`adb_close_shell`](#adb-close-shell) | **写** | 关掉当前 ADB shell 会话（等价于点面板上会话的关闭：杀掉 adb shell 子进程 + 移除终端）。本来就没开会话时是幂等的（closed:false + note），不是错误。写操作。 |
 | [`mcp_danger`](#mcp-danger) | 读 | 列出**需要二次确认**的危险工具（会对外产生不可撤销影响的那些）与各自的后果。调用它们时必须带 confirm:true，否则不会执行。只读。 |
 | [`app_info`](#app-info) | 读 | 本机 SeaHi Serial 应用的基本信息（版本、平台、进程、运行时长）。只读，无副作用。 |
 | [`mcp_status`](#mcp-status) | 读 | MCP 服务器自身状态：是否运行、监听端点、会话数、请求数与限流/丢弃计数。只读。 |
@@ -483,6 +489,86 @@
 |---|---|---|---|
 | `confirm` | boolean | 否 | 危险动作确认：必须为 true 才会执行 |
 
+### ADB 语义工具（ADB shell）
+
+#### `adb_list_devices`
+
+- **作用**：列出 `adb devices -l` 看到的设备（序列号 / 状态 / 型号）。只读，不会开 shell。**只有 state=device 的那台才可用**；unauthorized 表示还没在设备上点「允许 USB 调试」。
+- **读/写**：只读，无副作用
+- **返回**：{total, ready, devices:[{serial,state,model,product}], note?}
+- **注意**：**只有 `state=device` 的那台可用**（`unauthorized` 表示设备上还没点「允许 USB 调试」）。读的是 `adb devices -l` 的实时结果（与面板那颗「刷新」同一个命令），不吃面板 5 秒轮询的空窗
+
+**入参**
+
+无（不需要参数）
+
+#### `adb_open_shell`
+
+- **作用**：在设备上开一个交互式 shell 会话（等价于点面板上那台设备的卡片：建 xterm + PTY）。开之前先确认设备在且 state=device；**等 PTY 真的建出来才返回**（最长 10 秒）。⚠️ 危险动作（之后能在设备上执行任意命令），必须带 confirm:true；不带时不会执行并返回 -32006。开完用 adb_shell_write 发命令、adb_shell_read 读输出。
+- **读/写**：只读，无副作用
+- **返回**：{serial, opened, cols, rows, note?}
+- **注意**：**危险动作**（开出来之后就能在设备上执行任意命令），必须带 `confirm:true`，否则不执行并回 `-32006`。开之前先确认设备 `state=device`（`serial` 省略=用第一台可用的）；**等 PTY 真的建出来才返回**（最长 10 秒），失败会如实说清是"这台机器没有可用设备"还是"serial 不存在"
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `serial` | string | 否 | 设备序列号（见 adb_list_devices；省略=用第一台 state=device 的设备） |
+| `confirm` | boolean | 否 | 危险动作确认：必须为 true 才会执行 |
+
+#### `adb_shell_write`
+
+- **作用**：往已打开的 ADB shell 写入内容（与在面板终端里敲键盘同一条路：字节会进设备 shell 的 stdin）。**命令要自己带上 \n**，不带就只是填在命令行上不会执行。⚠️ 危险动作（写进去的内容会被设备真的执行），必须带 confirm:true。单次最多 4096 字符（mcp_limits.maxAdbWriteChars），超了报 -32602。
+- **读/写**：只读，无副作用
+- **返回**：{serial, written, bytes, data}
+- **注意**：**危险动作**（写进去的内容会被设备真的执行），必须带 `confirm:true`。命令要自己带 `\n`，不带只是填在命令行上；单次最多 `maxAdbWriteChars` 个字符（超了 -32602）。走的就是面板终端敲键盘那条命令
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `data` | string | **是** | 要写入 shell 的内容，如 "ls -l\n" |
+| `confirm` | boolean | 否 | 危险动作确认：必须为 true 才会执行 |
+
+#### `adb_shell_read`
+
+- **作用**：读 ADB shell 已经产生的输出（日志中心 adb:rx 通道：PTY 读线程在生产端旁路的一份副本，**不会抢走界面终端要显示的队列**）。**items 是 PTY 的输出块、不是按行切好的文本**（终端输出本来就没有行边界，ANSI 光标序列会跨块）。用 sinceSeq 增量跟进：下一次传返回 items 里最后一条的 seq。只读，不需要界面。
+- **读/写**：只读，无副作用
+- **返回**：{serial, channel, count, items:[{seq,ts,level,dir,bytes,text}], truncated, dropped, mayBeIncomplete, note?}
+- **注意**：读日志中心 `adb:rx` —— PTY 读线程在**生产端**旁路的一份副本（**不会抢走界面终端要显示的队列**）。`items` 是 PTY 的**输出块**、不是按行切好的文本；`truncated=true` 表示凑满了一页（还有更多，用 `sinceSeq` 接着拉）；`mayBeIncomplete=true` 表示通道丢过最旧的行。**纯后端工具，没有界面也能用**
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `sinceSeq` | number | 否 | 只要 seq 大于它的行（增量跟进；省略=取尾部 limit 行） |
+| `limit` | number | 否 | 最多回多少行，默认 200，上限 2000（mcp_limits.maxAdbReadLines） |
+
+#### `adb_shell_resize`
+
+- **作用**：调整已打开 ADB shell 会话的 PTY 尺寸（与面板跟着容器尺寸自动推的是同一个后端命令）。cols/rows 都是 2~1000（mcp_limits.maxAdbCols / maxAdbRows）。注意：面板自己的尺寸同步（窗口/容器变化时）可能随后把它改回真实容器尺寸。写操作。
+- **读/写**：**写**（会改状态）
+- **返回**：{serial, cols, rows, note?}
+- **注意**：`cols` / `rows` 都是 **2~1000**（`maxAdbCols` / `maxAdbRows`），越界或 0/1 → -32602。注意面板自己的尺寸同步（窗口/容器变化时）可能随后把 PTY 改回真实容器尺寸
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `cols` | number | **是** | 列数（2~1000） |
+| `rows` | number | **是** | 行数（2~1000） |
+
+#### `adb_close_shell`
+
+- **作用**：关掉当前 ADB shell 会话（等价于点面板上会话的关闭：杀掉 adb shell 子进程 + 移除终端）。本来就没开会话时是幂等的（closed:false + note），不是错误。写操作。
+- **读/写**：**写**（会改状态）
+- **返回**：{serial, opened:false, closed, note?}
+- **注意**：关掉当前会话（kill `adb shell` 子进程 + 移除终端）；本来就没开会话时是幂等的（`closed:false` + `note`），不是错误
+
+**入参**
+
+无（不需要参数）
+
 ### 安全与策略
 
 #### `mcp_danger`
@@ -523,7 +609,7 @@
 
 - **作用**：MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。
 - **读/写**：只读，无副作用
-- **返回**：`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels, maxQuickCmdItems, maxQuickCmdLabelChars, maxQuickCmdValueChars, maxQuickCmdFileBytes, maxBleWriteChars}`
+- **返回**：`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels, maxQuickCmdItems, maxQuickCmdLabelChars, maxQuickCmdValueChars, maxQuickCmdFileBytes, maxBleWriteChars, maxAdbWriteChars, maxAdbCols, maxAdbRows, maxAdbReadLines}`
 - **注意**：用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**
 
 **入参**
@@ -801,6 +887,10 @@
 | `ui_set` 单条 `value` | **8192 字符**（超了 -32602；只挡条数挡不住"一条巨型字符串"）|
 | 快速指令 `value` / 组名 / 条目数 | 4096 / 64 字符 · 500 条（超长 -32602；**条目满了是 -32006**，先删几条）|
 | `serial_send` 单次字符数 | **64K**（超了 -32602；串口写是排队的）|
+| `ble_write` 单次字符数 | **4096**（超了 -32602；BLE 单次写受 MTU 限制）|
+| `adb_shell_write` 单次字符数 | **4096**（超了 -32602；这一头是**设备的 shell**）|
+| `adb_shell_resize` 的 `cols` / `rows` | **2~1000**（越界 / 0 / 1 都是 -32602）|
+| `adb_shell_read` 一次行数 | 默认 200，上限 **2000** |
 | 工具列表每页 | 50 |
 | `ctl_*` 上限 | 400 |
 | 日志单条 / 每通道 / 总量 / 通道数 | 8 KiB 截断 · 128 KiB~1 MiB · 16 MiB（超了裁最大通道）· 64 个 |

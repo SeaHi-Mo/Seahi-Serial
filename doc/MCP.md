@@ -79,6 +79,8 @@ npx seahi-serial-mcp uninstall  # 只移除它写的那一条
 | 类别 | 工具 |
 |---|---|
 | **串口语义（推荐优先用这些）** | `serial_get_state`、`serial_select_port`、`serial_set_baud`、`serial_set_frame`、`serial_set_lines`、`serial_set_display`、`serial_open`、`serial_close`、`serial_send`、`serial_clear`、`serial_get_history`、`serial_quick_cmd` |
+| **蓝牙语义** | `ble_get_state`、`ble_list_devices`、`ble_start_scan`、`ble_stop_scan`、`ble_connect`、`ble_disconnect`、`ble_get_services`、`ble_read`、`ble_write`、`ble_subscribe`、`ble_get_output`、`ble_refresh_rssi`、`ble_periph_status`、`ble_periph_start`、`ble_periph_stop` |
+| **ADB 语义** | `adb_list_devices`、`adb_open_shell`、`adb_shell_write`、`adb_shell_read`、`adb_shell_resize`、`adb_close_shell` |
 | 应用/服务器 | `app_info`、`mcp_status`、`mcp_limits`、`serial_list_ports` |
 | 界面操作 | `ui_list`、`ui_describe`、`ui_get`、`ui_set`、`ui_click`、`ui_get_state` |
 | 日志 | `log_channels`、`log_tail`、`log_search`、`log_stats`、`log_clear`、`log_export` |
@@ -164,8 +166,44 @@ npx seahi-serial-mcp uninstall  # 只移除它写的那一条
 > `ble_list_devices` 每次都会**现问一次后端**（不是读面板那个 2 秒轮询的缓存），
 > 所以刚开完扫描立刻问也拿得到。
 
-### 危险动作要二次确认（`confirm:true`）
+### ADB 语义工具（`adb_*`，第三批的 ADB 部分）
 
+ADB 面板（点顶栏「ADB 调试」）那条链路也能从 MCP 走。与 `serial_*` / `ble_*` 同构：
+**每个动作都复用面板那条真实路径**（`openAdbSession` / `closeAdbSession` / 面板终端敲键盘走的那条
+`adb_shell_write`），不给 AI 另写一套。ADB 面板是**单会话**模型（同时只有一台设备开着 shell）。
+
+| 工具 | 干什么 | 读/写 |
+|---|---|---|
+| `adb_list_devices` | `adb devices -l` 的实时结果（序列号 / 状态 / 型号）。**只有 `state=device` 那台能用** | 读 |
+| `adb_open_shell` | 在设备上开一个交互式 shell（= 点面板上的设备卡片）。**等 PTY 真的建出来才返回**（最长 10 秒） | **写 ⚠️ 危险** |
+| `adb_shell_write` | 往已开的 shell 里写内容（= 在面板终端里敲键盘）。**命令要自带 `\n`** | **写 ⚠️ 危险** |
+| `adb_shell_read` | 读 shell 已经产生的输出（日志中心的 `adb:rx`；`sinceSeq` 增量跟进）。**纯后端，不需要界面** | 读 |
+| `adb_shell_resize` | 调整 PTY 尺寸（`cols`/`rows` 都是 2~1000） | 写 |
+| `adb_close_shell` | 关掉当前会话（kill 子进程 + 移除终端）；没开时幂等 | 写 |
+
+一条典型流程（**两个危险动作都要带 `confirm:true`**）：
+
+```json
+{"name": "adb_list_devices"}
+{"name": "adb_open_shell", "arguments": {"serial": "emulator-5554", "confirm": true}}
+{"name": "adb_shell_write", "arguments": {"data": "ls -l /sdcard\n", "confirm": true}}
+// 等一会儿再读设备回了什么；下一次把最后一条的 seq 当 sinceSeq 传进来做增量
+{"name": "adb_shell_read", "arguments": {"limit": 50}}
+{"name": "adb_close_shell"}
+```
+
+> ⚠️ `adb_shell_write` 写的是**设备的 shell**：内容里带换行就是**在设备上真的执行**它。
+> 这也是它必须二次确认的原因（与"对外广播"同一档）。
+>
+> ⚠️ `adb_shell_read` 返回的 `items` 是 PTY 的**输出块**，不是按行切好的文本 ——
+> 终端输出本来就没有行边界（ANSI 光标序列会跨块）。要"人眼友好"的完整历史就用
+> `log_tail{channel:"adb:rx"}`，两者读的是**同一份存储**（在 PTY 读线程的生产端旁路了一份，
+> **不会抢走界面终端要显示的数据**）。
+>
+> 注意：ADB 那台**没有界面也能读**（`adb_shell_read` 是纯后端），但开/写/关都必须有界面
+> （它们走的是面板同一条路径）。
+
+### 危险动作要二次确认（`confirm:true`）
 有些动作**撤不回来**：对外广播（附近设备都能看到并连上来）、在别人的设备上执行命令、
 动宿主机的硬件挂载。这些工具**不带 `confirm:true` 就不会执行**，返回 `-32006` 并说明后果：
 
@@ -203,6 +241,7 @@ npx seahi-serial-mcp uninstall  # 只移除它写的那一条
 | 蓝牙状态 | `ble_get_state` · `ui_get_state{section:"ble"}` | 同上，优先 `ble_get_state` |
 | **扫描结果（名称/MAC/RSSI）** | `ble_list_devices` · `ui_get_state{section:"bleDevices"}` | 有语义工具用前者；**工具列表还没刷新**的客户端用后者（两者都留着就是为了这个） |
 | **实际收发内容** | `serial_get_output` / `ble_get_output` · `log_tail`（要通道名） | 先用前两个：不用知道通道名，且"还没收到数据"返回空列表而不是报错；要跨会话 / 更多行再 `log_tail` |
+| **ADB shell 的输出** | `adb_shell_read` · `log_tail{channel:"adb:rx"}` | 两者读的是**同一份存储**（PTY 读线程在生产端旁路进日志中心的那份）；`adb_shell_read` 不用知道通道名、没数据也不报错，`log_tail` 能翻更早的行 |
 | 某个控件 | `ui_list` → `ui_describe` → `ui_get`/`ui_set`/`ui_click` | 枚举 → 看格式 → 操作 |
 | 点按钮 / 开关 | `ui_click{path}` **≡** `ui_set{path, value:true}` | **真的是同一条实现**（`click` 只是把 value 强制成 true）。留两个是让模型选工具更少出错，挑一个用即可 |
 | 日志通道概览 | `log_channels` · `log_stats` | `log_stats` 信息更全（速率/跨度/告警数）；两者都列通道 |
@@ -240,7 +279,12 @@ npx seahi-serial-mcp uninstall  # 只移除它写的那一条
 | 请求体上限 | 1 MiB |
 | 工具列表每页 | 50 |
 | `ctl_*` 工具上限 | 400 个 |
-| 前端桥回执超时 | 5 秒（在途上限 32） |
+| 前端桥回执超时 | 5 秒（在途上限 32；`ble_connect` 130 秒、BLE 设备动作 30 秒、`adb_open_shell` 30 秒） |
+| `serial_send` 单次字符数 | 64K（超了 -32602） |
+| `ble_write` 单次字符数 | 4096（超了 -32602） |
+| `adb_shell_write` 单次字符数 | 4096（超了 -32602；这一头是**设备的 shell**） |
+| `adb_shell_resize` 的 `cols` / `rows` | 2~1000（越界 / 0 / 1 都是 -32602） |
+| `adb_shell_read` 一次行数 | 默认 200，上限 2000 |
 | 日志单条上限 | 8 KiB（超过截断并留标记） |
 | 日志每通道上限 | 128 KiB ~ 1 MiB（按通道类型） |
 | **日志总量上限** | **16 MiB**（各通道另有更小的上限；超了会裁掉最大通道的旧日志，回收次数与回收字节数在 `log_stats` 里能看到） |

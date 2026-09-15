@@ -144,6 +144,17 @@ impl McpCore {
         self.app.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// 当前 ADB PTY 会话连的是哪台设备（给纯后端的 `adb_shell_read` 用）。
+    ///
+    /// 取的是**后端自己那份会话状态**（`AdbPtyState`，不是镜像界面状态）：没有 GUI、
+    /// 或没有会话时给 `None`，调用方据此如实回 `serial: null` 而不是编一个设备名。
+    /// 放在这一层（而不是 protocol.rs）是因为 protocol.rs 刻意"完全不碰 Tauri"。
+    pub fn adb_active_serial(&self) -> Option<String> {
+        use tauri::Manager; // AppHandle::state 需要这个 trait 在作用域内
+        let app = self.app_handle()?;
+        crate::adb_active_serial(&app.state::<crate::AdbPtyState>())
+    }
+
     /// 经前端桥执行一次界面操作（S5）。超时/繁忙/无 GUI 都返回明确的错误码。
     pub async fn ui_call(
         &self,

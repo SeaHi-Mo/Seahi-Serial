@@ -81,7 +81,8 @@ SeaHi Serial 的串口/蓝牙调试接口。按下面的顺序工作能省掉大
 5) 写操作只给一个目标时，失败即整次调用失败（不会假装成功）；给多个目标才会逐条回报。
 6) 上限先查 mcp_limits：例如 ui_set 一次最多 200 条、serial_send 单次最多 64K 字符；请求限流 60 次/分。
 7) 日志不要重复拉全量：log_tail 用 sinceSeq 增量跟进。
-8) 若 mcp_status 的 readOnly 为 true，说明用户开了**只读（沙箱）模式**：所有写操作会被拒（错误码 -32007，且**没有执行**）。这不是参数问题，别重试、也别绕路，直接告诉用户「请到 MCP 弹窗里关掉只读模式」即可。";
+8) 若 mcp_status 的 readOnly 为 true，说明用户开了**只读（沙箱）模式**：所有写操作会被拒（错误码 -32007，且**没有执行**）。这不是参数问题，别重试、也别绕路，直接告诉用户「请到 MCP 弹窗里关掉只读模式」即可。
+9) ADB 语义：adb_list_devices 看设备（只有 state=device 那台能用）→ adb_open_shell（**危险，要 confirm:true**；会等 PTY 真的建出来才返回）→ adb_shell_write（**危险，要 confirm:true**；命令要自带换行才会执行）→ adb_shell_read（用 sinceSeq 增量跟进，**不需要界面**）→ adb_close_shell。";
 
 /// 会被**只读（沙箱）模式**拦下的写工具。
 ///
@@ -112,6 +113,12 @@ pub const WRITE_TOOLS: &[&str] = &[
     "ble_connect",
     "ble_disconnect",
     "ble_write",
+    // ADB：在**别人的设备上**开 shell / 真的执行命令（前两个同时是危险动作，见 DANGER_TOOLS）
+    "adb_open_shell",
+    "adb_shell_write",
+    // 改 PTY 尺寸与关会话都会动界面（终端布局 / 会话消失）
+    "adb_shell_resize",
+    "adb_close_shell",
 ];
 
 /// 判断**这一次调用**算不算写操作。
@@ -132,6 +139,14 @@ pub const DANGER_TOOLS: &[(&str, &str)] = &[
     (
         "ble_periph_stop",
         "停掉正在对外广播的 BLE 外设（已连上来的中心设备会断开）",
+    ),
+    (
+        "adb_open_shell",
+        "在**别人的设备上**开一个交互式 shell（开出来之后就能在上面执行任意命令）",
+    ),
+    (
+        "adb_shell_write",
+        "把内容写进设备的 shell —— 内容里带换行就是在**设备上真的执行**它",
     ),
 ];
 
@@ -515,12 +530,75 @@ pub fn tool_defs() -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
+        // ===== ADB 语义工具（§16.6.2 第三批的 ADB 部分；前端 mcpAdbOp）=====
+        // 与 serial_*/ble_* 同构：工具名 → 前端 action，每个 action 都走面板那条真实路径。
+        // ADB 面板是**单会话**模型（一次只有一台设备开着 shell），所以除 open 之外的动作
+        // 都作用于"当前那个会话"，不再重复要 serial。
+        json!({
+            "name": "adb_list_devices",
+            "description": "列出 `adb devices -l` 看到的设备（序列号 / 状态 / 型号）。只读，不会开 shell。**只有 state=device 的那台才可用**；unauthorized 表示还没在设备上点「允许 USB 调试」。",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        json!({
+            "name": "adb_open_shell",
+            "description": "在设备上开一个交互式 shell 会话（等价于点面板上那台设备的卡片：建 xterm + PTY）。开之前先确认设备在且 state=device；**等 PTY 真的建出来才返回**（最长 10 秒）。⚠️ 危险动作（之后能在设备上执行任意命令），必须带 confirm:true；不带时不会执行并返回 -32006。开完用 adb_shell_write 发命令、adb_shell_read 读输出。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "serial": { "type": "string", "description": "设备序列号（见 adb_list_devices；省略=用第一台 state=device 的设备）" },
+                    "confirm": { "type": "boolean", "description": "危险动作确认：必须为 true 才会执行" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "adb_shell_write",
+            "description": "往已打开的 ADB shell 写入内容（与在面板终端里敲键盘同一条路：字节会进设备 shell 的 stdin）。**命令要自己带上 \\n**，不带就只是填在命令行上不会执行。⚠️ 危险动作（写进去的内容会被设备真的执行），必须带 confirm:true。单次最多 4096 字符（mcp_limits.maxAdbWriteChars），超了报 -32602。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "data": { "type": "string", "description": "要写入 shell 的内容，如 \"ls -l\\n\"" },
+                    "confirm": { "type": "boolean", "description": "危险动作确认：必须为 true 才会执行" }
+                },
+                "required": ["data"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "adb_shell_read",
+            "description": "读 ADB shell 已经产生的输出（日志中心 adb:rx 通道：PTY 读线程在生产端旁路的一份副本，**不会抢走界面终端要显示的队列**）。**items 是 PTY 的输出块、不是按行切好的文本**（终端输出本来就没有行边界，ANSI 光标序列会跨块）。用 sinceSeq 增量跟进：下一次传返回 items 里最后一条的 seq。只读，不需要界面。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sinceSeq": { "type": "number", "description": "只要 seq 大于它的行（增量跟进；省略=取尾部 limit 行）" },
+                    "limit": { "type": "number", "description": "最多回多少行，默认 200，上限 2000（mcp_limits.maxAdbReadLines）" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "adb_shell_resize",
+            "description": "调整已打开 ADB shell 会话的 PTY 尺寸（与面板跟着容器尺寸自动推的是同一个后端命令）。cols/rows 都是 2~1000（mcp_limits.maxAdbCols / maxAdbRows）。注意：面板自己的尺寸同步（窗口/容器变化时）可能随后把它改回真实容器尺寸。写操作。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "cols": { "type": "number", "description": "列数（2~1000）" },
+                    "rows": { "type": "number", "description": "行数（2~1000）" }
+                },
+                "required": ["cols", "rows"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "adb_close_shell",
+            "description": "关掉当前 ADB shell 会话（等价于点面板上会话的关闭：杀掉 adb shell 子进程 + 移除终端）。本来就没开会话时是幂等的（closed:false + note），不是错误。写操作。",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
         json!({
             "name": "mcp_danger",
             "description": "列出**需要二次确认**的危险工具（会对外产生不可撤销影响的那些）与各自的后果。调用它们时必须带 confirm:true，否则不会执行。只读。",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
-        }),
-        // ===== 通用界面桥（S5）：保证"没有任何控件够不到" =====
+        }),        // ===== 通用界面桥（S5）：保证"没有任何控件够不到" =====
         json!({
             "name": "ui_list",
             "description": "列出界面上的可操控控件（按钮/输入框/下拉/开关）。每条给出 path、类型、面板、当前值、是否可用与不可用的原因。建议先用它枚举，再决定操作哪个。",
@@ -766,6 +844,41 @@ fn check_page_limit(lim: u64) -> Result<(), RpcError> {
     Ok(())
 }
 
+/// `adb_shell_write` 单次最多写多少**字符**。
+///
+/// **为什么必须有**：这一头是设备的 PTY（shell），写进去的会被**真的执行**；
+/// 而这条链路要先过 WebView 与 IPC（AGENTS #10）。1 MiB 的请求体足够塞进几十万字符，
+/// 上限按"一条命令行 / 一小段脚本"给足余量 —— 要灌大文件请用 adb push（那是面板外的事）。
+pub const MAX_ADB_WRITE_CHARS: usize = 4096;
+
+/// `adb_shell_resize` 的列/行上限（下限都是 2，与面板 `syncAdbTermSize` 的
+/// `Math.max(2, …)` 一致：0/1 会让远端 shell 的光标寻址与多列布局崩掉）。
+///
+/// **为什么必须有**：这两个数字会被原样交给 `portable_pty::PtySize`。超大值
+/// （比如 65535×65535）让远端按这个尺寸重排/清屏，实际是把会话搞坏，而调用方看不出原因。
+pub const MAX_ADB_COLS: u64 = 1000;
+pub const MAX_ADB_ROWS: u64 = 1000;
+/// ADB 终端尺寸的下限（与前端 `Math.max(2, …)` 同一个数）
+pub const MIN_ADB_DIM: u64 = 2;
+
+/// `adb_shell_read` 一次最多回多少行（与 `log_tail` 的 1..=2000 同一口径）
+pub const MAX_ADB_READ_LINES: u64 = 2000;
+
+/// 终端尺寸的闸门：`2..=max`。0/1 与超上限都在**碰界面之前**报 `-32602`。
+fn check_adb_dim(key: &str, v: u64, max: u64) -> Result<(), RpcError> {
+    if !(MIN_ADB_DIM..=max).contains(&v) {
+        return Err(RpcError::new(
+            E_INVALID_PARAMS,
+            format!(
+                "{} 只能是 {}~{}（收到 {}）—— 面板自己算尺寸时的下限也是 {}，\
+                 比它小的值会让远端 shell 的布局崩掉。",
+                key, MIN_ADB_DIM, max, v, MIN_ADB_DIM
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// 实际暴露的工具列表 = 内置工具 + （可选的）全量控件工具。
 /// `tools/list`、`mcp_status.toolCount`、客户端的配置提示词都用它，保证三处一致。
 pub fn exposed_tools(core: &McpCore) -> Vec<Value> {
@@ -801,6 +914,13 @@ fn require_str(args: &Value, key: &str) -> Result<String, RpcError> {
 
 fn opt_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(|v| v.as_u64())
+}
+
+/// 取一个必填的整数参数（缺失 / 不是非负整数 → `-32602`，让调用方改参数重试）
+fn require_u64(args: &Value, key: &str) -> Result<u64, RpcError> {
+    args.get(key)
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| RpcError::new(E_INVALID_PARAMS, format!("缺少 {} 参数（需非负整数）", key)))
 }
 
 fn opt_str(args: &Value, key: &str) -> Option<String> {
@@ -1193,6 +1313,44 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         "ble_periph_status" => ble_call(core, "periphStatus", args, json!({})).await,
         "ble_periph_start" => ble_call(core, "periphStart", args, json!({})).await,
         "ble_periph_stop" => ble_call(core, "periphStop", args, json!({})).await,
+        // ===== ADB 语义工具（前端 mcpAdbOp；与 serial_*/ble_* 同构）=====
+        "adb_list_devices" => adb_call(core, "listDevices", json!({})).await,
+        "adb_open_shell" => {
+            // serial 省略 = 前端用"第一台 state=device 的设备"（它自己会先问 adb_devices 确认）
+            let mut extra = json!({});
+            if let Some(s) = opt_str(args, "serial") {
+                extra["serial"] = json!(s);
+            }
+            adb_call(core, "openShell", extra).await
+        }
+        "adb_shell_write" => {
+            let data = require_str(args, "data")?;
+            // 长度闸门在**碰界面之前**（AGENTS #10）：没界面时超长入参也必须先拿到 -32602
+            // （"改参数重试"），而不是含糊的 -32006（"没有界面"）。边界值正好等于上限要放行。
+            if data.chars().count() > MAX_ADB_WRITE_CHARS {
+                return Err(RpcError::new(
+                    E_INVALID_PARAMS,
+                    format!(
+                        "单次最多写 {} 个字符（收到 {} 个）。ADB 那一头是设备的 shell，\
+                         要灌大块数据请用面板外的 adb push，或拆成多条命令。",
+                        MAX_ADB_WRITE_CHARS,
+                        data.chars().count()
+                    ),
+                ));
+            }
+            adb_call(core, "shellWrite", json!({ "data": data })).await
+        }
+        // 纯后端：读日志中心的 adb:rx（**不去 drain 面板轮询的那个 crossbeam 队列**，
+        // 见 adb_shell_read 的注释），所以没有界面时也能用。
+        "adb_shell_read" => adb_shell_read(core, args),
+        "adb_shell_resize" => {
+            let cols = require_u64(args, "cols")?;
+            let rows = require_u64(args, "rows")?;
+            check_adb_dim("cols", cols, MAX_ADB_COLS)?;
+            check_adb_dim("rows", rows, MAX_ADB_ROWS)?;
+            adb_call(core, "shellResize", json!({ "cols": cols, "rows": rows })).await
+        }
+        "adb_close_shell" => adb_call(core, "closeShell", json!({})).await,
         "mcp_danger" => Ok(json!({
             "tools": DANGER_TOOLS
                 .iter()
@@ -1440,6 +1598,11 @@ pub fn limits_json() -> Value {
         "maxUiSetValueChars": MAX_UI_SET_VALUE_CHARS,
         "maxSendChars": MAX_SEND_CHARS,
         "maxBleWriteChars": MAX_BLE_WRITE_CHARS,
+        // ADB：写进设备 shell 的单次字符数、PTY 尺寸、一次最多读多少行
+        "maxAdbWriteChars": MAX_ADB_WRITE_CHARS,
+        "maxAdbCols": MAX_ADB_COLS,
+        "maxAdbRows": MAX_ADB_ROWS,
+        "maxAdbReadLines": MAX_ADB_READ_LINES,
         "toolsPage": super::TOOLS_PAGE,
         "idleTimeoutSecs": super::IDLE_TIMEOUT_SECS,
         "rateLimitPerMin": super::RATE_LIMIT_PER_MIN,
@@ -1493,6 +1656,79 @@ async fn ble_call(
 /// 批量改字段/开关（前端按"字段表 / 开关表"决定是写值还是切 class）
 async fn serial_apply(core: &Arc<McpCore>, args: &Value, items: Value) -> Result<Value, RpcError> {
     serial_call(core, "apply", args, json!({ "items": items })).await
+}
+
+/// ADB 语义工具的转发（与 `serial_call`/`ble_call` 同构，面板换成 `adb`）。
+///
+/// 为什么没有 `args`/`pane` 参数：ADB 面板是单会话模型、也没有多分栏，
+/// 会话由 `serial` 标识 —— 硬塞一个用不上的 pane 只会让调用方以为它能开多个 ADB 会话。
+/// 每个工具要用的字段由各自的调用点放进 `extra`（光校验不转发 = 前端永远收不到）。
+async fn adb_call(core: &Arc<McpCore>, action: &str, extra: Value) -> Result<Value, RpcError> {
+    let mut payload = extra;
+    payload["action"] = json!(action);
+    core.ui_call("adb", payload).await
+}
+
+/// 读 ADB shell 已经产生的输出（**纯后端**，没有界面时也能用）。
+///
+/// 数据来源是日志中心的 `adb:rx` 通道，**不是面板轮询的那个 crossbeam 队列** ——
+/// 后者是单消费者队列：前端每 120ms 就 drain 一次写进 xterm，工具跑去 drain 会把界面
+/// 要显示的输出抢走（AGENTS #6 明令禁止"去 drain 前端轮询的队列"）。所以 ADB 的 PTY
+/// 读线程在**生产端**多推了一份到 LogHub（`main.rs` 的 `adb_open_shell` 读线程），这里只读副本。
+///
+/// **通道不存在不算错误**：那只是"还没有任何 shell 输出"。`log_tail` 对同样的输入会报
+/// `-32602`「没有这个通道」，而 AI 会据此得出"不支持读 ADB 输出"这种错结论。
+fn adb_shell_read(core: &Arc<McpCore>, args: &Value) -> Result<Value, RpcError> {
+    const CHANNEL: &str = "adb:rx";
+    let want = opt_u64(args, "limit")
+        .unwrap_or(200)
+        .clamp(1, MAX_ADB_READ_LINES) as usize;
+    let since = opt_u64(args, "sinceSeq");
+    // serial 取**后端自己那份会话状态**（不是镜像界面）：面板是单会话模型，
+    // 0 个或切换设备的瞬间有多个时如实回 null，而不是猜一台。
+    let serial = core.adb_active_serial();
+    let (items, dropped, may_be_incomplete) = match super::loghub::hub().tail(CHANNEL, since, want) {
+        Ok(v) => (
+            v["lines"].as_array().cloned().unwrap_or_default(),
+            v["dropped"].as_u64().unwrap_or(0),
+            v["mayBeIncomplete"].as_bool().unwrap_or(false),
+        ),
+        // 通道还不存在 = 还没有数据（**不是**错误，理由见上面的注释）
+        Err(_) => (Vec::new(), 0, false),
+    };
+    // `truncated` 的口径与 `log_search`/`log_export` 一致：凑满一页就说明"后面可能还有"。
+    // （`log_tail` 的 `truncated` 还额外要求 `dropped>0`，于是"行数到上限但没丢过"会谎报 false
+    // —— 那是它的历史口径，新工具不跟着抄。）
+    let truncated = items.len() >= want;
+
+    let mut notes: Vec<String> = Vec::new();
+    if items.is_empty() {
+        notes.push(
+            "adb:rx 还没有数据：先 adb_open_shell 开一个会话，再用 adb_shell_write 发命令（命令要带 \\n）。"
+                .to_string(),
+        );
+    }
+    if serial.is_none() {
+        notes.push(format!(
+            "serial 未知（当前没有 ADB PTY 会话，或正在切换设备）：这些输出来自共用通道 {}。",
+            CHANNEL
+        ));
+    }
+    let mut out = json!({
+        "serial": serial,
+        "channel": CHANNEL,
+        "count": items.len(),
+        "items": items,
+        "truncated": truncated,
+        // 丢弃要能读出来（AGENTS #6）：通道被裁过时 mayBeIncomplete=true，
+        // 否则调用方会以为"设备就输出了这么多"。
+        "dropped": dropped,
+        "mayBeIncomplete": may_be_incomplete,
+    });
+    if !notes.is_empty() {
+        out["note"] = json!(notes.join(" "));
+    }
+    Ok(out)
 }
 
 /// 读某个分栏**实际收发的内容**（串口监视器的核心）。
@@ -2074,6 +2310,31 @@ mod tests {
         serde_json::from_str(&s).expect("响应应是合法 JSON")
     }
 
+    /// 翻完 `tools/list` 的**所有页**取工具名。
+    ///
+    /// 为什么需要：内置工具已经超过一页（`TOOLS_PAGE = 50`，2026-09 加上 ADB 后是 55 个），
+    /// 而 `ctl_*` 排在它们**后面** —— 只读第一页的断言会以为"工具不见了"，实际上只是没翻页。
+    async fn all_tool_names(c: &Arc<McpCore>) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..10 {
+            let raw = match &cursor {
+                Some(x) => format!(
+                    r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{{"cursor":"{}"}}}}"#,
+                    x
+                ),
+                None => r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_string(),
+            };
+            let r = call(c, &raw).await;
+            names.extend(list_names(&r));
+            cursor = r["result"]["nextCursor"].as_str().map(|s| s.to_string());
+            if cursor.is_none() {
+                break;
+            }
+        }
+        names
+    }
+
     // 不开 tokio 的 macros feature（tokio-macros 不在本地缓存里），
     // 所以测试用手搓的最小 current_thread 运行时 block_on，而不是 #[tokio::test]。
     fn block_on<F: std::future::Future>(f: F) -> F::Output {
@@ -2165,13 +2426,14 @@ mod tests {
     fn tools_list_exposes_expected_names() {
         block_on(async {
             let c = core();
-            let r = call(&c, r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#).await;
-            let names: Vec<String> = r["result"]["tools"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|t| t["name"].as_str().unwrap().to_string())
-                .collect();
+            // 内置工具已经超过一页（TOOLS_PAGE=50），所以必须**顺着游标翻完**再断言 ——
+            // 只看第一页会漏掉后半页的工具（ADB 那 6 个就全在后半页）。
+            let names = all_tool_names(&c).await;
+            assert_eq!(
+                names.len(),
+                tool_defs().len(),
+                "翻完所有页应当不重不漏地拿到全部内置工具"
+            );
             for want in [
                 "app_info",
                 "mcp_status",
@@ -2188,10 +2450,16 @@ mod tests {
                 "log_stats",
                 "log_clear",
                 "log_export",
+                // ADB（第三批）：排在后半页，正是"只看第一页会漏掉"的那批
+                "adb_list_devices",
+                "adb_open_shell",
+                "adb_shell_write",
+                "adb_shell_read",
+                "adb_shell_resize",
+                "adb_close_shell",
             ] {
                 assert!(names.contains(&want.to_string()), "缺少工具 {} 于 {:?}", want, names);
             }
-            assert!(r["result"]["nextCursor"].is_null(), "本轮工具数不足一页");
         });
     }
 
@@ -2326,6 +2594,11 @@ mod tests {
             assert_eq!(sc["maxQuickCmdFileBytes"], MAX_QUICK_CMD_FILE_BYTES);
             // ble_write 的单次上限（BLE 写受 MTU 限制，没有上限就等于让 AI 灌爆 WebView）
             assert_eq!(sc["maxBleWriteChars"], MAX_BLE_WRITE_CHARS);
+            // ADB 的三个上限（写进设备 shell 的字符数、PTY 尺寸、一次读多少行）
+            assert_eq!(sc["maxAdbWriteChars"], MAX_ADB_WRITE_CHARS);
+            assert_eq!(sc["maxAdbCols"], MAX_ADB_COLS);
+            assert_eq!(sc["maxAdbRows"], MAX_ADB_ROWS);
+            assert_eq!(sc["maxAdbReadLines"], MAX_ADB_READ_LINES);
         });
     }
 
@@ -2376,6 +2649,8 @@ mod tests {
                 "mcp_calls",
                 "mcp_stats",
                 "mcp_config_get",
+                // ADB 的读输出是**纯后端**（读日志中心的 adb:rx），没有界面也该是对象
+                "adb_shell_read",
             ];
             for name in names {
                 let raw = format!(
@@ -2656,6 +2931,8 @@ mod tests {
                     "logTotalCapBytes", "maxBodyBytes", "maxBleWriteChars", "maxSendChars", "maxSessions",
                     "maxUiSetItems", "maxUiSetValueChars", "protocolFallback", "protocolVersion", "rateLimitPerMin",
                     "sessionQueue", "toolsPage",
+                    // ADB：写进设备 shell 的字符数 / PTY 尺寸 / 一次读多少行
+                    "maxAdbWriteChars", "maxAdbCols", "maxAdbRows", "maxAdbReadLines",
                     // 快速指令外部文件的上限（加字段就要一起改这里，契约测试会拦）
                     "maxQuickCmdItems", "maxQuickCmdLabelChars", "maxQuickCmdValueChars",
                     "maxQuickCmdFileBytes",
@@ -2718,6 +2995,16 @@ mod tests {
                 ("ble_periph_status", json!({}), NoGui),
                 ("ble_periph_start", json!({ "confirm": true }), NoGui),
                 ("ble_periph_stop", json!({ "confirm": true }), NoGui),
+                // ADB 语义工具（§16.6.2 第三批）：读输出是纯后端，其余都经前端 mcpAdbOp
+                // （两个危险动作照旧要求 confirm，没带就根本走不到界面那一步）
+                ("adb_list_devices", json!({}), NoGui),
+                ("adb_open_shell", json!({ "confirm": true }), NoGui),
+                ("adb_shell_write", json!({ "data": "ls -l\n", "confirm": true }), NoGui),
+                ("adb_shell_read", json!({ "limit": 5 }), Backend(&[
+                    "serial", "channel", "count", "items", "truncated", "dropped", "mayBeIncomplete",
+                ], &["note"])),
+                ("adb_shell_resize", json!({ "cols": 120, "rows": 40 }), NoGui),
+                ("adb_close_shell", json!({}), NoGui),
                 // 危险工具表本身是纯后端只读：不需要界面（"有哪些危险动作"不该依赖 GUI）
                 ("mcp_danger", json!({}), Backend(&["tools", "total", "note"], &[])),
                 ("ui_list", json!({}), NoGui),
@@ -2751,7 +3038,13 @@ mod tests {
                 if req.is_empty() {
                     continue;
                 }
-                let r = call(&c, &raw_call(name, &json!({}))).await;
+                // 危险工具要先补一个 confirm：危险门故意排在 required 校验**之前**
+                // （没确认就什么都别做），不给 confirm 就永远测不到"缺必填 → -32602"这一层。
+                let mut args = json!({});
+                if danger_note(name).is_some() {
+                    args["confirm"] = json!(true);
+                }
+                let r = call(&c, &raw_call(name, &args)).await;
                 assert_eq!(
                     r["error"]["code"], E_INVALID_PARAMS,
                     "{} 声明了 required{:?}，缺参却没报 -32602: {}",
@@ -2998,8 +3291,51 @@ mod tests {
                                 _ => json!({ "ok": false, "error": format!("假前端不认识 action: {}", action) }),
                             }
                         }
-                        "list" => json!({ "ok": true, "value": { "controls": [], "total": 0 } }),
-                        "describe" | "get" => json!({ "ok": true, "value": { "path": "serial.conn.portSelect", "value": "COM1" } }),
+                        // ADB 语义层（mcpAdbOp）：只做"够驱动 adb_* 工具解析路径"的最小仿真
+                        "adb" => {
+                            let action = payload["action"].as_str().unwrap_or("");
+                            match action {
+                                "listDevices" => json!({ "ok": true, "value": {
+                                    "total": 2, "ready": 1,
+                                    "devices": [
+                                        { "serial": "emulator-5554", "state": "device",
+                                          "model": "sdk_gphone64_x86_64", "product": "sdk" },
+                                        { "serial": "0123456789ABCDEF", "state": "unauthorized",
+                                          "model": "Pixel 7", "product": "panther" },
+                                    ],
+                                }}),
+                                // 前端可能自己挑设备（serial 省略时用第一台 state=device 的）
+                                "openShell" => json!({ "ok": true, "value": {
+                                    "serial": payload.get("serial").and_then(|v| v.as_str())
+                                        .unwrap_or("emulator-5554"),
+                                    "opened": true, "cols": 120, "rows": 40,
+                                }}),
+                                // data 缺了要报参数错 —— Rust 侧"校验了却没放进 payload"是 batch 4
+                                // 真出现过的漏法（ble_read 的 char 就被吞过），这里必须能抓住
+                                "shellWrite" => {
+                                    if payload["data"].as_str().unwrap_or("").is_empty() {
+                                        json!({ "ok": false, "invalidParams": true,
+                                                "error": "假前端：shellWrite 少了 data" })
+                                    } else {
+                                        let d = payload["data"].as_str().unwrap_or("");
+                                        json!({ "ok": true, "value": {
+                                            "serial": "emulator-5554", "written": true,
+                                            "bytes": d.len(), "data": d,
+                                        }})
+                                    }
+                                }
+                                "shellResize" => json!({ "ok": true, "value": {
+                                    "serial": "emulator-5554",
+                                    "cols": payload.get("cols").and_then(|v| v.as_u64()).unwrap_or(0),
+                                    "rows": payload.get("rows").and_then(|v| v.as_u64()).unwrap_or(0),
+                                }}),
+                                "closeShell" => json!({ "ok": true, "value": {
+                                    "serial": "emulator-5554", "opened": false, "closed": true,
+                                }}),
+                                _ => json!({ "ok": false, "error": format!("假前端不认识 action: {}", action) }),
+                            }
+                        }
+                        "list" => json!({ "ok": true, "value": { "controls": [], "total": 0 } }),                        "describe" | "get" => json!({ "ok": true, "value": { "path": "serial.conn.portSelect", "value": "COM1" } }),
                         "getState" => json!({ "ok": true, "value": { "theme": "dark" } }),
                         "set" | "click" => json!({ "ok": true, "value": { "results": [], "effects": [] } }),
                         other => json!({ "ok": false, "error": format!("假前端不认识 op: {}", other) }),
@@ -3214,6 +3550,34 @@ mod tests {
                     pre_connected: None,
                     calls: vec![("ble", json!({ "action": "periphStop" }))],
                     keys: &["pane", "started", "advertising"] },
+                // ADB 第三批：每个动作都经前端 mcpAdbOp（危险门在 Rust 侧，这一层只钉
+                // "发出去的 op/参数"与"拿到回执后的返回形状"）
+                Case { tool: "adb_list_devices", args: json!({}),
+                    pre_connected: None,
+                    calls: vec![("adb", json!({ "action": "listDevices" }))],
+                    keys: &["total", "ready", "devices"] },
+                // 给了 serial：必须**原样进 payload**（前端靠它挑设备），且只在给了的时候出现
+                Case { tool: "adb_open_shell", args: json!({ "serial": "emulator-5554", "confirm": true }),
+                    pre_connected: None,
+                    calls: vec![("adb", json!({ "action": "openShell", "serial": "emulator-5554" }))],
+                    keys: &["serial", "opened", "cols", "rows"] },
+                // 省略 serial：payload 里不许凭空多一个 serial（前端自己取第一台可用设备）
+                Case { tool: "adb_open_shell", args: json!({ "confirm": true }),
+                    pre_connected: None,
+                    calls: vec![("adb", json!({ "action": "openShell" }))],
+                    keys: &["serial", "opened"] },
+                Case { tool: "adb_shell_write", args: json!({ "data": "ls -l\n", "confirm": true }),
+                    pre_connected: None,
+                    calls: vec![("adb", json!({ "action": "shellWrite", "data": "ls -l\n" }))],
+                    keys: &["serial", "written", "bytes", "data"] },
+                Case { tool: "adb_shell_resize", args: json!({ "cols": 100, "rows": 30 }),
+                    pre_connected: None,
+                    calls: vec![("adb", json!({ "action": "shellResize", "cols": 100, "rows": 30 }))],
+                    keys: &["serial", "cols", "rows"] },
+                Case { tool: "adb_close_shell", args: json!({}),
+                    pre_connected: None,
+                    calls: vec![("adb", json!({ "action": "closeShell" }))],
+                    keys: &["serial", "opened", "closed"] },
                 Case { tool: "ui_list", args: json!({ "limit": 3 }),
                     pre_connected: None,
                     calls: vec![("list", json!({ "limit": 3 }))],
@@ -3320,6 +3684,9 @@ mod tests {
                 "ble_list_devices", "ble_start_scan", "ble_stop_scan", "ble_get_services",
                 "ble_get_output", "ble_refresh_rssi", "ble_read", "ble_subscribe",
                 "ble_write", "ble_connect", "ble_disconnect",
+                // ADB 第三批（都经前端 mcpAdbOp；adb_shell_read 是纯后端，不在这张表里）
+                "adb_list_devices", "adb_open_shell", "adb_shell_write",
+                "adb_shell_resize", "adb_close_shell",
             ];
             // serial_get_output 只读日志中心，但**先要过前端拿分栏名与通道名**，所以也算界面工具
             want.push("serial_get_output");
@@ -3384,6 +3751,113 @@ mod tests {
                 r["result"]["structuredContent"]["devices"][0]["mac"],
                 "AA:BB:CC:DD:EE:FF"
             );
+        });
+    }
+
+    /// ADB 设备列表同理：**文本摘要里要有序列号与状态**。
+    /// 与 `ble_list_devices` 那条是同一个教训（只报"N 项"等于把数据藏起来）——
+    /// 这里不能只写 `devices=2 项`，否则只读文本的客户端拿不到"该连哪台"。
+    #[test]
+    fn adb_list_devices_text_carries_serial_state_and_model() {
+        block_on(async {
+            let c = core();
+            {
+                let mut slot = c.test_ui.lock().unwrap_or_else(|e| e.into_inner());
+                *slot = Some(Box::new(|op: &str, payload: &Value| {
+                    assert_eq!(op, "adb", "adb_list_devices 该走 adb 面板");
+                    assert_eq!(payload["action"], "listDevices");
+                    json!({ "ok": true, "value": {
+                        "total": 1, "ready": 1,
+                        "devices": [{ "serial": "emulator-5554", "state": "device",
+                                      "model": "sdk_gphone64_x86_64", "product": "sdk" }],
+                    }})
+                }));
+            }
+            let r = call(&c, &raw_call("adb_list_devices", &json!({}))).await;
+            assert_eq!(r["result"]["isError"], false, "{}", r);
+            let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+            assert!(text.contains("emulator-5554"), "文本摘要里没有序列号: {}", text);
+            assert!(text.contains("device"), "文本摘要里没有状态: {}", text);
+            assert!(text.contains("sdk_gphone64_x86_64"), "文本摘要里没有型号: {}", text);
+        });
+    }
+
+    /// `adb_shell_read` 是纯后端工具（读日志中心的 `adb:rx`），三个行为必须钉住：
+    /// ① 通道还没建（一条输出都没有）时**不报错**（`log_tail` 对同样的输入会报 -32602，
+    ///    AI 会据此得出"不支持读 ADB 输出"的错结论）；② `sinceSeq` 是增量；
+    /// ③ 摘要里**真的有输出内容**，不是只报了个条数。
+    #[test]
+    fn adb_shell_read_reads_the_loghub_channel_incrementally() {
+        let _g = hub_lock();
+        let hub = crate::mcp::loghub::hub();
+        hub.set_enabled(true);
+        hub.clear(Some("adb:rx"));
+
+        block_on(async {
+            let c = core();
+            // ① 通道还不存在 → 空列表 + note，不是错误
+            let r = call(&c, &raw_call("adb_shell_read", &json!({}))).await;
+            assert!(r.get("error").is_none(), "没数据不该是协议错误: {}", r);
+            assert_eq!(r["result"]["isError"], false, "{}", r);
+            assert_eq!(r["result"]["structuredContent"]["count"], 0);
+            assert_eq!(r["result"]["structuredContent"]["channel"], "adb:rx");
+            assert!(
+                r["result"]["structuredContent"]["note"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("adb_open_shell"),
+                "空的时候要说清下一步: {}",
+                r["result"]["structuredContent"]["note"]
+            );
+
+            // ② 写入几条（模拟 PTY 读线程的旁路）→ 尾部读取 + sinceSeq 增量
+            crate::mcp::loghub::hub().push(
+                "adb:rx",
+                crate::mcp::loghub::LEVEL_INFO,
+                crate::mcp::loghub::DIR_RX,
+                "total 12\n",
+                9,
+            );
+            crate::mcp::loghub::hub().push(
+                "adb:rx",
+                crate::mcp::loghub::LEVEL_INFO,
+                crate::mcp::loghub::DIR_RX,
+                "drwxr-xr-x 4 root root 4096 /data\n",
+                33,
+            );
+            let r = call(&c, &raw_call("adb_shell_read", &json!({ "limit": 10 }))).await;
+            let sc = &r["result"]["structuredContent"];
+            assert_eq!(sc["count"], 2);
+            assert_eq!(sc["items"][0]["seq"], 1, "seq 从 1 开始且连续: {}", sc["items"]);
+            assert_eq!(sc["items"][1]["dir"], "rx");
+            let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+            assert!(
+                text.contains("/data") || text.contains("drwxr-xr-x"),
+                "文本摘要里必须真的有输出内容（只报条数等于把数据藏起来）: {}",
+                text
+            );
+
+            // sinceSeq 是**增量**：只拿比它新的
+            let r = call(&c, &raw_call("adb_shell_read", &json!({ "sinceSeq": 1 }))).await;
+            let sc = &r["result"]["structuredContent"];
+            assert_eq!(sc["count"], 1, "sinceSeq=1 时只该回第 2 条: {}", sc);
+            assert_eq!(sc["items"][0]["seq"], 2);
+
+            // ③ 丢弃账要能读出来（AGENTS #6：不能让调用方以为日志是完整的）
+            crate::mcp::loghub::hub().note_dropped("adb:rx", 3);
+            let r = call(&c, &raw_call("adb_shell_read", &json!({}))).await;
+            let sc = &r["result"]["structuredContent"];
+            assert_eq!(sc["dropped"], 3, "{}", sc);
+            assert_eq!(sc["mayBeIncomplete"], true, "有丢弃时必须明确告知: {}", sc);
+
+            // ④ 没带 limit 时不应超上限（limit 是 clamp，不是拒绝）
+            let r = call(
+                &c,
+                &raw_call("adb_shell_read", &json!({ "limit": MAX_ADB_READ_LINES + 999 })),
+            )
+            .await;
+            assert_eq!(r["result"]["isError"], false, "{}", r);
+            hub.clear(Some("adb:rx"));
         });
     }
 
@@ -3646,30 +4120,44 @@ mod tests {
         }
         block_on(async {
             let c = core();
-            // ② 没带 confirm：被危险门拦下 —— 错误里点明"危险动作"，且**没有走到界面那一步**
-            let e = call_tool(&c, "ble_periph_start", &json!({})).await.unwrap_err();
-            assert_eq!(e.code, E_DEVICE_NOT_READY, "危险动作没确认时用 -32006（前置条件类）");
-            assert!(
-                e.message.contains("危险动作") && e.message.contains("confirm"),
-                "要说清这是危险动作、带 confirm 重试: {}",
-                e.message
-            );
-            // 没执行 → 工具调用计数里不该有它（"没执行"要有证据）
-            let called = c
-                .tool_calls
-                .lock()
-                .unwrap_or_else(|x| x.into_inner())
-                .get("ble_periph_start")
-                .copied()
-                .unwrap_or(0);
-            assert_eq!(called, 0, "被危险门拦下的调用不能计入工具调用次数");
+            // ② 没带 confirm：**每一个**危险工具都被危险门拦下 —— 错误里点明"危险动作"、
+            // 且**没有走到界面/后端那一步**（工具调用计数里不该有它 = "没执行"的证据）。
+            // 逐个查而不是只查 ble_periph_start：表里新加的危险工具（ADB 这两个）
+            // 如果忘了接上确认门，只测第一个就漏过去了。
+            for (name, _why) in DANGER_TOOLS {
+                let e = call_tool(&c, name, &json!({})).await.unwrap_err();
+                assert_eq!(
+                    e.code, E_DEVICE_NOT_READY,
+                    "{} 没确认时该用 -32006（前置条件类）：{}",
+                    name, e.message
+                );
+                assert!(
+                    e.message.contains("危险动作") && e.message.contains("confirm"),
+                    "{} 要说清这是危险动作、带 confirm 重试: {}",
+                    name,
+                    e.message
+                );
+                let called = c
+                    .tool_calls
+                    .lock()
+                    .unwrap_or_else(|x| x.into_inner())
+                    .get(*name)
+                    .copied()
+                    .unwrap_or(0);
+                assert_eq!(called, 0, "{} 被危险门拦下的调用不能计入工具调用次数", name);
+            }
             // ③ 带了 confirm：放行（没有 GUI，所以这里会变成"没有界面"那类错误，而不是危险门）
-            let e2 = call_tool(&c, "ble_periph_start", &json!({ "confirm": true })).await.unwrap_err();
-            assert!(
-                !e2.message.contains("危险动作"),
-                "带了 confirm 就不该再被危险门拦: {}",
-                e2.message
-            );
+            for (name, _why) in DANGER_TOOLS {
+                let e2 = call_tool(&c, name, &json!({ "confirm": true }))
+                    .await
+                    .unwrap_err();
+                assert!(
+                    !e2.message.contains("危险动作"),
+                    "{} 带了 confirm 就不该再被危险门拦: {}",
+                    name,
+                    e2.message
+                );
+            }
             // ④ 普通工具不受影响
             assert!(
                 call_tool(&c, "app_info", &json!({})).await.is_ok(),
@@ -4182,18 +4670,19 @@ mod tests {
             c.registry
                 .replace(vec![reg_entry("serial.conn.portSelect", "select", "serial")]);
 
-            let r = call(&c, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await;
+            // 内置工具超过一页，`ctl_*` 排在它们后面 —— 必须翻完所有页再看
+            let names = all_tool_names(&c).await;
             assert!(
-                !list_names(&r).iter().any(|n| n.starts_with("ctl_")),
+                !names.iter().any(|n| n.starts_with("ctl_")),
                 "默认不该暴露 ctl_*：几百个工具会明显拖累模型选工具的准确率"
             );
 
             c.cfg.lock().unwrap().expose.auto_control_tools = true;
-            let r2 = call(&c, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).await;
+            let names2 = all_tool_names(&c).await;
             assert!(
-                list_names(&r2).contains(&"ctl_serial_conn_portselect".to_string()),
+                names2.contains(&"ctl_serial_conn_portselect".to_string()),
                 "{:?}",
-                list_names(&r2)
+                names2
             );
         });
     }
@@ -4352,6 +4841,78 @@ mod tests {
                 lim["result"]["structuredContent"]["maxQuickCmdValueChars"],
                 json!(MAX_QUICK_CMD_VALUE_CHARS)
             );
+
+            // ⑥ ADB 写入量：这一头是**设备的 shell**，超限同样要在碰界面之前报 -32602
+            let long_adb = "A".repeat(MAX_ADB_WRITE_CHARS + 1);
+            let r = call(
+                &c,
+                &raw_call("adb_shell_write", &json!({ "data": long_adb, "confirm": true })),
+            )
+            .await;
+            assert_eq!(
+                r["error"]["code"], E_INVALID_PARAMS,
+                "adb_shell_write 超长应先报 -32602：{}",
+                r
+            );
+            assert!(
+                r["error"]["message"].as_str().unwrap_or("").contains("上限")
+                    || r["error"]["message"].as_str().unwrap_or("").contains("最多"),
+                "错误信息要说清上限：{}",
+                r
+            );
+            // 边界值（正好等于上限）放行 → 这才轮到"没有界面"
+            let adb_ok = "A".repeat(MAX_ADB_WRITE_CHARS);
+            let r = call(
+                &c,
+                &raw_call("adb_shell_write", &json!({ "data": adb_ok, "confirm": true })),
+            )
+            .await;
+            assert_eq!(r["result"]["isError"], true, "边界值应放行到界面层：{}", r);
+            assert!(
+                r["result"]["content"][0]["text"].as_str().unwrap_or("").contains("-32006"),
+                "放行后应报「没有界面」：{}",
+                r
+            );
+
+            // ⑦ ADB 终端尺寸：0/1/超上限都是参数问题（面板自己的下限是 2）
+            for bad in [0u64, 1, MAX_ADB_COLS + 1] {
+                let r = call(&c, &raw_call("adb_shell_resize", &json!({ "cols": bad, "rows": 40 }))).await;
+                assert_eq!(
+                    r["error"]["code"], E_INVALID_PARAMS,
+                    "adb_shell_resize cols={} 应先报 -32602：{}",
+                    bad, r
+                );
+            }
+            for bad in [0u64, MIN_ADB_DIM - 1, MAX_ADB_ROWS + 1] {
+                let r = call(&c, &raw_call("adb_shell_resize", &json!({ "cols": 120, "rows": bad }))).await;
+                assert_eq!(
+                    r["error"]["code"], E_INVALID_PARAMS,
+                    "adb_shell_resize rows={} 应先报 -32602：{}",
+                    bad, r
+                );
+            }
+            // 边界值放行（2 与 1000 都算合法）
+            for (cols, rows) in [(MIN_ADB_DIM, MIN_ADB_DIM), (MAX_ADB_COLS, MAX_ADB_ROWS)] {
+                let r = call(
+                    &c,
+                    &raw_call("adb_shell_resize", &json!({ "cols": cols, "rows": rows })),
+                )
+                .await;
+                assert_eq!(
+                    r["result"]["isError"], true,
+                    "边界尺寸 {cols}x{rows} 应放行到界面层：{}",
+                    r
+                );
+            }
+
+            // ⑧ 新增的上限同样必须公开（AGENTS #10：报不出来就等于让人撞墙）
+            let lim = call(&c, &raw_call("mcp_limits", &json!({}))).await;
+            assert_eq!(
+                lim["result"]["structuredContent"]["maxAdbWriteChars"],
+                json!(MAX_ADB_WRITE_CHARS)
+            );
+            assert_eq!(lim["result"]["structuredContent"]["maxAdbCols"], json!(MAX_ADB_COLS));
+            assert_eq!(lim["result"]["structuredContent"]["maxAdbRows"], json!(MAX_ADB_ROWS));
         });
     }
 
@@ -4407,7 +4968,10 @@ mod tests {
                 reg_entry("serial.conn.a", "button", "serial"),
                 reg_entry("ble.scan.b", "button", "ble"),
             ]);
-            let names = list_names(&call(&c, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await);
+            // ⚠️ 必须用 `all_tool_names`（翻完所有页）：内置工具已超过一页（TOOLS_PAGE=50，
+            // 2026-09 加上 ADB 后是 55 个），而 `ctl_*` 排在它们后面 ——
+            // 只读第一页会以为"控件工具不见了"，其实只是没翻页。
+            let names = all_tool_names(&c).await;
             assert!(names.contains(&"ctl_ble_scan_b".to_string()));
             assert!(
                 !names.contains(&"ctl_serial_conn_a".to_string()),

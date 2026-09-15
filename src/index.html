@@ -5613,6 +5613,7 @@ function mcpHandleUiCmd(op, payload) {
     }
     if (op === 'serial') return mcpSerialOp(payload);
     if (op === 'ble') return mcpBleOp(payload);
+    if (op === 'adb') return mcpAdbOp(payload);
     return { ok: false, error: '未知的 ui 操作: ' + op };
 }
 
@@ -6100,6 +6101,246 @@ function mcpBleOp(payload) {
     return { ok: false, invalidParams: true, error: '未知的 ble action: ' + action
         + '（可用：state / listDevices / startScan / stopScan / getServices / read / subscribe / write'
         + ' / connect / disconnect / getOutput / refreshRssi / periphStatus / periphStart / periphStop）' };
+}
+
+/* ===== ADB 语义层（给 MCP 的 adb_* 工具用）=====
+ *
+ * 与 `mcpBleOp` 同构：一个 action 分支表，**每个分支都调面板那条真实路径**
+ * （`openAdbSession` / `closeAdbSession` / `invoke('adb_shell_write')` …），不给 AI 另写一套。
+ * 与 BLE 的差别只有一处：ADB 面板是**单会话**模型，所以"当前会话"就是 `#adb-sessionArea`
+ * 里那个 `[id^="adb-session-"]` 元素，会话身份看它身上的 `_adbSerial` / `_adbPtyId`。
+ *
+ * 两个危险动作（`openShell` / `shellWrite`）的确认门在 Rust 侧（`DANGER_TOOLS`）：
+ * 没带 `confirm:true` 根本走不到这里（见 protocol.rs）。
+ */
+
+// 开会话最多在前端等多久（毫秒）。Rust 桥对 `adb.openShell` 用的是"设备档"超时
+// （bridge.rs 的 UI_TIMEOUT_DEVICE_MS = 30s），必须**大于**这个值 —— 否则慢一点的
+// 成功会被桥判成 -32004「界面可能正忙」，AI 拿到的是假失败（与 BLE connect 同一个坑）。
+// 断言集里有一条守着这个大小关系。
+var ADB_OPEN_WAIT_MS = 10000;
+
+// UTF-8 字节数（写进 PTY 的是**字节**，回执里的 bytes 得是真的字节数）。
+// 不引 TextEncoder：老 WebView 上它不一定在，而这里只需要一个 10 行的纯函数。
+function adbUtf8Bytes(s) {
+    var n = 0;
+    for (var i = 0; i < s.length; i++) {
+        var c = s.charCodeAt(i);
+        if (c < 0x80) n += 1;
+        else if (c < 0x800) n += 2;
+        // 代理对（emoji 等）算一个 4 字节字符：跳过低位代理
+        else if (c >= 0xd800 && c <= 0xdbff) { n += 4; i++; }
+        else n += 3;
+    }
+    return n;
+}
+
+// 当前那个 ADB 会话元素（单会话模型：最多一个）
+function adbSessionEl() {
+    var area = document.getElementById('adb-sessionArea');
+    if (!area || !area.querySelector) return null;
+    return area.querySelector('[id^="adb-session-"]');
+}
+
+// 把会话元素的真实状态整理成回执。cols/rows 取 xterm 自己的尺寸 ——
+// 面板同步 PTY 尺寸（syncAdbTermSize）用的就是这两个数，所以它们是同一份事实。
+function adbSessionValue(el, note) {
+    var term = el && el._adbTerm;
+    var v = {
+        serial: (el && el._adbSerial) || null,
+        opened: true,
+        cols: (term && term.cols) || null,
+        rows: (term && term.rows) || null,
+    };
+    if (note) v.note = note;
+    return v;
+}
+
+// 让 ADB 页真的显示出来（与用户点顶栏那颗按钮同一条路：合成点击 → openAdb()）。
+// 返回调用后 ADB 页（含会话区）是否就绪。
+// 为什么要切页：① 用户得看得见 AI 在干什么；② 面板隐藏时 syncAdbTermSize 会主动跳过
+// （容器尺寸为 0 会把 PTY 压成 2x2），于是 PTY 会停在 40x120 的默认值 —— 终端一打开就错位。
+function adbEnsurePaneVisible() {
+    var pane = document.getElementById('adb-pane');
+    var ready = function() {
+        return !!(pane && pane.style.display !== 'none' && document.getElementById('adb-sessionArea'));
+    };
+    if (ready()) return true;
+    mcpRevealPaneFor('adb');
+    pane = document.getElementById('adb-pane');
+    return ready();
+}
+
+function mcpAdbOp(payload) {
+    payload = payload || {};
+    var action = payload.action;
+
+    if (action === 'listDevices') {
+        // 直接问后端（与面板那颗「刷新」按钮**同一个命令**）：不吃面板那 5 秒轮询的空窗，
+        // 刚插上设备也能立刻看到。只读，不碰会话。
+        return invoke('adb_devices').then(function(list) {
+            var devs = Array.isArray(list) ? list : [];
+            var devices = devs.map(function(d) {
+                return {
+                    serial: String(d.serial || ''),
+                    state: String(d.state || ''),
+                    model: (d.model === undefined || d.model === null) ? '' : String(d.model),
+                    product: (d.product === undefined || d.product === null) ? '' : String(d.product),
+                };
+            });
+            var ready = devices.filter(function(d) { return d.state.toLowerCase() === 'device'; }).length;
+            var out = { total: devices.length, ready: ready, devices: devices };
+            if (!devices.length) {
+                out.note = '没有 ADB 设备：插上设备并打开 USB 调试；'
+                    + '设备上还没点「允许 USB 调试」时 state 会是 unauthorized。'
+                    + '（adb 本身没装/找不到时后端会直接报「未找到 adb 可执行文件」）';
+            } else if (!ready) {
+                out.note = '有 ' + devices.length + ' 台但一台都不可用（state 不是 device）：'
+                    + 'unauthorized 需要在设备上点「允许 USB 调试」，offline 需要重新插拔/重启 adb 服务。';
+            }
+            return { ok: true, value: out };
+        }).catch(function(e) {
+            return { ok: false, error: '读 ADB 设备列表失败: ' + String((e && e.message) || e) };
+        });
+    }
+
+    if (action === 'openShell') {
+        if (typeof openAdbSession !== 'function') {
+            return { ok: false, error: '这个界面版本没有 ADB 会话功能（openAdbSession 不存在）：请更新应用' };
+        }
+        if (!adbEnsurePaneVisible()) {
+            return { ok: false, error: 'ADB 页没能显示出来（找不到 #adb-pane / #adbToggleBtn）' };
+        }
+        var wantSerial = String(payload.serial || '').trim();
+        return invoke('adb_devices').then(function(list) {
+            var ready2 = (Array.isArray(list) ? list : []).filter(function(d) {
+                return String(d.state || '').toLowerCase() === 'device';
+            });
+            if (!ready2.length) {
+                return { ok: false, error: '这台机器没有可用的 ADB 设备（adb devices 里一台 state=device 都没有）：'
+                    + '先插上设备并在设备上允许 USB 调试，再用 adb_list_devices 确认' };
+            }
+            var target = null;
+            if (wantSerial) {
+                target = ready2.filter(function(d) { return String(d.serial) === wantSerial; })[0] || null;
+                if (!target) {
+                    // 设备名错了：这是**参数问题**（invalidParams → -32602），并把可选项列出来
+                    return { ok: false, invalidParams: true,
+                             error: '没有 ' + wantSerial + ' 这台可用设备（可选：' +
+                                 ready2.map(function(d) { return String(d.serial); }).join(' / ') + '）' };
+                }
+            } else {
+                target = ready2[0];
+            }
+            var serial = String(target.serial);
+            var area = document.getElementById('adb-sessionArea');
+            if (!area) return { ok: false, error: 'ADB 面板还没建出来（缺少 #adb-sessionArea）' };
+            var cur = adbSessionEl();
+            if (cur && cur._adbSerial === serial && cur._adbPtyId) {
+                return { ok: true, value: adbSessionValue(cur, '本来就开着这个设备的 shell，没有重复打开') };
+            }
+            try {
+                openAdbSession(serial);      // 与用户点设备卡片完全同一条路（建面板 + xterm + PTY）
+            } catch (e) {
+                return { ok: false, error: '打开 ADB 会话失败: ' + String((e && e.message) || e) };
+            }
+            // 点下去只代表"开始了"：`_adbPtyId` 要等 `invoke('adb_open_shell')` 回来才有，
+            // 所以这里轮询到**真的开出来**才回执（与 serial_open 点完轮询确认同一套纪律）。
+            return new Promise(function(resolve) {
+                var deadline = Date.now() + ADB_OPEN_WAIT_MS;
+                var tick = function() {
+                    var el = adbSessionEl();
+                    if (el && el._adbPtyId) { resolve({ ok: true, value: adbSessionValue(el) }); return; }
+                    if (el && el._adbOpenError) {
+                        resolve({ ok: false, error: '打开 ADB shell 失败: ' + el._adbOpenError });
+                        return;
+                    }
+                    if (el && !el._adbTerm) {
+                        resolve({ ok: false, error: 'ADB 会话节点建出来了但没有终端（xterm.js 未加载）' });
+                        return;
+                    }
+                    if (!el) {
+                        resolve({ ok: false, error: 'ADB 会话没能建起来（#adb-sessionArea 里没有会话节点）' });
+                        return;
+                    }
+                    if (Date.now() >= deadline) {
+                        resolve({ ok: false, error: (ADB_OPEN_WAIT_MS / 1000)
+                            + ' 秒内没拿到 PTY 会话（adb_open_shell 一直没回来）：设备可能断开/未授权，'
+                            + '或 adb 不可用。详情看界面终端上的报错或 log_tail(channel="error")' });
+                        return;
+                    }
+                    setTimeout(tick, 100);
+                };
+                tick();      // 先查一次：已经开好时（或同步就绪时）不必等第一个 100ms
+            });
+        }).catch(function(e) {
+            return { ok: false, error: '打开 ADB shell 失败: ' + String((e && e.message) || e) };
+        });
+    }
+
+    if (action === 'shellWrite') {
+        var data = (payload.data === undefined || payload.data === null) ? '' : String(payload.data);
+        if (!data) {
+            return { ok: false, invalidParams: true,
+                     error: '要给 data：要写进 shell 的内容（命令请自己带上 \\n，不带就只是填在命令行上不会执行）' };
+        }
+        var elW = adbSessionEl();
+        if (!elW) return { ok: false, error: '还没开 ADB shell 会话：先 adb_open_shell' };
+        if (!elW._adbPtyId) {
+            return { ok: false, error: 'ADB 会话还在建立中（还没拿到 PTY id）：稍等片刻，或先用 adb_open_shell 确认' };
+        }
+        // 用的就是面板终端 onData 走的那条命令（xterm 敲键盘 → invoke('adb_shell_write')），
+        // 所以设备收到的字节与用户手打完全一样。
+        return invoke('adb_shell_write', { sessionId: elW._adbPtyId, data: data }).then(function() {
+            return { ok: true, value: {
+                serial: elW._adbSerial || null,
+                written: true,
+                bytes: adbUtf8Bytes(data),
+                data: data,
+            } };
+        }).catch(function(e) {
+            return { ok: false, error: '写 ADB shell 失败: ' + String((e && e.message) || e) };
+        });
+    }
+
+    if (action === 'shellResize') {
+        var cols = parseInt(payload.cols, 10);
+        var rows = parseInt(payload.rows, 10);
+        if (!(cols >= 2) || !(rows >= 2)) {
+            return { ok: false, invalidParams: true, error: 'cols / rows 都要是 >= 2 的整数' };
+        }
+        var elR = adbSessionEl();
+        if (!elR) return { ok: false, error: '还没开 ADB shell 会话：先 adb_open_shell' };
+        if (!elR._adbPtyId) {
+            return { ok: false, error: 'ADB 会话还在建立中（还没拿到 PTY id）：稍等片刻再改尺寸' };
+        }
+        return invoke('adb_shell_resize', { sessionId: elR._adbPtyId, cols: cols, rows: rows })
+            .then(function() {
+                return { ok: true, value: {
+                    serial: elR._adbSerial || null, cols: cols, rows: rows,
+                    // 说清"这不是独占的"：面板自己跟着容器尺寸同步时会把 PTY 改回真实尺寸
+                    note: '已把 PTY 改成 ' + cols + 'x' + rows
+                        + '；面板自己的尺寸同步（容器变化时）可能随后改回真实容器尺寸',
+                } };
+            }).catch(function(e) {
+                return { ok: false, error: '改 ADB PTY 尺寸失败: ' + String((e && e.message) || e) };
+            });
+    }
+
+    if (action === 'closeShell') {
+        var elC = adbSessionEl();
+        if (!elC) {
+            return { ok: true, value: { serial: null, opened: false, closed: false,
+                                        note: '本来就没有打开的 ADB shell 会话' } };
+        }
+        var serialC = elC._adbSerial || null;
+        // 复用面板那个关闭入口（含 kill adb shell 子进程 + 移除终端 + 回收在途的 open_shell）
+        closeAdbSession(elC.id);
+        return { ok: true, value: { serial: serialC, opened: false, closed: true } };
+    }
+
+    return { ok: false, invalidParams: true, error: '未知的 adb action: ' + action
+        + '（可用：listDevices / openShell / shellWrite / shellResize / closeShell）' };
 }
 
 /* ===== 串口语义层（给 MCP 的 serial_* 工具用）=====
@@ -13591,6 +13832,9 @@ function openAdbSession(serial) {
         term.focus();
     }).catch(function(e) {
         console.error('[ADB] 打开PTY会话失败:', e);
+        // 失败原因要**留下来**：MCP 的 adb_open_shell 在等"真的开出来"，光往终端上写一行
+        // 它看不见（那行是给人看的），于是 AI 只会拿到一句含糊的超时。
+        el._adbOpenError = String((e && e.message) || e);
         term.writeln('\x1b[31m连接设备失败: ' + e + '\x1b[0m');
     });
 }

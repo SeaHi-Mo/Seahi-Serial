@@ -4712,6 +4712,10 @@ fn report_js_error(error: String, context: String) {
 
 /// PTY 会话：通过伪终端让 adb shell 交互式运行（ls 多列 + ANSI 彩色 + 标准提示符）
 struct AdbPtySession {
+    /// 这个会话连的是哪台设备。存在的意义：MCP 的 `adb_shell_read` 读的是**所有会话共用**的
+    /// `adb:rx` 日志通道，要如实告诉调用方"这段输出来自哪台设备"，就得记住它
+    /// （后端自己的事实，不是把界面状态镜像一份）。
+    serial: String,
     child: std::sync::Arc<std::sync::Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
     /// 写入端：portable-pty 的 master 通过 take_writer() 得到可写句柄
     writer: std::sync::Mutex<Box<dyn std::io::Write + Send>>,
@@ -4728,6 +4732,19 @@ struct AdbPtySession {
 /// 全局状态：ADB PTY 会话（key = session_id）
 struct AdbPtyState {
     sessions: std::sync::Arc<Mutex<HashMap<String, std::sync::Arc<AdbPtySession>>>>,
+}
+
+/// 当前 ADB PTY 会话连接的是哪台设备（给 MCP 的 `adb_shell_read` 用）。
+///
+/// 单会话模型下最多一个；0 个、或切换设备那一瞬有多个时返回 `None` ——
+/// 与其猜一台，不如如实说"不确定"（输出与设备对不上比没有设备名更糟）。
+pub(crate) fn adb_active_serial(state: &AdbPtyState) -> Option<String> {
+    let s = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+    if s.len() == 1 {
+        s.values().next().map(|x| x.serial.clone())
+    } else {
+        None
+    }
 }
 
 /// 查找 adb，打开一个交互式 shell 会话
@@ -4777,6 +4794,18 @@ async fn adb_open_shell(
                             dropped_thread.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             continue;
                         }
+                        // 生产端旁路：这个 crossbeam 通道是"前端轮询取走的单消费者队列"，
+                        // 所以 MCP 的 `adb_shell_read` 只能读**在产生处复制的这一份**，
+                        // 绝不能去 drain 队列（那会把界面终端要显示的输出抢走，AGENTS #6）。
+                        // push 拿不到锁就丢一条并计数，绝不阻塞这条读线程（AGENTS #6/#10）；
+                        // MCP 没启用时它只是一次原子读，零成本。
+                        crate::mcp::loghub::hub().push(
+                            "adb:rx",
+                            crate::mcp::loghub::LEVEL_INFO,
+                            crate::mcp::loghub::DIR_RX,
+                            &String::from_utf8_lossy(&buf[..n]),
+                            n as u32,
+                        );
                         if tx.send(buf[..n].to_vec()).is_err() { break; }
                     }
                     Err(e) => { println!("[ADB-PTY] reader err {}", e); break; }
@@ -4787,6 +4816,7 @@ async fn adb_open_shell(
         // 用 take_writer() 拿写入句柄
         let writer = pair.master.take_writer().map_err(|e| format!("take_writer 失败: {}", e))?;
         let session = std::sync::Arc::new(AdbPtySession {
+            serial,
             child: std::sync::Arc::new(std::sync::Mutex::new(child)),
             writer: std::sync::Mutex::new(writer),
             output: rx,

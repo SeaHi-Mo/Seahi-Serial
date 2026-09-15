@@ -152,6 +152,7 @@
 | M40 | button.qcmd-col-add | `#{mid}-qcmdAdd-{gid}`（靠 id 或 `.qcmd-dh-add` 兜底） | **往这一组加一条指令**（挂在**该组表头行的最右**，跨发送/删除两条轨道、右对齐；用主题强调色 `--link`） | `addQcmdItem(mid, gid)` | 改+持久化 | 无 |
 | M38a | （MCP 专用） | op `ble`（前端 `mcpBleOp`）的 `state` / `periphStatus` / `periphStart` / `periphStop` | AI 侧的蓝牙语义层：读状态、读从机广播状态、启停从机广播（**危险，要 confirm**）。启停**复用面板的 `startBlePeriph`/`stopBlePeriph`** | 无 | 写（state/periphStatus 是读） | 从机启停没带 confirm → Rust 侧危险门先拦（-32006，不执行） |
 | M38b | （MCP 专用） | op `serial` 的 `quickList` / `quickRun` / `quickLoop` / `quickAdd` / `quickUpdate` / `quickRemove` / `quickGroup`（前端 `mcpSerialOp` 分支） | AI 侧的快速指令：列/执行/开关循环/增删改/组操作。**每个都复用面板按钮走的函数**（含 `qcmdLoopRefusal` 前置检查、`qcmdMoveGroup` 排序、`mcpWriteEl` 写控件），不另开一套 | 无 | 写操作（除 `quickList`） | 参数不认识/越界 → `invalidParams`（-32602）；没连串口或没有可发条目 → 可行动的错误（-32006） |
+| M38c | （MCP 专用） | op `adb`（前端 `mcpAdbOp`）的 `listDevices` / `openShell` / `shellWrite` / `shellResize` / `closeShell` | AI 侧的 ADB 语义层（见 2.5 的 A4）：每个分支都调面板那条真实路径；`openShell` 先切到 ADB 页、再 `openAdbSession(serial)`，并**轮询到 `_adbPtyId` 出现才回执**（前端上限 `ADB_OPEN_WAIT_MS=10s`，必须小于桥的设备档 30s） | 无 | 写（`listDevices` 是读） | 危险动作（`openShell`/`shellWrite`）没带 confirm → Rust 侧危险门先拦（-32006，不执行）；没有可用设备 → 说明"先插设备/允许 USB 调试" |
 | M39b | button.qcmd-group-sw | `#{mid}-qcmdSw-{gid}`（抬头里，握把与组名之间） | **这一组是否参与循环**的滑动开关（默认开）：关掉 = 整组跳过，顺序号原样保留 | click → setQcmdGroupOn(mid, gid, on) | 改+持久化（quickGroups[].on，与 olded 一样只存 config.json） | 无 |
 | M40a | button.qcmd-dh-add | `#{mid}-btnQcmdGroupAdd`（工具栏） | **新建循环组**：追加到最下面 + 默认 1 条空指令 | `addQcmdGroup(mid)` | 改+持久化 | 组数到上限时拒绝并 toast |
 | M40b | div.qcmd-group-hd | `#{mid}-qcmdG-{gid}`（JS 建，抬头） | 组抬头容器；**按住**最左侧**的握把上下拖**调组的顺序（循环顺序 = 组的上下顺序） | `startQcmdGroupDrag` → `onQcmdGroupDragMove` → `endQcmdGroupDrag` | 改+持久化（组序写进 `quickGroups`，多组时连文件里的表顺序一起改） | 无 |
@@ -221,6 +222,7 @@
 | A1 | button | `#adbRefreshDevBtn` | 重新扫描 ADB 设备 | `refreshAdbDevices()` 9469 | 读（`adb_devices`） | 无 |
 | A2 | div 卡片 | `.adb-dev-card[data-serial="…"]` | 选设备并开会话 | `click` 9501 → `openAdbSession(serial)` 9580 | **副作用**（建 PTY shell） | 无 |
 | A3 | xterm 终端 | `#adb-session-N-termBox`（xterm 自建字符层） | 键盘输入到 PTY | `term.onData` 9630 → `invoke('adb_shell_write')` | **副作用**（发 shell 命令） | 无 |
+| A4 | （MCP 专用） | op `adb`（前端 `mcpAdbOp`）的 `listDevices` / `openShell` / `shellWrite` / `shellResize` / `closeShell` | AI 侧的 ADB 语义层：列设备、开会话、写 shell、调 PTY 尺寸、关会话。**每个都复用面板那条真实路径**（`refreshAdbDevices` 同一条 `adb_devices`、`openAdbSession`/`closeAdbSession`、终端同一条 `adb_shell_write`/`adb_shell_resize`）；`openShell` 会先切到 ADB 页并**轮询到 `_adbPtyId` 真的出现才回执** | 无 | 写（`listDevices` 是读） | 开会话/写 shell 没带 confirm → Rust 侧危险门先拦（-32006，不执行）；没设备/serial 不存在 → 可行动的错误（-32006 / -32602）；`data` 超 4096 字符、`cols`/`rows` 越界 → -32602（都在碰界面之前） |
 
 ### 2.6 蓝牙面板 · 主机模式（`#bleBody`）
 

@@ -2860,7 +2860,7 @@ console.log('preview ->', out);
                        mcpSrc.indexOf('\n    ]', mcpSrc.indexOf('pub fn tool_defs()')))
         .matchAll(/"name":\s*"([a-z][a-z0-9_]*)"/g)].map((m) => m[1])
     )];
-    check(srcTools.length === 49, '源码里是 49 个内置工具（20 通用 + 13 串口语义 + 16 蓝牙语义）', srcTools.length);
+    check(srcTools.length === 55, '源码里是 55 个内置工具（20 通用 + 13 串口语义 + 16 蓝牙语义 + 6 ADB 语义）', srcTools.length);
     const missing = srcTools.filter((n) => toolsDoc.indexOf('#### `' + n + '`') < 0);
     check(missing.length === 0, '工具参考文档 doc/MCP_TOOLS.md 列出了全部内置工具', '缺：' + missing.join(','));
     check((toolsDoc.match(/^#### `/gm) || []).length === srcTools.length,
@@ -5010,6 +5010,396 @@ console.log('preview ->', out);
         && /pub const MAX_BLE_DEVICE_PAGE/.test(protoPaging)
         && /lim > MAX_BLE_DEVICE_PAGE/.test(protoPaging),
         'ble_list_devices 的 offset 有 schema、真进了 payload、页大小有上限');
+    }
+
+    // ---- ADB 语义层（MCP 的 adb_* 工具）：前端分支、危险表、跨端对齐 + 真实 handler 行为 ----
+    // AGENTS #11：假前端（Rust 侧）只证明那一半；前端这一半必须用**真实函数**跑。
+    // 这里跑的是真的 `mcpAdbOp` + 真的 `openAdbSession`/`closeAdbSession`（xterm 与 document 用假的），
+    // 所以"openShell 到底有没有走面板那条路""PTY id 从哪来"是实测出来的，不是靠读源码猜的。
+    {
+      const proto = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');
+      const bridgeSrc = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'bridge.rs'), 'utf8');
+      check(/if \(op === 'adb'\) return mcpAdbOp\(payload\)/.test(html) && /function mcpAdbOp\(payload\)/.test(html),
+        'ui_call 的 adb 面板接上了 mcpAdbOp（与 serial / ble 同构）');
+      for (const a of ['listDevices', 'openShell', 'shellWrite', 'shellResize', 'closeShell']) {
+        check(html.indexOf("action === '" + a + "'") >= 0, "mcpAdbOp 有 " + a + " 分支");
+      }
+
+      // 跨端：Rust 的 adb_* 界面工具 ↔ 前端 action（"后端发了、前端没分支"会静默失败，
+      // 而两边各自测自己那一半时全是绿的）
+      const adbPairs = [['adb_list_devices', 'listDevices'], ['adb_open_shell', 'openShell'],
+                        ['adb_shell_write', 'shellWrite'], ['adb_shell_resize', 'shellResize'],
+                        ['adb_close_shell', 'closeShell']];
+      const badAdbPairs = adbPairs.filter(p => proto.indexOf('"' + p[0] + '"') < 0
+        || proto.indexOf('adb_call(core, "' + p[1] + '"') < 0);
+      check(badAdbPairs.length === 0, '每个 adb_* 界面工具都能映射到前端的 action',
+        JSON.stringify(badAdbPairs));
+      // 反过来扫"Rust 真会发的每个 adb action"（不靠上面那张手写的表，表会漂）
+      const adbActions = [...new Set([...proto.matchAll(/adb_call\(core, "([a-zA-Z]+)"/g)].map(m => m[1]))];
+      check(adbActions.length >= 5, '扫到了后端的 ADB 动作（不是空扫）', adbActions.join(','));
+      const missingAdb = adbActions.filter(a => html.indexOf("action === '" + a + "'") < 0);
+      check(missingAdb.length === 0, '前端实现了后端会发的每个 ADB 动作', missingAdb.join(',') || '(全都有)');
+
+      // adb_shell_read 是**纯后端**：它不该有前端分支（有的话说明偷偷走了界面桥）
+      check(/"adb_shell_read" => adb_shell_read\(core, args\)/.test(proto)
+        && /fn adb_shell_read\(core: &Arc<McpCore>, args: &Value\)/.test(proto)
+        && html.indexOf("action === 'shellRead'") < 0,
+        'adb_shell_read 是纯后端工具（读日志中心，不走前端桥）');
+      check(/const CHANNEL: &str = "adb:rx";/.test(proto)
+        && /loghub::hub\(\)\.tail\(CHANNEL, since, want\)/.test(proto),
+        'adb_shell_read 读的是日志中心 adb:rx（与界面终端同一份数据的旁路）');
+      // 生产端旁路：PTY 读线程要多推一份，且**原队列照旧推给前端**——
+      // 工具层绝不去 drain 那个单消费者队列（AGENTS #6；抢走会让界面丢数据）
+      check(/crate::mcp::loghub::hub\(\)\.push\(\s*"adb:rx"/.test(mainRs)
+        && /if tx\.send\(buf\[\.\.n\]\.to_vec\(\)\)\.is_err\(\) \{ break; \}/.test(mainRs),
+        'ADB 输出在**生产端**（PTY 读线程）旁路进 LogHub，原队列照旧推给前端');
+      check(!/session\.output\.try_recv/.test(proto) && !/\.output\.try_recv/.test(proto),
+        '工具层绝不去 drain 面板轮询的那个队列（AGENTS #6）');
+
+      // 危险表：只有"在设备上开 shell / 真的执行"这两个要确认
+      const dangerSrc = (/pub const DANGER_TOOLS: &\[\(&str, &str\)\] = &\[([\s\S]*?)\n\];/.exec(proto)
+        || ['', ''])[1];
+      check(/adb_open_shell/.test(dangerSrc) && /adb_shell_write/.test(dangerSrc),
+        '危险动作表里有 adb_open_shell / adb_shell_write（在别人的设备上执行 = 撤不回来）');
+      const adbNotDanger = ['adb_list_devices', 'adb_shell_read', 'adb_shell_resize', 'adb_close_shell']
+        .filter(n => dangerSrc.indexOf('"' + n + '"') >= 0);
+      check(adbNotDanger.length === 0,
+        'ADB 的读与一般写**不**要求 confirm（要求了会让 Agent 以为普通操作也能"确认了事"）',
+        adbNotDanger.join(','));
+      const writeToolsSrc = (/pub const WRITE_TOOLS: &\[&str\] = &\[([\s\S]*?)\];/.exec(proto) || ['', ''])[1];
+      const missWrite = ['adb_open_shell', 'adb_shell_write', 'adb_shell_resize', 'adb_close_shell']
+        .filter(n => writeToolsSrc.indexOf('"' + n + '"') < 0);
+      check(missWrite.length === 0, 'ADB 的四个写工具都在 WRITE_TOOLS 里（只读模式拦得下）',
+        missWrite.join(','));
+
+      // 上限：常量存在、真的执行、也报给了客户端
+      check(/MAX_ADB_WRITE_CHARS/.test(proto)
+        && /data\.chars\(\)\.count\(\) > MAX_ADB_WRITE_CHARS/.test(proto)
+        && /"maxAdbWriteChars": MAX_ADB_WRITE_CHARS/.test(proto),
+        'adb_shell_write 的单次上限有常量、真的执行、也进了 mcp_limits');
+      check(/pub const MAX_ADB_COLS: u64 = 1000;/.test(proto) && /pub const MAX_ADB_ROWS: u64 = 1000;/.test(proto)
+        && /check_adb_dim\("cols", cols, MAX_ADB_COLS\)/.test(proto)
+        && /check_adb_dim\("rows", rows, MAX_ADB_ROWS\)/.test(proto),
+        'adb_shell_resize 的 cols/rows 有区间闸门（2~1000，在碰界面之前）');
+      // 参数必须**真的进 payload**（只 require_str 校验却忘了放进 extra，前端永远收不到 —— batch 4 踩过）
+      check(/adb_call\(core, "shellWrite", json!\(\{ "data": data \}\)\)/.test(proto)
+        && /adb_call\(core, "shellResize", json!\(\{ "cols": cols, "rows": rows \}\)\)/.test(proto)
+        && /extra\["serial"\] = json!\(s\)/.test(proto),
+        'ADB 的参数真的进了 payload（不是只校验、不转发）');
+
+      // 桥超时：前端自己的等待上限必须**小于**桥的超时（与 BLE connect 同一类假失败）
+      const feAdbWait = Number((/var ADB_OPEN_WAIT_MS = (\d+);/.exec(html) || [0, 0])[1]);
+      const adbDeviceMs = Number((/UI_TIMEOUT_DEVICE_MS: u64 = ([0-9_]+)/.exec(bridgeSrc) || [0, '0'])[1].replace(/_/g, ''));
+      check(feAdbWait > 0 && feAdbWait < adbDeviceMs,
+        'ADB 开 shell 的前端等待上限小于桥的设备档超时（否则慢一点的成功会变成 -32004 假失败）',
+        JSON.stringify({ feAdbWait, adbDeviceMs }));
+      check(/fn timeout_for\([\s\S]{0,700}"openShell" => UI_TIMEOUT_DEVICE_MS/.test(bridgeSrc),
+        '桥按 action 给 adb.openShell 设备档超时（只定义不调用 = 没改）');
+
+      // ---- mcpAdbOp 行为（真 handler + 假 DOM）----
+      // `openAdbSession` 是真函数：它自己建会话元素、调 xterm、invoke('adb_open_shell')，
+      // 把 `_adbPtyId` 写进元素 —— 我们只把 xterm / document / invoke 换成假的。
+      const mkAdbEnv = (opts) => {
+        opts = opts || {};
+        const calls = [];
+        let now = 0;
+        const timers = [];
+        // 同步 thenable：让 promise 链在**同一个 tick** 内 settle，测试才能同步读结果。
+        // 注意必须真的做"链式传递"（`then` 返回一个**跟着父 promise 走**的子 promise）：
+        // 简化成"读一眼当前值"会让 `p.then(f).catch(g)` 在 f 还没回来时就把 undefined 定下来，
+        // 于是"等满超时才失败"这条断言永远测不到（第一版就是这么假绿的）。
+        function SyncPromise(fn) {
+          const self = this;
+          self._v = undefined; self._e = undefined; self._has = false; self._waiting = [];
+          self._resolve = (v) => {
+            if (self._has) return;
+            self._has = true; self._v = v; self._drain();
+          };
+          self._reject = (e) => {
+            if (self._has) return;
+            self._has = true; self._e = e; self._drain();
+          };
+          if (fn) {
+            try { fn(self._resolve, self._reject); } catch (err) { self._reject(err); }
+          }
+        }
+        SyncPromise.prototype._drain = function() {
+          const self = this;
+          const waiters = self._waiting;
+          self._waiting = [];
+          waiters.forEach(function(w) {
+            let r;
+            if (self._e !== undefined) {
+              if (!w.g) { w.child._reject(self._e); return; }
+              r = w.g(self._e);
+            } else {
+              r = w.f ? w.f(self._v) : self._v;
+            }
+            if (r && typeof r.then === 'function') {
+              r.then(function(v) { w.child._resolve(v); }, function(e) { w.child._reject(e); });
+            } else {
+              w.child._resolve(r);
+            }
+          });
+        };
+        SyncPromise.prototype.then = function(f, g) {
+          const child = new SyncPromise();
+          this._waiting.push({ f: f, g: g, child: child });
+          if (this._has) this._drain();
+          return child;
+        };
+        SyncPromise.prototype.catch = function(g) { return this.then(null, g); };
+        const resolvedP = (v) => new SyncPromise(function(res) { res(v); });
+
+        const byId = {};
+        const mkEl = (id) => {
+          const e = {
+            id: id || '', style: {}, innerHTML: '', children: [], parentNode: null,
+            offsetParent: null, _attrs: {},
+            getAttribute(k) { return (k in e._attrs) ? e._attrs[k] : null; },
+            setAttribute(k, v) { e._attrs[k] = v; },
+            appendChild(c) { e.children.push(c); c.parentNode = e; if (c.id) byId[c.id] = c; return c; },
+            removeChild(c) { e.children = e.children.filter(x => x !== c); },
+            focus() {}, addEventListener() {},
+            querySelector() { return null; },
+            querySelectorAll() { return []; },
+          };
+          if (id) byId[id] = e;
+          return e;
+        };
+        const pane = mkEl('adb-pane');
+        pane.style.display = opts.paneVisible ? 'flex' : 'none';
+        let paneToggles = 0;
+        const area = mkEl('');
+        area.querySelector = (sel) => {
+          if (sel === '.no-scrollbar') return null;
+          return area.children.filter(c => /^adb-session-/.test(c.id))[0] || null;
+        };
+        area.querySelectorAll = () => area.children.filter(c => /^adb-session-/.test(c.id));
+        const toggleBtn = mkEl('adbToggleBtn');
+        toggleBtn.click = () => {
+          paneToggles++;
+          if (pane.style.display === 'none') {
+            pane.style.display = 'flex';
+            // 真面板第一次打开时才把 #adb-sessionArea 拼进 DOM（openAdb 的 innerHTML）
+            byId['adb-sessionArea'] = area;
+          } else {
+            pane.style.display = 'none';
+          }
+        };
+        if (opts.paneVisible) byId['adb-sessionArea'] = area;
+
+        function FakeTerminal() {
+          this.cols = 120; this.rows = 40; this.element = null;
+        }
+        FakeTerminal.prototype.open = function(box) {
+          this.element = { parentElement: box };   // box.offsetParent === null → syncAdbTermSize 直接返回
+        };
+        FakeTerminal.prototype.writeln = function() {};
+        FakeTerminal.prototype.write = function() {};
+        FakeTerminal.prototype.focus = function() {};
+        FakeTerminal.prototype.dispose = function() {};
+        FakeTerminal.prototype.scrollToBottom = function() {};
+        FakeTerminal.prototype.onResize = function(cb) { this._resizeCb = cb; };
+        FakeTerminal.prototype.onData = function(cb) { this._dataCb = cb; };
+
+        const devices = opts.devices || [];
+        const invoke = (cmd, a) => {
+          calls.push({ cmd, args: a });
+          if (cmd === 'adb_devices') {
+            if (opts.devicesFail) return new SyncPromise((res, rej) => rej(opts.devicesFail));
+            return resolvedP(devices);
+          }
+          if (cmd === 'adb_open_shell') {
+            if (opts.openFail) return new SyncPromise((res, rej) => rej(opts.openFail));
+            if (opts.openNever) return new SyncPromise(() => {});   // 永不 settle：模拟 adb 卡住
+            return resolvedP('adb-pty-1');
+          }
+          if (cmd === 'adb_shell_write' && opts.writeFail) {
+            return new SyncPromise((res, rej) => rej(opts.writeFail));
+          }
+          if (cmd === 'adb_shell_resize' && opts.resizeFail) {
+            return new SyncPromise((res, rej) => rej(opts.resizeFail));
+          }
+          return resolvedP({});
+        };
+
+        const sb = {
+          console, Promise: SyncPromise, Uint8Array, parseInt, isNaN, Error, Array,
+          setTimeout: (cb) => { timers.push(cb); return timers.length; },
+          clearTimeout() {},
+          setInterval: () => 1, clearInterval() {},
+          Date: { now: () => now },
+          Terminal: FakeTerminal,
+          window: {},              // 没有 ResizeObserver：走不到那条分支
+          document: {
+            getElementById: (id) => byId[id] || null,
+            createElement: () => mkEl(''),
+          },
+          invoke,
+          _adbSessions: 0,
+          // 顶层 `var ADB_OPEN_WAIT_MS` 不在被抽取的函数里，得**按源码里的真值**注入
+          // （测试里那个"等满上限就超时"的断言依赖它）
+          ADB_OPEN_WAIT_MS: Number((/var ADB_OPEN_WAIT_MS = (\d+);/.exec(html) || [0, 0])[1]),
+        };
+        sb.calls = calls;
+        sb.area = area;
+        sb.pane = pane;
+        sb.paneToggles = () => paneToggles;
+        sb.setNow = (v) => { now = v; };
+        sb.tickTimers = (advanceMs) => { now += (advanceMs || 0); const cb = timers.shift(); if (cb) cb(); };
+        sb.pendingTimers = () => timers.length;
+        vm.createContext(sb);
+        vm.runInContext([
+          'function syncAdbTermSize(el) {',
+          '    var t = el && el._adbTerm;',
+          '    if (!t) return;',
+          '    var box = t.element && t.element.parentElement;',
+          '    if (!box || box.offsetParent === null) return;',
+          '}',
+        ].join('\n'), sb);
+        vm.runInContext(['mcpAdbOp', 'adbUtf8Bytes', 'adbSessionEl', 'adbSessionValue',
+                         'adbEnsurePaneVisible', 'mcpRevealPaneFor', 'openAdbSession',
+                         'closeAdbSession', 'setAdbPollRate'].map(extractFunction).join('\n'), sb);
+        return sb;
+      };
+      const settledAdb = (x) => (x && typeof x.then === 'function') ? x._v : x;
+      const twoDevices = [
+        { serial: 'emulator-5554', state: 'device', model: 'sdk_gphone64_x86_64', product: 'sdk' },
+        { serial: '0123456789ABCDEF', state: 'unauthorized', model: 'Pixel 7', product: 'panther' },
+      ];
+
+      // ① listDevices：真去问后端（与面板「刷新」同一个命令），并把状态说清楚
+      const envL = mkAdbEnv({ devices: twoDevices });
+      const lv = settledAdb(envL.mcpAdbOp({ action: 'listDevices' }));
+      check(lv.ok === true && envL.calls.length === 1 && envL.calls[0].cmd === 'adb_devices'
+        && lv.value.total === 2 && lv.value.ready === 1
+        && lv.value.devices[0].serial === 'emulator-5554'
+        && lv.value.devices[0].model === 'sdk_gphone64_x86_64',
+        'adb_list_devices：真的去问后端 adb_devices，并区分"几台 / 几台可用"',
+        JSON.stringify({ calls: envL.calls, value: lv.value }));
+      const envL2 = mkAdbEnv({ devices: [] });
+      const lv2 = settledAdb(envL2.mcpAdbOp({ action: 'listDevices' }));
+      check(lv2.ok === true && lv2.value.total === 0 && /没有 ADB 设备/.test(lv2.value.note)
+        && /允许 USB 调试/.test(lv2.value.note),
+        'adb_list_devices：一台都没有时 note 说清下一步（插设备 / 允许 USB 调试）', lv2.value.note);
+      const envL3 = mkAdbEnv({ devicesFail: '未找到 adb 可执行文件' });
+      const lv3 = settledAdb(envL3.mcpAdbOp({ action: 'listDevices' }));
+      check(lv3.ok === false && lv3.invalidParams !== true
+        && String(lv3.error).indexOf('未找到 adb 可执行文件') >= 0,
+        'adb_list_devices：没有 adb 时如实回 ok:false（不带 invalidParams → 工具层给 -32006"先装/放好 adb"）',
+        JSON.stringify(lv3));
+      const envL4 = mkAdbEnv({ devices: [twoDevices[1]] });
+      const lv4 = settledAdb(envL4.mcpAdbOp({ action: 'listDevices' }));
+      check(lv4.ok === true && lv4.value.ready === 0 && /一台都不可用/.test(lv4.value.note),
+        'adb_list_devices：有设备但都不 available 时 note 说清（unauthorized 要设备上点允许）', lv4.value.note);
+
+      // ② openShell：走真的 openAdbSession（建会话元素 + xterm + invoke('adb_open_shell')），
+      //    并**轮询到 _adbPtyId 真的出现**才回执；顺带把 ADB 页切出来
+      const envO = mkAdbEnv({ devices: twoDevices, paneVisible: false });
+      const ov = settledAdb(envO.mcpAdbOp({ action: 'openShell', serial: 'emulator-5554' }));
+      check(ov.ok === true && ov.value.opened === true && ov.value.serial === 'emulator-5554'
+        && ov.value.cols === 120 && ov.value.rows === 40,
+        'adb_open_shell：开出来之后才回执（serial/cols/rows 来自真实会话元素）', JSON.stringify(ov));
+      check(envO.calls.filter(c => c.cmd === 'adb_open_shell').length === 1
+        && envO.calls.filter(c => c.cmd === 'adb_open_shell')[0].args.serial === 'emulator-5554',
+        'adb_open_shell：真的调了 adb_open_shell（走 openAdbSession 那条路）', JSON.stringify(envO.calls));
+      check(envO.pane.style.display === 'flex' && envO.paneToggles() === 1,
+        'adb_open_shell：先把 ADB 页显示出来（用户得看得见；隐藏时 PTY 尺寸也会停在默认值）',
+        JSON.stringify({ display: envO.pane.style.display, toggles: envO.paneToggles() }));
+      check(!!envO.area.children[0] && envO.area.children[0]._adbPtyId === 'adb-pty-1'
+        && envO.area.children[0]._adbSerial === 'emulator-5554',
+        'adb_open_shell：会话元素上真有 _adbPtyId（不是"点完就当开好了"）',
+        JSON.stringify(envO.area.children.map(c => ({ id: c.id, pty: c._adbPtyId }))));
+
+      // 没给 serial：用第一台 state=device 的设备
+      const envO2 = mkAdbEnv({ devices: twoDevices, paneVisible: true });
+      const ov2 = settledAdb(envO2.mcpAdbOp({ action: 'openShell' }));
+      check(ov2.ok === true && ov2.value.serial === 'emulator-5554'
+        && envO2.paneToggles() === 0,
+        'adb_open_shell：serial 省略时用第一台可用的；ADB 页已经显示时一个多余的点都不发',
+        JSON.stringify({ value: ov2.value, toggles: envO2.paneToggles() }));
+
+      // 没有可用设备 / serial 写错 / adb 卡住：三种失败都要如实、可行动
+      const envO3 = mkAdbEnv({ devices: [twoDevices[1]], paneVisible: true });
+      const ov3 = settledAdb(envO3.mcpAdbOp({ action: 'openShell' }));
+      check(ov3.ok === false && /没有可用的 ADB 设备/.test(ov3.error)
+        && envO3.calls.filter(c => c.cmd === 'adb_open_shell').length === 0,
+        'adb_open_shell：这台机器没有可用设备时**如实失败且不去开**（不留给用户一个坏终端）',
+        JSON.stringify(ov3));
+      const envO4 = mkAdbEnv({ devices: twoDevices, paneVisible: true });
+      const ov4 = settledAdb(envO4.mcpAdbOp({ action: 'openShell', serial: 'nope' }));
+      check(ov4.ok === false && ov4.invalidParams === true
+        && String(ov4.error).indexOf('emulator-5554') > 0,
+        'adb_open_shell：serial 不存在 → invalidParams（-32602）并列出可选设备', JSON.stringify(ov4));
+      const envO5 = mkAdbEnv({ devices: twoDevices, paneVisible: true, openFail: '未找到 adb 可执行文件' });
+      const ov5 = settledAdb(envO5.mcpAdbOp({ action: 'openShell' }));
+      check(ov5.ok === false && String(ov5.error).indexOf('未找到 adb 可执行文件') >= 0,
+        'adb_open_shell：adb_open_shell 失败 → ok:false 且带上真实原因（openAdbSession 把它留在 _adbOpenError）',
+        JSON.stringify(ov5));
+      const envO6 = mkAdbEnv({ devices: twoDevices, paneVisible: true, openNever: true });
+      const p6 = envO6.mcpAdbOp({ action: 'openShell' });
+      check(settledAdb(p6) === undefined && envO6.pendingTimers() > 0,
+        'adb_open_shell：（前置）adb_open_shell 永不回来时，前端确实在轮询等（而不是立刻当成功）');
+      envO6.tickTimers(Number((/var ADB_OPEN_WAIT_MS = (\d+);/.exec(html) || [0, 0])[1]) + 1);
+      const ov6 = settledAdb(p6);
+      check(ov6 && ov6.ok === false && /秒内没拿到 PTY 会话/.test(ov6.error),
+        'adb_open_shell：等满 ADB_OPEN_WAIT_MS 后如实超时失败（不会无限等，也不会假成功）',
+        JSON.stringify(ov6));
+
+      // ③ shellWrite：把 data 交给 adb_shell_write，sessionId 必须是**真会话拿到的那一个**
+      const envW = mkAdbEnv({ devices: twoDevices, paneVisible: true });
+      settledAdb(envW.mcpAdbOp({ action: 'openShell' }));
+      const wv = settledAdb(envW.mcpAdbOp({ action: 'shellWrite', data: 'ls -l\n' }));
+      const wCall = envW.calls.filter(c => c.cmd === 'adb_shell_write')[0];
+      check(wv.ok === true && !!wCall && wCall.args.sessionId === 'adb-pty-1'
+        && wCall.args.data === 'ls -l\n' && wv.value.written === true && wv.value.bytes === 6,
+        'adb_shell_write：走面板终端同一条命令，data/sessionId 原样交给后端',
+        JSON.stringify({ call: wCall, value: wv.value }));
+      const envW2 = mkAdbEnv({ devices: twoDevices, paneVisible: true });
+      settledAdb(envW2.mcpAdbOp({ action: 'openShell' }));
+      const wv2 = settledAdb(envW2.mcpAdbOp({ action: 'shellWrite', data: '中文' }));
+      check(wv2.value.bytes === 6, 'adb_shell_write：bytes 是真实 UTF-8 字节数（不是字符数）', wv2.value.bytes);
+      const envW3 = mkAdbEnv({ devices: twoDevices, paneVisible: true });
+      check(envW3.mcpAdbOp({ action: 'shellWrite', data: 'ls' }).ok === false
+        && envW3.mcpAdbOp({ action: 'shellWrite', data: '' }).invalidParams === true,
+        'adb_shell_write：没开会话 / data 为空分别如实报（后者是参数问题 → -32602）');
+      const envW4 = mkAdbEnv({ devices: twoDevices, paneVisible: true, writeFail: '会话已关闭' });
+      settledAdb(envW4.mcpAdbOp({ action: 'openShell' }));
+      const wv4 = settledAdb(envW4.mcpAdbOp({ action: 'shellWrite', data: 'ls' }));
+      check(wv4.ok === false && String(wv4.error).indexOf('会话已关闭') >= 0,
+        'adb_shell_write：底层写失败 → ok:false（不谎报成功）', JSON.stringify(wv4));
+
+      // ④ shellResize / closeShell
+      const envR = mkAdbEnv({ devices: twoDevices, paneVisible: true });
+      settledAdb(envR.mcpAdbOp({ action: 'openShell' }));
+      const rv = settledAdb(envR.mcpAdbOp({ action: 'shellResize', cols: 100, rows: 30 }));
+      const rCall = envR.calls.filter(c => c.cmd === 'adb_shell_resize')[0];
+      check(rv.ok === true && !!rCall && rCall.args.cols === 100 && rCall.args.rows === 30
+        && rCall.args.sessionId === 'adb-pty-1' && /可能随后改回/.test(rv.value.note),
+        'adb_shell_resize：真的把 cols/rows 推给后端，并说清"面板同步可能改回去"',
+        JSON.stringify({ call: rCall, value: rv.value }));
+      const envR2 = mkAdbEnv({ devices: twoDevices, paneVisible: true });
+      settledAdb(envR2.mcpAdbOp({ action: 'openShell' }));
+      check(envR2.mcpAdbOp({ action: 'shellResize', cols: 0, rows: 30 }).invalidParams === true
+        && envR2.mcpAdbOp({ action: 'shellResize', cols: 100, rows: 1 }).invalidParams === true,
+        'adb_shell_resize：cols/rows < 2 → invalidParams（与前端文档里 2~1000 的说法一致）');
+      const envC = mkAdbEnv({ devices: twoDevices, paneVisible: true });
+      settledAdb(envC.mcpAdbOp({ action: 'openShell' }));
+      const cv = settledAdb(envC.mcpAdbOp({ action: 'closeShell' }));
+      check(cv.ok === true && cv.value.closed === true && cv.value.serial === 'emulator-5554'
+        && envC.area.children.length === 0
+        && envC.calls.filter(c => c.cmd === 'adb_shell_close').length === 1,
+        'adb_close_shell：复用面板的 closeAdbSession（会话元素被移除、PTY 被 kill）',
+        JSON.stringify({ value: cv.value, children: envC.area.children.length, calls: envC.calls }));
+      const envC2 = mkAdbEnv({ devices: twoDevices, paneVisible: true });
+      const cv2 = settledAdb(envC2.mcpAdbOp({ action: 'closeShell' }));
+      check(cv2.ok === true && cv2.value.closed === false && /本来就没有/.test(cv2.value.note)
+        && envC2.calls.length === 0,
+        'adb_close_shell：本来就没开时幂等返回（不是错误，也不去打后端）', JSON.stringify(cv2));
+      const envX = mkAdbEnv({ devices: twoDevices, paneVisible: true });
+      check(envX.mcpAdbOp({ action: 'nope' }).invalidParams === true,
+        'mcpAdbOp：不认识的 action → invalidParams（工具层据此给 -32602）');
     }
     const protoSrc = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');
     const usizeOf = name => {

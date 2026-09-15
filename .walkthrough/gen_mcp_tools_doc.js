@@ -84,10 +84,17 @@ const META = {
   ble_periph_status: ['读', '{advertising, serviceUuid, chars, discoverable, connectable, manualReply, warning?}', '**关键**：`advertising=false` 表示"服务建好了但没在广播"（蓝牙关着/不支持外设角色时 `warning` 会给真实原因），别把它当成功'],
   ble_periph_start: ['写⚠️', '{pane, started, advertising, serviceUuid, warning?}', '**危险动作：对外广播**（附近设备都能看到并连上来）。必须带 `confirm:true`，否则不执行并回 `-32006`；用的是面板上已配置好的服务/特征'],
   ble_periph_stop: ['写⚠️', '{pane, started, advertising, serviceUuid, warning?}', '**危险动作**：停掉对外广播（已连上来的中心设备会断开）。必须带 `confirm:true`'],
-  mcp_danger: ['读', '{tools:[{name, consequence, confirm}], total, note}', '危险工具清单（会对外产生不可撤销影响的那些）。**先问后果再确认**：不带 confirm 调用它们不会执行'],  serial_quick_cmd: ['读', '{pane, items:[{index,label,value,seq,delayMs,hex}], usable, file, source}', '不带 index 只列；带 index 才执行（→ {pane, ran, label, value, hex}）。`seq`/`delayMs`/`hex` 是**每条自己的发送参数**（顺序号 > 0 才进面板上的「循环发送」列表，`delayMs` 默认 1000，`hex` 默认关闭）；`source=file` 表示这个列表来自外部文件（面板里增删改会写回该文件），`file` 是它的路径；`source=config` 才是纯配置里的列表'],
+  mcp_danger: ['读', '{tools:[{name, consequence, confirm}], total, note}', '危险工具清单（会对外产生不可撤销影响的那些）。**先问后果再确认**：不带 confirm 调用它们不会执行'],
+  // ===== ADB 语义（§16.6.2 第三批的 ADB 部分）=====
+  adb_list_devices: ['读', '{total, ready, devices:[{serial,state,model,product}], note?}', '**只有 `state=device` 的那台可用**（`unauthorized` 表示设备上还没点「允许 USB 调试」）。读的是 `adb devices -l` 的实时结果（与面板那颗「刷新」同一个命令），不吃面板 5 秒轮询的空窗'],
+  adb_open_shell: ['写⚠️', '{serial, opened, cols, rows, note?}', '**危险动作**（开出来之后就能在设备上执行任意命令），必须带 `confirm:true`，否则不执行并回 `-32006`。开之前先确认设备 `state=device`（`serial` 省略=用第一台可用的）；**等 PTY 真的建出来才返回**（最长 10 秒），失败会如实说清是"这台机器没有可用设备"还是"serial 不存在"'],
+  adb_shell_write: ['写⚠️', '{serial, written, bytes, data}', '**危险动作**（写进去的内容会被设备真的执行），必须带 `confirm:true`。命令要自己带 `\\n`，不带只是填在命令行上；单次最多 `maxAdbWriteChars` 个字符（超了 -32602）。走的就是面板终端敲键盘那条命令'],
+  adb_shell_read: ['读', '{serial, channel, count, items:[{seq,ts,level,dir,bytes,text}], truncated, dropped, mayBeIncomplete, note?}', '读日志中心 `adb:rx` —— PTY 读线程在**生产端**旁路的一份副本（**不会抢走界面终端要显示的队列**）。`items` 是 PTY 的**输出块**、不是按行切好的文本；`truncated=true` 表示凑满了一页（还有更多，用 `sinceSeq` 接着拉）；`mayBeIncomplete=true` 表示通道丢过最旧的行。**纯后端工具，没有界面也能用**'],
+  adb_shell_resize: ['写', '{serial, cols, rows, note?}', '`cols` / `rows` 都是 **2~1000**（`maxAdbCols` / `maxAdbRows`），越界或 0/1 → -32602。注意面板自己的尺寸同步（窗口/容器变化时）可能随后把 PTY 改回真实容器尺寸'],
+  adb_close_shell: ['写', '{serial, opened:false, closed, note?}', '关掉当前会话（kill `adb shell` 子进程 + 移除终端）；本来就没开会话时是幂等的（`closed:false` + `note`），不是错误'],  serial_quick_cmd: ['读', '{pane, items:[{index,label,value,seq,delayMs,hex}], usable, file, source}', '不带 index 只列；带 index 才执行（→ {pane, ran, label, value, hex}）。`seq`/`delayMs`/`hex` 是**每条自己的发送参数**（顺序号 > 0 才进面板上的「循环发送」列表，`delayMs` 默认 1000，`hex` 默认关闭）；`source=file` 表示这个列表来自外部文件（面板里增删改会写回该文件），`file` 是它的路径；`source=config` 才是纯配置里的列表'],
   app_info: ['读', '`{name, version, profile, os, arch, pid, uptimeSecs}`', ''],
   mcp_status: ['读', '打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/statusEmits/readOnly/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`', '**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新；**`readOnly` 必须先看** —— 为 true 时所有写操作会被拒（-32007）'],
-  mcp_limits: ['读', '`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels, maxQuickCmdItems, maxQuickCmdLabelChars, maxQuickCmdValueChars, maxQuickCmdFileBytes, maxBleWriteChars}`', '用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**'],
+  mcp_limits: ['读', '`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels, maxQuickCmdItems, maxQuickCmdLabelChars, maxQuickCmdValueChars, maxQuickCmdFileBytes, maxBleWriteChars, maxAdbWriteChars, maxAdbCols, maxAdbRows, maxAdbReadLines}`', '用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**'],
   serial_list_ports: ['读', '`{count, ports:[{portName, friendlyName, productName}]}`', '不会打开端口；**端口名在 `portName`**（字段一律驼峰，别去猜 `port_name`）'],
   ui_list: ['读', '`{total, controls:[{path, kind, panel, group, label, enabled, disabledReason, value?, options?}], nextCursor?}`', '`enabled=false` 时 `disabledReason` 会说明原因（如"串口未连接"）；建议先枚举再操作'],
   ui_describe: ['读', '`{…控件公开字段…, description, inputSchema}`', '等于"这个控件怎么用"的说明书'],
@@ -111,6 +118,7 @@ const GROUPS = [
   ['串口语义工具（**优先用这些**，比 ui_* 通用桥更准）', ['serial_get_state', 'serial_select_port', 'serial_set_baud', 'serial_set_frame', 'serial_set_lines', 'serial_set_display', 'serial_open', 'serial_close', 'serial_send', 'serial_clear', 'serial_get_history', 'serial_get_output', 'serial_quick_cmd']],
   ['蓝牙语义工具（BLE）', ['ble_get_state', 'ble_list_devices', 'ble_start_scan', 'ble_stop_scan', 'ble_connect', 'ble_disconnect', 'ble_get_services', 'ble_read', 'ble_write', 'ble_subscribe', 'ble_get_output', 'ble_refresh_rssi',
                     'ble_periph_status', 'ble_periph_start', 'ble_periph_stop']],
+  ['ADB 语义工具（ADB shell）', ['adb_list_devices', 'adb_open_shell', 'adb_shell_write', 'adb_shell_read', 'adb_shell_resize', 'adb_close_shell']],
   ['安全与策略', ['mcp_danger']],
   ['应用与服务器', ['app_info', 'mcp_status', 'mcp_limits', 'serial_list_ports']],
   ['界面操作（走合成 DOM 事件，和用户点击同一条路径）', ['ui_list', 'ui_describe', 'ui_get', 'ui_set', 'ui_click', 'ui_get_state']],
@@ -227,6 +235,10 @@ md += '| `ui_set` 单次 items | **200**（超了 -32602；这条链路跑在界
 md += '| `ui_set` 单条 `value` | **8192 字符**（超了 -32602；只挡条数挡不住"一条巨型字符串"）|\n';
 md += '| 快速指令 `value` / 组名 / 条目数 | 4096 / 64 字符 · 500 条（超长 -32602；**条目满了是 -32006**，先删几条）|\n';
 md += '| `serial_send` 单次字符数 | **64K**（超了 -32602；串口写是排队的）|\n';
+md += '| `ble_write` 单次字符数 | **4096**（超了 -32602；BLE 单次写受 MTU 限制）|\n';
+md += '| `adb_shell_write` 单次字符数 | **4096**（超了 -32602；这一头是**设备的 shell**）|\n';
+md += '| `adb_shell_resize` 的 `cols` / `rows` | **2~1000**（越界 / 0 / 1 都是 -32602）|\n';
+md += '| `adb_shell_read` 一次行数 | 默认 200，上限 **2000** |\n';
 md += '| 工具列表每页 | 50 |\n';
 md += '| `ctl_*` 上限 | 400 |\n';
 md += '| 日志单条 / 每通道 / 总量 / 通道数 | 8 KiB 截断 · 128 KiB~1 MiB · 16 MiB（超了裁最大通道）· 64 个 |\n';

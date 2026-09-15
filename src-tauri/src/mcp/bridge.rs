@@ -41,6 +41,16 @@ pub const UI_TIMEOUT_DEVICE_MS: u64 = 30_000;
 /// **默认仍是 5 秒**：放宽超时是有代价的（真卡死时 AI 要多等），所以只给"确实要等设备"的
 /// 那几个动作加长，且在这里逐个列名 —— 不允许出现"某个 op 顺手被放宽、没人知道"。
 pub fn timeout_for(op: &str, payload: &Value) -> u64 {
+    // ADB 的 `openShell` 是"要等设备"的那一类：前端 `mcpAdbOp` 会先问一次 adb_devices、
+    // 再调 `openAdbSession`，然后**轮询到 PTY 真的建出来**（前端常量 `ADB_OPEN_WAIT_MS`）。
+    // 按界面动作的 5 秒算必然给出假失败（-32004 + "界面可能正忙"），而操作其实还在正常进行
+    // —— 与 BLE connect 那次是同一个坑。
+    if op == "adb" {
+        return match payload.get("action").and_then(|a| a.as_str()).unwrap_or("") {
+            "openShell" => UI_TIMEOUT_DEVICE_MS,
+            _ => UI_TIMEOUT_MS,
+        };
+    }
     if op != "ble" {
         return UI_TIMEOUT_MS;
     }
@@ -339,6 +349,12 @@ mod tests {
             timeout_for("ble", &json!({ "action": "read" })),
             UI_TIMEOUT_DEVICE_MS
         );
+        // ADB 开会话同样是"要等设备"的动作：前端自己会轮询到 PTY 建出来（最长
+        // `ADB_OPEN_WAIT_MS`），桥必须比它等得久，否则每次慢一点的成功都会被记成失败。
+        assert_eq!(
+            timeout_for("adb", &json!({ "action": "openShell" })),
+            UI_TIMEOUT_DEVICE_MS
+        );
         // 反过来也要钉住：**不能顺手把所有 op 都放宽**（真卡死时 AI 要多等）
         for (op, payload) in [
             ("list", json!({})),
@@ -348,6 +364,10 @@ mod tests {
             ("ble", json!({ "action": "state" })),
             ("ble", json!({ "action": "listDevices" })),
             ("ble", json!({})),
+            ("adb", json!({ "action": "listDevices" })),
+            ("adb", json!({ "action": "shellWrite" })),
+            ("adb", json!({ "action": "closeShell" })),
+            ("adb", json!({})),
         ] {
             assert_eq!(
                 timeout_for(op, &payload),
