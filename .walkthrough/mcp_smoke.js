@@ -128,6 +128,21 @@ function txtOf(r) {
   await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {},
                             clientInfo: { name: 'seahi-smoke', version: '1' } });
   await post({ jsonrpc: '2.0', method: 'notifications/initialized' });
+
+  // 只读（沙箱）模式会**整体改变写工具的预期**：`call_tool` 的门顺序是
+  // 只读门（-32007）→ 危险确认门（-32006）→ 各工具自己的参数校验（-32602），
+  // 所以只读模式下写/危险工具的"必填缺失 / 无 confirm"探针**必然**先撞上 -32007。
+  // 那不是工具坏了，是策略门在正常工作 —— 不认清这一点，自检会稳定误报 5 个"硬失败"
+  // （2026-09 真机跑出来的就是这个现象）。
+  const st0 = await callTool('mcp_status', {});
+  const readOnly = !!(st0.result && st0.result.structuredContent
+    && st0.result.structuredContent.readOnly);
+  if (readOnly) {
+    console.log('\nℹ️ 只读（沙箱）模式已开启：写工具与危险工具本次的预期是 **-32007（策略拒绝）**。');
+    console.log('   参数校验（-32602）与二次确认门（-32006）被策略门挡在前面，本次**未覆盖** ——');
+    console.log('   要验证它们，请在应用弹窗里关掉「只读模式」再跑一遍这个脚本。');
+  }
+
   const listed = (await rpc('tools/list', {})).result || {};
   const live = (listed.tools || []).map((t) => ({
     name: t.name,
@@ -182,12 +197,15 @@ function txtOf(r) {
     }
     let expect;
     if (isDanger) {
-      expect = 'danger';                                   // 不带 confirm：必须被二次确认门拦下（无副作用）
+      // 不带 confirm：必须被二次确认门拦下（无副作用）；只读模式下则应先是策略门
+      expect = readOnly ? 'policy' : 'danger';
       a = {};                                              // 探针参数一律不带（危险动作不该被执行）
     } else if (isWrite && !SAFE_WRITES.has(name)) {
-      if (t.required.length) { expect = 'invalid'; a = {}; }   // 必填缺失 → 参数校验必须生效（不碰界面）
-      else if (!FULL) { rows.push({ name, kind: '跳过', note: '有副作用（无必填参数）→ 加 --full 才调' }); continue; }
-      else expect = 'ok';
+      if (t.required.length) {
+        expect = readOnly ? 'policy' : 'invalid';           // 只读时先撞 -32007，不是 -32602
+        a = {};
+      } else if (!FULL) { rows.push({ name, kind: '跳过', note: '有副作用（无必填参数）→ 加 --full 才调' }); continue; }
+      else expect = readOnly ? 'policy' : 'ok';
     } else {
       expect = 'ok';
     }
@@ -201,12 +219,24 @@ function txtOf(r) {
     let kind = '成功', note = '';
     if (err) {
       const code = err.code;
-      if (expect === 'invalid' && code === -32602) { kind = '参数校验生效'; note = '-32602'; }
+      if (expect === 'policy') {
+        // 只读模式下**正确**的结果就是 -32007；执行了或报别的码才是异常
+        if (code === -32007) { kind = '策略门生效（只读）'; note = '-32007'; }
+        else { kind = '**只读门没拦住**'; note = '期望 -32007，实际 ' + code + ' ' + err.message; hardFail++; }
+      }
+      else if (expect === 'invalid' && code === -32602) { kind = '参数校验生效'; note = '-32602'; }
       else if (code === -32601) { kind = '**工具不存在**'; note = '客户端看到的就是这个'; hardFail++; }
       else if (expect === 'invalid') { kind = '**参数校验异常**'; note = '期望 -32602，实际 ' + code + ' ' + err.message; hardFail++; }
       else { kind = '协议错误'; note = code + ' ' + err.message; }
     } else if (!res) {
       kind = '**没有回执**'; hardFail++;
+    } else if (expect === 'policy') {
+      // ⚠️ -32007 是**工具级**失败（`result.isError`），不是 JSON-RPC 层的 error：
+      // protocol.rs 只把 -32602/-32601 当协议错误，其余一律包成 isError 结果。
+      // 所以这里必须先看 isError，再看"到底执行了没有"。
+      if (res.isError && /-32007/.test(text)) { kind = '策略门生效（只读）'; note = '-32007'; }
+      else if (res.isError) { kind = '策略门生效（只读）'; note = text.replace(/\s+/g, ' ').slice(0, 70); }
+      else { kind = '**只读模式下却执行了**'; note = '写操作没被策略门拦下！'; hardFail++; }
     } else if (expect === 'danger') {
       if (res.isError && /-32006|confirm/.test(text)) { kind = '二次确认门生效'; note = '拒绝执行（正确）'; }
       else if (res.isError) { kind = '二次确认门生效'; note = text.slice(0, 60); }
@@ -235,6 +265,14 @@ function txtOf(r) {
   console.log('\n合计：' + rows.length + ' 个工具有结果，' + skipped + ' 个按安全模式跳过，'
     + bad + ' 个硬失败' + (missing.length ? '，' + missing.length + ' 个工具在应用里不存在' : ''));
   if (!FULL) console.log('（写工具用"必填缺失 / 危险动作无 confirm"探针验证，都不产生副作用；要真调加 --full）');
+  if (readOnly) {
+    console.log('ℹ️ 只读模式开着：写工具的探针预期是 -32007（上面标"策略门生效（只读）"的是**正常**的）。'
+      + '参数校验与二次确认门本次未覆盖。');
+  }
+  if (missing.length) {
+    console.log('ℹ️ 有 ' + missing.length + ' 个工具只在源码里：跑的是**旧构建**（重编译 + 重启应用，'
+      + '客户端也要重连才会重读 tools/list）。');
+  }
 
   // ---- 扫描链路单独跑：开扫 → 等它真扫到 → 读列表 → 停 ----
   // （用户报过"扫描结果没有返回给 MCP 客户端"，这条就是它的端到端验证）
