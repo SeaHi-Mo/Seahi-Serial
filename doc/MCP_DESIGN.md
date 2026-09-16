@@ -437,9 +437,13 @@ MCP 规范里"SSE 模式"实际对应两种形态，本方案**主实现遗留 S
 | 形态 | 端点 | 何时用 | 本期 |
 |---|---|---|---|
 | HTTP+SSE（2024-11-05 规范） | `GET /sse` + `POST /messages?sessionId=` | 客户端配置里写 `"type": "sse"` 时用 | ✅ 主实现 |
-| Streamable HTTP（2025-03-26 规范） | `POST /mcp`（返回 JSON 或 SSE 流）、`GET /mcp`、`DELETE /mcp` | 新版客户端默认走这个 | ✅ 同端口附带（薄封装，复用同一 SessionRegistry） |
+| Streamable HTTP（2025-03-26 规范） | `POST /mcp`（**直接回 `application/json`**）、`GET /mcp`（挂 SSE 流收通知）、`DELETE /mcp`（终止会话） | 新版客户端默认走这个 | ✅ **已落地**（2026-09-16，见 §17） |
 
-理由：用户要求"只采用 SSE 模式"，但主流客户端在新版本里已经默认 Streamable HTTP；两者共用同一套工具与状态，附带实现的成本远低于"客户端连不上再返工"的成本。配置项 `streamableHttp: true` 可关。
+理由：用户要求"只采用 SSE 模式"，但主流客户端在新版本里已经默认 Streamable HTTP；两者共用同一套工具与状态，附带实现的成本远低于"客户端连不上再返工"的成本。配置项 `streamableHttp` 可关（默认开）。
+
+> 2026-09-16 落地时的取舍见 §17：POST **不返回 SSE 流**（我们的工具是一问一答，没有中途消息，
+> 规范允许服务器在 JSON 与 SSE 之间二选一）；两类会话共用同一张表与上限；表满时只淘汰最久未活动的
+> **HTTP** 会话（SSE 会话被踢掉会变成收不到东西的僵尸，而客户端拿到 429 又无从恢复）。
 
 **SSE 帧格式（遗留传输）：**
 
@@ -1485,9 +1489,345 @@ BLE 面板有两套完全不同的东西：**主机**（当中央去连别人的
 
 ## 17. 实施记录
 
+### 2026-09-16 · 「把 COM7 映射到 WSL」整条链路打通 ✅（读得到设备表 / 点得准那一行 / 不再假成功）
+
+**起因**：用户问"如果我对 AI 说：帮我打开 WSL 端口映射，然后把 COM7 映射到 WSL 当中，然后打开该串口监视器，
+打开串口然后抓 log —— MCP 的真实调用应该是什么样的？"。**先照着这条链路实测，再看代码**，结果第 2 步是断的。
+
+#### 实测证据（对着正在跑的应用，用一次性探针，只读为主）
+
+```
+ui_click {"path":"global.ui.wslToggleBtn"} → -32007（只读模式开着）
+ui_get_state {"section":"wslDevices"}      → -32602 没有这个区段（可用：serial / wsl / ble / bleDevices / theme / window / monitors）
+ui_list {"panel":"wsl"}                    → total = 0
+ui_list {} （全量）                        → total = 155，其中 74 个的 label 是 input_N / div_N 这种兜底命名
+```
+
+#### 四个根因
+
+| # | 缺口 | 为什么是"断"而不是"不好用" |
+|---|---|---|
+| 1 | **读不到设备表**：`ui_get_state` 没有 `wslDevices` 区段，`serial_list_ports` 只列 Windows COM 口 | AI 不知道哪台设备是 COM7、busid 是多少、映射没映射。**没有任何工具能枚举 WSL 侧的 USB 设备** |
+| 2 | **点不准那一行**：设备行是动态 `innerHTML`，行里的「映射」复选框**连 id 都没有** | `mcpEntryFor` 对无 id 元素走"标签名_全局序号"兜底 → `wsl.misc.input_127`，label 也是 `input_127`。**没有任何设备身份**，AI 只能盲点 |
+| 3 | **点了会假成功**：`mcpWriteEl` 对 checkbox 是 `el.click()` 后**同步**返回 `!!el.checked`，而 `toggleWslMapping` 是 async（`await attach_port_to_wsl`，60s 超时；需要提权时还弹模态框等用户在机器上点「授权并映射」） | 回执立刻回 `value:true`，**而设备根本没映射上**。AI 会以为成功然后去开串口，然后拿到一个莫名其妙的下一个错 |
+| 4 | **可能映射错设备**：设备表每 5 秒 `innerHTML` 重画，节点总数不变时 `mcpEnsureRegistry` **不重建**（它只比数量），且行内 `onchange` 带的是**下标** | 注册表里留着**已脱离 DOM 的旧元素 + 旧下标**：`el.click()` 照样跑 inline handler，用旧下标调 `toggleWslMapping` → **映射到另一台设备**。把错的 USB 设备挂进 WSL 是有副作用的 |
+
+**这不是新问题**：BLE 早就踩过同一类（`ui_get_state` 里那段注释写着"设备卡片是动态生成的 div、
+不在控件注册表里，所以面板上明明扫到了、AI 却读不到"，于是有了 `section:"bleDevices"`）。
+**WSL 只是没跟着做** —— 缺的正是它那一份。
+
+#### 交付物
+
+| 层 | 改动 |
+|---|---|
+| `src/index.html` | ① `ui_get_state` 加 `wslDevices` 区段（`mcpWslDevicesState`）；② 设备行三个控件给稳定 id + `aria-label` 身份（`wslRow-<busid>` / `wslMap-<busid>` / `wslAutoMap-<busid>`）；③ `toggleWslMapping(mid, idx, checked)` → `toggleWslMapping(busid, checked)`（**按 busid 寻址**，顺带删掉已无用的 `mid`）；④ `mcpWslMapOutcome` + 界面桥把结果挂进回执（`mapRequest`）；⑤ `mcpEnsureRegistry` 增加"元素还在不在 DOM 里"的探测；⑥ `mcpSerialPortOptions` + `serial_get_state.portOptions` |
+| `src-tauri/src/mcp/protocol.rs` | `pub const PANE_DESC`（13 处重复的 `pane` 描述**只写一处**，并补上 `wsl`）——原先只有 `main / extra-1 / …`，AI 压根不知道能用 `pane:"wsl"`；`ui_get_state` 的 enum/描述加 `wslDevices` 与 `mapControlPath`；`summarize_wsl_devices`（+ 按载荷形状分派）；`serial_select_port` / `serial_list_ports` 的描述改成不再误导（原文写"值必须是 `serial_list_ports` 返回的端口名"，对 WSL 分栏是**错的**） |
+| `.walkthrough` | `gen_ble_preview.js` +28 条（含**行为**断言：注册表脱离 DOM 必重建、`mcpWslControlPath` 与真实注册表路径一致、`mapRequest` 三态、`portOptions`）；`gen_mcp_tools_doc.js` 支持 schema 里的 Rust 常量引用 |
+| `doc/MCP.md` | 新增「把 USB 串口映射进 WSL（一条完整的链路）」四步表 |
+
+#### 两条"设计上刻意如此"
+
+1. **不给 WSL 单开一套工具**（用户明确的原则：两边功能完全一样，做两套必然漂移）。
+   仍然是同一套 `serial_*` + `pane`，只在**数据来源**上分流；映射本身就是界面上的一个动作，
+   所以走通用桥（`ui_set` + `mapControlPath`），不新增语义工具 —— 工具数仍是 **55**。
+2. **回执不等待**。映射那条路最长要几十秒、还可能挂在一个等用户点确认的授权框上，而界面桥的预算是
+   **5 秒**（`bridge.rs::UI_TIMEOUT_MS`）。判据用 `_wslBusy[busid]` —— `toggleWslMapping` 在**第一个
+   `await` 之前**就把它置起来了，所以 `el.click()` 一返回就能确定"到底跑起来没有"，
+   **不用等、不用轮询、不会撞预算**。`settled=false` + `note` 如实说"已发起但没完成，别重试，
+   去 `wslDevices` 看 status"。这与 `ble_connect` 那次"桥超时给 AI 一个假失败"的教训同源：
+   **宁可说"还没好"，也不要说错**。
+
+#### 同日补记：AI 动手时界面会不会切页？—— **写切、读不切**，并顺手治了"懒创建分栏"
+
+用户接着问"AI 在控制 WSL 面板时，前端不会跳转到 WSL 面板吗？"。查下来答案是**分两条路，而且不一致**：
+
+| 走哪条 | 原先会不会切页 | 依据 |
+|---|---|---|
+| 通用桥 `ui_set` / `ui_click`（含上面第 3 步的映射） | **会** | `mcpHandleUiCmd` 在写之前先调 `mcpRevealPaneFor(ent.panel)` |
+| `ble_*` 语义工具 | 写会、**只读不会** | `mcpBleOp` 顶部那段判断（注释写明理由："客户端一 poll 就把用户从别的页面拽走，比看不见更烦人"） |
+| `adb_*` 语义工具 | **会** | `adbEnsurePaneVisible`：除了"看得见"，还因为面板隐藏时 `syncAdbTermSize` 会主动跳过（容器尺寸为 0 → PTY 被压成 2×2） |
+| **`serial_*` 语义工具** | **一处都没有** | `mcpSerialOp` 里没有任何切页调用 —— 与 BLE/ADB 不一致 |
+
+于是 AI 在读着串口页的时候操作 WSL 分栏的串口，**界面一动不动**，用户看不见 AI 在动哪一栏 ——
+正是当初加 `mcpRevealPaneFor` 要解决的"看不见 AI 在干什么"。
+
+**而且查这件事时撞出第二个更硬的问题**：`serial_*{pane:"wsl"}` 在 **WSL 面板从没打开过**时直接回
+"没有这个分栏"。真机实测：
+
+```
+serial_get_state{}            → panes = ["main"]
+serial_get_state{pane:"wsl"}  → -32602 没有这个分栏: wsl；可用分栏: main
+ui_get_state{}                → monitors 里有 ["main","wsl"]
+```
+
+根因：`monitors['wsl']` 是 `openWslMapping()` → `initWslMonitor('wsl')` **懒创建**的，在那之前运行时
+根本没有这一栏。而**配置里却有**（`ui_get_state.monitors`），所以 AI 会觉得"工具自相矛盾"。
+
+**两个问题其实是同一个修法**：切页那一步恰好就是创建它的那一步。所以：
+
+1. `mcpSerialOp` 里加 `MCP_SERIAL_WRITE_ACTIONS` 分类表 + `mcpSerialRevealForPane(payload.pane)`，
+   **在解析 pane 之前**切页 —— 写动作因此既让用户看得见，又**冷启动也能直接成功**（不用 AI 先手动开面板）。
+   判据抄 BLE 那条纪律：**写切、读不切**（读动作是 `panes` / `state` / `history` / `quickList`）。
+2. `mcpSerialMissingPaneHint(pane)`：分栏"不存在"有两种 —— ① 名字写错；② **还没被创建出来**。
+   第 ② 种明确说破并给下一步（`ui_click global.ui.wslToggleBtn` / `addMonitorBtn`），
+   并注明"**写操作会自动打开它**，只有只读工具才会碰到这个提示"；名字真写错时**不套**这段提示（免得成噪音）。
+3. `PANE_DESC` 补上这两条（13 个工具共用），省得 AI 以为"页面自己乱跳"。
+
+**跨端断言**：`protocol.rs` 发给 `serial` 面板的每个 action 都必须被分成写/读两类 ——
+否则以后加一个写动作会**静默地不切页**（两端各自的测试都绿，只有用户觉得"看不见 AI 在干啥"）。
+
+验证（本条补记）：`cargo test` **213 passed / 0 failed / 4 ignored**（不变）、断言集
+**1651 passed / 0 failed**（这条补记 +6：写动作切页并建出懒创建的分栏 / 只读一个页面都不切 /
+"懒创建"的报错给出下一步 / 名字真写错时不套那段提示 / `extra-N` 指向"加监视器" /
+每个 serial action 都被分类）。
+
+#### 仍未做（记录在案）
+
+| 编号 | 缺口 | 若修的思路 |
+|---|---|---|
+| R8 | 授权框（`#wsl-map-approval-overlay`，60 秒自动取消）**AI 点不到也看不见** —— 它只知道"还在进行中" | 要么把"正在等授权"作为 `mapRequest.pendingApproval` 报出来（AI 就能提示用户去点），要么明确"这个框必须人来点"并写进文档（当前是后者：`note` 里说了要用户确认）。⚠️ **不要让 AI 自动点那个框** —— 那是提权授权，等同把 UAC 交给模型 |
+| R9 | 端口下拉被别的分栏占用时 `inUse:true`，但工具**没有**"释放/抢占"的入口 | 复用界面的占用检查逻辑，给一条明确的错误而不是静默失败 |
+| R10 | `_wslDevices` 里 `port` 为 `-` 的设备（没识别到 COM 名，如网卡/键盘）也会出现在 `wslDevices` 里 | 前端已在 `mapControlPath` 上保持一致；若 AI 误映射非串口设备，考虑在描述里提示"优先选 `hasCom:true` 的" |
+
+验证：`cargo test` **213 passed / 0 failed / 4 ignored**（新增
+`ui_get_state_advertises_the_wsl_device_section`、`ui_get_state_wsl_devices_text_carries_busid_and_com`；
+假前端的 `getState` 改成**按 section 回不同形状** —— 原来固定回 `{theme}`，那两个 `ui_get_state` 用例的
+`keys` 因此是摆设）、断言集 **1645 passed / 0 failed**（其中一条是把 `index.html` 的每个内联
+`<script>` **整段**编译一次 —— 按名字抽函数的断言盖不到"没被抽到的那个函数有语法错"）、
+npm 自测 **94 passed / 0 failed**。（随后同日的"界面切页"补记又把它加到 **1651**，见上。）
+
+### 2026-09-16 · WSL 分栏上的 `serial_*` 被"本机没有可用串口"挡死 ✅（P0）
+
+**起因**：用户提问"WSL 端口映射也有串口监视器，MCP 的串口操作工具，有没有和主页的串口监视器做区分？
+如果没有，是不是可以通过监视器 ID 来区分"。
+
+**先答设计问题**：**本来就区分** —— 语义工具用 `pane` = 监视器 ID 寻址（`main` / `extra-N` 是 Windows 分栏，
+`wsl` / `wsl-xN` 是 WSL 分栏），BLE 那个内嵌监视器由前端 `monitors[mid].bleEmbedded` 标记并排除在
+`mcpSerialPanes()` 之外。用户随后明确了原则：
+**不做两套工具**（两边功能完全一样，做两套必然漂移），**只按 `pane` 区分数据来源**
+（Windows 侧 `list_ports` / `open_port` / `send_data`，WSL 侧 `get_wsl_serial_devices` / `open_wsl_serial` /
+`send_wsl_serial`）。这条原则与 MCP 约定 #3（工具改界面走合成 DOM 事件、不给 AI 另写一套）是同一条。
+
+**真刀真枪查下来抓到两条**（用户选了"先修两条 P0"）：
+
+| 编号 | 问题 | 严重度 | 修法 |
+|---|---|---|---|
+| P0-a | `serial_open` 开头那条"一个串口都没有就别去点按钮"的前置检查（为省 6 秒轮询超时加的）**一律**拿 `crate::list_ports()`（Windows COM 口）判定 —— 于是 `serial_open(pane:"wsl")` 在"没有任何 COM 口"时立刻回 `-32006 本机没有可用串口`，而界面上点得通（WSL 那颗按钮走 `toggleWslConnection` → `open_wsl_serial`，跟本机有没有 COM 口无关） | **高**：触发条件正是 WSL 用户的**正常用法** —— USB 串口 `usbipd bind` 进 WSL 之后，Windows 侧本来就看不到那个口了。现象是"工具说不行、界面说行"，AI 只会去反复重试或改参数 | 新增 `fn pane_is_wsl(args)`（`p == "wsl" \|\| p.starts_with("wsl-")`，`trim` + 转小写），把前置检查包进 `if !pane_is_wsl(args) { … }` —— WSL 分栏跳过，交给前端自己报"WSL 里没有设备"。⚠️ 不能只按 `starts_with("wsl")` 匹配：`wslx` 这种不是分栏 id（回归测试 `pane_is_wsl_matches_only_wsl_panes` 守着，含 `main` / `extra-1` / 省略 `pane` / `wslx` / `not-wsl`） |
+| P0-b | MCP 串口分派的 `refreshPorts` 分支两条分栏混着走 `MCP_SERIAL_FUNCS.refreshPorts(mid)`（Windows 那条），会把 WSL 分栏的端口下拉填成 Windows 的 COM 列表 | 中（**潜在**，见下） | 改成 `if (m.isWsl) refreshWslMonPorts(mid); else MCP_SERIAL_FUNCS.refreshPorts(mid);` |
+
+**P0-b 的自我纠正**：这条同一个坑在"设备变更"那条路径上**已经踩过一次并修过**（`src/index.html`
+里的 device-changed 注释就写着"此前统一用 refreshPorts，会导致…把 WSL 监视器端口填成 Windows COM 列表"），
+当时漏了 `refreshPorts` 这个 action。但复查时发现：**当前没有任何工具会发出 `refreshPorts` 这个 action**
+（`protocol.rs` 里没有对应的 match 分支；界面上那颗"刷新端口"按钮走的是它自己的 onclick）——
+所以它是**尚未被触发过的雷**，不是线上正在发生的故障。这一点必须如实说明，不能把它记成"修好了一个正在发作的 bug"。
+代码里留了注释说明"目前没有工具发这个 action"，免得后来人以为它是热路径。
+
+**顺带确认（不是改动，是记录）**：`serial_open` / `serial_close` 在 WSL 分栏上**本来就路由正确** ——
+它们点的是面板上那颗 `start` 按钮，而 WSL 面板的按钮是 `onclick="toggleWslConnection('wsl')"`，
+所以只要 P0-a 不再提前拦截，这条路是通的（合成 DOM 事件复用的就是它）。
+
+**当时仍未做（P1）—— 已在同日随后一并修掉**，见本文件更靠上的
+「2026-09-16 · 「把 COM7 映射到 WSL」整条链路打通」：
+
+| 编号 | 缺口 | 当时的修法设想 |
+|---|---|---|
+| P1-a | 工具 schema 的 `pane` 描述只写了 `main / extra-1 / extra-2 …`，**没有 `wsl`** —— AI 看工具定义时不知道 WSL 分栏能这么寻址 | 把这段描述抽成**一个常量**再用（`protocol.rs` 里有 13 处 `"pane"` 参数重复这段文字，改一处漏一处） |
+| P1-b | **没有任何 MCP 工具能列出 WSL 侧的串口设备**（`serial_list_ports` 只列 Windows COM 口） | `serial_get_state` 的返回加 `portOptions`，让 AI 自己枚举 |
+
+> 这两条只是"读不到 / 不知道"的缺口。随后按整条链路实测才发现**真正致命的是另一层**：
+> 就算 AI 知道 `pane:"wsl"`、也能枚举端口，它**仍然映射不了设备** —— 那张 USB 设备表根本没有读的入口，
+> 行里的复选框也没有 id，而且点下去的回执是**假成功**。详见上面那条记录的四点根因。
+
+验证：`cargo test` **211 passed / 0 failed / 4 ignored**（新增 `pane_is_wsl_matches_only_wsl_panes`；
+原有那条"没有串口设备时 `serial_open` 立刻失败"的测试跟着加强 —— 现在除了断言 `no_serial_port_hint`，
+还要求它前面真有 `if !pane_is_wsl(args) {`）、断言集 **1616 passed / 0 failed**。断言集这一侧分两类：
+① **源码断言** —— `pane_is_wsl` 存在、`serial_open` 的前置检查真的被它分流、没有 `wsl_serial_*` 这套
+平行工具、以及那条老测试被加强了（正则要求 `serial_open` 分支里 `if !pane_is_wsl(args) {` 出现在
+`no_serial_port_hint` 之前）；
+② **行为断言** —— 把 `mcpSerialOp` 丢进假 DOM 真调一遍：`refreshPorts` 在 WSL 分栏上走
+`refreshWslMonPorts`、在 Windows 分栏上走 `refreshPorts`，且分栏列表里能同时看到 `wsl` 与 `main`。
+
+### 2026-09-16 · Streamable HTTP 落地：`POST/GET/DELETE /mcp` ✅（第 1+2 期一起做）
+
+**起因**：用户提问"除了 SSE，是不是可以加一个 streamable-http 的连接类型"。核对下来是**设计有、代码无**：
+§4.1 早就把 Streamable HTTP 规划成"同端口附带、薄封装、复用同一 SessionRegistry"、`aiConfig` 里还写了
+`streamableHttp: true`，但 §17 的 S0~S3 记录里明确写着"本轮**未**实现 `POST /mcp`"。而现实是主流客户端
+（VS Code / Cline / 新版 Cursor / Claude Code）**默认只走 Streamable HTTP**，只支持 SSE 的客户端越来越少。
+
+**结论**：可以加，而且我们这种"一问一答"的工具集正好落在规范里最省事的那条路径上 ——
+`POST /mcp` **直接回 `application/json`**，不必实现"POST 返回 SSE 流"（规范允许服务器二选一）。
+
+#### 设计选择（每条都有代价，写下来免得后面被"优化"掉）
+
+| 决策 | 为什么 |
+|---|---|
+| **POST 直接回 JSON，不做 SSE 流** | 我们的工具没有进度通知、没有中途消息，一条响应就是全部内容。走 SSE 只是多一层分帧、多一处能出错的地方 |
+| **两类会话共用一张表**（`Session.tx: Option<Sender>`） | 上限 / 空闲回收 / 限流只有一套口径。另开一张 `http_sessions` 表就是两处实现，迟早漂移 |
+| **表满时淘汰最久未活动的 HTTP 会话**（而不是 429） | ① 不能淘汰 SSE 会话：它的长连接已经建立，删表项只会把那条流变成收不到东西的僵尸；② 更不能回 429：客户端拿到 429 无从下手，只能干等 30 分钟空闲回收（会话泄漏那次就是这么炸的）；③ HTTP 会话被淘汰是**干净可恢复**的 —— 下次请求得 404，按规范重新 `initialize` |
+| **`GET /mcp` 的流断开只摘通道、不删会话**（`keep_session_on_drop`） | 那个会话还要继续给 POST 用。`/sse` 的语义（流断开 = 会话结束）不能照搬 |
+| **`Origin` 校验只加在 `/mcp`** | `/sse` + `/messages` 是既有路径，客户端本来就不发 Origin；为合规去赌"某个客户端带了个奇怪的 Origin"不划算 |
+| **`MCP-Protocol-Version` 不认识就 400，但把支持列表写进响应体** | 规范要求 400；但光一个 400 调用方只能靠猜，所以把 `2025-06-18 / 2025-03-26 / 2024-11-05` 一起回过去 |
+| **`streamableHttp` 默认开** | 多一个路由的运行时成本≈0；关掉的代价是用户看到"新版客户端连不上"却不知道为什么。要关随时在弹窗里点 |
+| **npm 安装器默认仍是 `--transport sse`** | 已配过的用户重跑不会把配置改坏、只支持 SSE 的老客户端也不会突然被换成它不认的形态。要新形态显式 `--transport http` |
+
+#### 交付物
+
+| 层 | 改动 |
+|---|---|
+| `mcp/transport.rs` | 路由加 `POST/GET/DELETE /mcp`；`Session.tx` 变 `Option`；`open_sse` 拆出 `attach_outbound`（`/sse` 与 `GET /mcp` 共用）；新增 `resolve_http_session`（含淘汰策略）、`post_mcp` / `get_mcp` / `delete_mcp`、`origin_allowed`、`protocol_version_problem`、`read_body_limited`、`rate_limited_body`；`SseBody` 加 `keep_session` |
+| `mcp/aiconfig.rs` | `ServerCfg.streamableHttp`（`#[serde(default)]` 默认开）、`Endpoint.urlStreamable`、`http_url()`、`host_in_url()` |
+| `mcp/mod.rs` | `streamable_http()` 读取；`status_json` 增加 `streamableHttp` / `streamableUrl`（**两条 URL 都打码**）；`mcp_client_config` 输出两种传输的片段 + `streamableHttp` 别名片段；新增 `mcp_set_streamable` 命令；`mcp_config_set` 接受 `server.streamableHttp` |
+| `src/index.html` | 弹窗拆成「Streamable HTTP / 遗留 SSE」两块（各含地址 + 客户端配置 + 复制）；`Streamable HTTP` 开关（独立 `_mcpStreamableBusy`）；关掉时隐藏那一块 |
+| `npm/seahi-serial-mcp` | `--transport sse\|http`、`pickUrl()`、`desiredEntry(url, transport)`、幂等判断**同时比 type 与 url**、`status` 分辨两种传输、缺 `urlStreamable` 时给可操作提示 |
+| `.walkthrough` | `gen_ble_preview.js` 新增/改写 74 条；`gen_mcp_tools_doc.js` 端点表与 curl 示例；`mcp_smoke.js` 支持 http 模式（`--transport`） |
+
+#### 顺手修掉的两个既有问题
+
+1. **`sse_url` 生成的 IPv6 地址是语法无效的**：`server.host` 允许 `::1`，但 `http://::1:7777/sse` 里的
+   `::1:7777` 根本解析不出来 —— 选 `::1` 的用户拿到的两条 URL 全是打不开的。新增的 `host_in_url()` 统一加方括号，两个 URL 生成函数共用。
+2. **心跳任务会漏**：`/sse` 的会话从表里删掉之后，心跳任务因为自己还持着一个 `tx` clone，`try_send` 照样成功，
+   于是一直转到队列写满为止（15s × 256 ≈ **1 小时**）——每断开一次漏一个后台任务。现在心跳每跳检查会话是否还在表里，
+   不在就退出（`DELETE /mcp` 也因此能干净收尾）。
+
+另外两处"必须共用一份"的抽取：`read_body_limited`（`/messages` 与 `/mcp` 共用，**新入口不能绕过 1 MiB 上限**）、
+`rate_limited_body`（两个传输给 AI 的"请放慢"文案不许漂移）。
+
+#### 验证证据
+
+- `cargo test --manifest-path src-tauri/Cargo.toml`：**205 passed / 0 failed / 4 ignored**
+  （新增 7 条端到端：完整握手 + 202 + 404 + DELETE、开关关掉后 `/mcp` 404 而 `/sse` 照常、
+  鉴权/Origin/协议版本三道门、body 上限、`GET /mcp` 收通知且流断开后会话仍在、
+  表满时优先淘汰 HTTP 会话并保住 SSE 会话的广播，另有 4 条纯函数单测）
+- `node .walkthrough/gen_ble_preview.js`：**1569 passed / 0 failed**（较上次 +75）
+- `node npm/seahi-serial-mcp/test/self-test.js`：**84 passed / 0 failed**（较上次 +22）
+- **跨进程真调**（`mcp_serve_for_manual_check` 起真服务，另起进程当客户端）：
+  `node .walkthrough/mcp_smoke.js --url http://127.0.0.1:7799/mcp?token=testtoken`
+  → **Streamable HTTP / 55 个工具有结果 / 0 个硬失败**；同一脚本对正在跑的应用走 SSE 也是 55 / 0。
+  两条传输各跑一遍，才算"两边都是真的"。
+
+#### 本轮**未**做（都记在 §4.6 / §9 里，不是遗漏）
+
+`POST /mcp` 返回 SSE 流（规范允许二选一，我们选了 JSON）、`Last-Event-ID` 断线续传、
+`resources/subscribe` 的资源推送、危险工具的二次确认。
+
+#### 需要你在本机验证
+
+**拿一个真实客户端连一次**（推荐顺序）：在弹窗里复制「Streamable HTTP」那块的配置 → 粘进
+VS Code / Cline / Claude Code → 重启客户端 → 看它能不能列出 55 个工具。
+我这里只能用自己写的客户端脚本跨进程验证，**它们证明不了"某个真实客户端的会话头/类型名处理"**——
+而那正是这条链路唯一还可能出问题的地方。
+
+#### 同日追加：传输改成**三档**，界面按需选择（用户看了截图后提的）
+
+用户看到落地后的弹窗截图，指出"SSE 和 http 不应该同时支持吧，是不是可以按需选择"。
+
+先把事实摆清：**后端同时提供两个端点本身没问题**（老客户端只认 `/sse`、新客户端只认 `/mcp`，
+两个端点共用一套工具与状态；很多 MCP 服务器都这么挂）。真正乱的是**界面**——一屏同时摆两套地址 +
+两份客户端配置，用户不知道该复制哪份。所以改的是"选择"与"展示"，不是"能不能同时服务"。
+
+**方案（三档，而不是两档）**：把原来的 `streamableHttp: bool` 升级成 `server.transport`：
+
+| 档位 | 含义 |
+|---|---|
+| `both`（**默认**） | 两条都提供（兼容性最好） |
+| `http` | 只服务 `/mcp`；`/sse` + `/messages` 立刻 404 |
+| `sse` | 只服务遗留 SSE；`/mcp` 立刻 404 |
+
+为什么不做成"只 HTTP / 只 SSE"两档：那会让**升级本身**成为一次事故 —— 已经用 SSE 配好客户端的用户，
+升级后客户端会立刻连不上，而他们并没有做任何选择。三档把"排掉另一种"变成**用户主动的动作**，
+代价（谁会连不上）写在按钮的悬停说明里。
+
+**界面**：弹窗最上面**一行四个控件**——`启用/关闭 MCP 服务器` + **传输下拉框**（`HTTP` / `SSE` / `All`，
+值对应 `http` / `sse` / `both`）+ `只读模式` +（右端）`重置令牌`。
+**只展示当前档确实提供的连接方式**，单档时另一块直接隐藏（展示一个只会 404 的地址等于让人白配一遍）。
+切换立即生效（路由每次请求都读配置），不用重启服务器。
+
+> 这一块界面被用户来回调整了五轮，最终形态就是上面这个（记下来免得下次又"优化"回去）：
+> ① 一开始是"两种传输各一块，并列展示" → 用户指出"不应该同时支持，要按需选择"；
+> ② 改成三档按钮组 + 一句灰字说明 → 用户要求删掉灰字（"写操作全被拒（-32007）""两条都在跑…"）；
+> ③ 又要求**用下拉框替代按钮组**（`HTTP|SSE|All`）放到开关按钮右侧，"传输"那行整个删除；
+> ④ 再把**只读模式也搬到同一行**，并把它固定成「只读模式」四个字 —— 开/关状态不写在按钮上；
+> ⑤ 最后是**悬停提示本身**：用户截图指出原生 `title` ①"鼠标一扫就弹"、划过一排按钮**一闪一闪**，
+>    ②一行铺开**横跨整个窗口**。于是说明改走 `data-mcp-tip`，由 `mcpTipBind()` **停顿 450ms** 才显示在
+>    弹窗里那块**常驻说明区**（`#mcpTipRow` + `.mcp-tip`：`min-height` 占位不跳动、`pre-line` 能换行）；
+>    控件名交给简短的 `aria-label` —— **删了 title 必须补它**，因为控件注册表的 label 取的是
+>    `title || aria-label`（`mcpMakeEntry`），不补就会退化成元素 id，AI 那边等于失去这个控件的说明。
+>    实现上顺手扩了断言集的假 DOM（`getAttribute`/`setAttribute`/`addEventListener`/`fire`），
+>    并用**假定时器手动推进**验证"到点之前一个字都不显示"。
+>
+> 五条经验：**(a)** 后果说明（谁会连不上、只读是开是关）不占界面行数；
+> **(b)** 但信息不能丢 —— 断言集里有断言钉住"下拉框的说明必须讲清三个选项各自的后果"
+> 和"只读按钮的说明必须以「只读模式：开 —— AI 只能看」/「只读模式：关 —— 」开头"；
+> **(c)** 下拉框在途要禁用、失败要把选中值**拨回真实状态**（否则界面停在一个没生效的值上，
+> 比"报错"更让人困惑）；
+> **(d)** 按钮文案固定之后，**在途反馈也得有地方去**（这里是把说明置为「处理中…」）——
+> 否则点了没反应的观感会回来；
+> **(e)** 只要说明一长，就一定会撞上"原生 `title` 不能用来承载长说明"这件事：它闪、不换行、
+> 还会污染 AI 看到的控件 label。自己做一个**延迟出现的说明区**，代价只是那块要占一点高度。
+> 断言集里共 30+ 条钉着这一行的布局与交互（控件顺序、只读不再单独成行、文字固定、选项值、
+> 选中态跟随、隐显、解禁、失败回滚、选当前项不发 IPC、旧按钮组与两处灰字不许回来、
+> 四个控件不许再有 title、说明区延迟/清空/focus 直显、长说明必须带换行）。
+
+**升级路径（这里踩到一个真问题）**：老配置里只有 `streamableHttp` 这个 bool，迁移规则是
+`false → sse`、`缺失/true → both`。第一版把 `transport` 设计成 `Option<TransportMode>`、只在读的时候
+`unwrap_or` 推断 —— 结果是 `false` 那条配置**写回一轮后就变成 `both`**：`transport` 是 `None`，
+序列化成 `"transport": null`，而老的 `streamableHttp` 字段是 `skip_serializing`，信息整个丢了
+（用户当年主动关掉 `/mcp` 的意愿，在一次读写之间被静默抹掉）。修法是在**读入口 `load_in` 里做规范化**：
+把推断结果落成 `transport` 的实际值并清掉兼容字段 —— 只有读入口同时看得到两个字段。
+回归测试 `old_config_migrates_transport_mode` 覆盖"读进来是 sse → 写回 → **再读还是 sse**"。
+
+**连带改动**：端点发现文件加 `transport` 字段，且**不提供的那条 URL 写空串**（不是留个连不上的地址）；
+npm 安装器的 `readEndpoint` 因此不能再强求 `url` 存在（只提供 `/mcp` 时它就是空的），
+`pickUrl` 要把"应用只提供另一种"讲清楚并给出两条出路（换 `--transport`，或去弹窗改档位）。
+
+验证：`cargo test` **208 passed / 0 failed / 4 ignored**（迁移与三档各有回归测试）、
+断言集 **1579 passed / 0 failed**（三档的选中态/隐显/解禁/失败回滚）、npm 自测 **94 passed / 0 failed**。
+
+#### 同日：SSE + HTTP 同时连接的风险自查 —— 实测抓出并修掉一个**高危** ✅
+
+用户问"SSE 和 HTTP 同时连接时该怎么办"。**先实测，不靠推断**：写了个一次性探针（4 个 HTTP 客户端
+各自按规范挂上 `GET /mcp` 推送流，然后看第 5 个客户端会怎样），输出是：
+
+```
+PROBE: 总数=4 / tx.is_some()=4（淘汰候选 = tx.is_none() 的数量 = 0）
+PROBE: 第 5 个客户端 → HTTP/1.1 429 Too Many Requests
+```
+
+**根因**：表满时的淘汰判据写的是 `filter(|(_, s)| s.tx.is_none())` —— 想表达"这是 HTTP 会话"，
+但 `tx` 表达的其实是"**有没有推送通道**"。而 HTTP 会话按规范挂上 `GET /mcp` 流之后也有 `tx`，
+于是这一类客户端**全部变成不可淘汰**，淘汰候选 = 0 → 第 5 个客户端吃 429 ——
+正是本文件与代码注释里都写着"绝不能回 429"的那条路（客户端无从下手，只能干等 30 分钟空闲回收）。
+
+**危险之处在于触发条件就是推荐用法**：客户端越规范（挂 GET 流），越容易撞上；而且现象是"新客户端
+连不上"，排查时很容易怀疑到 token/端口上。这也说明"用某个字段顺带表达身份"的写法有多脆 ——
+`tx` 的有无被赋予了第二重含义（会话类型），而它随时会因功能变化（这里就是新增 `GET /mcp`）而失效。
+
+**修法**（P0，用户确认后落地）：
+1. `Session` 加**显式** `kind: SessionKind`（`Sse` / `Http`），淘汰只看 `kind == Http`；
+2. `DELETE /mcp` 只许删 HTTP 会话，目标是 SSE 会话时回 **404**（403 等于告诉对方"这个 sid 存在，
+   只是不归你"——那是个免费探测信号）；
+3. 两条回归测试：`http_sessions_with_a_get_stream_are_still_evictable`（4 个挂了流的 HTTP 会话 +
+   第 5 个客户端 → 必须 200 且淘汰掉一个）、`delete_mcp_refuses_to_remove_an_sse_session`。
+
+**同次评估里发现但本轮未修**（用户选了"只修 P0"，这些留着）：
+
+| 编号 | 风险 | 现状 | 若修的思路 |
+|---|---|---|---|
+| R2 | SSE 会话只要流挂着就占坑且不可淘汰，"挂着不用"是常态 → 4 个老客户端就能占满 | 未修 | `MAX_SESSIONS` 4 → 8 |
+| R3 | 淘汰按 `last_seen` 挑，而 `ble_connect` 最长 130s 期间它不更新 → 正在跑长任务的客户端最容易被踢（当次响应不受影响，但下一次请求会 404 → 重新握手） | 未修 | 加"最小空闲门槛"（如 < 30s 不淘汰，宁可 429 + `Retry-After`） |
+| R4 | All 档下弹窗给两份配置，同一个客户端都粘上会看到 55×2 个相同工具 → 模型选错、副作用可能翻倍 | 未修 | 弹窗加一句"同一个客户端只配一条" |
+| R5 | `mcp_status.sessions` 是总数，界面看不出"谁占着坑" | 未修 | status 加 `sseSessions` / `httpSessions` |
+| R6 | 挂机 30 分钟的 SSE 会话会被后来者顺手 `retain` 掉（客户端一般自动重连） | 未修 | 可接受，仅记录 |
+| R7 | 限流是每会话 60/分，但界面桥的在途上限 32 是**全局**的 → 两个客户端猛刷时会互相挤（`-32005`） | 未修 | 若真成问题，再考虑按会话配额 |
+
+验证：`cargo test` **210 passed / 0 failed / 4 ignored**、断言集 **1592 passed / 0 failed**
+（新增两条守着"判据必须是 kind""两个回归测试必须在"）。
+
 ### 2026-09-15 · 「只读模式开了之后无法关闭」—— 那颗按钮被永久置灰 ✅
 
-用户截图报障：打开只读模式后，弹窗里那颗开关**再也点不动**（一直显示"只读模式：开（AI 只能看）"），
+用户截图报障：打开只读模式后，弹窗里那颗开关**再也点不动**（当时按钮一直显示"只读模式：开（AI 只能看）"
+—— 这个"把状态写进按钮文字"的写法后来按用户要求改掉了，现在文案固定为「只读模式」、状态只进悬停说明，
+见本日更靠上的"传输改成三档"那条的 ④），
 而它是**关掉只读的唯一入口**（只读下 AI 连 `mcp_config_set` 都会被拒，这是 2026-09-14 那条故意的不对称）。
 
 根因在界面这一段，一行之差：
@@ -2482,6 +2822,7 @@ tools/list 里出现 ctl_* ；调用时按名字解析回控件路径，走**同
 
 S4 控件注册表、S5 `ui_*` 前端桥、S6 全量/语义工具、S7 日志中心、S8 AI 调用记录（`ai-calls.jsonl`）、S9 npm 安装器、S10 收紧。
 另外本轮**未**实现：`POST /mcp`（Streamable HTTP）、`/status`（带 token 的详情端点）、`resources/subscribe`、危险工具确认。
+（**后续更新**：`/status` 见 S10，Streamable HTTP 见 §17 的 2026-09-16 一条；`resources/subscribe` 与危险确认仍未做。）
 
 #### 需要在你本机验证（我这里做不到）
 

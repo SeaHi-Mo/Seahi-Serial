@@ -224,6 +224,101 @@ async function runMain(argv) {
   check(st2.clients.find((c) => c.client === 'cursor').state.includes('已配置且指向当前端点'),
     '装上后 status 说"已配置且指向当前端点"', JSON.stringify(st2.clients.find((c) => c.client === 'cursor')));
 
+  console.log('\n【Streamable HTTP（--transport http）】');
+  {
+    const t4 = tmpdir('http');
+    const EP4 = path.join(t4, 'ep.json');
+    const C4 = path.join(t4, 'claude.json');
+    process.env.SEAHI_CONFIG_DIR = t4;
+    process.env.SEAHI_ENDPOINT_FILE = EP4;
+    process.env.SEAHI_MCP_CLAUDE_CONFIG = C4;
+    const HTTP_URL = `http://127.0.0.1:${port}/mcp?token=${TOKEN}`;
+    fs.writeFileSync(EP4, JSON.stringify({ url: URL_OK, urlStreamable: HTTP_URL, pid: process.pid }));
+    fs.writeFileSync(C4, JSON.stringify({ mcpServers: {} }, null, 2) + '\n');
+
+    check(cli.parseArgs([]).transport === 'sse', '默认传输是 sse（不悄悄改用户既有配置）');
+    check(cli.parseArgs(['--transport', 'http']).transport === 'http', '--transport http 能解析');
+    check(cli.parseArgs(['--transport=http']).transport === 'http', '--transport=http 也能解析');
+    check(cli.parseArgs(['--transport', 'http']).transportExplicit === true, '能区分"显式选了"与默认值');
+
+    const epObj = { url: URL_OK, urlStreamable: HTTP_URL };
+    check(cli.pickUrl(epObj, 'sse').url === URL_OK, 'sse 取 url');
+    check(cli.pickUrl(epObj, 'http').url === HTTP_URL, 'http 取 urlStreamable');
+    const noHttp = cli.pickUrl({ url: URL_OK }, 'http');
+    check(noHttp.ok === false && /urlStreamable/.test(noHttp.reason), '没有 http 端点时给出可操作的说明', noHttp.reason);
+    check(cli.desiredEntry(HTTP_URL, 'http').type === 'http', 'http 传输写 type=http');
+    check(cli.desiredEntry(URL_OK, 'sse').type === 'sse', 'sse 传输写 type=sse');
+
+    let r4 = await runMain(['install', '--client', 'claude', '--transport', 'http']);
+    check(r4.code === 0, '--transport http 安装成功', r4.code);
+    const c4 = JSON.parse(read(C4));
+    check(c4.mcpServers['seahi-serial'].type === 'http', 'type 写成了 http');
+    check(c4.mcpServers['seahi-serial'].url === HTTP_URL, '写的是 /mcp 端点');
+    check(r4.out.includes('Streamable HTTP'), '输出里说明了用的是哪种传输');
+    check(!r4.out.includes(TOKEN), '输出里没有完整 token');
+
+    // 换回 sse：**必须真的重写** —— 只看 url 的幂等判断会误判成"无需修改"，
+    // 用户以为切回来了、客户端其实还按老形态连，而且两边都不报错
+    r4 = await runMain(['install', '--client', 'claude']);
+    check(r4.out.includes('已写入'), '从 http 换回 sse 会重写（幂等判断要同时比 type）', r4.out);
+    check(JSON.parse(read(C4)).mcpServers['seahi-serial'].type === 'sse', 'type 变回 sse');
+
+    const before4 = read(C4);
+    r4 = await runMain(['install', '--client', 'claude']);
+    check(r4.out.includes('无需修改') && read(C4) === before4, '同一传输重跑是 no-op');
+
+    // 老应用（发现文件里没有 urlStreamable）时 --transport http 要拒绝写盘并说清怎么办
+    fs.writeFileSync(EP4, JSON.stringify({ url: URL_OK, pid: process.pid }));
+    fs.writeFileSync(C4, JSON.stringify({ mcpServers: {} }, null, 2) + '\n');
+    r4 = await runMain(['install', '--client', 'claude', '--transport', 'http']);
+    check(r4.code === 2, '没有 http 端点 → 退出码 2', r4.code);
+    check(/urlStreamable/.test(r4.err) && /--transport sse/.test(r4.err), '提示了成因与应急做法', r4.err);
+    check(!JSON.parse(read(C4)).mcpServers['seahi-serial'], '拒绝时不写盘');
+
+    r4 = await runMain(['install', '--client', 'claude', '--transport', 'ws']);
+    check(r4.code === 1, '未知 --transport → 退出码 1', r4.code);
+
+    // status 要能分辨配的是哪种传输
+    fs.writeFileSync(EP4, JSON.stringify({ url: URL_OK, urlStreamable: HTTP_URL, pid: process.pid }));
+    fs.writeFileSync(
+      C4,
+      JSON.stringify({ mcpServers: { 'seahi-serial': { type: 'http', url: HTTP_URL } } }, null, 2) + '\n'
+    );
+    const st4 = await cli.statusAll({ timeoutMs: 2000 });
+    const claudeState4 = st4.clients.find((c) => c.client === 'claude').state;
+    check(claudeState4.includes('Streamable HTTP'), 'status 认出配的是 Streamable HTTP', claudeState4);
+
+    // ---- 应用只提供一种传输时：提示要指向**真实原因**（不是干巴巴的"缺字段"），并给出出路 ----
+    fs.writeFileSync(EP4, JSON.stringify({ transport: 'sse', url: URL_OK, urlStreamable: '', pid: process.pid }));
+    fs.writeFileSync(C4, JSON.stringify({ mcpServers: {} }, null, 2) + '\n');
+    r4 = await runMain(['install', '--client', 'claude', '--transport', 'http']);
+    check(r4.code === 2, '应用只提供 SSE 时用 http → 退出码 2', r4.code);
+    check(/只提供遗留 SSE/.test(r4.err) && /--transport sse/.test(r4.err),
+      '说清是"应用只提供另一种"并给出两条出路', r4.err);
+    r4 = await runMain(['install', '--client', 'claude', '--transport', 'sse']);
+    check(r4.code === 0 && JSON.parse(read(C4)).mcpServers['seahi-serial'].type === 'sse',
+      '同一状态下 sse 照样能装');
+
+    fs.writeFileSync(EP4, JSON.stringify({ transport: 'http', url: '', urlStreamable: HTTP_URL, pid: process.pid }));
+    fs.writeFileSync(C4, JSON.stringify({ mcpServers: {} }, null, 2) + '\n');
+    r4 = await runMain(['install', '--client', 'claude', '--transport', 'sse']);
+    check(r4.code === 2, '应用只提供 /mcp 时用 sse → 退出码 2', r4.code);
+    check(/只提供 Streamable HTTP/.test(r4.err) && /--transport http/.test(r4.err), '同样给出出路', r4.err);
+    r4 = await runMain(['install', '--client', 'claude', '--transport', 'http']);
+    check(r4.code === 0 && JSON.parse(read(C4)).mcpServers['seahi-serial'].url === HTTP_URL,
+      '同一状态下 http 照样能装');
+
+    check(cli.pickUrl({ transport: 'sse', url: URL_OK }, 'http').ok === false,
+      'pickUrl：只提供 SSE 时取 http 要失败');
+    check(cli.pickUrl({ transport: 'sse', url: URL_OK }, 'sse').url === URL_OK,
+      'pickUrl：只提供 SSE 时取 sse 正常');
+    check(cli.pickUrl({ transport: 'http', urlStreamable: HTTP_URL }, 'sse').ok === false,
+      'pickUrl：只提供 /mcp 时取 sse 要失败');
+
+    const st5 = await cli.statusAll({ timeoutMs: 2000 });
+    check(st5.app.transport === 'http', 'status 报出应用当前提供的传输', JSON.stringify(st5.app));
+  }
+
   console.log('\n【包本身的约束】');
   const pkg = JSON.parse(read(path.join(__dirname, '..', 'package.json')));
   check(!pkg.dependencies && !pkg.devDependencies, '零依赖（含 devDependencies）');

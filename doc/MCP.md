@@ -26,13 +26,34 @@ SeaHi Serial 内置一个 **MCP（Model Context Protocol）服务器**，让 Cla
 
 点图标打开弹窗：
 
-- **一个切换按钮**：点一下开启，再点一下关闭（按钮文案会跟着变：关着时写"启用 MCP 服务器"、开着时写"关闭 MCP 服务器"）
-- **连接 URL**：`http://127.0.0.1:7777/sse?token=…`（一键复制）
-- **客户端配置**：可直接粘进客户端的 JSON 片段（一键复制）
-- **安装提示词**：一段自然语言，粘给 AI 让它自己接上（一键复制）
+- **最上面一行挤着三个控件**（从左到右）：
+  1. **开关按钮**：点一下开启，再点一下关闭（文案跟着状态变：关着时"启用 MCP 服务器"、开着时"关闭 MCP 服务器"）；
+  2. **传输下拉框**：`HTTP` / `SSE` / `All`（详见下面一条）；
+  3. **只读模式按钮**：文案**始终是「只读模式」**，当前是开是关**不写在按钮上** —— 见下面的说明区。
+     打开后 AI 只能读、不能改（见 §8）。
+
+  最右边是**重置令牌**。
+- **说明区（就在这一行下面那块）**：把鼠标**停在**上面任一控件上约半秒，它的说明就显示在这块里；
+  移开即消失。说明会**按行排开**（长内容分几行显示），所以不会像系统默认的悬停提示那样一条横跨整个窗口。
+  "鼠标只是划过"时什么都不会弹 —— 这是有意的（否则鼠标扫过一排按钮会一闪一闪）。
+  只读模式当前是开是关，也是在这里看（"只读模式：开 —— AI 只能看……" / "只读模式：关 —— ……"）。
+- **传输选择（就是那颗下拉框）**：`HTTP` / `SSE` / `All`
+  - **All**（默认）：两条都提供 —— 老客户端走 `/sse`、新客户端走 `/mcp`，兼容性最好；
+  - **HTTP**：只服务 Streamable HTTP，`/sse` 与 `/messages` 立刻变成 404（只支持 SSE 的老客户端会连不上）；
+  - **SSE**：只服务遗留 SSE，`/mcp` 立刻变成 404（只认 Streamable HTTP 的新版客户端会连不上）。
+
+  切换**立即生效**（不用重启服务器）。三个选项各自的后果写在上面那块**说明区**里（界面上不再摆灰字提示），
+  切换成功/失败各有一条 toast 说明结果。地址与客户端配置只展示**当前选中的那一种**。
+  升级上来的配置默认是"两种都提供"—— **不会因为升级把任何一类客户端挡在门外**。
+- **连接地址与客户端配置**：只展示**当前档位确实提供**的那些（单档时只有一块），各带一键复制：
+  - **Streamable HTTP**：`http://127.0.0.1:7777/mcp?token=…` ← 新版客户端用这个（VS Code / Cline / 新版 Cursor / Claude Code）
+  - **遗留 SSE**：`http://127.0.0.1:7777/sse?token=…` ← 只支持 SSE 的老客户端用这个
+- **安装提示词**：可直接粘给 AI 的 JSON 片段 / 一段自然语言（各自一键复制）
 - **重置令牌**：旧令牌立即失效，已粘贴的配置需要重新复制
 
 > 只监听 `127.0.0.1`。默认端口 7777 被占用时会自动向后找（最多 20 个），**实际端口看弹窗**。
+
+> 两种传输**共用同一套工具与同一张会话表**（上限 4 个），所以"用哪个连"不会改变 AI 能做什么。
 
 ## 3. 怎么接到客户端
 
@@ -44,13 +65,32 @@ npx seahi-serial-mcp status     # 看应用在不在跑、各客户端配没配
 npx seahi-serial-mcp uninstall  # 只移除它写的那一条
 ```
 
-选项：`--client claude,claudecode,cursor,vscode`、`--url <url>`、`--dry-run`、`--json`。
+选项：`--client claude,claudecode,cursor,vscode`、`--url <url>`、`--transport sse|http`、`--dry-run`、`--json`。
+
+> **传输怎么选**：默认 `--transport sse`（不改既有行为）。新版客户端默认只走 Streamable HTTP，
+> 它们连不上时加 `--transport http`；这条会用发现文件里的 `urlStreamable` 并写成 `"type": "http"`。
+> 少数客户端（**Cline 等**）认的字段是 `"type": "streamableHttp"`，那种情况手工改一下 type 即可。
 
 **端口回退导致 URL 变了之后，重跑一次 `install` 就全修好了** —— 这是它比手工粘贴强的地方。
 
 ### 方式二：手工粘贴
 
-把弹窗里的「客户端配置」粘进对应文件，或按下面自己写：
+把弹窗里的「客户端配置」粘进对应文件，或按下面自己写。
+
+**新版客户端（推荐）—— Streamable HTTP：**
+
+```json
+{
+  "mcpServers": {
+    "seahi-serial": {
+      "type": "http",
+      "url": "http://127.0.0.1:7777/mcp?token=<弹窗里复制的完整 URL>"
+    }
+  }
+}
+```
+
+**只支持 SSE 的老客户端：**
 
 ```json
 {
@@ -62,6 +102,10 @@ npx seahi-serial-mcp uninstall  # 只移除它写的那一条
   }
 }
 ```
+
+⚠️ 各家客户端对 http 传输的 `type` 写法不一致（`http` / `streamableHttp`）。**写错的典型表现是客户端
+静默按遗留 SSE 去解析**，然后给你一句没头没尾的"连不上" —— 拿不准就看弹窗里那句提示。
+token 放在 URL 里是为了兼容"只会填 url、不会填 headers"的客户端；`Authorization: Bearer` 同样认。
 
 常见位置（**以你本机实际为准**，`status` 会把候选路径打出来）：
 
@@ -86,13 +130,63 @@ npx seahi-serial-mcp uninstall  # 只移除它写的那一条
 | 日志 | `log_channels`、`log_tail`、`log_search`、`log_stats`、`log_clear`、`log_export` |
 | 记录与配置 | `mcp_calls`、`mcp_stats`、`mcp_config_get`、`mcp_config_set` |
 
-**串口语义工具与通用界面桥的区别**：前者用"**分栏 + 语义字段**"寻址（`pane` = `main` / `extra-1` / …），
-后者用"控件路径"。多开监视器时控件路径会撞名，所以**能用语义工具就别拼控件路径**。
-推荐顺序：`serial_get_state` 看现状 → `serial_select_port` / `serial_set_baud` / `serial_set_frame` 设参数 →
-`serial_open` 开始监控（会确认真的连上）→ `serial_send` 发数据 → `serial_get_history` / `log_tail` 回看。
+**串口语义工具与通用界面桥的区别**：前者用"**分栏 + 语义字段**"寻址（`pane` = `main` / `extra-N` 为 Windows 分栏，
+`wsl` / `wsl-xN` 为 WSL 分栏；省略 `pane` 即 `main`），后者用"控件路径"。多开监视器时控件路径会撞名，
+所以**能用语义工具就别拼控件路径**。
+
+**Windows 分栏与 WSL 分栏共用同一套 `serial_*` 工具**（这是刻意的：两边功能完全一样，没有 `wsl_serial_*`），
+靠 `pane` 区分 —— 差异只在数据来源：Windows 侧是本机 COM 口（`list_ports` / `open_port`），
+WSL 侧是 WSL 里的设备（`get_wsl_serial_devices` / `open_wsl_serial`）。所以 `serial_open` 在 WSL 分栏上
+**不会**拿"本机有没有 COM 口"卡你：把 USB 串口 `usbipd bind` 进 WSL 之后 Windows 侧本来就没有那个口，
+那是 WSL 用户的常态。
+
+**选端口前先看 `portOptions`**：`serial_get_state` 会带回**这个分栏**当前能选的端口
+（Windows 分栏是 `COM3` 这样的名字，WSL 分栏是 `/dev/ttyUSB0` 这样的 WSL 内部路径；`inUse` 表示被别的分栏占着）。
+**别拿 `serial_list_ports` 当依据** —— 它只列 Windows 的 COM 口，对 WSL 分栏是误导。
+
+推荐顺序：`serial_get_state` 看现状（含 `portOptions`）→ `serial_select_port` / `serial_set_baud` / `serial_set_frame`
+设参数 → `serial_open` 开始监控（会确认真的连上）→ `serial_send` 发数据 → `serial_get_history` / `log_tail` 回看。
 
 通用的界面操作仍然留着兜长尾：`ui_list` 看有哪些控件 → `ui_describe` 看某个控件怎么填 → `ui_set`/`ui_click` 操作。
 每个工具的完整入参与返回结构见 [`MCP_TOOLS.md`](./MCP_TOOLS.md)。
+
+### 把 USB 串口映射进 WSL（一条完整的链路）
+
+"打开 WSL 端口映射 → 把 COM7 映射进去 → 开那个分栏的串口 → 抓 log"整条链路可以全交给 AI，四步：
+
+| 步 | 调用 | 说明 |
+|---|---|---|
+| 1 | `ui_click{"path":"global.ui.wslToggleBtn"}` | 打开 WSL 端口映射面板（**设备表是懒加载的**，不打开就还没去问 `usbipd`） |
+| 2 | `ui_get_state{"section":"wslDevices"}` | 读 USB 设备表：`{busid, port, name, vidpid, hasCom, status, wslPath, wslSerial, busy, mapControlPath, autoMapControlPath}`。**`port` 就是 Windows 侧的 COM 名**（用户嘴里的"把 COM7 映射进去"靠它对上号），`mapControlPath` 是可直接交给 `ui_set` 的控件路径 —— 不用自己算 |
+| 3 | `ui_set{"path":<mapControlPath>,"value":true}` | 映射/取消映射（`value:false` 取消）。⚠️ **这是"点了才开始跑"的动作**：要过 `usbipd`（几十秒），需要管理员权限时还会弹出授权框**等用户在机器上点确认**。所以回执里带的是 `mapRequest.settled=false` + `note` —— **别重试**，回到第 2 步看 `status` 是否变成 `mapped` |
+| 4 | `serial_get_state{"pane":"wsl"}` → `serial_select_port` → `serial_open{"pane":"wsl"}` → `serial_get_output{"pane":"wsl"}` | 映射完成后 WSL 分栏的端口里才会出现 `/dev/ttyUSB0`；`serial_open` 在 WSL 分栏上**不受"本机有没有 COM 口"影响** |
+
+`section:"wslDevices"` 还带 `wslRunning`（WSL 没运行的话映射复选框是灰的，`ui_set` 会拒绝并说明原因）
+与 `panelOpened`（面板没打开过时设备表是空的，`note` 会说下一步 —— 别误判成"这台机器没有 USB 设备"）。
+
+> 与蓝牙那边是同一个套路：设备行都是**动态 DOM、不在控件注册表里**，所以都有专门的
+> `section`（`bleDevices` / `wslDevices`）让只配了通用桥的客户端也读得到。
+
+### AI 动手时界面会自己切页（写切、读不切）
+
+用户要**看得见 AI 在干什么**，所以规则是：
+
+| 调用 | 界面 |
+|---|---|
+| 通用桥 `ui_set` / `ui_click`（含上面第 3 步的映射） | **先切到目标面板**，再改控件 |
+| 语义工具 `serial_*` 的**写**动作（`serial_select_port`/`serial_set_*`/`serial_open`/`serial_send`/`serial_clear`/`serial_quick_cmd` 的改列表与执行…） | **先切到该 `pane` 所在的面板** |
+| 语义工具 `serial_*` / `ble_*` 的**只读**动作（`serial_get_state`/`serial_get_output`/`ble_list_devices`…） | **一个页面都不切** |
+
+只读不切是故意的：客户端一轮询就把用户从当前页面拽走，比"看不见"更烦人。
+
+**顺带解决一件 AI 会困惑的事**：WSL 分栏（和额外监视器）是**懒创建**的 —— WSL 分栏要等端口映射面板
+第一次打开才存在。所以在面板没打开过时：
+
+- **写操作会自动把它建出来**（切页这一步就是创建它的那一步），所以 `serial_open{"pane":"wsl"}` 冷启动也能直接成功；
+- **只读操作不切页**，于是会回一句 `没有这个分栏: wsl`，并在错误里明确指出
+  「WSL 分栏是懒创建的，先 `ui_click{"path":"global.ui.wslToggleBtn"}`（写操作不用你手动开）」。
+  注意 `ui_get_state` 的 `monitors` 里**有** `wsl`（那是配置），而 `serial_get_state` 的 `panes` 里没有
+  （那是运行时）—— 两者不一致时以 `panes` 为准，别以为工具坏了。
 
 ### `serial_quick_cmd`：快速指令（列表 / 执行 / 循环 / 增删改）
 
@@ -308,16 +402,24 @@ ADB 面板（点顶栏「ADB 调试」）那条链路也能从 MCP 走。与 `se
 | 端点 | 鉴权 | 用途 |
 |---|---|---|
 | `GET /healthz` | 不需要 | 探活，**只回 `{"ok":true}`**（不泄露版本等任何信息） |
-| `GET /status` | **需要 token** | 服务器详情（运行状态、端口、会话数、工具数、丢弃统计……）。返回里 **token 与完整 URL 都会打码** |
-| `GET /sse` | **需要 token** | 建立 SSE 会话，首帧下发 `event: endpoint`（后续请求的投递地址） |
-| `POST /messages` | **需要 token** | 按 JSON-RPC 发请求，结果通过已建立的 SSE 流回传 |
+| `GET /status` | **需要 token** | 服务器详情（运行状态、端口、会话数、工具数、丢弃统计……）。返回里 **token 与两条完整 URL 都会打码**（`urlMasked` / `streamableUrlMasked`） |
+| `POST /mcp` | **需要 token** | **Streamable HTTP**（推荐）：发 JSON-RPC，**结果直接从这次响应体回来**；`initialize` 的响应头带 `Mcp-Session-Id`，后续请求用同名请求头带回来。通知回 **202 + 空体**；会话不认识回 **404**（客户端据此重新 `initialize`） |
+| `GET /mcp` | **需要 token** | 给已初始化的会话挂一条 SSE 流，收服务端通知（如 `notifications/tools/list_changed`）。一个会话最多一条流（重复请求 → 409） |
+| `DELETE /mcp` | **需要 token** | 主动结束会话（回 204），立刻释放一个会话名额 |
+| `GET /sse` | **需要 token** | 遗留 SSE：建立会话，首帧下发 `event: endpoint`（后续请求的投递地址） |
+| `POST /messages` | **需要 token** | 遗留 SSE：按 JSON-RPC 发请求，结果通过已建立的 SSE 流回传 |
 
 token 可放在查询串（`?token=…`）或 `Authorization: Bearer …` 请求头里。`/healthz` 之外的任何端点缺 token 或 token 错误一律回 **401**。
+`/mcp` 另外还校验 `MCP-Protocol-Version`（不认识的值 → 400，响应里列出支持的版本；缺失按 `2025-03-26` 放行）与 `Origin`（非回环 → 403，防 DNS rebinding；不带 Origin 的 SDK/curl 不受影响）。
+
+> ⚠️ `/sse` + `/messages` 与 `/mcp` 这**三行是否真的存在，取决于弹窗里的传输档位**（见 §2）：
+> 选「仅 /mcp」时前两行返回 404，选「仅 SSE」时 `/mcp` 那三行返回 404。
+> 拿不准就先看 `GET /status` 的 `transport` 字段（`both` / `http` / `sse`）与两条 URL 哪个非 null。
 
 ## 8. 安全边界
 
 1. **只监听回环地址**，不能配置成对外网/局域网开放（配置接口会拒绝非回环的 host）。
-2. **必须带 token**；`/healthz` 是唯一不需要 token 的端点，且只回 `{"ok":true}`，不泄露任何信息；`/status` 虽然能看详情，但也**不回显 token 与完整 URL**。
+2. **必须带 token**；`/healthz` 是唯一不需要 token 的端点，且只回 `{"ok":true}`，不泄露任何信息；`/status` 虽然能看详情，但也**不回显 token 与完整 URL**（两条 URL 都打码）。`/mcp` 还额外做 `Origin` 校验（只放行回环来源）。
 3. **工具不能修改 token** —— 必须由你在界面点「重置令牌」。
 4. **AI 记录与用户配置严格分文件**（`ai-calls.jsonl` 与 `config.json` 互不相干，有自动化断言守着）。
 5. 危险工具（发数据、开串口、连蓝牙等）的**二次确认**尚未实现，属于后续工作（见 `MCP_DESIGN.md` §9）。

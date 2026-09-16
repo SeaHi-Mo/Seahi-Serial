@@ -15,12 +15,15 @@
 
 | | |
 |---|---|
-| 传输 | **只有 SSE**（HTTP+SSE）。没有 Streamable HTTP，因此只支持 Streamable HTTP 的客户端连不上 |
-| 端点 | `GET /sse`（建立会话，首帧下发 `event: endpoint`）→ `POST /messages?sessionId=…`（发 JSON-RPC，结果从 SSE 流回）|
+| 传输 | **两种并存**（默认）：① **Streamable HTTP**（`POST /mcp`，2025-03-26+ 规范，新版客户端默认走它）；② **遗留 SSE**（`GET /sse` + `POST /messages`，只支持 SSE 的老客户端）。也可以在弹窗里选「仅 /mcp」或「仅 SSE」—— 那时另一条端点返回 404 |
+| 端点（推荐，新客户端）| `POST /mcp?token=…` 发 JSON-RPC，**结果直接从这次 HTTP 响应回来**（`Content-Type: application/json`）；`initialize` 的响应头带 `Mcp-Session-Id`，后续请求用同名请求头带回来；`GET /mcp` 可另挂一条 SSE 流收服务端通知；`DELETE /mcp` 主动结束会话 |
+| 端点（老客户端）| `GET /sse`（建立会话，首帧下发 `event: endpoint`）→ `POST /messages?sessionId=…`（发 JSON-RPC，结果从 SSE 流回）|
 | 鉴权 | 每个请求都要带 token：`?token=…` 或 `Authorization: Bearer …`；`GET /healthz` 是唯一免鉴权端点，只回 `{"ok":true}` |
 | 监听 | **只监听回环**（`127.0.0.1` / `::1` / `localhost`），不对外网/局域网开放 |
-| 握手顺序 | 客户端必须先 `GET /sse` 拿到 endpoint，再 `POST` `initialize` → `notifications/initialized` → `tools/list` |
-| 地址从哪来 | 程序弹窗里的「连接 URL」，或 `%APPDATA%\seahi-serial\mcp-endpoint.json` |
+| 握手顺序（Streamable HTTP）| `POST /mcp` `initialize`（不带会话头）→ 从响应头拿 `Mcp-Session-Id` → 后续请求都带上它 → `notifications/initialized`（回 202）→ `tools/list` |
+| 握手顺序（遗留 SSE）| 客户端必须先 `GET /sse` 拿到 endpoint，再 `POST` `initialize` → `notifications/initialized` → `tools/list` |
+| 地址从哪来 | 程序弹窗里的「Streamable HTTP / 遗留 SSE」两块地址，或 `%APPDATA%\seahi-serial\mcp-endpoint.json`（`url` 与 `urlStreamable` 两个字段）|
+| 传输档位 | 弹窗里的「传输」三档：**两种都提供**（默认，兼容性最好）/ **仅 /mcp** / **仅 SSE**。配置键是 `server.transport`（老的 `server.streamableHttp` 布尔写法仍然认）。选单档时**另一条端点立刻返回 404**（切换立即生效，不用重启服务器）|
 
 ## 2. 怎么拿工具列表
 
@@ -32,8 +35,8 @@
 
 | 工具 | 读/写 | 作用 |
 |---|---|---|
-| [`serial_get_state`](#serial-get-state) | 读 | 读某个串口分栏的完整状态：端口、波特率、帧格式(数据位/停止位/校验)、行尾、DTR/RTS、查看模式、行号/时间戳/回显/自动滚动/自动重连/终端模式、**是否正在监控**、输出行数与字节数、发送历史条数、以及全部分栏名。省略 pane 默认 main。**操作串口前先调它**。 |
-| [`serial_select_port`](#serial-select-port) | **写** | 选串口分栏要用的端口（等价于在「端口」下拉里选一项）。值必须是 serial_list_ports 返回的端口名；给错会回列可选值。 |
+| [`serial_get_state`](#serial-get-state) | 读 | 读某个串口分栏的完整状态：端口、波特率、帧格式(数据位/停止位/校验)、行尾、DTR/RTS、查看模式、行号/时间戳/回显/自动滚动/自动重连/终端模式、**是否正在监控**、输出行数与字节数、发送历史条数、以及全部分栏名（`panes`）。还给出 `portOptions` —— **这个分栏**当前能选哪些端口（Windows 分栏是 COM 名，WSL 分栏是 `/dev/...` 路径；`inUse` 表示被别的分栏占着）。省略 pane 默认 main。**操作串口前先调它**。 |
+| [`serial_select_port`](#serial-select-port) | **写** | 选串口分栏要用的端口（等价于在「端口」下拉里选一项）。值必须是**该分栏**端口下拉里的一个 —— 也就是 serial_get_state 的 `portOptions` 里的 `value`；给错会回列可选值。⚠️ **别拿 serial_list_ports 当依据**：它只列 Windows 的 COM 口，而 WSL 分栏要的是 `/dev/ttyUSB0` 这类 WSL 内部路径（把 USB 串口 usbipd bind 进 WSL 之后，Windows 侧本来就看不到那个口）。 |
 | [`serial_set_baud`](#serial-set-baud) | **写** | 设置波特率（110..4000000）。等价于在「波特率」输入框里填值。 |
 | [`serial_set_frame`](#serial-set-frame) | **写** | 设置串口帧格式：dataBits(5|6|7|8) / stopBits(1|2) / parity(none|odd|even)。至少给一个（在「更多设置」里）。**改帧格式只在未连接时有意义**，连接中请先 serial_close。 |
 | [`serial_set_lines`](#serial-set-lines) | **写** | 设置 DTR / RTS 电平（布尔）。常用于让目标板复位（DTR 拉低）或进入下载模式。 |
@@ -70,12 +73,12 @@
 | [`app_info`](#app-info) | 读 | 本机 SeaHi Serial 应用的基本信息（版本、平台、进程、运行时长）。只读，无副作用。 |
 | [`mcp_status`](#mcp-status) | 读 | MCP 服务器自身状态：是否运行、监听端点、会话数、请求数与限流/丢弃计数。只读。 |
 | [`mcp_limits`](#mcp-limits) | 读 | MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。 |
-| [`serial_list_ports`](#serial-list-ports) | 读 | 枚举本机可用串口（端口名 / 友好名称 / 产品名）。只读，不会打开端口。返回 {count, ports:[…]}。 |
+| [`serial_list_ports`](#serial-list-ports) | 读 | 枚举本机可用串口（端口名 / 友好名称 / 产品名）。只读，不会打开端口。⚠️ **只有 Windows 侧的 COM 口** —— WSL 分栏的端口是 WSL 内部的 `/dev/...`，不在这里（用 serial_get_state 的 `portOptions` 看那个分栏能选什么）。返回 {count, ports:[…]}。 |
 | [`ui_list`](#ui-list) | 读 | 列出界面上的可操控控件（按钮/输入框/下拉/开关）。每条给出 path、类型、面板、当前值、是否可用与不可用的原因。建议先用它枚举，再决定操作哪个。 |
 | [`ui_describe`](#ui-describe) | 读 | 看某个控件的完整信息与它的输入格式（inputSchema）：可选值有哪些、要传数字还是布尔。 |
 | [`ui_get`](#ui-get) | 读 | 读某个控件的当前值（实时从界面读，不是缓存的配置）。 |
-| [`ui_set`](#ui-set) | **写** | 设置控件值。执行走的是与用户点击完全相同的路径，所以界面会同步变化。返回的是**写后的真实值**（控件可能规范化输入）。可用 items 一次设置多个。 |
-| [`ui_click`](#ui-click) | **写** | 点一个按钮/开关（等价于 ui_set 传 true，但语义更清楚）。 |
+| [`ui_set`](#ui-set) | **写** | 设置控件值。执行走的是与用户点击完全相同的路径，所以界面会同步变化。返回的是**写后的真实值**（控件可能规范化输入）。可用 items 一次设置多个。⚠️ 少数动作是「点了才开始跑」的 —— 典型是 WSL 端口映射那个复选框（要过 usbipd，可能要用户在机器上点授权框）：结果里会带 `mapRequest.settled=false` 与 `note`，**那时不要重试**，稍后用 ui_get_state{section:"wslDevices"} 看 status 是否变成 mapped。 |
+| [`ui_click`](#ui-click) | **写** | 点一个按钮/开关（等价于 ui_set 传 true，但语义更清楚）。⚠️ 同 ui_set：WSL 端口映射那种「点了才开始跑」的控件会在结果里带 `mapRequest.settled=false`，别重试，去 ui_get_state{section:"wslDevices"} 复查。 |
 | [`ui_get_state`](#ui-get-state) | 读 | 读整个界面状态的快照（就是随用户配置持久化的那份：各监视器的端口/波特率/行尾/显示模式/开关、主题、蓝牙选中项等）。可用 section 只取子树。 |
 | [`log_channels`](#log-channels) | 读 | 列出所有日志通道（条数 / 字节 / seq 区间 / 被丢弃条数 / 最后一条时间）。不确定去哪找日志时先调它。 |
 | [`log_tail`](#log-tail) | 读 | 取某个通道的尾部若干行。给了 sinceSeq 就只取它之后的（增量拉取：不重复也不丢）。返回里 mayBeIncomplete=true 表示这个通道曾丢掉过最旧的行。 |
@@ -98,30 +101,30 @@
 
 #### `serial_get_state`
 
-- **作用**：读某个串口分栏的完整状态：端口、波特率、帧格式(数据位/停止位/校验)、行尾、DTR/RTS、查看模式、行号/时间戳/回显/自动滚动/自动重连/终端模式、**是否正在监控**、输出行数与字节数、发送历史条数、以及全部分栏名。省略 pane 默认 main。**操作串口前先调它**。
+- **作用**：读某个串口分栏的完整状态：端口、波特率、帧格式(数据位/停止位/校验)、行尾、DTR/RTS、查看模式、行号/时间戳/回显/自动滚动/自动重连/终端模式、**是否正在监控**、输出行数与字节数、发送历史条数、以及全部分栏名（`panes`）。还给出 `portOptions` —— **这个分栏**当前能选哪些端口（Windows 分栏是 COM 名，WSL 分栏是 `/dev/...` 路径；`inUse` 表示被别的分栏占着）。省略 pane 默认 main。**操作串口前先调它**。
 - **读/写**：只读，无副作用
-- **返回**：{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, advOpen, outputLines, outputBytes, historyCount, panes, logChannels:{rx,tx}}
-- **注意**：**操作串口前先调它**；省略 pane 默认 main；`logChannels` 是"收发内容去哪读"的通道名
+- **返回**：{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, advOpen, outputLines, outputBytes, historyCount, panes, portOptions:[{value,label,inUse}], logChannels:{rx,tx}}
+- **注意**：**操作串口前先调它**；省略 pane 默认 main；`logChannels` 是"收发内容去哪读"的通道名；`portOptions` 是**这个分栏**当前能选的端口（Windows 分栏是 COM 名，WSL 分栏是 `/dev/...` 路径）——选端口前先看它
 
 **入参**
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `pane` | string | 否 | 分栏名：main / extra-1 / extra-2 …；省略=main |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
 
 #### `serial_select_port`
 
-- **作用**：选串口分栏要用的端口（等价于在「端口」下拉里选一项）。值必须是 serial_list_ports 返回的端口名；给错会回列可选值。
+- **作用**：选串口分栏要用的端口（等价于在「端口」下拉里选一项）。值必须是**该分栏**端口下拉里的一个 —— 也就是 serial_get_state 的 `portOptions` 里的 `value`；给错会回列可选值。⚠️ **别拿 serial_list_ports 当依据**：它只列 Windows 的 COM 口，而 WSL 分栏要的是 `/dev/ttyUSB0` 这类 WSL 内部路径（把 USB 串口 usbipd bind 进 WSL 之后，Windows 侧本来就看不到那个口）。
 - **读/写**：**写**（会改状态）
 - **返回**：{pane, applied:[{name,ok,from,to}]}
-- **注意**：值必须是 serial_list_ports 里的端口名；给错 → 协议级 `-32602` 并**回列真实可选值**（来自界面下拉的选项），照着改就行
+- **注意**：值必须是**该分栏**端口下拉里的一个（就是 `serial_get_state` 的 `portOptions[].value`）；给错 → 协议级 `-32602` 并**回列真实可选值**，照着改就行。⚠️ 别拿 `serial_list_ports` 当依据：它只有 Windows 的 COM 口，WSL 分栏要的是 `/dev/ttyUSB0` 这类 WSL 内部路径
 
 **入参**
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `port` | string | **是** | 端口名，如 COM3 |
-| `pane` | string | 否 | 分栏名，省略=main |
+| `port` | string | **是** | 端口名：Windows 分栏如 COM3；WSL 分栏如 /dev/ttyUSB0 |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
 
 #### `serial_set_baud`
 
@@ -135,7 +138,7 @@
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `baud` | number | **是** | 波特率，如 115200 |
-| `pane` | string | 否 | 分栏名，省略=main |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
 
 #### `serial_set_frame`
 
@@ -151,7 +154,7 @@
 | `dataBits` | string | 否 | 枚举：`5` / `6` / `7` / `8` |
 | `stopBits` | string | 否 | 枚举：`1` / `2` |
 | `parity` | string | 否 | 枚举：`none` / `odd` / `even` |
-| `pane` | string | 否 | 分栏名，省略=main |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
 
 #### `serial_set_lines`
 
@@ -166,7 +169,7 @@
 |---|---|---|---|
 | `dtr` | boolean | 否 |  |
 | `rts` | boolean | 否 |  |
-| `pane` | string | 否 | 分栏名，省略=main |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
 
 #### `serial_set_display`
 
@@ -188,7 +191,7 @@
 | `autoReconnect` | boolean | 否 |  |
 | `terminalMode` | boolean | 否 |  |
 | `advOpen` | boolean | 否 | 「更多设置」栏是否展开（真串口面板才有） |
-| `pane` | string | 否 | 分栏名，省略=main |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
 
 #### `serial_open`
 
@@ -203,7 +206,7 @@
 |---|---|---|---|
 | `port` | string | 否 | 可选：先选端口再打开 |
 | `baud` | number | 否 | 可选：先设波特率再打开 |
-| `pane` | string | 否 | 分栏名，省略=main |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
 
 #### `serial_close`
 
@@ -216,7 +219,7 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `pane` | string | 否 | 分栏名，省略=main |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
 
 #### `serial_send`
 
@@ -232,7 +235,7 @@
 | `data` | string | **是** | 要发送的内容（文本或 HEX 串）；单次最多 64K 字符，大块数据请分批 |
 | `mode` | string | 否 | 枚举：`text` / `hex` 发送模式，默认沿用界面当前设置 |
 | `lineEnding` | string | 否 | 枚举：`crlf` / `lf` / `cr` / `none` 临时改行尾（改完会留在界面上） |
-| `pane` | string | 否 | 分栏名，省略=main |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
 
 #### `serial_clear`
 
@@ -245,7 +248,7 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `pane` | string | 否 | 分栏名，省略=main |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
 
 #### `serial_get_history`
 
@@ -259,7 +262,7 @@
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `limit` | number | 否 | 最多返回多少条，默认 20，上限 200 |
-| `pane` | string | 否 | 分栏名，省略=main |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
 
 #### `serial_get_output`
 
@@ -272,7 +275,7 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `pane` | string | 否 | 分栏名，省略=main |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
 | `direction` | string | 否 | 枚举：`rx` / `tx` / `both` 只要收(rx)/只要发(tx)/都要(both，默认) |
 | `lines` | number | 否 | 最多返回多少行，默认 50，上限 2000 |
 
@@ -297,7 +300,7 @@
 | `seq` | number | 否 | action=add/update 时的顺序号：0 = 不参与循环，>0 在**组内**按数字升序发 |
 | `delayMs` | number | 否 | action=add/update 时的延时（毫秒，本条发完到下发一条的间隔，缺省 1000，上限 600000） |
 | `hex` | boolean | 否 | action=add/update 时：这一条是否按 HEX 解析后发送（默认 false） |
-| `pane` | string | 否 | 分栏名，省略=main |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
 
 ### 蓝牙语义工具（BLE）
 
@@ -598,8 +601,8 @@
 
 - **作用**：MCP 服务器自身状态：是否运行、监听端点、会话数、请求数与限流/丢弃计数。只读。
 - **读/写**：只读，无副作用
-- **返回**：打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/statusEmits/readOnly/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`
-- **注意**：**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新；**`readOnly` 必须先看** —— 为 true 时所有写操作会被拒（-32007）
+- **返回**：打码后的服务器状态：`running/enabled/host/port/streamableHttp/tokenMasked/sessions/statusEmits/readOnly/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`
+- **注意**：**不含 token 与完整 URL**（`urlMasked` 与 `streamableUrlMasked` 只在服务器通过界面启动、确实绑定了端口时出现；**两条 URL 都打码**）；`streamableHttp` 为 false 时 `/mcp` 返回 404、只剩遗留 SSE；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新；**`readOnly` 必须先看** —— 为 true 时所有写操作会被拒（-32007）
 
 **入参**
 
@@ -618,10 +621,10 @@
 
 #### `serial_list_ports`
 
-- **作用**：枚举本机可用串口（端口名 / 友好名称 / 产品名）。只读，不会打开端口。返回 {count, ports:[…]}。
+- **作用**：枚举本机可用串口（端口名 / 友好名称 / 产品名）。只读，不会打开端口。⚠️ **只有 Windows 侧的 COM 口** —— WSL 分栏的端口是 WSL 内部的 `/dev/...`，不在这里（用 serial_get_state 的 `portOptions` 看那个分栏能选什么）。返回 {count, ports:[…]}。
 - **读/写**：只读，无副作用
 - **返回**：`{count, ports:[{portName, friendlyName, productName}]}`
-- **注意**：不会打开端口；**端口名在 `portName`**（字段一律驼峰，别去猜 `port_name`）
+- **注意**：不会打开端口；**端口名在 `portName`**（字段一律驼峰，别去猜 `port_name`）。⚠️ **只列 Windows 侧的 COM 口** —— WSL 分栏的端口是 WSL 内部的 `/dev/...`，不在这里（用 `serial_get_state` 的 `portOptions`）
 
 **入参**
 
@@ -673,10 +676,10 @@
 
 #### `ui_set`
 
-- **作用**：设置控件值。执行走的是与用户点击完全相同的路径，所以界面会同步变化。返回的是**写后的真实值**（控件可能规范化输入）。可用 items 一次设置多个。
+- **作用**：设置控件值。执行走的是与用户点击完全相同的路径，所以界面会同步变化。返回的是**写后的真实值**（控件可能规范化输入）。可用 items 一次设置多个。⚠️ 少数动作是「点了才开始跑」的 —— 典型是 WSL 端口映射那个复选框（要过 usbipd，可能要用户在机器上点授权框）：结果里会带 `mapRequest.settled=false` 与 `note`，**那时不要重试**，稍后用 ui_get_state{section:"wslDevices"} 看 status 是否变成 mapped。
 - **读/写**：**写**（会改状态）
-- **返回**：`{results:[{path, ok, notFound?, error?, from?, to?}], effects:[{path, from, to}]}`（**单目标失败时不会有这个结构**：整个调用直接失败）
-- **注意**：**会真的改界面**；支持批量 `items:[{path,value}]`（整批一次回执）；只给一个 `path`/`value` 时按**单目标语义**——失败即整次调用失败（路径不存在 → `-32602`；控件被禁用 → `isError`+`-32006`）
+- **返回**：`{results:[{path, ok, notFound?, error?, from?, to?, mapRequest?}], effects:[{path, from, to}]}`（**单目标失败时不会有这个结构**：整个调用直接失败）
+- **注意**：**会真的改界面**；支持批量 `items:[{path,value}]`（整批一次回执）；只给一个 `path`/`value` 时按**单目标语义**——失败即整次调用失败（路径不存在 → `-32602`；控件被禁用 → `isError`+`-32006`）。⚠️ 少数动作**点了才开始跑**（典型：WSL 端口映射那个复选框要过 usbipd、还可能弹授权框等用户点）—— 那时结果里会带 `mapRequest.settled=false` + `note`：**别重试**，稍后用 `ui_get_state{section:"wslDevices"}` 看 status 是否变成 `mapped`
 
 **入参**
 
@@ -688,10 +691,10 @@
 
 #### `ui_click`
 
-- **作用**：点一个按钮/开关（等价于 ui_set 传 true，但语义更清楚）。
+- **作用**：点一个按钮/开关（等价于 ui_set 传 true，但语义更清楚）。⚠️ 同 ui_set：WSL 端口映射那种「点了才开始跑」的控件会在结果里带 `mapRequest.settled=false`，别重试，去 ui_get_state{section:"wslDevices"} 复查。
 - **读/写**：**写**（会改状态）
-- **返回**：`{results:[{path, ok, notFound?, error?}], effects:[…]}`（**单目标失败时不会有这个结构**：整个调用直接失败）
-- **注意**：**会真的点下去**（例如"开始监控"）；用于 setter 够不到的动作；点击不存在/不可用的控件 → `-32602` / `isError`+`-32006`，**不会**假装成功
+- **返回**：`{results:[{path, ok, notFound?, error?, mapRequest?}], effects:[…]}`（**单目标失败时不会有这个结构**：整个调用直接失败）
+- **注意**：**会真的点下去**（例如"开始监控"）；用于 setter 够不到的动作；点击不存在/不可用的控件 → `-32602` / `isError`+`-32006`，**不会**假装成功。⚠️ 同 `ui_set`：WSL 端口映射那种"点了才开始跑"的动作会带 `mapRequest.settled=false`，**别重试**
 
 **入参**
 
@@ -703,13 +706,13 @@
 
 - **作用**：读整个界面状态的快照（就是随用户配置持久化的那份：各监视器的端口/波特率/行尾/显示模式/开关、主题、蓝牙选中项等）。可用 section 只取子树。
 - **读/写**：只读，无副作用
-- **返回**：当前会话配置快照（与界面「保存配置」同一份真源）；**section 给 bleDevices 时返回蓝牙扫描结果全量**（设备卡片是动态 div、不在控件注册表里，只有通用桥的客户端就从这里读），`ble` 段里带一份前 10 台的 `scanResult`
+- **返回**：当前会话配置快照（与界面「保存配置」同一份真源）；**两张"运行时设备表"都要从它读**：`section:"bleDevices"` = 蓝牙扫描结果全量、`section:"wslDevices"` = WSL 端口映射的 USB 设备表（`{wslRunning, targetDistro, panelOpened, count, mapped, devices:[{busid, port, name, vidpid, hasCom, status, wslPath, wslSerial, busy, mapControlPath, autoMapControlPath}], note, mapUnavailableReason}`）—— 两处的行都是**动态 div、不在控件注册表里**，只有通用桥的客户端只能从这里读；`ble` 段里另带一份前 10 台的 `scanResult`
 
 **入参**
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `section` | string | 否 | 枚举：`serial` / `wsl` / `ble` / `bleDevices` / `theme` / `window` / `monitors` serial / wsl / ble / bleDevices / theme / window / monitors；省略=全部。**扫描结果**读 `bleDevices`（全量）或 `ble.scanResult`（前 10 台）—— 设备卡片是动态 div、不在控件注册表里，只有通用桥的客户端得从这两处读 |
+| `section` | string | 否 | 枚举：`serial` / `wsl` / `ble` / `bleDevices` / `wslDevices` / `theme` / `window` / `monitors` serial / wsl / ble / bleDevices / wslDevices / theme / window / monitors；省略=全部。**运行时设备表**（不是配置）：蓝牙扫描结果读 `bleDevices`（全量）或 `ble.scanResult`（前 10 台）；WSL 端口映射的 USB 设备表读 `wslDevices` —— 两处的行都是**动态 div、不在控件注册表里**，所以只有通用桥的客户端必须从这里读。`wslDevices` 每条还带 `mapControlPath`（可直接交给 ui_set 的控件路径），要映射某台设备就先用它把 COM 名对上 busid。 |
 
 ### 日志中心
 
@@ -874,13 +877,17 @@
 | 前端桥在途请求过多 | `-32005`（`E_UI_BUSY`）|
 | 超过 60 次/分 | `-32000`（`E_RATE_LIMITED`）|
 | 工具内部 panic | `-32603`，消息里写明"已上报"；连接**不会**被打死，且会上报错误库 |
+| `POST /mcp` 带的 `Mcp-Session-Id` 不认识（过期/被表满淘汰/伪造） | HTTP 404 + `session not found`（**不是** JSON-RPC 错误）；规范里客户端拿到 404 应当重新 `initialize` |
+| `POST /mcp` 的 `MCP-Protocol-Version` 不认识 | HTTP 400，响应体里列出我们支持的版本（缺失该头按 2025-03-26 放行）|
+| `POST /mcp` 带了非回环的 `Origin`（`http://evil.com` / `https://…` / `null`） | HTTP 403（防 DNS rebinding；不带 Origin 的 SDK/curl 不受影响）|
 | token 不对 / 缺失 | HTTP 401（不是 JSON-RPC 层）|
 
 ## 7. 上限与安全边界
 
 | 项 | 值 |
 |---|---|
-| 同时会话数 | 4（客户端断开**立刻**回收，不等空闲超时）|
+| 同时会话数 | 4，**两种传输共用一张表**：SSE 会话在流断开时立刻回收；HTTP 会话没有断连信号可依赖，靠 30 分钟空闲回收 + 客户端 `DELETE /mcp` |
+| 表满时（HTTP 新建会话）| **淘汰最久未活动的 HTTP 会话**（客户端下次请求得 404 并重新 `initialize`，可恢复）；只有剩下的全是 SSE 会话时才回 429 —— 淘汰 SSE 会话会把它那条长连接变成收不到东西的僵尸 |
 | 每会话出站队列 / 心跳 / 空闲回收 / 限流 | 256 条丢最旧 · 15s · 30 分钟 · 60 次/分 |
 | 请求体上限 | 1 MiB |
 | `ui_set` 单次 items | **200**（超了 -32602；这条链路跑在界面主线程上）|
@@ -900,7 +907,7 @@
 安全边界：
 
 1. **只监听回环**，`server.host` 只接受 `127.0.0.1`/`::1`/`localhost`；
-2. 必须带 token；`/healthz` 是唯一免鉴权端点且只回 `{"ok":true}`；`/status` 需 token 且**不回显 token 与完整 URL**；
+2. 必须带 token；`/healthz` 是唯一免鉴权端点且只回 `{"ok":true}`；`/status` 需 token 且**两条 URL 都打码**（`urlMasked` / `streamableUrlMasked`），绝不回显 token 与完整 URL；`/mcp` 另外校验 `Origin`（只放行回环）；
 3. **工具不能改 token**（必须在界面点「重置令牌」）；
 4. AI 记录写独立的 `ai-calls.jsonl`，**用户配置 `config.json` 里不会出现任何 AI 痕迹**；
 5. 运行期错误走程序既有的错误上报（LogHub → 本地日志 → Sentry/自建服务），**上报前 token 打码**，同类错误 5 分钟只报一次；
@@ -908,27 +915,57 @@
 
 ## 8. 手测示例（curl）
 
+**Streamable HTTP（推荐，新版客户端走这条）**
+
 ```bash
-# 1) 探活（不需要 token）
+# 1) initialize：不带会话头，从**响应头**里拿 Mcp-Session-Id（-i 才会打印响应头）
+curl.exe -i -X POST "http://127.0.0.1:7777/mcp?token=<TOKEN>" \
+  -H "Content-Type: application/json" \
+  -H "MCP-Protocol-Version: 2025-06-18" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"curl"}}}'
+#   期望 HTTP 200 + content-type: application/json + 响应头 mcp-session-id: <SID>
+#   ⚠️ 结果**就在这个响应体里**（不必像 SSE 那样另开一条流等）
+
+# 2) 后续请求带上会话头（结果同样直接从响应回来）
+curl.exe -i -X POST "http://127.0.0.1:7777/mcp?token=<TOKEN>" \
+  -H "Content-Type: application/json" \
+  -H "Mcp-Session-Id: <SID>" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"app_info"}}'
+
+# 3) 通知：回 202 + 空体（规范要求，不是 200 加空 JSON）
+curl.exe -i -X POST "http://127.0.0.1:7777/mcp?token=<TOKEN>" \
+  -H "Content-Type: application/json" \
+  -H "Mcp-Session-Id: <SID>" \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+
+# 4) 用完主动结束会话（立刻释放一个会话名额）
+curl.exe -i -X DELETE "http://127.0.0.1:7777/mcp?token=<TOKEN>" -H "Mcp-Session-Id: <SID>"
+#   期望 HTTP 204
+```
+
+**遗留 SSE（只支持 SSE 的老客户端走这条）**
+
+```bash
+# 0) 探活（不需要 token）
 curl.exe -i http://127.0.0.1:7777/healthz
 
-# 2) 建 SSE 会话，看首帧 endpoint（-N 关缓冲；这个连接要一直挂着）
+# 1) 建 SSE 会话，看首帧 endpoint（-N 关缓冲；这个连接要一直挂着）
 curl.exe -N "http://127.0.0.1:7777/sse?token=<TOKEN>"
 #   event: endpoint
 #   data: /messages?sessionId=<SID>&token=<TOKEN>
 
-# 3) 另开一个窗口，往上面那个 SID 发 JSON-RPC
+# 2) 另开一个窗口，往上面那个 SID 发 JSON-RPC
 curl.exe -i -X POST "http://127.0.0.1:7777/messages?sessionId=<SID>&token=<TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","clientInfo":{"name":"curl"}}}'
-#   期望 HTTP 202；结果从第 2 步的 SSE 流里出来
+#   期望 HTTP 202；结果从第 1 步的 SSE 流里出来
 
-# 4) 列工具（同样 202，结果从 SSE 流回）
+# 3) 列工具（同样 202，结果从 SSE 流回）
 curl.exe -i -X POST "http://127.0.0.1:7777/messages?sessionId=<SID>&token=<TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 
-# 5) 调一个只读工具
+# 4) 调一个只读工具
 curl.exe -i -X POST "http://127.0.0.1:7777/messages?sessionId=<SID>&token=<TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"app_info"}}'

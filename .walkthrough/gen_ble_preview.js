@@ -108,6 +108,26 @@ const check = (ok, label, extra) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${extra !== undefined && !ok ? '   -> ' + extra : ''}`);
 };
 
+// ---- 先过一遍 index.html 的**整段**脚本语法 ----
+// 下面绝大多数断言是"按名字抽一个函数丢进 vm"，抽不到的函数有语法错也不会有人发现 ——
+// 而那正是最容易出的事（一次手工编辑漏个括号）。这里把每个内联 <script> 整段编译一次。
+{
+  const re = /<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi;
+  let m, blocks = 0, bad = [];
+  while ((m = re.exec(html)) !== null) {
+    blocks++;
+    const at = html.slice(0, m.index).split('\n').length;
+    try {
+      new vm.Script(m[1], { filename: `index.html <script> #${blocks} (第 ${at} 行起)` });
+    } catch (e) {
+      bad.push(`#${blocks}(第 ${at} 行): ${e.message}`);
+    }
+  }
+  check(blocks > 0 && bad.length === 0,
+    `index.html 的 ${blocks} 个内联 <script> 块都能编译（按名字抽函数的断言盖不到这一层）`,
+    bad.join(' | '));
+}
+
 const cards = byId['ble-devList'].children;
 const typeOf = (cardHtml) => {
   // 通过各类型图标的 path 首段特征定位（互不相同）
@@ -2004,10 +2024,11 @@ console.log('preview ->', out);
     '按钮文案写的是"点了会发生什么"（关着→启用 / 开着→关闭）');
   check(/_mcpBusy = true;/.test(html) && /tg\.disabled = !!_mcpBusy;/.test(html),
     '命令发出期间按钮禁用（连点会陆续发两条相反的 IPC）');
-  check(/id="mcpUrl"/.test(html) && /id="mcpClientCfg"/.test(html) && /id="mcpPrompt"/.test(html),
-    '弹窗有 连接 URL / 客户端配置 / 安装提示词 三块');
+  check(/id="mcpUrl"/.test(html) && /id="mcpClientCfg"/.test(html) && /id="mcpPrompt"/.test(html)
+    && /id="mcpStreamableUrl"/.test(html) && /id="mcpClientCfgStreamable"/.test(html),
+    '弹窗有 两种传输各自的「地址 + 客户端配置」+ 安装提示词，共五块');
   const copyBtns = (html.match(/onclick="mcpCopy\(/g) || []).length;
-  check(copyBtns === 3, '三块各有一个复制按钮', copyBtns);
+  check(copyBtns === 5, '五块各有一个复制按钮', copyBtns);
   // 用户要求删掉底部那行"版本 · 工具 · 请求 · 丢弃 · 发现文件"
   check(!/id="mcpMeta"/.test(html), '底部那行元信息已删除（界面不再占一行）');
   check(/stText\.title = parts\.join\(' · '\)/.test(html),
@@ -2033,8 +2054,8 @@ console.log('preview ->', out);
     && /\.mcp-copy-btn \{ position:absolute; top:3px; right:4px;/.test(html),
     '复制按钮绝对定位在内容框右上角');
   check(/class="ble-modal-btn mcp-copy-btn"/.test(html)
-    && (html.match(/class="ble-modal-btn mcp-copy-btn"/g) || []).length === 3,
-    '三块内容各有且只有一个复制按钮',
+    && (html.match(/class="ble-modal-btn mcp-copy-btn"/g) || []).length === 5,
+    '五块内容各有且只有一个复制按钮',
     (html.match(/class="ble-modal-btn mcp-copy-btn"/g) || []).length);
   check(/<div class="mcp-box">\s*\n\s*<span class="mcp-url" id="mcpUrl"><\/span>\s*\n\s*<button class="ble-modal-btn mcp-copy-btn"/.test(html),
     '按钮和 URL 在同一个定位容器里（用户举的例子：URL 框的右上角）');
@@ -2068,7 +2089,7 @@ console.log('preview ->', out);
   // 这里守前端——事件来了必须用 payload 重画，而不是拿旧缓存重画（那样等于没更新）。
   check(/listen\('mcp-status-changed', function\(ev\) \{[\s\S]{0,160}?_mcpStatus = ev && ev\.payload;/.test(html),
     '状态事件必须用 ev.payload 更新缓存再重画（不能用旧 _mcpStatus 重画，那样界面永远不变）');
-  check(/function openMcpModal\(\)[\s\S]{0,200}?refreshMcpStatus\(\);/.test(html),
+  check(/function openMcpModal\(\)[\s\S]{0,600}?refreshMcpStatus\(\);/.test(html),
     '打开弹窗时主动拉一次状态（推送漏了也能纠正）');
 
   // ---- MCP 模块源码（命令实现与隔离性都在这里，不在 main.rs）----
@@ -2112,7 +2133,49 @@ console.log('preview ->', out);
   check(!/bind\([^)]*0\.0\.0\.0/.test(mcpSrc) && !/host:\s*"0\.0\.0\.0"/.test(mcpSrc),
     '绝不把 0.0.0.0 当监听地址用（只监听回环）');
   check(/"\/healthz"/.test(mcpSrc) && /"\/sse"/.test(mcpSrc) && /"\/messages"/.test(mcpSrc),
-    '有 /healthz、/sse、/messages 三个端点');
+    '有 /healthz、/sse、/messages 三个端点（遗留 SSE 那条路）');
+  // ---- Streamable HTTP（2025-03-26+ 规范）：单端点三动词 ----
+  check(/"\/mcp"/.test(mcpSrc) && /Method::POST, "\/mcp"/.test(mcpSrc)
+    && /Method::GET, "\/mcp"/.test(mcpSrc) && /Method::DELETE, "\/mcp"/.test(mcpSrc),
+    '有 /mcp 的 POST / GET / DELETE 三个动词');
+  check(/fn post_mcp\(/.test(mcpSrc) && /fn get_mcp\(/.test(mcpSrc) && /fn delete_mcp\(/.test(mcpSrc),
+    '三个处理函数都在（路由表里挂着，不是只写在文档里）');
+  check(/with_session_header\(resp, &sid, is_new\)/.test(mcpSrc) && /MCP_SESSION_HEADER/.test(mcpSrc),
+    '新会话下发 Mcp-Session-Id（客户端后续请求必须带回来）');
+  check(/None => Response::builder\(\)[\s\S]{0,80}?\.status\(StatusCode::ACCEPTED\)/.test(mcpSrc),
+    '通知回 202 + 空体（规范要求；回 200 加空 JSON 是错的）');
+  check(/fn session_not_found\(\)/.test(mcpSrc) && /StatusCode::NOT_FOUND/.test(mcpSrc),
+    '不认识的会话回 404（客户端据此重新 initialize；回 400 会让它一路失败）');
+  check(/fn origin_allowed\(/.test(mcpSrc) && /origin_host_is_loopback/.test(mcpSrc),
+    'Origin 只放行回环来源（防 DNS rebinding）');
+  check(/fn protocol_version_problem\(/.test(mcpSrc) && /MCP_VERSION_HEADER/.test(mcpSrc),
+    '校验 MCP-Protocol-Version（不认识的回 400，且消息里列出支持的版本）');
+  check(/fn read_body_limited\(/.test(mcpSrc)
+    && (mcpSrc.match(/read_body_limited\(req\)/g) || []).length >= 2,
+    '/messages 与 /mcp 共用同一份带上限的读体逻辑（新入口不能绕过 1 MiB 上限）');
+  // ⚠️ 判据必须是 `Session::kind`，**不能是 `tx`**：HTTP 会话按规范挂上 `GET /mcp` 流之后
+  // tx 也是 Some —— 用 tx 判断会让这类客户端全部变成"不可淘汰"，4 个占满后第 5 个直接 429
+  // （2026-09 实测证实：淘汰候选 = 0 → HTTP/1.1 429）。Rust 侧有回归测试守着。
+  check(/http_session_evicted/.test(mcpSrc)
+    && /filter\(\|\(_, s\)\| s\.kind == SessionKind::Http\)/.test(mcpSrc),
+    '表满时只淘汰 HTTP 会话，且判据是 kind（不是 tx）');
+  check(/pub enum SessionKind/.test(mcpSrc) && /kind: SessionKind::Sse/.test(mcpSrc)
+    && /kind: SessionKind::Http/.test(mcpSrc),
+    '两类会话有显式的 kind（淘汰策略的唯一判据）');
+  check(/fn http_sessions_with_a_get_stream_are_still_evictable/.test(mcpSrc)
+    && /fn delete_mcp_refuses_to_remove_an_sse_session/.test(mcpSrc),
+    '两个回归测试都在：挂了 GET 流的 HTTP 会话仍可淘汰、DELETE 删不掉 SSE 会话');
+  check(/keep_session_on_drop/.test(mcpSrc) && /keep_session: bool/.test(mcpSrc),
+    'GET /mcp 的流断开只摘通道、不删会话（会话还要继续给 POST 用）');
+  check(/transport_mode\(\)/.test(mcpSrc) && /serves_http\(\)/.test(mcpSrc) && /serves_sse\(\)/.test(mcpSrc),
+    '传输是**三档**的（both / http / sse），路由按档决定哪条端点存在');
+  check(/\(Method::GET, "\/sse"\) if mode\.serves_sse\(\)/.test(mcpSrc)
+    && /\(Method::POST, "\/mcp"\) if mode\.serves_http\(\)/.test(mcpSrc),
+    '/sse 与 /mcp 各自被档位守着（不在档里的端点落进 404 分支）');
+  check(/"transport": mode\.as_str\(\)/.test(mcpSrc) && /"streamableHttp": mode\.serves_http\(\)/.test(mcpSrc),
+    '状态里既有 transport 档位、也有派生的 streamableHttp（老客户端/老断言仍然能用）');
+  check(/"urlStreamable"/.test(mcpSrc) || /url_streamable/.test(mcpSrc),
+    '端点发现文件里带上了 Streamable HTTP 地址（安装器与外部工具要靠它）');
   check(/constant_time_eq/.test(mcpSrc), 'token 用定长比较');
   check(/event: endpoint/.test(mcpSrc), 'SSE 首帧下发 endpoint');
   check(/: ping/.test(mcpSrc), '有 SSE 心跳（防中间层断流）');
@@ -2140,9 +2203,22 @@ console.log('preview ->', out);
 
   // ---- 行为：状态点与按钮禁用 ----
   const mcpEls = {};
+  // 假元素。除了 className/textContent/style，还要给 getAttribute/setAttribute/addEventListener：
+  // 顶栏那几颗控件现在把说明存进 `data-mcp-tip`、用 addEventListener 绑悬停（原生 title 会一闪一闪），
+  // 假 DOM 不认这两样就会直接崩。`fire()` 是给测试手动触发事件用的。
   const mcpEl = (id) => {
     if (!mcpEls[id]) {
-      mcpEls[id] = { id: id, className: '', textContent: '', title: '', disabled: false, style: {} };
+      mcpEls[id] = {
+        id: id, className: '', textContent: '', title: '', disabled: false, style: {},
+        attrs: {}, handlers: {},
+        getAttribute(n) {
+          return Object.prototype.hasOwnProperty.call(this.attrs, n) ? this.attrs[n] : null;
+        },
+        setAttribute(n, v) { this.attrs[n] = String(v); },
+        removeAttribute(n) { delete this.attrs[n]; },
+        addEventListener(t, fn) { (this.handlers[t] = this.handlers[t] || []).push(fn); },
+        fire(t) { (this.handlers[t] || []).forEach((fn) => fn({ target: this })); },
+      };
     }
     return mcpEls[id];
   };
@@ -2161,6 +2237,9 @@ console.log('preview ->', out);
   vm.runInContext([
     'var _mcpBusy = false;',
     'var _mcpReadOnlyBusy = false;',
+    // Streamable HTTP 那颗开关的在途标志（三个开关各一份，缺一个就在这里 ReferenceError）
+    'var _mcpTransportBusy = false;',
+    'var _mcpTransportCur = null;',
     extractFunction('_mcpDotClass'),
     extractFunction('renderMcpStatus'),
   ].join('\n'), sbMcp);
@@ -2194,24 +2273,34 @@ console.log('preview ->', out);
   check(mcpEl('mcpToggleBtn').disabled === false, '运行中切换按钮仍可点（它就是用来关的）');
   check(mcpEl('mcpToggleBtn').textContent === '关闭 MCP 服务器', '运行中按钮说"关闭"',
     mcpEl('mcpToggleBtn').textContent);
-  check(mcpEl('mcpToggleHint').textContent === '点按钮可停止', '运行中旁边给出下一步提示');
-  check(mcpEl('mcpToggleBtn').title.indexOf('释放端口') > 0, '运行中按钮提示写的是"停止并释放端口"');
+  check(mcpEl('mcpToggleHint').textContent === '',
+    '运行中不再有"点按钮可停止"这类提示（用户 2026-09-16 要求删掉；在途时它才显示"处理中…"）',
+    mcpEl('mcpToggleHint').textContent);
+  check(String(mcpEl('mcpToggleBtn').getAttribute('data-mcp-tip')).indexOf('释放端口') > 0,
+    '运行中按钮说明写的是"释放端口并清日志中心内存"');
   // 悬停说明要"说明主要作用"，不能只是换个名字
-  check(mcpEl('mcpToggleBtn').title.indexOf('关闭 MCP 服务器：') === 0
-    && mcpEl('mcpToggleBtn').title.indexOf('日志中心') > 0,
-    '运行中：说明关掉会发生什么（释放端口 + 清日志中心内存）', mcpEl('mcpToggleBtn').title);
+  check(/^关闭 MCP 服务器 —— /.test(String(mcpEl('mcpToggleBtn').getAttribute('data-mcp-tip')))
+    && String(mcpEl('mcpToggleBtn').getAttribute('data-mcp-tip')).indexOf('日志中心') > 0,
+    '运行中：说明关掉会发生什么（释放端口 + 清日志中心内存）',
+    mcpEl('mcpToggleBtn').getAttribute('data-mcp-tip'));
   {
     const titles = (html.match(/title="[^"]{12,}"/g) || []).join('\n');
-    [['连接 URL', '访问令牌'], ['客户端配置', 'mcpServers'], ['安装提示词', '发给 AI 客户端']]
+    [['Streamable HTTP（新版客户端用这个）', '访问令牌'],
+     ['遗留 SSE（老客户端用这个）', '访问令牌'],
+     ['安装提示词', '发给 AI 客户端']]
       .forEach(([label, must]) => {
         const re = new RegExp('title="([^"]*)"[^>]*>' + label + '<');
         const m = re.exec(html);
         check(!!m && m[1].indexOf(must) > 0,
           '「' + label + '」的悬停说明讲了它的作用（含"' + must + '"）', m ? m[1] : '(没有 title)');
       });
-    check(/title="复制完整连接地址（含访问令牌）"/.test(titles), '复制 URL 的悬停说明');
-    check(/title="复制客户端配置 JSON：粘进 Claude \/ Cursor 的 mcpServers"/.test(titles),
-      '复制客户端配置的悬停说明');
+    check(/title="复制 Streamable HTTP 连接地址（含访问令牌）"/.test(titles),
+      '复制 Streamable HTTP 地址的悬停说明');
+    check(/title="复制 SSE 连接地址（含访问令牌）"/.test(titles), '复制 SSE 地址的悬停说明');
+    check(/title="复制 SSE 客户端配置 JSON（type=sse）/.test(titles),
+      '复制 SSE 客户端配置的悬停说明');
+    check(/title="复制 Streamable HTTP 的客户端配置 JSON（type 一般写 http；Cline 等要写 streamableHttp）"/.test(titles),
+      '复制 Streamable HTTP 配置的悬停说明里写清了 type 的两种写法（猜错会静默按老形态解析）');
     check(/title="复制这段提示词发给 AI，让它自己完成客户端配置"/.test(titles),
       '复制安装提示词的悬停说明');
     check(/onclick="closeMcpModal\(\)" title="只关闭这个窗口，不影响 MCP 服务器运行"/.test(html),
@@ -2271,6 +2360,8 @@ console.log('preview ->', out);
     vm.runInContext([
       'var _mcpBusy = false;',
       'var _mcpReadOnlyBusy = false;',
+      'var _mcpTransportBusy = false;',
+      'var _mcpTransportCur = null;',
       extractFunction('_mcpDotClass'),
       extractFunction('renderMcpStatus'),
       extractFunction('mcpToggleReadOnly'),
@@ -2279,12 +2370,16 @@ console.log('preview ->', out);
     check(mcpEl('mcpReadOnlyBtn').disabled === false, '初始只读开关可点（否则第一次就开不了）');
     sbRo.mcpToggleReadOnly();
     check(mcpEl('mcpReadOnlyBtn').disabled === true, '点下去立刻置灰（挡住连点发两条相反的 IPC）');
-    check(mcpEl('mcpReadOnlyBtn').textContent === '只读模式：处理中…', '在途时按钮说"处理中…"',
-      mcpEl('mcpReadOnlyBtn').textContent);
+    check(mcpEl('mcpReadOnlyBtn').textContent === '只读模式',
+      '**按钮文案固定「只读模式」**（状态不进按钮文字）', mcpEl('mcpReadOnlyBtn').textContent);
+    check(mcpEl('mcpReadOnlyBtn').getAttribute('data-mcp-tip') === '处理中…', '在途状态放在悬停说明里',
+      mcpEl('mcpReadOnlyBtn').getAttribute('data-mcp-tip'));
     await flush();
     check(sbRo._mcpStatus.readOnly === true, '第一次点：只读模式打开');
-    check(mcpEl('mcpReadOnlyBtn').textContent === '只读模式：开（AI 只能看）', '开完文案切到"开"',
-      mcpEl('mcpReadOnlyBtn').textContent);
+    check(mcpEl('mcpReadOnlyBtn').textContent === '只读模式'
+      && /^只读模式：开 —— AI 只能看/.test(mcpEl('mcpReadOnlyBtn').getAttribute('data-mcp-tip')),
+      '开完：文案不变，悬停显示"只读模式：开 —— AI 只能看…"',
+      mcpEl('mcpReadOnlyBtn').getAttribute('data-mcp-tip'));
     check(mcpEl('mcpReadOnlyBtn').disabled === false,
       '**开完必须解禁** —— 不禁用回来，用户就再也关不掉只读模式（本次回归的那一条）');
 
@@ -2292,8 +2387,10 @@ console.log('preview ->', out);
     sbRo.mcpToggleReadOnly();
     await flush();
     check(sbRo._mcpStatus.readOnly === false, '**再点一下真的能关掉**（"开了之后无法关闭"回归）');
-    check(mcpEl('mcpReadOnlyBtn').textContent === '只读模式：关', '关完文案切回"关"',
-      mcpEl('mcpReadOnlyBtn').textContent);
+    check(mcpEl('mcpReadOnlyBtn').textContent === '只读模式'
+      && /^只读模式：关 —— /.test(mcpEl('mcpReadOnlyBtn').getAttribute('data-mcp-tip')),
+      '关完：文案不变，悬停显示"只读模式：关 —— …"',
+      mcpEl('mcpReadOnlyBtn').getAttribute('data-mcp-tip'));
     check(mcpEl('mcpReadOnlyBtn').disabled === false, '关完照样还能再点（来回切不卡死）');
     check(roToasts.length === 2 && /已关闭只读模式/.test(roToasts[1]), '关掉时给出反馈', roToasts.join(' / '));
 
@@ -2301,7 +2398,9 @@ console.log('preview ->', out);
     sbRo._mcpReadOnlyBusy = true;
     sbRo.renderMcpStatus({ readOnly: true });
     check(mcpEl('mcpReadOnlyBtn').disabled === true, '在途期间推来的状态不会提前解禁（防连点）');
-    check(mcpEl('mcpReadOnlyBtn').textContent === '只读模式：处理中…', '在途期间文案仍是"处理中…"');
+    check(mcpEl('mcpReadOnlyBtn').textContent === '只读模式'
+      && mcpEl('mcpReadOnlyBtn').getAttribute('data-mcp-tip') === '处理中…',
+      '在途期间文案也不变，悬停仍是"处理中…"');
     sbRo._mcpReadOnlyBusy = false;
 
     // 失败路径：命令被拒/后端抖动也要解禁，否则一次失败就把这颗按钮永久锁死
@@ -2311,6 +2410,304 @@ console.log('preview ->', out);
     check(mcpEl('mcpReadOnlyBtn').disabled === false, '**命令失败也要解禁**（一次抖动不能锁死这颗按钮）');
     check(roToasts.length === 3 && /只读模式切换失败/.test(roToasts[2]), '失败时把原因说出来',
       roToasts.join(' / '));
+  }
+
+  // ---- 传输档位：三档单选，与只读模式同一套纪律（独立 busy、成败都要解禁、区块跟着档位隐显）----
+  {
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    const sbToasts = [];
+    const sbSt = {
+      console, Promise, setTimeout,
+      document: { getElementById: (id) => mcpEl(id) },
+      showToast(m) { sbToasts.push(m); },
+      _fail: false,
+      invoke(name, args) {
+        if (sbSt._fail) return Promise.reject(new Error('后端炸了'));
+        const t = args.transport;
+        sbSt._mcpStatus = { running: true, host: '127.0.0.1', port: 7777, sessions: 0,
+          version: '0.9.9', toolCount: 4, requests: 0, dropped: 0,
+          transport: t,
+          streamableHttp: t !== 'sse',
+          url: t === 'http' ? null : 'http://127.0.0.1:7777/sse?token=x',
+          streamableUrl: t === 'sse' ? null : 'http://127.0.0.1:7777/mcp?token=x' };
+        return Promise.resolve(sbSt._mcpStatus);
+      },
+    };
+    sbSt._mcpStatus = { transport: 'both' };
+    sbSt.refreshMcpStatus = function() { sbSt.renderMcpStatus(sbSt._mcpStatus); };
+    vm.createContext(sbSt);
+    vm.runInContext([
+      'var _mcpBusy = false;',
+      'var _mcpReadOnlyBusy = false;',
+      'var _mcpTransportBusy = false;',
+      'var _mcpTransportCur = null;',
+      extractFunction('_mcpDotClass'),
+      extractFunction('renderMcpStatus'),
+      extractFunction('mcpTransportPicked'),
+    ].join('\n'), sbSt);
+
+    sbSt.renderMcpStatus(sbSt._mcpStatus);
+    check(mcpEl('mcpTransportSel').value === 'both',
+      '默认选中 All（与后端默认值一致）', mcpEl('mcpTransportSel').value);
+    check(mcpEl('mcpTransportSel').disabled === false, '非在途时下拉框可操作');
+    check(mcpEl('mcpStreamableField').style.display === 'block'
+      && mcpEl('mcpSseField').style.display === 'block', 'All 时两块连接方式都展示');
+
+    // 选 HTTP：另一条要藏起来
+    sbSt.mcpTransportPicked('http');
+    check(mcpEl('mcpTransportSel').disabled === true, '在途时禁用（挡连点）');
+    check(mcpEl('mcpTransportSel').value === 'http', '**在途就先把选中态画过去**（反馈要快）');
+    await flush();
+    check(sbSt._mcpStatus.transport === 'http', '切到 HTTP');
+    check(mcpEl('mcpTransportSel').disabled === false,
+      '**切完必须解禁**（漏掉这一句，下拉框就再也动不了了）');
+    check(mcpEl('mcpTransportSel').value === 'http', '选中态跟着回执走');
+    check(mcpEl('mcpStreamableField').style.display === 'block'
+      && mcpEl('mcpSseField').style.display === 'none',
+      'HTTP 时隐藏 SSE 那一块（展示一个只会 404 的地址等于让人白配一遍）');
+
+    // 再选 SSE
+    sbSt.mcpTransportPicked('sse');
+    await flush();
+    check(mcpEl('mcpTransportSel').value === 'sse', '切到 SSE');
+    check(mcpEl('mcpStreamableField').style.display === 'none'
+      && mcpEl('mcpSseField').style.display === 'block', 'SSE 时反过来');
+
+    // 选当前项 = 不发 IPC（别白写一次盘）
+    const toastsBefore = sbToasts.length;
+    sbSt.mcpTransportPicked('sse');
+    await flush();
+    check(sbToasts.length === toastsBefore, '选已选中的项什么都不做');
+
+    // 失败路径
+    sbSt._fail = true;
+    sbSt.mcpTransportPicked('both');
+    await flush();
+    check(mcpEl('mcpTransportSel').disabled === false, '**命令失败也要解禁**（一次抖动不能锁死它）');
+    check(mcpEl('mcpTransportSel').value === 'sse',
+      '失败时下拉框**拨回真实值**（不留在"选了但没成"的样子）', mcpEl('mcpTransportSel').value);
+    check(sbToasts.some((m) => /传输切换失败/.test(m)), '失败时把原因说出来', sbToasts.join(' / '));
+  }
+
+  // 三个开关的 busy 标志必须各一份：共用一个会让"A 在途时把 B 也置灰"
+  {
+    const busyVars = (html.match(/var _mcp\w*Busy = false;/g) || []);
+    check(busyVars.length === 3, '三个 MCP 开关各有独立的在途标志', busyVars.join(' '));
+    check(/mcp::mcp_set_transport,/.test(fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8')),
+      'mcp_set_transport 命令已注册到 invoke_handler（漏了就是"切换失败: command not found"）');
+    check(/pub fn mcp_set_transport\(/.test(mcpSrc), '命令实现存在');
+    check(/"transport" =>/.test(mcpSrc) && /server\.transport 必须是字符串/.test(mcpSrc),
+      'AI 侧也能通过 mcp_config_set 改 server.transport（与界面同一份配置）');
+    check(/\bserver\.streamableHttp\b[\s\S]{0,240}?set_transport_mode/.test(mcpSrc),
+      '老的 server.streamableHttp 布尔写法仍然被接受（改名不能把老调用方变成静默失效）');
+    check(/fn old_config_migrates_transport_mode/.test(mcpSrc)
+      && /fn transport_mode_roundtrips_and_clears_the_legacy_field/.test(mcpSrc),
+      '老配置迁移有回归测试守着（意愿丢了 = 升级后某类客户端莫名连不上）');
+  }
+
+  // ---- 布局：传输下拉框在「开关按钮」右侧；旧的三档按钮组与两处灰字都删掉 ----
+  {
+    // 三样东西必须挤在**同一行**：开关按钮 → 传输下拉框 → 只读模式按钮（用户 2026-09-16 指定的布局）
+    const row = /<div class="mcp-row" style="flex-wrap:wrap;">[\s\S]{0,400}?id="mcpToggleBtn"[\s\S]{0,400}?id="mcpTransportSel"[\s\S]{0,1400}?id="mcpReadOnlyBtn"[\s\S]{0,900}?<\/div>/
+      .exec(html);
+    check(!!row, '「开关按钮 + 传输下拉框 + 只读模式」在同一行（且顺序如此）');
+    check(!/<\/div>\s*<div class="mcp-row">\s*<button[^>]*id="mcpReadOnlyBtn"/.test(html),
+      '只读模式不再单独占一行（原来那一行已删）');
+    const selMatch = /<select[^>]*id="mcpTransportSel"[\s\S]*?<\/select>/.exec(html);
+    check(!!selMatch, '用的是原生 <select>（不是一排按钮）');
+    const sel = selMatch ? selMatch[0] : '';
+    check(/<option value="http">HTTP<\/option>/.test(sel)
+      && /<option value="sse">SSE<\/option>/.test(sel)
+      && /<option value="both" selected>All<\/option>/.test(sel),
+      '三个选项 HTTP / SSE / All，值对应后端的 http / sse / both', sel);
+    check(/id="mcpTransportSel"[^>]*data-mcp-tip="[^"]*All —— 两条都提供/.test(html),
+      '下拉框的悬停说明讲清了三个选项各自的后果（灰字没了，这条信息不能也丢）');
+    // 宽度：用固定像素，别让原生 select 按内容自适应（切选项时会抖）或被 min-width 撑宽
+    check(/id="mcpTransportSel"[^>]*style="[^"]*width:\d+px/.test(html)
+      && !/id="mcpTransportSel"[^>]*style="[^"]*min-width:9/.test(html)
+      && !/id="mcpTransportSel"[^>]*style="[^"]*width:auto/.test(html),
+      '下拉框是固定窄宽度（不被 min-width:96px 撑开、也不随选项抖动）');
+    check(/<button class="ble-modal-btn" id="mcpReadOnlyBtn"[^>]*>只读模式<\/button>/.test(html)
+      && !/textContent = [^;]*只读模式：/.test(html),
+      '只读模式按钮的文案就是「只读模式」（状态不再写进按钮文字，只进 title）');
+    check(!/mcpTransportBothBtn/.test(html) && !/mcpTransportHttpBtn/.test(html)
+      && !/mcpTransportSseBtn/.test(html),
+      '原来那排「传输」三档按钮连渲染代码一起删掉了');
+    check(!/mcpSetTransport/.test(html), '旧函数名 mcpSetTransport 不再被引用（换成了 mcpTransportPicked）');
+    check(!/id="mcpReadOnlyHint"/.test(html) && !/getElementById\('mcpReadOnlyHint'\)/.test(html),
+      '「写操作全被拒（-32007）」那行灰字仍然不存在（连渲染它的死代码一起清掉）');
+    check(!/id="mcpTransportHint"/.test(html) && !/getElementById\('mcpTransportHint'\)/.test(html),
+      '传输的说明灰字仍然不存在（"两条都在跑…"不占界面行数）');
+    check(/ro\.setAttribute\('data-mcp-tip', _mcpReadOnlyBusy \? '处理中…'/.test(html)
+      && /错误码 -32007/.test(html),
+      '只读模式的解释仍在悬停说明里（灰字删了，但含义查得到；说明走 data-mcp-tip，**不写 title**）');
+
+    // ---- 顶栏说明：不再用原生 title，改成"常驻说明区 + 停顿一下才显示 + 能换行" ----
+    // 用户两张截图：原生 title ①鼠标一扫就弹、划过一排按钮一闪一闪；②一行铺开横跨整个窗口。
+    ['mcpToggleBtn', 'mcpTransportSel', 'mcpReadOnlyBtn', 'mcpResetTokenBtn'].forEach((id) => {
+      const withTitle = new RegExp('id="' + id + '"[^>]*\\stitle=');
+      check(!withTitle.test(html), '「' + id + '」不再用原生 title（说明走 data-mcp-tip）');
+    });
+    check(!/ro\.title =/.test(html) && !/tg\.title =/.test(html),
+      'JS 里也不再把说明写回 title（否则原生 tooltip 又会冒出来一闪一闪）');
+    // 控件注册表的 label 取的是 `title || aria-label`（mcpMakeEntry）—— title 删了必须补 aria-label，
+    // 否则 AI 在 ui_list 里看到的控件名会退化成元素 id
+    check(/aria-label="传输形态"/.test(html) && /aria-label="只读模式"/.test(html)
+      && /aria-label="重置令牌"/.test(html) && /aria-label="启用\/关闭 MCP 服务器"/.test(html),
+      '四个控件都有简短的 aria-label（注册表的 label 不会退化成 id）');
+    check(/id="mcpTipRow"/.test(html) && /white-space:pre-line/.test(html)
+      && /\.mcp-tip \{ min-height:\d+px/.test(html),
+      '弹窗里有常驻说明区：min-height 占位（不跳动）+ pre-line（长说明能换行）');
+  }
+
+  // ---- 行为：说明区的延迟与清空（假 DOM 真跑 mcpTipBind + 假定时器手动推进）----
+  {
+    const timers = [];
+    const sbTip = {
+      console,
+      document: { getElementById: (id) => mcpEl(id) },
+      setTimeout(fn, ms) { timers.push({ fn, ms }); return timers.length; },
+      clearTimeout() { timers.length = 0; },
+    };
+    mcpEl('mcpToggleBtn').setAttribute('data-mcp-tip', '开启 MCP 服务器 —— 只监听本机 127.0.0.1。');
+    mcpEl('mcpTransportSel').setAttribute('data-mcp-tip', '传输形态：\n· HTTP …\n· SSE …\n· All …');
+    vm.createContext(sbTip);
+    vm.runInContext([
+      'var _mcpTipTimer = null;',
+      'var _mcpTipBound = false;',
+      extractFunction('mcpTipBind'),
+    ].join('\n'), sbTip);
+
+    sbTip.mcpTipBind();
+    check(mcpEl('mcpToggleBtn').handlers.mouseenter && mcpEl('mcpToggleBtn').handlers.mouseenter.length === 1,
+      '顶栏控件绑上了悬停事件', JSON.stringify(Object.keys(mcpEl('mcpToggleBtn').handlers || {})));
+    sbTip.mcpTipBind();
+    check(mcpEl('mcpToggleBtn').handlers.mouseenter.length === 1,
+      '重复调用只绑一次（弹窗是常驻 DOM，绑两次会挂一堆计时器）');
+
+    // 鼠标"路过"：到点之前什么都不显示 —— 这就是"不闪"的关键
+    mcpEl('mcpToggleBtn').fire('mouseenter');
+    check(mcpEl('mcpTipRow').textContent === '', '**还没到延迟时间，说明区是空的**（鼠标扫过不会闪）');
+    check(timers.length === 1 && timers[0].ms >= 300,
+      '延迟 ≥300ms 才显示', timers.length ? String(timers[0].ms) : '(没排定时器)');
+
+    // 停住了：到点显示
+    timers[0].fn();
+    check(mcpEl('mcpTipRow').textContent.indexOf('开启 MCP 服务器') >= 0, '到点后显示说明',
+      mcpEl('mcpTipRow').textContent);
+    check(/show/.test(mcpEl('mcpTipRow').className), '显示时挂上 show（有底色/边框）',
+      mcpEl('mcpTipRow').className);
+
+    // 移开就清空
+    mcpEl('mcpToggleBtn').fire('mouseleave');
+    check(mcpEl('mcpTipRow').textContent === '' && !/show/.test(mcpEl('mcpTipRow').className),
+      '移开就清空、去掉 show', mcpEl('mcpTipRow').className);
+
+    // 长说明必须带换行符（靠 CSS 的 pre-line 显示成多行，而不是一行铺开）
+    const longTip = String(mcpEl('mcpTransportSel').getAttribute('data-mcp-tip') || '');
+    check(longTip.indexOf('\n') > 0, '下拉框的长说明里带换行（否则又一行铺到窗口边上）');
+
+    // 键盘 Tab 过去也要能看到（无障碍），且不延迟 —— 那是明确的意图
+    mcpEl('mcpTransportSel').fire('focus');
+    check(mcpEl('mcpTipRow').textContent === longTip, 'focus 直接显示（不等延迟）',
+      mcpEl('mcpTipRow').textContent.slice(0, 40));
+    mcpEl('mcpTransportSel').fire('blur');
+    check(mcpEl('mcpTipRow').textContent === '', 'blur 后清空');
+  }
+
+  // ---- WSL 分栏：**同一套** serial_* 靠 pane 区分；两种分栏的"数据源"不同，不是两套工具 ----
+  check(/fn pane_is_wsl\(/.test(mcpSrc) && /if !pane_is_wsl\(args\)/.test(mcpSrc),
+    'serial_open 的前置检查按 pane 分流：WSL 分栏不再被 Windows 端口数卡住（usbipd bind 之后那正是常态）');
+  check(/fn pane_is_wsl_matches_only_wsl_panes/.test(mcpSrc),
+    'pane_is_wsl 的判据有单测（判错哪个方向都有代价）');
+  check(/if \(m\.isWsl\) refreshWslMonPorts\(mid\);/.test(html)
+    && /else MCP_SERIAL_FUNCS\.refreshPorts\(mid\);/.test(html),
+    'refreshPorts 按 isWsl 分流（这个坑在"设备变更"那条路径上已经踩过一次）');
+  // 不为 WSL 单开第二套工具：工具名里不该出现 wsl_serial_* 之类
+  check(!/wsl_serial_(open|close|send|list|select)/.test(mcpSrc),
+    '没有为 WSL 单开一套串口工具（功能一样，只靠 pane 区分分栏）');
+
+  // ---- 行为：写动作切页（顺带建出懒创建的分栏）、只读不切、refreshPorts 走对数据源 ----
+  {
+    const calls = [];
+    const revealed = [];
+    const sbSer = {
+      console,
+      // **冷启动**：monitors 里只有 main —— WSL 分栏要等面板第一次打开
+      // （`openWslMapping()` → `initWslMonitor('wsl')`）才存在。真机上"配置里有 wsl、运行时没有"
+      // 就是这个状态，也是 `serial_get_state{pane:"wsl"}` 一度回"没有这个分栏"的原因。
+      monitors: { main: { isConnected: false } },
+      MCP_SERIAL_FUNCS: { refreshPorts: (mid) => calls.push('windows:' + mid) },
+      refreshWslMonPorts: (mid) => calls.push('wsl:' + mid),
+      document: { getElementById: () => null },
+      // 真的 mcpRevealPaneFor 走"点那颗入口按钮 → openWslMapping()"，而 openWslMapping 第一次
+      // 会 `initWslMonitor('wsl')` 把分栏建出来 —— **这正是"写操作冷启动也能成功"的机制**，
+      // 所以假环境必须照样把分栏建出来，否则测的就不是这个机制。
+      mcpRevealPaneFor: (panel) => {
+        revealed.push(panel);
+        if (panel === 'wsl' && !sbSer.monitors.wsl) sbSer.monitors.wsl = { isWsl: true, isConnected: false };
+        return true;
+      },
+    };
+    vm.createContext(sbSer);
+    vm.runInContext([
+      extractVarObject('MCP_SERIAL_WRITE_ACTIONS'),
+      extractFunction('mcpSerialPanes'),
+      extractFunction('mcpSerialResolvePane'),
+      extractFunction('mcpPanelOfMid'),
+      extractFunction('mcpSerialRevealForPane'),
+      extractFunction('mcpSerialMissingPaneHint'),
+      extractFunction('mcpSerialOp'),
+    ].join('\n'), sbSer);
+
+    // ① 写操作：先切页（用户看得见 AI 在动哪一栏），并顺带把懒创建的分栏建出来
+    const coldWrite = sbSer.mcpSerialOp({ action: 'refreshPorts', pane: 'wsl' });
+    check(coldWrite.ok === true && revealed.join(',') === 'wsl',
+      '写操作先把该分栏的面板切到前台（否则"AI 在操控 WSL 分栏、界面却停在别处"= 看不见 AI 在干什么）',
+      JSON.stringify({ ok: coldWrite.ok, revealed, panes: Object.keys(sbSer.monitors) }));
+    check(calls.join(',') === 'wsl:wsl',
+      '切页顺带建出了懒创建的 WSL 分栏 —— 所以冷启动（面板从没打开过）时写操作也能直接成功，'
+      + '不用 AI 先手动开面板', calls.join(','));
+    sbSer.mcpSerialOp({ action: 'refreshPorts', pane: 'main' });
+    check(calls.join(',') === 'wsl:wsl,windows:main',
+      'Windows 分栏刷新端口仍走 list_ports', calls.join(','));
+    const panes = sbSer.mcpSerialOp({ action: 'panes' });
+    check(panes.ok && panes.value.panes.indexOf('wsl') >= 0 && panes.value.panes.indexOf('main') >= 0,
+      'WSL 分栏出现在 pane 列表里（同一个工具就能寻到它）', JSON.stringify(panes));
+
+    // ② 只读工具**绝不**切页：客户端一 poll 就把用户从别的页面拽走，比"看不见"更烦人
+    //    （与 mcpBleOp 顶部那条纪律一致）
+    revealed.length = 0;
+    sbSer.mcpSerialOp({ action: 'panes' });
+    sbSer.mcpSerialOp({ action: 'state', pane: 'wsl-x9' });
+    check(revealed.length === 0, '只读动作一个页面都不切（panes / state 都不切）', String(revealed.length));
+
+    // ③ 分栏"还没建出来"时要给可操作的出路，而不是只说"没有这个分栏"
+    const coldRead = sbSer.mcpSerialOp({ action: 'state', pane: 'wsl-x9' });
+    check(!coldRead.ok && coldRead.notFound === true && /global\.ui\.wslToggleBtn/.test(coldRead.error)
+      && /写操作会自动打开它/.test(coldRead.error),
+      '只读碰到"懒创建的分栏还不存在"时，报错给出下一步（并说明写操作不需要手动开面板）',
+      coldRead.error);
+    const typo = sbSer.mcpSerialOp({ action: 'state', pane: 'com9' });
+    check(!/懒创建/.test(typo.error) && /没有这个分栏: com9/.test(typo.error),
+      '名字真的写错时不套那段"懒创建"提示（提示只在该出现时出现，否则等于噪音）', typo.error);
+    const extraPane = sbSer.mcpSerialOp({ action: 'state', pane: 'extra-3' });
+    check(/addMonitorBtn/.test(extraPane.error),
+      '额外监视器还没创建时指向那颗"加监视器"按钮', extraPane.error);
+
+    // ④ 跨端：protocol.rs 发给 serial 面板的**每个** action 都要被分成写/读两类 ——
+    //    否则以后加一个写动作会**静默地不切页**（两边各自的测试都绿，只有用户觉得"看不见 AI 在干啥"）。
+    const sentActions = new Set();
+    for (const m of mcpSrc.matchAll(/serial_call\(core, "(\w+)"/g)) sentActions.add(m[1]);
+    for (const m of mcpSrc.matchAll(/"action": "(quickRun|quickList|setSendAs)"/g)) sentActions.add(m[1]);
+    sentActions.add('refreshPorts');   // 分派里真有这个分支（界面那颗"刷新端口"按钮走自己的 onclick）
+    const writeTable = extractVarObject('MCP_SERIAL_WRITE_ACTIONS');
+    const readActions = ['state', 'history', 'quickList', 'panes'];
+    const unclassified = [...sentActions].filter(
+      (a) => !new RegExp('\\b' + a + ': true').test(writeTable) && readActions.indexOf(a) < 0);
+    check(sentActions.size >= 12 && unclassified.length === 0,
+      'protocol.rs 发出的每个 serial action 都归了类（写=切页 / 读=不切），没有漏网的',
+      '未分类: [' + unclassified.join(',') + ']  共 ' + sentActions.size + ' 个 action');
   }
 
   console.log('\n【MCP 控件注册表与界面桥（S4 / S5）】');
@@ -2387,27 +2784,66 @@ console.log('preview ->', out);
   const themeSwitch = mcpFakeEl('span', { id: 'themeSwitch', onclick: 'toggleTheme()' });
   const noIdBtn = mcpFakeEl('button', { onclick: 'clearLog("main")' });
   const nativeSel = mcpFakeEl('select', { id: 'extra-1-viewMode' });
+  // WSL 端口映射设备区：设备行是**动态 innerHTML** 出来的，行里的「映射」复选框靠
+  // `wslMap-<busid>` 这样的稳定 id 才在注册表里"有名有姓"（此前只有 input_<全局序号>）。
+  const wslPane = mcpFakeEl('div', { id: 'wsl-pane' });
+  const wslMap = mcpFakeEl('input', {
+    id: 'wslMap-2-1', type: 'checkbox', 'data-wsl-busid': '2-1',
+    'aria-label': '映射到 WSL：COM7（USB-SERIAL CH340）（busid 2-1）',
+  });
+  wslPane.appendChild(wslMap);
+  const wslDeviceList = mcpFakeEl('div', { id: 'main-wslDeviceList' });
+  // WSL 分栏的端口下拉：`portOptions` 读的就是"下拉里那一份"（与下拉本身同一个真源）
+  const wslPortDrop = mcpFakeEl('div', { id: 'wsl-portDrop' });
+  const wslOptA = mcpFakeEl('div', { class: 'sel-opt', 'data-val': '/dev/ttyUSB0' });
+  wslOptA.textContent = '/dev/ttyUSB0(CH340)';
+  const wslOptB = mcpFakeEl('div', { class: 'sel-opt port-in-use', 'data-val': '/dev/ttyACM0' });
+  wslOptB.textContent = '/dev/ttyACM0 [占用中]';
+  wslPortDrop._opts = [wslOptA, wslOptB];
   [portSel, btnStart, baud, chk, iBtn].forEach((e) => pane.appendChild(e));
   [themeSwitch, noIdBtn].forEach((e) => globalBar.appendChild(e));
-  const mcpNodes = [portSel, btnStart, baud, chk, iBtn, themeSwitch, noIdBtn, nativeSel];
+  // 额外监视器的控件在真机上当然也在树里 —— 不挂上去的话，"元素还在不在 DOM 里"那条探测
+  // 会因为一个假元素永远判 stale，测试就变成了"每次都重建"（等于没测）。
+  pane.appendChild(nativeSel);
+  const mcpNodes = [portSel, btnStart, baud, chk, iBtn, themeSwitch, noIdBtn, nativeSel, wslMap];
 
   const sbReg = {
     console,
-    document: { querySelectorAll: () => mcpNodes, getElementById: () => null },
+    document: {
+      querySelectorAll: () => mcpNodes,
+      getElementById: (id) => ({ 'main-wslDeviceList': wslDeviceList, 'wsl-portDrop': wslPortDrop }[id] || null),
+      // 真 DOM 有这个（注册表的"元素还在不在"探测要用）；上溯到三个假根之一即算在树里
+      contains: (el) => {
+        let n = el;
+        while (n) {
+          if (n === pane || n === globalBar || n === wslPane) return true;
+          n = n.parentNode;
+        }
+        return false;
+      },
+    },
     scheduleConfigSave() {},
     invoke() { return Promise.resolve({}); },
     showToast() {},
+    // `mcpEnsureRegistry` 重建后会 `mcpReportRegistry()`（去抖 300ms）—— 假环境里给个空实现，
+    // 否则"注册表重建"这条新路径一跑到就 ReferenceError（真机上它是 Tauri 的定时器）。
+    setTimeout() { return 0; },
   };
   vm.createContext(sbReg);
   vm.runInContext([
     "var MCP_REGISTRY = {}; var MCP_REGISTRY_LIST = []; var _mcpRegistrySig = -1; var _mcpUiOrigin = 0;",
+    "var _mcpReportTimer = null; var _mcpRegistryReported = '';",
+    "var _wslDevices = []; var _wslBusy = {}; var _wslRunning = false; var _wslTargetDist = '';",
     extractVarObject('MCP_GROUP_BY_FIELD'),
     /var MCP_SELECTOR = '[^']+';/.exec(html)[0],
     ...['mcpSlug', 'mcpPanelOfMid', 'mcpPanelOfNode', 'mcpGroupOfField', 'mcpJoinPath',
         'mcpKindOf', 'mcpReadEl', '_mcpDispatch', '_mcpFindOption', 'mcpWriteEl',
         'mcpElEnabled', 'mcpDisabledReason', 'mcpEntryFor', 'mcpBuildRegistry',
-        'mcpEnsureRegistry', 'mcpInputSchemaFor', 'mcpEntryPublic', 'mcpHandleUiCmd',
-        'mcpRevealPaneFor', 'mcpNotifyState'].map(extractFunction),
+        'mcpEnsureRegistry', 'mcpReportRegistry', 'mcpInputSchemaFor', 'mcpEntryPublic', 'mcpHandleUiCmd',
+        'mcpRevealPaneFor', 'mcpNotifyState',
+        // WSL 设备表那一组（ui_get_state{section:"wslDevices"} 与映射回执都靠它们）
+        'mcpWslDeviceByBusid', 'mcpWslControlPath', 'mcpWslDevicesState', 'mcpWslMapOutcome',
+        'mcpSerialPortOptions'].map(extractFunction),
   ].join('\n'), sbReg);
 
   // ---- 纯函数：路径派生 ----
@@ -2461,6 +2897,72 @@ console.log('preview ->', out);
   check(!!sbReg.MCP_REGISTRY['serial.conn.viewMode'], 'extra-N 是串口监视器 → serial.conn.viewMode');
   const uniq = Object.keys(sbReg.MCP_REGISTRY).length;
   check(uniq === mcpNodes.length, '路径唯一（撞了就加序号）', uniq);
+
+  // ---- WSL 设备行：控件得"认得出是哪台设备"，AI 拿到的路径得"点得中" ----
+  // 背景：设备行是动态 innerHTML，行里的「映射」复选框原本连 id 都没有 → 只能落到
+  // "input_<全局序号>" 的兜底名字，既认不出设备、序号还会随任何 DOM 变化而漂移。
+  check(!!sbReg.MCP_REGISTRY['wsl.ui.wslMap_2_1'],
+    '设备行的「映射」复选框有稳定路径（由 busid 决定，不是 input_<全局序号>）');
+  check(/COM7/.test(sbReg.MCP_REGISTRY['wsl.ui.wslMap_2_1'].label),
+    '它的 label 带设备身份（COM 名）—— ui_list 才认得出哪一行是哪台设备',
+    sbReg.MCP_REGISTRY['wsl.ui.wslMap_2_1'].label);
+  // 路径规则必须只有一处：mcpWslControlPath 算出来的要和注册表里的**完全一致**，
+  // 否则 `ui_get_state{section:"wslDevices"}` 给 AI 的 mapControlPath 是个点不中的地址。
+  check(sbReg.mcpWslControlPath('2-1', 'map') === 'wsl.ui.wslMap_2_1'
+    && sbReg.MCP_REGISTRY[sbReg.mcpWslControlPath('2-1', 'map')] !== undefined,
+    'mcpWslControlPath 与注册表路径一致（AI 直接用 mapControlPath，不用自己猜 slug 规则）',
+    sbReg.mcpWslControlPath('2-1', 'map'));
+
+  // 设备表本身：COM 名、状态、以及"可直接交给 ui_set 的路径"三样都得在
+  sbReg._wslRunning = true;
+  sbReg._wslDevices = [
+    { busid: '2-1', port: 'COM7', name: 'USB-SERIAL CH340', vidpid: '1A86:7523', hasCom: true, status: 'unmapped' },
+    { busid: '3-4', port: '-', name: 'CP2102', vidpid: '10C4:EA60', hasCom: false, status: 'mapped', wslPath: '/dev/ttyUSB0' },
+  ];
+  const wslState = sbReg.mcpWslDevicesState();
+  check(wslState.count === 2 && wslState.mapped === 1 && wslState.devices[0].port === 'COM7',
+    'wslDevices 报出 COM 名与已映射台数（用户嘴里的"把 COM7 映射到 WSL"就靠它对上号）',
+    JSON.stringify(wslState.devices[0]));
+  check(wslState.devices[1].mapControlPath === 'wsl.ui.wslMap_3_4'
+    && wslState.devices[1].wslPath === '/dev/ttyUSB0',
+    '每条设备都带 mapControlPath 与 WSL 路径（AI 不用在 busid 和控件路径之间做翻译）',
+    JSON.stringify(wslState.devices[1]));
+  // 面板是懒初始化的：没打开过时设备表为空，必须说清是"还没加载"而不是"没有设备"
+  check(wslState.panelOpened === true && wslState.note === null,
+    '设备列表容器在（面板打开过）→ 不再提示"先打开面板"');
+  sbReg.document.getElementById = () => null;
+  check(/面板还没打开过/.test(sbReg.mcpWslDevicesState().note),
+    '面板没打开过时要说"还没加载"，不能让 AI 以为这台机器没有 USB 设备',
+    String(sbReg.mcpWslDevicesState().note));
+  sbReg.document.getElementById = (id) => ({ 'main-wslDeviceList': wslDeviceList, 'wsl-portDrop': wslPortDrop }[id] || null);
+
+  // ---- 假成功防线：点了之后"到底跑起来没有"，只能看 _wslBusy ----
+  // `toggleWslMapping` 在**第一个 await 之前**就置 busy，所以点击返回的同一刻就能判定；
+  // 因此不需要等待/轮询，也就不会去撞界面桥的 5s 预算（等过头 = -32004 假失败）。
+  sbReg._wslBusy = {};
+  const mapNotStarted = sbReg.mcpWslMapOutcome('2-1', true);
+  check(mapNotStarted.settled === true && mapNotStarted.alreadyInTargetState === false
+    && !/已发起/.test(mapNotStarted.note),
+    '没跑起来就如实说"没跑起来"，不谎报成功', JSON.stringify(mapNotStarted));
+  sbReg._wslBusy = { '2-1': true };
+  const mapInFlight = sbReg.mcpWslMapOutcome('2-1', true);
+  check(mapInFlight.settled === false && mapInFlight.inFlight === true && /不要重试/.test(mapInFlight.note),
+    '真在跑 → settled=false + 明确"不要重试"（映射几十秒，还可能卡在授权框上等用户点）',
+    JSON.stringify(mapInFlight));
+  const mapStale = sbReg.mcpWslMapOutcome('9-9', true);
+  check(mapStale.stale === true && /不在当前设备表/.test(mapStale.note),
+    '拿过期 busid 操作要能自解释（设备表每 5 秒刷新一次）', JSON.stringify(mapStale));
+  sbReg._wslBusy = {};
+
+  // ---- portOptions：读的就是该分栏下拉里那一份（WSL 是 /dev 路径，Windows 是 COM 名）----
+  const portOpts = sbReg.mcpSerialPortOptions('wsl');
+  check(portOpts.length === 2 && portOpts[0].value === '/dev/ttyUSB0'
+    && portOpts[0].label === '/dev/ttyUSB0(CH340)' && portOpts[0].inUse === false
+    && portOpts[1].inUse === true,
+    'portOptions 从 <mid>-portDrop 的 .sel-opt[data-val] 读，并标出被占用的端口',
+    JSON.stringify(portOpts));
+  check(sbReg.mcpSerialPortOptions('main').length === 0,
+    '没有对应下拉时回空数组（不是抛错），免得读状态这条路被带崩');
   check(portSel.getAttribute('data-mcp') === 'serial.conn.portSelect',
     'data-mcp 属性已注入（这是唯一锚点）', portSel.getAttribute('data-mcp'));
   const noIdPath = noIdBtn.getAttribute('data-mcp');
@@ -2546,6 +3048,62 @@ console.log('preview ->', out);
     '后端 ack 侧确实有这两个字段，且与前端字段名一致');
 
   check(sbReg.mcpHandleUiCmd('bogus', {}).ok === false, '未知 ui 操作明确失败');
+
+  // ---- innerHTML 重画（节点数不变）也必须让注册表失效 ----
+  // WSL 设备表每 5 秒整棵重画一次，设备个数不变时**节点总数恰好一样** ——
+  // 只比数量的旧实现会把一批已脱离 DOM 的旧元素留在注册表里：它们照样 enabled()、
+  // 照样能 click()，于是 ui_set 点的是空气却回 ok:true（行内 onchange 里还可能带着旧下标，
+  // 去操作**另一台设备**）。这里模拟"换个新元素顶上、数量不变"。
+  {
+    const beforeRebuild = sbReg.MCP_REGISTRY['serial.conn.portSelect'].el;
+    portSel.parentNode = null;                       // 旧元素脱离 DOM
+    mcpNodes[0] = mcpFakeEl('div', { id: 'main-portSelect', class: 'sel', 'data-val': 'COM1' });
+    sbReg.mcpEnsureRegistry(false);
+    check(sbReg.MCP_REGISTRY['serial.conn.portSelect'].el !== beforeRebuild
+      && sbReg.MCP_REGISTRY['serial.conn.portSelect'].el === mcpNodes[0],
+      '节点数没变但元素换过（面板 innerHTML 重画）→ 注册表必须重建，'
+      + '否则 ui_set 点的是已脱离 DOM 的旧元素却回 ok:true');
+    // 反方向：元素都还在树里时**不该**无谓重建（每次都重建 = 每次都重报一遍 ctl_* 注册表）。
+    // 用"条目对象换没换"来判：重建会为每个元素造一个新的 entry 对象。
+    mcpNodes[0].parentNode = pane;                   // 新元素也在树里（真机就是这样）
+    const entryBefore = sbReg.MCP_REGISTRY['wsl.ui.wslMap_2_1'];
+    sbReg.mcpEnsureRegistry(false);
+    check(sbReg.MCP_REGISTRY['wsl.ui.wslMap_2_1'] === entryBefore,
+      '元素都在树里、数量也没变 → 不重建（entry 对象都不换）');
+  }
+
+  // ---- 跨端：ui_get_state 的区段清单（Rust enum ↔ 前端分支 ↔ 报错提示）----
+  // 少写一边的表现是**静默**的：照描述传 section:"wslDevices"，前端回一句"没有这个区段"，
+  // 而两端各自的单测都是绿的（与 2026-09 那次 notFound 丢字段同源）。
+  check(/sec === 'wslDevices'/.test(html),
+    '前端 ui_get_state 真有 wslDevices 分支（Rust 的 enum 里有它）');
+  check(/"enum": \["serial", "wsl", "ble", "bleDevices", "wslDevices", "theme", "window", "monitors"\]/.test(mcpSrc),
+    'Rust 侧 section 的 enum 与前端分支对得上（多一个少一个都会静默失败）');
+  check(/description[\s\S]{0,600}?mapControlPath/.test(mcpSrc)
+    || /mapControlPath[\s\S]{0,600}?description/.test(mcpSrc),
+    'Rust 的 section 描述里点出了 mapControlPath（AI 靠这一句才知道控件路径能从哪拿）');
+
+  // ---- 映射那条链路的源码形状 ----
+  // 按 busid 寻址（下标会随 innerHTML 重画过期 → 会去操作另一台设备）
+  check(/onchange="toggleWslMapping\(\\'' \+ jsBusid \+ '\\', this\.checked\)"/.test(html),
+    '「映射」复选框按 busid 调 toggleWslMapping（不再传下标）');
+  check(!/toggleWslMapping\(\\'' \+ mid \+ '\\', ' \+ idx/.test(html),
+    '旧的 (mid, idx, checked) 调用已经删掉');
+  check(/async function toggleWslMapping\(busid, checked\)/.test(html),
+    'toggleWslMapping 的签名就是 (busid, checked)');
+  check(/var device = mcpWslDeviceByBusid\(busid\);/.test(html),
+    '函数体内按 busid 取设备（唯一真源 _wslDevices）');
+  check(/if \(mapBusid\) itemRes\.mapRequest = mcpWslMapOutcome\(mapBusid, after\);/.test(html),
+    '界面桥把 mapRequest 挂进回执（同步回执只能说"发起了"，不能说"映射好了"）');
+  check(/id="wslMap-' \+ safeBusid \+ '" data-wsl-busid="' \+ safeBusid \+ '"/.test(html),
+    '设备行给「映射」复选框写了 id 与 data-wsl-busid（前者给路径，后者给回执判据）');
+  check(/id="wslAutoMap-' \+ safeBusid \+ '"/.test(html),
+    '「自动」开关同样有稳定 id（按 busid 而不是 VID:PID —— 同型号设备会撞 id）');
+  check(/id="wslRow-' \+ safeBusid \+ '"/.test(html),
+    '设备行本身也有稳定 id（否则它在注册表里只是 div_<全局序号>）');
+  check(/aria-label="' \+ safeMapLabel \+ '"/.test(html) && /aria-label="' \+ safeAutoLabel \+ '"/.test(html)
+    && /aria-label="' \+ safeRowLabel \+ '"/.test(html),
+    '三个控件都用 aria-label 承载身份（注册表 label 读 title || aria-label）');
 
   console.log('\n【MCP 日志中心（S7）】');
 
@@ -2827,8 +3385,13 @@ console.log('preview ->', out);
   check(/pub async fn handle_raw_guarded\(/.test(mcpSrc)
     && /futures::FutureExt::catch_unwind\(fut\)/.test(mcpSrc),
     '分派入口有 panic 兜底：panic → JSON-RPC 错误 + 上报，而不是把连接静默打死');
-  check(/handle_raw_guarded\(core, &text, &sid\)/.test(mcpSrc),
-    '传输层走的是带兜底的入口（别再退回不兜底的那个）');
+  {
+    // 传输层有**两条**入口（/messages 与 POST /mcp），两个都必须走带兜底的那个 ——
+    // 只守一处的话，"新加的入口忘了套 catch_unwind"会静默退化（panic 打死连接、无上报）
+    const guardedCalls = (mcpSrc.match(/handle_raw_guarded\(core, &text, &sid\)/g) || []).length;
+    check(guardedCalls === 2,
+      '两个传输都走带 panic 兜底的入口（/messages 与 POST /mcp，一个都不能漏）', guardedCalls);
+  }
   check(/E_INTERNAL, format!\("服务器内部错误（已上报）/.test(mcpSrc),
     'panic 转成的错误里告诉调用方"已上报"（否则用户不知道该不该反馈）');
   // 会话回收：客户端断开必须**立刻**回收，不能干等 30 分钟空闲超时 ——
@@ -2836,9 +3399,10 @@ console.log('preview ->', out);
   // （官方 Python SDK 一致性检查在真机上抓到的真问题，见 §17 最新记录）
   check(/struct SseBody/.test(mcpSrc) && /impl Drop for SseBody/.test(mcpSrc),
     'SSE 响应体带 Drop 守卫：流被丢弃（= 客户端断开）时回收会话');
-  check(/fn sse_response\(core: Arc<McpCore>, sid: String/.test(mcpSrc),
+  check(/fn sse_response\([\s\S]{0,140}?core: Arc<McpCore>[\s\S]{0,80}?sid: String/.test(mcpSrc),
     'sse_response 拿得到 core 与 sid（否则守卫无从回收）');
-  check(/sse_response\(core\.clone\(\), id\.clone\(\), rx\)/.test(mcpSrc), '调用点把两个都传进去了');
+  check(/sse_response\(core\.clone\(\), sid\.to_string\(\), rx, keep_session_on_drop\)/.test(mcpSrc),
+    '调用点把 keep_session 也传进去了（GET /mcp 的流断开不能删会话）');
   check(/fn session_is_reclaimed_as_soon_as_the_client_disconnects/.test(mcpSrc),
     '有"连断 6 次、每次都要立刻回收"的回归测试');
 
@@ -2865,8 +3429,12 @@ console.log('preview ->', out);
     check(missing.length === 0, '工具参考文档 doc/MCP_TOOLS.md 列出了全部内置工具', '缺：' + missing.join(','));
     check((toolsDoc.match(/^#### `/gm) || []).length === srcTools.length,
       '文档里的工具小节数 == 工具数（没有多余/重复）');
-    check(/只有 SSE/.test(toolsDoc) && /-32602/.test(toolsDoc),
-      '文档写清了传输（只有 SSE）与错误码语义');
+    check(/POST \/mcp/.test(toolsDoc) && /Streamable HTTP/.test(toolsDoc) && /遗留 SSE/.test(toolsDoc)
+      && /-32602/.test(toolsDoc),
+      '文档写清了**两种**传输（Streamable HTTP 的 /mcp + 遗留 SSE）与错误码语义');
+    // 用户文档同样要跟上：只写 SSE 会让人以为新版客户端连不上是必然的
+    check(/Streamable HTTP/.test(mcpDoc) && /--transport http/.test(mcpDoc) && /\/mcp\?token=/.test(mcpDoc),
+      'doc/MCP.md 也写了 Streamable HTTP 的配置与安装器的 --transport http');
 
     // ---- 跨边界：**后端会发的每个 op/action，前端都必须有分支** ----
     // 这类不一致最阴：后端发出去了、前端回一句"未知的 serial 操作"，工具就静默失败，
@@ -2896,8 +3464,9 @@ console.log('preview ->', out);
     check(/pub const SERVER_INSTRUCTIONS/.test(mcpProd) && /"instructions": SERVER_INSTRUCTIONS/.test(mcpProd),
       'initialize 下发工作指引（Agent 靠它一次做对，而不是靠失败去猜）');
     check(/fn no_serial_port_hint\(/.test(mcpProd)
-      && /"serial_open" => \{[\s\S]{0,260}?no_serial_port_hint/.test(mcpSrc),
-      '没有串口设备时 serial_open 立刻失败，不去白等 6 秒轮询超时');
+      && /"serial_open" => \{[\s\S]{0,900}?if !pane_is_wsl\(args\) \{[\s\S]{0,300}?no_serial_port_hint/
+        .test(mcpSrc),
+      '没有串口设备时 serial_open 立刻失败（不去白等 6 秒），且这个检查**只在非 WSL 分栏**做');
     check(/"id": req_id/.test(mcpProd) && !/"id": serde_json::Value::Null/.test(mcpProd),
       '限流回包带上本次请求的 id（用 null 的话客户端配不上号、那次调用会挂到超时）');
 
@@ -2917,9 +3486,9 @@ console.log('preview ->', out);
       '弹窗里有只读模式开关（否则打开后 AI 关不掉、用户也只能手改配置文件）');
     check(/function mcpToggleReadOnly\(\)[\s\S]{0,400}?invoke\('mcp_set_read_only'/.test(html),
       '开关调用 mcp_set_read_only');
-    check(/ro\.textContent = _mcpReadOnlyBusy \?/.test(html)
-      && /on \? '只读模式：开（AI 只能看）' : '只读模式：关'/.test(html),
-      '开关文案跟着 readOnly 状态更新（在途时另说）');
+    check(/ro\.textContent = '只读模式';/.test(html)
+      && /on \? '只读模式：开 —— AI 只能看/.test(html) && /'只读模式：关 —— /.test(html),
+      '按钮文案**固定**「只读模式」，开关状态只写在悬停说明里（用户 2026-09-16 要求）');
     // 禁用态**只由在途标志决定**，且要在 render 里解禁：写死 `btn.disabled = true` 而没人放回来，
     // 就是"只读模式开了之后无法关闭"（那颗按钮是关它的唯一入口）。行为断言在上面。
     check(/var _mcpReadOnlyBusy = false;/.test(html) && /ro\.disabled = !!_mcpReadOnlyBusy/.test(html),
@@ -3008,9 +3577,12 @@ console.log('preview ->', out);
   check(/if !constant_time_eq\(&given, &core\.token\(\)\) \{[\s\S]{0,120}?unauthorized\(\)[\s\S]{0,120}?status_json_public\(\)/
     .test(mcpSrc), '/status 的未授权分支与授权分支分得很清楚');
   check(/pub fn status_json_public\(/.test(mcpSrc), '有「对外可见」的状态序列化函数');
+  // 两个带 token 的 URL 都要摘掉：**新增传输时最容易漏的就是这里** ——
+  // 只处理 url 的话，streamableUrl 会把完整 token 从 /status 与 mcp_status 一起漏出去
+  check(/\[\(\"url\", \"urlMasked\"\), \(\"streamableUrl\", \"streamableUrlMasked\"\)\]/.test(mcpSrc)
+    && /o\.remove\(full\)/.test(mcpSrc),
+    '对外状态里两条完整 URL 都被换成打码版（url → urlMasked、streamableUrl → streamableUrlMasked）');
   check(/o\.remove\("token"\)/.test(mcpSrc), '对外状态里 token 被摘掉');
-  check(/o\.remove\("url"\)/.test(mcpSrc) && /o\.insert\("urlMasked"\.into\(\)/.test(mcpSrc),
-    '对外状态里完整 url 被换成 urlMasked');
   check(/pub fn mask_url\(url: &str\) -> String/.test(mcpSrc), 'mask_url 在配置模块里（与写盘口径一致）');
   // /healthz 仍然只回 {"ok":true}（唯一免鉴权端点不能变成信息泄露点）
   check(/\(Method::GET, "\/healthz"\) => json_resp\(StatusCode::OK, serde_json::json!\(\{ "ok": true \}\)\)/.test(mcpSrc),
@@ -3109,6 +3681,11 @@ console.log('preview ->', out);
       'main-stopBits': sfx('main-stopBits', { attrs: { 'data-val': '1' }, opts: [opt('1'), opt('2')] }),
       'main-parity': sfx('main-parity', { attrs: { 'data-val': 'none' }, opts: [opt('none'), opt('odd')] }),
       'main-chkDTR': sfx('main-chkDTR', { tag: 'input', attrs: { type: 'checkbox' }, checked: false }),
+      // 端口下拉的**选项**（就是 `portOptions` 读的那一份：真机上 Windows 是 COM 名、
+      // WSL 是 /dev 路径；AI 选端口前先看它，而 serial_list_ports 只有 Windows 的那一份）
+      'main-portDrop': sfx('main-portDrop', {
+        opts: [opt('COM1', 'CH340 (COM1)'), opt('COM3', 'CP2102 (COM3)')],
+      }),
       'main-chkRTS': sfx('main-chkRTS', { tag: 'input', attrs: { type: 'checkbox' }, checked: true }),
       'main-advRow': sfx('main-advRow'),
       'main-sendAsText': sfx('main-sendAsText', { text: '文本' }),
@@ -3155,6 +3732,9 @@ console.log('preview ->', out);
       refreshPorts() { calls.refreshed++; },
       copyOutput() {},
       sendQcmdItem(mid, gid, idx) { calls.qcmd.push([mid, gid, idx]); },
+      // 切页在别处已经专门测过（见上面的"写动作切页"那一段）；这里只要它存在，
+      // 不然每个 write action 都会在这里 ReferenceError。
+      mcpRevealPaneFor() { return false; },
     };
     vm.createContext(sbSer);
     vm.runInContext([
@@ -3162,6 +3742,10 @@ console.log('preview ->', out);
       // 三个映射表是模块级 var（不在函数里），必须单独抠出来注入，否则沙箱里 undefined
       /var MCP_SERIAL_FIELDS = \{[\s\S]*?\n\};/.exec(html)[0],
       /var MCP_SERIAL_TOGGLES = \{[\s\S]*?\n\};/.exec(html)[0],
+      // 写/读动作分类表（`mcpSerialOp` 靠它决定要不要切页）
+      /var MCP_SERIAL_WRITE_ACTIONS = \{[\s\S]*?\n\};/.exec(html)[0],
+      extractFunction('mcpPanelOfMid'), extractFunction('mcpSerialRevealForPane'),
+      extractFunction('mcpSerialMissingPaneHint'),
       /var MCP_SERIAL_FUNCS = \{[\s\S]*?\n\};/.exec(html)[0],
       extractFunction('mcpReadEl'), extractFunction('mcpWriteEl'), extractFunction('_mcpDispatch'),
       extractFunction('_mcpFindOption'), extractFunction('mcpKindOf'),
@@ -3179,7 +3763,7 @@ console.log('preview ->', out);
       extractFunction('mcpSerialPanes'), extractFunction('mcpSerialResolvePane'),
       extractFunction('mcpSerialEl'), extractFunction('mcpSerialOptions'),
       extractFunction('mcpSerialState'), extractFunction('mcpSerialApply'), extractFunction('mcpSerialOp'),
-      extractFunction('mcpSerialLogChannels'),
+      extractFunction('mcpSerialLogChannels'), extractFunction('mcpSerialPortOptions'),
       // mcpSerialOp 的 quick* 分支会调这些面板函数。本节只验证"发出去的 op/参数"与"回执形状"，
       // 所以按最小语义打桩；**真实行为**（改真的落到模型上）由下面侧栏那一节用真函数 + 假 DOM 测，
       // 两节各管一半、不重复。
@@ -3226,6 +3810,15 @@ console.log('preview ->', out);
     check(st.value.isConnected === false && st.value.outputLines === 12 && st.value.historyCount === 2,
       '状态带运行时信息：是否在监控 / 输出行数 / 历史条数');
     check(st.value.autoScroll === true && st.value.lineNum === false, '状态里的开关取自 on class');
+    // 选端口前先看这个分栏能选什么 —— serial_list_ports 只列 Windows 的 COM 口，
+    // 对 WSL 分栏是误导（usbipd bind 之后 Windows 侧本来就没有那个口）
+    check(st.value.portOptions && st.value.portOptions.length === 2
+      && st.value.portOptions[0].value === 'COM1' && st.value.portOptions[0].label === 'CH340 (COM1)'
+      && st.value.portOptions[0].inUse === false,
+      '状态里带出该分栏的 portOptions（与端口下拉读同一份 DOM，不另存状态）',
+      JSON.stringify(st.value.portOptions));
+    check(JSON.stringify(sbSer.mcpSerialPortOptions('wsl')) === '[]',
+      '该分栏还没有端口下拉时回空数组（不抛错）—— 读状态这条链路不该被带崩');
     // 让 AI 知道"收发内容去哪读"：通道名由前端一处定义，serial_get_output 直接读它
     check(st.value.logChannels && st.value.logChannels.rx === 'serial:main:rx'
       && st.value.logChannels.tx === 'serial:main:tx',
@@ -5001,9 +5594,12 @@ console.log('preview ->', out);
         'ui_get_state 的 ble 段：默认仍是精简的前 10 台，但 limit/offset **真的透传**（原来写死 (10,0)）');
       check(/out = mcpBleScanResult\(parseInt\(payload\.limit, 10\), parseInt\(payload\.offset, 10\)\);/.test(html),
         'bleDevices 段同样支持 limit / offset 分页（通用桥也要能一页页翻）');
-      check(/可用：serial \/ wsl \/ ble \/ bleDevices \/ theme/.test(html)
-        && /"bleDevices"/.test(fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8')),
-        '区段写错时的报错与工具 schema 里都列出了 bleDevices（AI 靠它们发现这个入口）');
+      // 两个"运行时设备表"区段都要在**报错提示**与**工具 schema**里同时出现：
+      // 少一边的表现是静默的 —— 照描述传参，前端回一句"没有这个区段"，两端单测却都是绿的。
+      check(/可用：serial \/ wsl \/ ble \/ bleDevices \/ wslDevices \/ theme/.test(html)
+        && /"bleDevices"/.test(fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8'))
+        && /"wslDevices"/.test(fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8')),
+        '区段写错时的报错与工具 schema 里都列出了 bleDevices 与 wslDevices（AI 靠它们发现这两个入口）');
       const protoPaging = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');
       check(/"offset": \{ "type": "number"/.test(protoPaging)
         && /extra\["offset"\] = json!\(off\)/.test(protoPaging)

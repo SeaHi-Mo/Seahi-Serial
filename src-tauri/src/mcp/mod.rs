@@ -139,6 +139,17 @@ impl McpCore {
             .read_only
     }
 
+    /// 当前提供哪种传输（`both` / `http` / `sse`）。
+    ///
+    /// 路由每次请求都读它，所以改这个配置**立即生效**，不需要重启服务器。
+    pub fn transport_mode(&self) -> aiconfig::TransportMode {
+        self.cfg
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .server
+            .transport_mode()
+    }
+
     /// 需要界面的操作都从这里拿 AppHandle（没有就是没有 GUI 上下文）
     pub fn app_handle(&self) -> Option<tauri::AppHandle> {
         self.app.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -231,9 +242,16 @@ impl McpCore {
             .iter()
             .map(|(k, v)| (k.clone(), json!(*v)))
             .collect();
-        // 只有真正在跑时才给 URL：否则界面会展示一个连不上的地址
-        let url = if running && !cfg.server.token.is_empty() {
+        // 只有真正在跑、且**该传输确实被提供**时才给 URL：否则界面会展示一个连不上的地址，
+        // 用户拿着它去配客户端只会得到"连不上"（0.5.8 起传输是三档的，不再是"两个都always 有"）
+        let mode = cfg.server.transport_mode();
+        let url = if running && mode.serves_sse() && !cfg.server.token.is_empty() {
             port.map(|p| aiconfig::sse_url(&cfg.server.host, p, &cfg.server.token))
+        } else {
+            None
+        };
+        let streamable_url = if running && mode.serves_http() && !cfg.server.token.is_empty() {
+            port.map(|p| aiconfig::http_url(&cfg.server.host, p, &cfg.server.token))
         } else {
             None
         };
@@ -243,6 +261,11 @@ impl McpCore {
             "host": cfg.server.host,
             "port": port,
             "url": url,
+            // 传输三档：`both` / `http` / `sse`。界面靠它决定展示哪一块、哪颗按钮是选中的
+            "transport": mode.as_str(),
+            // 派生字段（保留给老客户端/老断言）：等价于"当前是否提供 /mcp"
+            "streamableHttp": mode.serves_http(),
+            "streamableUrl": streamable_url,
             "token": cfg.server.token,
             "tokenMasked": aiconfig::mask_token(&cfg.server.token),
             "sessions": self.sessions.len(),
@@ -302,11 +325,16 @@ impl McpCore {
         let mut v = self.status_json();
         if let Some(o) = v.as_object_mut() {
             o.remove("token");
-            if let Some(u) = o.get("url").and_then(|x| x.as_str()) {
-                let masked = aiconfig::mask_url(u);
-                o.insert("urlMasked".into(), json!(masked));
+            // 两个带 token 的 URL 都要打码。**新增传输时最容易漏的就是这里**：
+            // 只处理 `url` 的话，`streamableUrl` 会把完整 token 从 `/status` 端点
+            // 和 `mcp_status` 工具一起漏出去（而这两个正是"对外"的接口）。
+            for (full, masked_key) in [("url", "urlMasked"), ("streamableUrl", "streamableUrlMasked")] {
+                let masked = o.get(full).and_then(|x| x.as_str()).map(aiconfig::mask_url);
+                if let Some(m) = masked {
+                    o.insert(masked_key.into(), json!(m));
+                }
+                o.remove(full);
             }
-            o.remove("url");
         }
         v
     }
@@ -410,6 +438,33 @@ pub fn apply_config_patch_with(
                             return Err(
                                 "不接受通过工具修改 token；请在界面弹窗里点「重置令牌」".to_string()
                             )
+                        }
+                        // 传输形态（`both` / `http` / `sse`）。**立即生效**（路由每次请求都读配置），
+                        // 所以不置 need_restart。
+                        // ⚠️ 这是"AI 能把自己锁在门外"的一个口子：如果 AI 正通过 `/mcp` 连着而把
+                        // 传输改成 `sse`，它下一发请求就会拿到 404。留着是有意的 —— 与 `enabled`
+                        // 一样，这个工具本来就是拿来改服务器配置的。
+                        "transport" => {
+                            let s = sv.as_str().ok_or_else(|| {
+                                "server.transport 必须是字符串：both / http / sse".to_string()
+                            })?;
+                            let m = aiconfig::TransportMode::parse(s).ok_or_else(|| {
+                                format!("未知的 server.transport: {}（可选 both / http / sse）", s)
+                            })?;
+                            cfg.server.set_transport_mode(m);
+                        }
+                        // 兼容老的布尔写法（`streamableHttp: false` ⇒ 只留 SSE）。
+                        // 文档主推 `transport`，但**老调用方不该因为改名就静默失效**
+                        // （改名的代价必须由我们承担，不是由调用方猜）。
+                        "streamableHttp" => {
+                            let b = sv
+                                .as_bool()
+                                .ok_or_else(|| "server.streamableHttp 必须是布尔".to_string())?;
+                            cfg.server.set_transport_mode(if b {
+                                aiconfig::TransportMode::Both
+                            } else {
+                                aiconfig::TransportMode::Sse
+                            });
                         }
                         other => return Err(format!("不支持的 server 配置项: {}", other)),
                     }
@@ -524,6 +579,8 @@ pub fn config_summary(cfg: &aiconfig::AiConfig) -> Value {
             "enabled": cfg.server.enabled,
             "host": cfg.server.host,
             "port": cfg.server.port,
+            // 传输三档：`both` / `http` / `sse`
+            "transport": cfg.server.transport_mode().as_str(),
             "hasToken": !cfg.server.token.is_empty(),
             "tokenMasked": aiconfig::mask_token(&cfg.server.token),
         },
@@ -603,7 +660,7 @@ pub fn start(core: &Arc<McpCore>, app: Option<&tauri::AppHandle>) -> Result<Valu
         return Ok(core.status_json());
     }
     // 1) 确保 token 存在并落盘（原子写）
-    let (host, port, token) = {
+    let (host, port, token, mode) = {
         let mut cfg = core.cfg.lock().unwrap_or_else(|e| e.into_inner());
         if cfg.server.token.is_empty() {
             cfg.server.token = aiconfig::new_token();
@@ -611,6 +668,8 @@ pub fn start(core: &Arc<McpCore>, app: Option<&tauri::AppHandle>) -> Result<Valu
         let host = cfg.server.host.clone();
         let port = cfg.server.port;
         let token = cfg.server.token.clone();
+        // 传输形态要一起写进端点发现文件：只提供一种时，另一条 URL 会被写成空串
+        let mode = cfg.server.transport_mode();
         let snapshot = cfg.clone();
         drop(cfg);
         // 把当前令牌登记为敏感串：错误上报前会把它抹掉（端点 URL 里就带着它）
@@ -619,7 +678,7 @@ pub fn start(core: &Arc<McpCore>, app: Option<&tauri::AppHandle>) -> Result<Valu
             crate::dbg_log(&format!("mcp: ai-config.json 保存失败: {}", e));
             report::report("config_save_failed", &e);
         }
-        (host, port, token)
+        (host, port, token, mode)
     };
 
     // 停机标志由 serve() 在绑端口前清掉（见其注释）——不在这里重复置位，避免两处口径漂移
@@ -647,8 +706,8 @@ pub fn start(core: &Arc<McpCore>, app: Option<&tauri::AppHandle>) -> Result<Valu
             // 记下 AppHandle：ui_* 工具靠它经前端桥驱动界面
             *core.app.lock().unwrap_or_else(|e| e.into_inner()) = app.cloned();
             core.set_error(None);
-            // 3) 写端点发现文件（npm 安装器/外部工具靠它找到我们）
-            if let Err(e) = aiconfig::write_endpoint(&host, actual, &token) {
+            // 3) 写端点发现文件（npm 安装器/外部工具靠它找到我们；用的是**起服务时**的传输形态）
+            if let Err(e) = aiconfig::write_endpoint(&host, actual, &token, mode) {
                 crate::dbg_log(&format!("mcp: 写端点发现文件失败: {}", e));
                 report::report("endpoint_write_failed", &e);
             }
@@ -812,6 +871,38 @@ pub fn mcp_set_read_only(state: tauri::State<'_, McpState>, enabled: bool) -> Va
     core.status_json()
 }
 
+/// 设置**传输形态**：`both`（两种都提供）/ `http`（只服务 `/mcp`）/ `sse`（只服务遗留 SSE）。
+///
+/// 与 `mcp_set_enabled` 不同，它**不需要重启服务器**：路由每次请求都读配置。
+/// 选 `http` / `sse` 时另一条传输的端点会立刻变成 404 —— 这是**用户主动选择**的后果，
+/// 不是升级带来的副作用（迁移规则见 `aiconfig::ServerCfg::transport_mode`）。
+#[tauri::command]
+pub fn mcp_set_transport(state: tauri::State<'_, McpState>, transport: String) -> Value {
+    let core = state.core();
+    match aiconfig::TransportMode::parse(&transport) {
+        Some(mode) => {
+            {
+                let mut cfg = core.cfg.lock().unwrap_or_else(|e| e.into_inner());
+                cfg.server.set_transport_mode(mode);
+                let snapshot = cfg.clone();
+                drop(cfg);
+                if let Err(e) = aiconfig::save(&snapshot) {
+                    core.set_error(Some(format!("保存 AI 配置失败: {}", e)));
+                }
+            }
+            crate::dbg_log(&format!("mcp: 传输形态已设为 {}", mode.as_str()));
+            core.emit_status();
+        }
+        None => {
+            core.set_error(Some(format!(
+                "未知的传输形态: {}（可选 both / http / sse）",
+                transport
+            )));
+        }
+    }
+    core.status_json()
+}
+
 /// 重新生成访问令牌（旧 token 立即失效，所有会话被断开）
 #[tauri::command]
 pub fn mcp_reset_token(app: tauri::AppHandle, state: tauri::State<'_, McpState>) -> Value {
@@ -954,33 +1045,102 @@ fn push_batch_into(hub: &loghub::LogHub, lines: &[Value], dropped_by_channel: Op
     n
 }
 
-/// 给界面用的"一键复制"内容：客户端配置 JSON + 自然语言安装提示词
+/// 给界面用的"一键复制"内容：**当前提供的传输**的客户端配置 JSON + 自然语言安装提示词。
+///
+/// 传输是三档的（`both` / `http` / `sse`），所以这里给出的片段也跟着变：
+/// 只提供一种时，空的那一份就是空串，提示词也只讲那一种 —— 不再出现"任选一条"这种
+/// 在单档下会误导人的说法。
 #[tauri::command]
 pub fn mcp_client_config(state: tauri::State<'_, McpState>) -> Value {
     let st = state.core().status_json();
-    let url = st.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let running = st.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
-    if !running || url.is_empty() {
+    let transport = st
+        .get("transport")
+        .and_then(|v| v.as_str())
+        .unwrap_or("both")
+        .to_string();
+    let url = st.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let streamable = st
+        .get("streamableUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !running || (url.is_empty() && streamable.is_empty()) {
         return json!({ "ok": false, "reason": "服务器未启用" });
     }
-    let client_json = serde_json::to_string_pretty(&json!({
-        "mcpServers": {
-            "seahi-serial": { "type": "sse", "url": url }
-        }
-    }))
-    .unwrap_or_default();
-    let prompt = format!(
-        "请把下面这个 MCP 服务器（SSE 传输）加入你的 MCP 配置并连接：\n  URL: {}\n\
-         它是本机 \"SeaHi Serial\" 串口/蓝牙调试器暴露的工具集，当前可用工具：{}。\n\
+    let entry = |ty: &str, u: &str| {
+        json!({ "mcpServers": { "seahi-serial": { "type": ty, "url": u } } })
+    };
+    let to_pretty = |v: Value| serde_json::to_string_pretty(&v).unwrap_or_default();
+    let client_json = if url.is_empty() {
+        String::new()
+    } else {
+        to_pretty(entry("sse", &url))
+    };
+    let streamable_json = if streamable.is_empty() {
+        String::new()
+    } else {
+        to_pretty(entry("http", &streamable))
+    };
+    // 各客户端对"http 传输"的类型名不统一（VS Code / Claude Code / Cursor 用 `http`，
+    // Cline 认 `streamableHttp`）。两种片段都给出来，别让用户自己猜 —— 猜错的代价是
+    // "客户端静默按遗留 SSE 解析"，然后就是一句没头没尾的连不上。
+    let streamable_alias = if streamable.is_empty() {
+        String::new()
+    } else {
+        to_pretty(entry("streamableHttp", &streamable))
+    };
+    let tools = protocol::tool_defs()
+        .iter()
+        .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
+        .collect::<Vec<_>>()
+        .join(" / ");
+    let tail = format!(
+        "\n它是本机 \"SeaHi Serial\" 串口/蓝牙调试器暴露的工具集，当前可用工具：{}。\n\
          连上后请先用 tools/list 看一眼可用工具再操作。",
-        url,
-        protocol::tool_defs()
-            .iter()
-            .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
-            .collect::<Vec<_>>()
-            .join(" / ")
+        tools
     );
-    json!({ "ok": true, "url": url, "clientConfig": client_json, "installPrompt": prompt })
+    let prompt = if url.is_empty() {
+        // 只提供 Streamable HTTP
+        format!(
+            "请把下面这个 MCP 服务器加入你的 MCP 配置并连接。它当前**只提供 Streamable HTTP**：\n\
+             URL: {}\n  配置片段：{}；若你的客户端不认 \"type\":\"http\"，就把它写成 \
+             \"type\":\"streamableHttp\"（Cline 等）。{}",
+            streamable,
+            streamable_json.replace('\n', " "),
+            tail
+        )
+    } else if streamable.is_empty() {
+        // 只提供遗留 SSE
+        format!(
+            "请把下面这个 MCP 服务器加入你的 MCP 配置并连接。它当前**只提供遗留 SSE（HTTP+SSE）**，\
+             所以客户端必须支持 `type: \"sse\"`：\n  URL: {}\n  配置片段：{}{}",
+            url,
+            client_json.replace('\n', " "),
+            tail
+        )
+    } else {
+        format!(
+            "请把下面这个 MCP 服务器加入你的 MCP 配置并连接。它有两条传输，**任选一条**：\n\
+             ① Streamable HTTP（推荐，新版客户端默认走这个）：\n  URL: {}\n  配置片段：{}；\
+             若你的客户端不认 \"type\":\"http\"，就把它写成 \"type\":\"streamableHttp\"（Cline 等）。\n\
+             ② 遗留 SSE（只支持 SSE 的老客户端）：\n  URL: {}{}",
+            streamable,
+            streamable_json.replace('\n', " "),
+            url,
+            tail
+        )
+    };
+    json!({
+        "ok": true,
+        "transport": transport,
+        "url": url,
+        "streamableUrl": streamable,
+        "clientConfig": client_json,
+        "clientConfigStreamable": streamable_json,
+        "clientConfigStreamableAlias": streamable_alias,
+        "installPrompt": prompt,
+    })
 }
 
 #[cfg(test)]
@@ -1100,6 +1260,78 @@ mod tests {
         rest[..end].to_string()
     }
 
+    // ===== Streamable HTTP（`/mcp`）的测试零件 =====
+
+    /// 带自定义头的 POST
+    fn post_req_h(path: &str, body: &str, extra: &[(&str, &str)]) -> String {
+        let mut h = String::new();
+        for (k, v) in extra {
+            h.push_str(&format!("{}: {}\r\n", k, v));
+        }
+        format!(
+            "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+            path,
+            h,
+            body.len(),
+            body
+        )
+    }
+
+    fn delete_req_h(path: &str, extra: &[(&str, &str)]) -> String {
+        let mut h = String::new();
+        for (k, v) in extra {
+            h.push_str(&format!("{}: {}\r\n", k, v));
+        }
+        format!(
+            "DELETE {} HTTP/1.1\r\nHost: 127.0.0.1\r\n{}Connection: close\r\n\r\n",
+            path, h
+        )
+    }
+
+    fn get_req_h(path: &str, extra: &[(&str, &str)]) -> String {
+        let mut h = String::new();
+        for (k, v) in extra {
+            h.push_str(&format!("{}: {}\r\n", k, v));
+        }
+        format!("GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\n{}Connection: close\r\n\r\n", path, h)
+    }
+
+    /// 从响应头里抠一个头（大小写不敏感）
+    fn header_of(resp: &str, name: &str) -> Option<String> {
+        let lower = resp.to_lowercase();
+        let key = format!("{}:", name.to_lowercase());
+        let i = lower.find(&key)?;
+        // 只看头部区（第一段 \r\n\r\n 之前），否则响应体里出现同名文本会误判
+        let head_end = resp.find("\r\n\r\n").unwrap_or(resp.len());
+        if i > head_end {
+            return None;
+        }
+        let rest = &resp[i + key.len()..];
+        let end = rest.find("\r\n").unwrap_or(rest.len());
+        Some(rest[..end].trim().to_string())
+    }
+
+    /// 响应体（HTTP 头之后的部分）
+    fn body_of(resp: &str) -> &str {
+        resp.find("\r\n\r\n").map(|i| &resp[i + 4..]).unwrap_or("")
+    }
+
+    /// 走一次 `/mcp` 的 initialize，返回 (会话 id, 原始响应)
+    async fn mcp_initialize(port: u16, token: &str) -> (String, String) {
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"t"}}}"#;
+        let r = one_shot(
+            port,
+            &post_req_h(
+                &format!("/mcp?token={}", token),
+                init,
+                &[("MCP-Protocol-Version", "2025-06-18")],
+            ),
+        )
+        .await;
+        let sid = header_of(&r, "mcp-session-id").unwrap_or_default();
+        (sid, r)
+    }
+
     #[test]
     fn healthz_needs_no_token_and_leaks_nothing() {
         let rt = rt();
@@ -1131,6 +1363,455 @@ mod tests {
             assert!(r2.starts_with("HTTP/1.1 401"), "缺 token 应 401: {}", r2);
             let r3 = one_shot(port, &post_req("/messages?sessionId=x&token=wrong", "{}")).await;
             assert!(r3.starts_with("HTTP/1.1 401"), "POST 错 token 应 401: {}", r3);
+            core.shutdown.store(true, Ordering::Relaxed);
+        });
+    }
+
+    // ===== Streamable HTTP（`/mcp`）：2025-03-26+ 规范的单端点形态 =====
+
+    /// 完整的 Streamable HTTP 流程：握手拿会话 id → 请求直接从 HTTP 响应回来 →
+    /// 通知回 202 → 未知会话 404 → DELETE 终止会话。
+    #[test]
+    fn streamable_http_end_to_end_handshake_and_tool_call() {
+        let rt = rt();
+        let core = test_core();
+        rt.block_on(async {
+            let port = serve(core.clone(), "127.0.0.1", 0).await.expect("起服务");
+            let base = "/mcp?token=testtoken";
+
+            // 1) initialize（不带会话头）→ 200 + application/json + Mcp-Session-Id
+            let (sid, r) = mcp_initialize(port, "testtoken").await;
+            assert!(r.starts_with("HTTP/1.1 200"), "initialize 应 200: {}", r);
+            assert!(
+                r.to_lowercase().contains("content-type: application/json"),
+                "{}",
+                r
+            );
+            assert!(!sid.is_empty(), "initialize 必须下发 Mcp-Session-Id: {}", r);
+            let v: serde_json::Value = serde_json::from_str(body_of(&r)).expect("响应体应是 JSON");
+            assert_eq!(v["id"], 1);
+            assert_eq!(v["result"]["serverInfo"]["name"], "seahi-serial");
+            assert_eq!(v["result"]["protocolVersion"], "2025-06-18");
+            assert_eq!(core.sessions.len(), 1, "会话应已注册");
+
+            let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+
+            // 2) 带会话头 → 结果**直接从这次 HTTP 响应回来**（不必另开一条流）
+            let r2 = one_shot(port, &post_req_h(base, list, &[("Mcp-Session-Id", &sid)])).await;
+            assert!(r2.starts_with("HTTP/1.1 200"), "{}", r2);
+            assert!(r2.contains("serial_list_ports"), "工具表要直接从 HTTP 回来");
+            assert!(
+                header_of(&r2, "mcp-session-id").is_none(),
+                "不是新会话就不该再下发 id"
+            );
+            assert_eq!(core.sessions.len(), 1, "带会话头的请求不该新建会话");
+
+            // 3) 工具调用
+            let call =
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"app_info"}}"#;
+            let r3 = one_shot(port, &post_req_h(base, call, &[("Mcp-Session-Id", &sid)])).await;
+            assert!(r3.contains("uptimeSecs"), "工具结果没回来: {}", r3);
+
+            // 4) 通知 → 202 + **空体**（规范要求；回 200 加空 JSON 是错的）
+            let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+            let r4 = one_shot(port, &post_req_h(base, note, &[("Mcp-Session-Id", &sid)])).await;
+            assert!(r4.starts_with("HTTP/1.1 202"), "通知应 202: {}", r4);
+            assert_eq!(body_of(&r4), "", "202 不该带响应体: {}", r4);
+
+            // 5) 不认识的会话 → 404（客户端据此重新 initialize；回 400 会让它一路失败）
+            let r5 = one_shot(port, &post_req_h(base, list, &[("Mcp-Session-Id", "nope")])).await;
+            assert!(r5.starts_with("HTTP/1.1 404"), "未知会话应 404: {}", r5);
+            assert!(r5.contains("session not found"), "{}", r5);
+
+            // 6) DELETE → 204，会话真的没了；再 DELETE → 404（幂等地告诉调用方"已经没了"）
+            let r6 = one_shot(port, &delete_req_h(base, &[("Mcp-Session-Id", &sid)])).await;
+            assert!(r6.starts_with("HTTP/1.1 204"), "DELETE 应 204: {}", r6);
+            assert_eq!(core.sessions.len(), 0, "DELETE 之后会话必须真的没了");
+            let r7 = one_shot(port, &delete_req_h(base, &[("Mcp-Session-Id", &sid)])).await;
+            assert!(r7.starts_with("HTTP/1.1 404"), "{}", r7);
+
+            core.shutdown.store(true, Ordering::Relaxed);
+        });
+    }
+
+    /// 传输三档：**只服务选中的那一种**，另一种的端点表现得像不存在（404）。
+    ///
+    /// 这是用户主动选的后果，所以必须逐档钉住 —— 少测一档就会出现"我选了只 SSE，
+    /// `/mcp` 却还开着"这种"界面说的和实际做的不一样"。
+    #[test]
+    fn transport_mode_decides_which_endpoints_exist() {
+        let rt = rt();
+        for (mode, want_mcp, want_sse) in [
+            (aiconfig::TransportMode::Both, true, true),
+            (aiconfig::TransportMode::Http, true, false),
+            (aiconfig::TransportMode::Sse, false, true),
+        ] {
+            let mut cfg = aiconfig::AiConfig::default();
+            cfg.server.token = "testtoken".to_string();
+            cfg.server.set_transport_mode(mode);
+            let core = Arc::new(McpCore::from_cfg(cfg));
+            rt.block_on(async {
+                let port = serve(core.clone(), "127.0.0.1", 0).await.expect("起服务");
+                let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
+                let mcp = one_shot(port, &post_req_h("/mcp?token=testtoken", init, &[])).await;
+                let sse = one_shot(port, &get_req("/sse?token=testtoken")).await;
+                // `/messages` 与 `/sse` 同进同出：只关一半会留下"能 POST 但没人收结果"的怪状态。
+                // 两者**都是 404**，只能靠响应体区分（"unknown session" = 端点存在但会话不对）
+                let messages =
+                    one_shot(port, &post_req("/messages?sessionId=x&token=testtoken", "{}")).await;
+
+                assert_eq!(
+                    mcp.starts_with("HTTP/1.1 200"),
+                    want_mcp,
+                    "{:?} 下 /mcp 的存在性不对: {}",
+                    mode,
+                    mcp
+                );
+                assert_eq!(
+                    sse.starts_with("HTTP/1.1 200"),
+                    want_sse,
+                    "{:?} 下 /sse 的存在性不对: {}",
+                    mode,
+                    sse
+                );
+                assert_eq!(
+                    messages.contains("unknown session"),
+                    want_sse,
+                    "{:?} 下 /messages 该与 /sse 同进同出: {}",
+                    mode,
+                    messages
+                );
+                if want_sse {
+                    assert!(sse.contains("event: endpoint"), "{}", sse);
+                } else {
+                    assert!(sse.contains("not found"), "被关掉的端点要明确说 404: {}", sse);
+                }
+                core.shutdown.store(true, Ordering::Relaxed);
+            });
+        }
+    }
+
+    /// 状态里的两条 URL 必须跟着传输档位走：只提供一种时**另一条是 null**，
+    /// 否则界面会展示一个必然 404 的地址（用户拿着它去配客户端只会得到"连不上"）。
+    #[test]
+    fn status_urls_follow_the_transport_mode() {
+        for (mode, want_url, want_streamable) in [
+            (aiconfig::TransportMode::Both, true, true),
+            (aiconfig::TransportMode::Http, false, true),
+            (aiconfig::TransportMode::Sse, true, false),
+        ] {
+            let mut cfg = aiconfig::AiConfig::default();
+            cfg.server.token = "tok".to_string();
+            cfg.server.set_transport_mode(mode);
+            let core = McpCore::from_cfg(cfg);
+            core.running.store(true, Ordering::Relaxed);
+            *core.port.lock().unwrap_or_else(|e| e.into_inner()) = Some(7777);
+            let st = core.status_json();
+            assert_eq!(st["transport"], mode.as_str());
+            assert_eq!(st["streamableHttp"], mode.serves_http(), "派生字段要跟着档位变");
+            assert_eq!(st["url"].is_string(), want_url, "{}：{}", mode.as_str(), st);
+            assert_eq!(
+                st["streamableUrl"].is_string(),
+                want_streamable,
+                "{}：{}",
+                mode.as_str(),
+                st
+            );
+        }
+    }
+
+    /// 鉴权 / Origin / 协议版本三道门（都只在 `/mcp` 上）
+    #[test]
+    fn streamable_http_rejects_bad_token_origin_and_version() {
+        let rt = rt();
+        let core = test_core();
+        rt.block_on(async {
+            let port = serve(core.clone(), "127.0.0.1", 0).await.expect("起服务");
+            let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
+
+            let r = one_shot(port, &post_req_h("/mcp?token=wrong", init, &[])).await;
+            assert!(r.starts_with("HTTP/1.1 401"), "错 token 应 401: {}", r);
+            let r = one_shot(port, &post_req_h("/mcp", init, &[])).await;
+            assert!(r.starts_with("HTTP/1.1 401"), "缺 token 应 401: {}", r);
+
+            // Origin：非回环一律拒（防 DNS rebinding）；真客户端不带这个头，所以放行不受影响
+            let bad = one_shot(
+                port,
+                &post_req_h("/mcp?token=testtoken", init, &[("Origin", "http://evil.com")]),
+            )
+            .await;
+            assert!(bad.starts_with("HTTP/1.1 403"), "非回环 Origin 应 403: {}", bad);
+            let good = one_shot(
+                port,
+                &post_req_h(
+                    "/mcp?token=testtoken",
+                    init,
+                    &[("Origin", "http://127.0.0.1:5173")],
+                ),
+            )
+            .await;
+            assert!(good.starts_with("HTTP/1.1 200"), "回环 Origin 应放行: {}", good);
+
+            // 协议版本：不认识的必须 400，且**说清我们支持哪些**
+            let ver = one_shot(
+                port,
+                &post_req_h(
+                    "/mcp?token=testtoken",
+                    init,
+                    &[("MCP-Protocol-Version", "1999-01-01")],
+                ),
+            )
+            .await;
+            assert!(ver.starts_with("HTTP/1.1 400"), "不认识的版本应 400: {}", ver);
+            assert!(
+                ver.contains("2025-06-18") && ver.contains("2025-03-26"),
+                "错误消息要列出支持的版本: {}",
+                ver
+            );
+
+            // Bearer 头也认（新版客户端不一定把 token 放在 URL 里）
+            let bearer = one_shot(
+                port,
+                &post_req_h("/mcp", init, &[("Authorization", "Bearer testtoken")]),
+            )
+            .await;
+            assert!(bearer.starts_with("HTTP/1.1 200"), "Bearer 鉴权应放行: {}", bearer);
+
+            core.shutdown.store(true, Ordering::Relaxed);
+        });
+    }
+
+    /// **新端点不能绕过请求体上限**（这是"加新工具/新入口先问一句它的输入有上限吗"的同类问题）
+    #[test]
+    fn streamable_http_enforces_body_limit_before_reading() {
+        let rt = rt();
+        let core = test_core();
+        rt.block_on(async {
+            let port = serve(core.clone(), "127.0.0.1", 0).await.expect("起服务");
+            // 声明一个超大的 Content-Length：应当**不用等 body 读完**就回 413
+            let req = format!(
+                "POST /mcp?token=testtoken HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                MAX_BODY_BYTES * 2
+            );
+            let resp = one_shot(port, &req).await;
+            assert!(resp.contains("413"), "应回 413（不用等 body 读完），实际: {}", resp);
+            assert!(resp.contains("body too large"), "要说清是请求体太大: {}", resp);
+            core.shutdown.store(true, Ordering::Relaxed);
+        });
+    }
+
+    /// `GET /mcp`：给已初始化的会话挂一条收通知的流；流断开**不能**把会话删掉
+    #[test]
+    fn get_mcp_streams_notifications_and_keeps_the_session() {
+        let rt = rt();
+        let core = test_core();
+        rt.block_on(async {
+            let port = serve(core.clone(), "127.0.0.1", 0).await.expect("起服务");
+            let (sid, _) = mcp_initialize(port, "testtoken").await;
+            let base = "/mcp?token=testtoken";
+
+            // 不带会话头 → 400（GET 是给已初始化会话收通知用的）
+            let r = one_shot(port, &get_req("/mcp?token=testtoken")).await;
+            assert!(r.starts_with("HTTP/1.1 400"), "没有会话头应 400: {}", r);
+
+            // 带会话头 → 200 text/event-stream，且不下发 endpoint 帧（客户端已经知道往哪 POST）
+            let mut sse = Sse {
+                stream: connect(port).await,
+                acc: String::new(),
+            };
+            sse.stream
+                .write_all(get_req_h(base, &[("Mcp-Session-Id", &sid)]).as_bytes())
+                .await
+                .unwrap();
+            assert!(sse.read_until("HTTP/1.1 200", 2000).await, "{}", sse.acc);
+            assert!(sse.acc.contains("text/event-stream"), "{}", sse.acc);
+            assert!(
+                !sse.acc.contains("event: endpoint"),
+                "GET /mcp 不该下发 endpoint 帧: {}",
+                sse.acc
+            );
+
+            // 同一会话再开一条 → 409（否则同一份通知会送两遍）
+            let dup = one_shot(port, &get_req_h(base, &[("Mcp-Session-Id", &sid)])).await;
+            assert!(dup.starts_with("HTTP/1.1 409"), "同一会话只能有一条流: {}", dup);
+
+            // 广播能送到这条流上
+            let n = transport::broadcast(
+                &core,
+                json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" }),
+            );
+            assert_eq!(n, 1, "应送达这条 GET /mcp 流");
+            assert!(sse.read_until("tools/list_changed", 2000).await, "{}", sse.acc);
+
+            // 流断开 → **会话必须还在**（它还要给 POST 用；这一条就是 keep_session 的守门人）
+            drop(sse);
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            assert_eq!(core.sessions.len(), 1, "GET /mcp 的流断开不能把会话删掉");
+            let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+            let after = one_shot(port, &post_req_h(base, list, &[("Mcp-Session-Id", &sid)])).await;
+            assert!(after.starts_with("HTTP/1.1 200"), "流断开后 POST 仍应可用: {}", after);
+
+            core.shutdown.store(true, Ordering::Relaxed);
+        });
+    }
+
+    /// 表满时：**先淘汰最久未活动的 HTTP 会话**，绝不动 SSE 会话（它的长连接会变僵尸），
+    /// 更不能直接回 429（客户端拿到 429 无从下手，只能干等空闲回收）
+    #[test]
+    fn http_sessions_are_evicted_before_sse_sessions() {
+        let rt = rt();
+        let core = test_core();
+        rt.block_on(async {
+            let port = serve(core.clone(), "127.0.0.1", 0).await.expect("起服务");
+
+            let mut http_sids = Vec::new();
+            for _ in 0..(MAX_SESSIONS - 1) {
+                let (sid, _) = mcp_initialize(port, "testtoken").await;
+                assert!(!sid.is_empty());
+                http_sids.push(sid);
+                // 拉开 last_seen，让"最久未活动"是确定的那个
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+
+            let mut sse = Sse {
+                stream: connect(port).await,
+                acc: String::new(),
+            };
+            sse.stream
+                .write_all(get_req("/sse?token=testtoken").as_bytes())
+                .await
+                .unwrap();
+            assert!(sse.read_until("event: endpoint", 2000).await, "{}", sse.acc);
+            let sse_sid = session_id_of(&sse.acc);
+            assert_eq!(core.sessions.len(), MAX_SESSIONS, "应当正好占满");
+
+            // 再来一个新客户端：应当淘汰最久未活动的 HTTP 会话，而不是 429
+            let (new_sid, r) = mcp_initialize(port, "testtoken").await;
+            assert!(r.starts_with("HTTP/1.1 200"), "表满时应淘汰而不是 429: {}", r);
+            assert!(!new_sid.is_empty());
+            assert_eq!(core.sessions.len(), MAX_SESSIONS, "淘汰后仍应正好占满");
+
+            let (sse_alive, oldest_gone) = {
+                let map = core.sessions.map.lock().unwrap_or_else(|e| e.into_inner());
+                (
+                    map.get(&sse_sid).map(|s| s.tx.is_some()).unwrap_or(false),
+                    !map.contains_key(&http_sids[0]),
+                )
+            };
+            assert!(sse_alive, "SSE 会话被 HTTP 的淘汰策略踢掉了（长连接会变僵尸）");
+            assert!(oldest_gone, "被淘汰的应当是最久未活动的那个 HTTP 会话");
+
+            // 而且那条 SSE 流仍然能收到广播
+            let n = transport::broadcast(
+                &core,
+                json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" }),
+            );
+            assert_eq!(n, 1, "SSE 会话应当还活着并能收到通知");
+            assert!(sse.read_until("tools/list_changed", 2000).await, "{}", sse.acc);
+
+            core.shutdown.store(true, Ordering::Relaxed);
+        });
+    }
+
+    /// **HTTP 会话挂了 `GET /mcp` 推送流之后，仍然必须可淘汰**。
+    ///
+    /// 起因（2026-09 实测证实，探针输出："淘汰候选 = tx.is_none() 的数量 = 0" → "第 5 个客户端
+    /// → HTTP/1.1 429"）：淘汰原本用 `tx.is_none()` 判断"这是 HTTP 会话"，而 `tx` 表达的只是
+    /// "有没有推送通道" —— 客户端按规范挂上 `GET /mcp` 之后，4 个 HTTP 会话**全都有 tx**，
+    /// 淘汰候选变成 0，第 5 个客户端直接吃 429（只能干等 30 分钟空闲回收）。
+    /// 挂 GET 流恰恰是推荐做法，所以这不是理论风险。现在判据是 `Session::kind`。
+    #[test]
+    fn http_sessions_with_a_get_stream_are_still_evictable() {
+        let rt = rt();
+        let core = test_core();
+        rt.block_on(async {
+            let port = serve(core.clone(), "127.0.0.1", 0).await.expect("起服务");
+            let mut streams = Vec::new();
+            for i in 0..MAX_SESSIONS {
+                let (sid, _) = mcp_initialize(port, "testtoken").await;
+                assert!(!sid.is_empty());
+                let mut s = Sse {
+                    stream: connect(port).await,
+                    acc: String::new(),
+                };
+                s.stream
+                    .write_all(
+                        get_req_h("/mcp?token=testtoken", &[("Mcp-Session-Id", &sid)]).as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(s.read_until("HTTP/1.1 200", 2000).await, "第 {} 条流没挂上: {}", i, s.acc);
+                streams.push(s);
+            }
+            // 前提必须是成立的反例：每个 HTTP 会话都挂了推送流（= tx 全是 Some）
+            let with_tx = core
+                .sessions
+                .map
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .filter(|s| s.tx.is_some())
+                .count();
+            assert_eq!(with_tx, MAX_SESSIONS, "前提：每个 HTTP 会话都挂了推送流");
+
+            // 第 5 个客户端：必须成功（淘汰一个 HTTP 会话），**不能是 429**
+            let (sid5, r5) = mcp_initialize(port, "testtoken").await;
+            assert!(
+                r5.starts_with("HTTP/1.1 200"),
+                "挂了 GET 流的 HTTP 会话必须仍然可淘汰（否则这里会退化成 429）: {}",
+                r5
+            );
+            assert!(!sid5.is_empty());
+            assert_eq!(core.sessions.len(), MAX_SESSIONS, "淘汰后仍应正好占满");
+
+            // 剩下那三个挂着流的会话照样能收广播（被淘汰的那个已不在表里，收不到是正常的）
+            let n = transport::broadcast(
+                &core,
+                json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" }),
+            );
+            assert_eq!(n, MAX_SESSIONS - 1, "剩下三个挂了流的会话都该收到广播");
+
+            core.shutdown.store(true, Ordering::Relaxed);
+        });
+    }
+
+    /// `DELETE /mcp` 只能删 Streamable HTTP 自己的会话：**不许删 SSE 会话**。
+    /// （删不掉时回 404 而不是 403 —— 403 等于告诉对方"这个 sid 存在，只是不归你"。）
+    #[test]
+    fn delete_mcp_refuses_to_remove_an_sse_session() {
+        let rt = rt();
+        let core = test_core();
+        rt.block_on(async {
+            let port = serve(core.clone(), "127.0.0.1", 0).await.expect("起服务");
+            let mut sse = Sse {
+                stream: connect(port).await,
+                acc: String::new(),
+            };
+            sse.stream
+                .write_all(get_req("/sse?token=testtoken").as_bytes())
+                .await
+                .unwrap();
+            assert!(sse.read_until("event: endpoint", 2000).await, "{}", sse.acc);
+            let sse_sid = session_id_of(&sse.acc);
+
+            let r = one_shot(
+                port,
+                &delete_req_h("/mcp?token=testtoken", &[("Mcp-Session-Id", &sse_sid)]),
+            )
+            .await;
+            assert!(r.starts_with("HTTP/1.1 404"), "删 SSE 会话该回 404: {}", r);
+            assert_eq!(core.sessions.len(), 1, "SSE 会话必须还在（那条流还在用它）");
+
+            // 而 HTTP 自己的会话照样能删（204）
+            let (sid, _) = mcp_initialize(port, "testtoken").await;
+            let r = one_shot(
+                port,
+                &delete_req_h("/mcp?token=testtoken", &[("Mcp-Session-Id", &sid)]),
+            )
+            .await;
+            assert!(r.starts_with("HTTP/1.1 204"), "HTTP 会话该能删: {}", r);
+            assert_eq!(core.sessions.len(), 1, "只剩那条 SSE 会话");
+
             core.shutdown.store(true, Ordering::Relaxed);
         });
     }
@@ -1693,6 +2374,8 @@ mod tests {
             let port = serve(core.clone(), "127.0.0.1", 7799).await.expect("起服务");
             println!("MCP_HEALTHZ=http://127.0.0.1:{}/healthz", port);
             println!("MCP_SSE=http://127.0.0.1:{}/sse?token=testtoken", port);
+            // Streamable HTTP 也一起打出来：跨进程自检（mcp_smoke.js）默认就走它
+            println!("MCP_HTTP=http://127.0.0.1:{}/mcp?token=testtoken", port);
             println!("MCP_READY=1");
             // 留出足够时间给外部客户端连接
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;

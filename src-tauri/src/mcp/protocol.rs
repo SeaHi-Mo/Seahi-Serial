@@ -205,7 +205,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "serial_list_ports",
-            "description": "枚举本机可用串口（端口名 / 友好名称 / 产品名）。只读，不会打开端口。返回 {count, ports:[…]}。",
+            "description": "枚举本机可用串口（端口名 / 友好名称 / 产品名）。只读，不会打开端口。⚠️ **只有 Windows 侧的 COM 口** —— WSL 分栏的端口是 WSL 内部的 `/dev/...`，不在这里（用 serial_get_state 的 `portOptions` 看那个分栏能选什么）。返回 {count, ports:[…]}。",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
         // ===== 串口语义工具（S12）=====
@@ -215,23 +215,23 @@ pub fn tool_defs() -> Vec<Value> {
         // 所以界面必然跟着变。分栏用 pane（main / extra-1 / …）指定，省略即 main。
         json!({
             "name": "serial_get_state",
-            "description": "读某个串口分栏的完整状态：端口、波特率、帧格式(数据位/停止位/校验)、行尾、DTR/RTS、查看模式、行号/时间戳/回显/自动滚动/自动重连/终端模式、**是否正在监控**、输出行数与字节数、发送历史条数、以及全部分栏名。省略 pane 默认 main。**操作串口前先调它**。",
+            "description": "读某个串口分栏的完整状态：端口、波特率、帧格式(数据位/停止位/校验)、行尾、DTR/RTS、查看模式、行号/时间戳/回显/自动滚动/自动重连/终端模式、**是否正在监控**、输出行数与字节数、发送历史条数、以及全部分栏名（`panes`）。还给出 `portOptions` —— **这个分栏**当前能选哪些端口（Windows 分栏是 COM 名，WSL 分栏是 `/dev/...` 路径；`inUse` 表示被别的分栏占着）。省略 pane 默认 main。**操作串口前先调它**。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "pane": { "type": "string", "description": "分栏名：main / extra-1 / extra-2 …；省略=main" }
+                    "pane": { "type": "string", "description": PANE_DESC }
                 },
                 "additionalProperties": false
             }
         }),
         json!({
             "name": "serial_select_port",
-            "description": "选串口分栏要用的端口（等价于在「端口」下拉里选一项）。值必须是 serial_list_ports 返回的端口名；给错会回列可选值。",
+            "description": "选串口分栏要用的端口（等价于在「端口」下拉里选一项）。值必须是**该分栏**端口下拉里的一个 —— 也就是 serial_get_state 的 `portOptions` 里的 `value`；给错会回列可选值。⚠️ **别拿 serial_list_ports 当依据**：它只列 Windows 的 COM 口，而 WSL 分栏要的是 `/dev/ttyUSB0` 这类 WSL 内部路径（把 USB 串口 usbipd bind 进 WSL 之后，Windows 侧本来就看不到那个口）。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "port": { "type": "string", "description": "端口名，如 COM3" },
-                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                    "port": { "type": "string", "description": "端口名：Windows 分栏如 COM3；WSL 分栏如 /dev/ttyUSB0" },
+                    "pane": { "type": "string", "description": PANE_DESC }
                 },
                 "required": ["port"],
                 "additionalProperties": false
@@ -244,7 +244,7 @@ pub fn tool_defs() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "baud": { "type": "number", "description": "波特率，如 115200" },
-                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                    "pane": { "type": "string", "description": PANE_DESC }
                 },
                 "required": ["baud"],
                 "additionalProperties": false
@@ -259,7 +259,7 @@ pub fn tool_defs() -> Vec<Value> {
                     "dataBits": { "type": "string", "enum": ["5", "6", "7", "8"] },
                     "stopBits": { "type": "string", "enum": ["1", "2"] },
                     "parity": { "type": "string", "enum": ["none", "odd", "even"] },
-                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                    "pane": { "type": "string", "description": PANE_DESC }
                 },
                 "additionalProperties": false
             }
@@ -272,7 +272,7 @@ pub fn tool_defs() -> Vec<Value> {
                 "properties": {
                     "dtr": { "type": "boolean" },
                     "rts": { "type": "boolean" },
-                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                    "pane": { "type": "string", "description": PANE_DESC }
                 },
                 "additionalProperties": false
             }
@@ -292,7 +292,7 @@ pub fn tool_defs() -> Vec<Value> {
                     "autoReconnect": { "type": "boolean" },
                     "terminalMode": { "type": "boolean" },
                     "advOpen": { "type": "boolean", "description": "「更多设置」栏是否展开（真串口面板才有）" },
-                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                    "pane": { "type": "string", "description": PANE_DESC }
                 },
                 "additionalProperties": false
             }
@@ -305,7 +305,7 @@ pub fn tool_defs() -> Vec<Value> {
                 "properties": {
                     "port": { "type": "string", "description": "可选：先选端口再打开" },
                     "baud": { "type": "number", "description": "可选：先设波特率再打开" },
-                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                    "pane": { "type": "string", "description": PANE_DESC }
                 },
                 "additionalProperties": false
             }
@@ -316,7 +316,7 @@ pub fn tool_defs() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                    "pane": { "type": "string", "description": PANE_DESC }
                 },
                 "additionalProperties": false
             }
@@ -330,7 +330,7 @@ pub fn tool_defs() -> Vec<Value> {
                     "data": { "type": "string", "description": "要发送的内容（文本或 HEX 串）；单次最多 64K 字符，大块数据请分批" },
                     "mode": { "type": "string", "enum": ["text", "hex"], "description": "发送模式，默认沿用界面当前设置" },
                     "lineEnding": { "type": "string", "enum": ["crlf", "lf", "cr", "none"], "description": "临时改行尾（改完会留在界面上）" },
-                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                    "pane": { "type": "string", "description": PANE_DESC }
                 },
                 "required": ["data"],
                 "additionalProperties": false
@@ -342,7 +342,7 @@ pub fn tool_defs() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                    "pane": { "type": "string", "description": PANE_DESC }
                 },
                 "additionalProperties": false
             }
@@ -354,7 +354,7 @@ pub fn tool_defs() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "limit": { "type": "number", "description": "最多返回多少条，默认 20，上限 200" },
-                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                    "pane": { "type": "string", "description": PANE_DESC }
                 },
                 "additionalProperties": false
             }
@@ -365,7 +365,7 @@ pub fn tool_defs() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "pane": { "type": "string", "description": "分栏名，省略=main" },
+                    "pane": { "type": "string", "description": PANE_DESC },
                     "direction": { "type": "string", "enum": ["rx", "tx", "both"], "description": "只要收(rx)/只要发(tx)/都要(both，默认)" },
                     "lines": { "type": "number", "description": "最多返回多少行，默认 50，上限 2000" }
                 },
@@ -391,7 +391,7 @@ pub fn tool_defs() -> Vec<Value> {
                     "seq": { "type": "number", "description": "action=add/update 时的顺序号：0 = 不参与循环，>0 在**组内**按数字升序发" },
                     "delayMs": { "type": "number", "description": "action=add/update 时的延时（毫秒，本条发完到下发一条的间隔，缺省 1000，上限 600000）" },
                     "hex": { "type": "boolean", "description": "action=add/update 时：这一条是否按 HEX 解析后发送（默认 false）" },
-                    "pane": { "type": "string", "description": "分栏名，省略=main" }
+                    "pane": { "type": "string", "description": PANE_DESC }
                 },
                 "additionalProperties": false
             }
@@ -641,7 +641,7 @@ pub fn tool_defs() -> Vec<Value> {
         // 会报出来）→ 要么拒收工具、要么丢掉约束。
         json!({
             "name": "ui_set",
-            "description": "设置控件值。执行走的是与用户点击完全相同的路径，所以界面会同步变化。返回的是**写后的真实值**（控件可能规范化输入）。可用 items 一次设置多个。",
+            "description": "设置控件值。执行走的是与用户点击完全相同的路径，所以界面会同步变化。返回的是**写后的真实值**（控件可能规范化输入）。可用 items 一次设置多个。⚠️ 少数动作是「点了才开始跑」的 —— 典型是 WSL 端口映射那个复选框（要过 usbipd，可能要用户在机器上点授权框）：结果里会带 `mapRequest.settled=false` 与 `note`，**那时不要重试**，稍后用 ui_get_state{section:\"wslDevices\"} 看 status 是否变成 mapped。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -664,8 +664,8 @@ pub fn tool_defs() -> Vec<Value> {
                 "properties": {
                     "section": {
                         "type": "string",
-                        "description": "serial / wsl / ble / bleDevices / theme / window / monitors；省略=全部。**扫描结果**读 `bleDevices`（全量）或 `ble.scanResult`（前 10 台）—— 设备卡片是动态 div、不在控件注册表里，只有通用桥的客户端得从这两处读",
-                        "enum": ["serial", "wsl", "ble", "bleDevices", "theme", "window", "monitors"]
+                        "description": "serial / wsl / ble / bleDevices / wslDevices / theme / window / monitors；省略=全部。**运行时设备表**（不是配置）：蓝牙扫描结果读 `bleDevices`（全量）或 `ble.scanResult`（前 10 台）；WSL 端口映射的 USB 设备表读 `wslDevices` —— 两处的行都是**动态 div、不在控件注册表里**，所以只有通用桥的客户端必须从这里读。`wslDevices` 每条还带 `mapControlPath`（可直接交给 ui_set 的控件路径），要映射某台设备就先用它把 COM 名对上 busid。",
+                        "enum": ["serial", "wsl", "ble", "bleDevices", "wslDevices", "theme", "window", "monitors"]
                     }
                 },
                 "additionalProperties": false
@@ -673,7 +673,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "ui_click",
-            "description": "点一个按钮/开关（等价于 ui_set 传 true，但语义更清楚）。",
+            "description": "点一个按钮/开关（等价于 ui_set 传 true，但语义更清楚）。⚠️ 同 ui_set：WSL 端口映射那种「点了才开始跑」的控件会在结果里带 `mapRequest.settled=false`，别重试，去 ui_get_state{section:\"wslDevices\"} 复查。",
             "inputSchema": {
                 "type": "object",
                 "properties": { "path": { "type": "string" } },
@@ -785,6 +785,22 @@ pub fn tool_defs() -> Vec<Value> {
         }),
     ]
 }
+
+/// 串口语义工具里那个 `pane` 参数的说明 —— **只写这一处**。
+///
+/// 为什么抽出来：13 个工具各抄一遍的下场是"改一处漏十二处"，而漏掉的恰好是一整类分栏 ——
+/// 原先只写了 `main / extra-1 / extra-2 …`，**一个字都没提 WSL**，于是 AI 看工具定义时
+/// 根本不知道还能用 `pane:"wsl"` 去操作 WSL 面板里的串口监视器（2026-09 用户问
+/// "WSL 端口映射也有串口监视器，MCP 的串口工具怎么区分"时暴露的）。
+/// 太长会白占模型上下文（13 份），所以这句话要短 —— 细节放在 `serial_get_state` 的返回值里
+/// （`panes` 报出全部分栏、`portOptions` 报出该分栏能选哪些端口）。
+///
+/// 后半句两条都是 2026-09 补的、AI 真的会撞上的事：
+/// ① **写操作会把该分栏的面板切到前台**（用户得看得见 AI 在动哪一栏；只读工具不切，
+///    否则客户端一 poll 就把用户从别的页面拽走）；② **WSL / 额外分栏是懒创建的**，
+///    面板没打开过时它还不存在 —— 写操作会顺带把它建出来，只读工具则会提示"先打开面板"。
+pub const PANE_DESC: &str =
+    "分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来";
 
 /// 一次性最多生成多少个 `ctl_*` 工具。
 /// 不做上限的话，一个有多面板 + 多个监视器的界面能轻松生成几百个工具，
@@ -1117,9 +1133,18 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         }
         "serial_open" => {
             // 一个串口都没有就别去点按钮：否则要白等 6 秒轮询超时（Agent 还可能再试一次）
-            let ports = crate::list_ports().await;
-            if let Some(msg) = no_serial_port_hint(ports.len()) {
-                return Err(RpcError::new(E_DEVICE_NOT_READY, msg));
+            //
+            // ⚠️ 但这个判据只对 **Windows 分栏**成立：WSL 分栏要开的是 WSL 侧的设备
+            // （前端那颗按钮走 `toggleWslConnection` → `open_wsl_serial`），跟本机有没有 COM 口无关。
+            // 而"Windows 侧没有 COM 口"恰恰是 WSL 用户的常态 —— 把 USB 串口用 usbipd bind 进 WSL
+            // 之后，Windows 就看不到那个口了。以前一律拿 `list_ports` 判定，于是 AI 操作 WSL 分栏
+            // 会得到"本机没有可用串口"（-32006），而界面上点得通 —— 工具说不行、界面说行。
+            // 工具仍然只有这一套（`serial_*` + pane），只是**取数据的来源按分栏分**。
+            if !pane_is_wsl(args) {
+                let ports = crate::list_ports().await;
+                if let Some(msg) = no_serial_port_hint(ports.len()) {
+                    return Err(RpcError::new(E_DEVICE_NOT_READY, msg));
+                }
             }
             // 先落可选的 port/baud（不合法会被 apply 那套挡住并回列可选值）
             let mut pre: Vec<Value> = Vec::new();
@@ -1622,6 +1647,28 @@ pub fn limits_json() -> Value {
 
 // ===== 分派 =====
 
+/// 这个 `pane` 是 WSL 分栏吗？
+///
+/// 为什么需要它：**两种分栏的串口来源是不同的两套实现** ——
+/// Windows 分栏走 `list_ports` / `open_port` / `send_data`，读的是本机 COM 口；
+/// WSL 分栏走 `get_wsl_serial_devices` / `open_wsl_serial` / `send_wsl_serial`，读的是
+/// WSL 里的设备（前端分栏 id 就是 `wsl` / `wsl-x1` / …，见 `mcpSerialLogChannels` 的 `wsl:` 前缀）。
+///
+/// 所以任何"拿 Windows 端口说事"的前置判断都必须先问一句是不是 WSL 分栏
+/// ——`serial_open` 里那个"一个串口都没有就别白等 6 秒"的检查就是例子。
+///
+/// 判据写成 `wsl` / `wsl-` 前缀（而不是 `starts_with("wsl")`）：前者不会把
+/// 将来可能出现的 `wslx` 之类误判成 WSL 分栏。
+fn pane_is_wsl(args: &Value) -> bool {
+    match opt_str(args, "pane") {
+        Some(p) => {
+            let p = p.trim().to_ascii_lowercase();
+            p == "wsl" || p.starts_with("wsl-")
+        }
+        None => false, // 省略 pane = main（Windows 分栏）
+    }
+}
+
 /// 组装一次串口语义调用（把 pane 透传下去）
 async fn serial_call(
     core: &Arc<McpCore>,
@@ -1964,12 +2011,20 @@ fn summarize_for_text(v: &Value) -> String {
 fn summarize_for_tool(tool: &str, v: &Value) -> String {
     // 按**载荷形状**判断而不是只按工具名：`ble_list_devices` 与通用桥的
     // `ui_get_state{section:"bleDevices"}` 返回的是同一张设备表，两条路都该看到设备名/MAC。
-    let looks_like_device_list = v["devices"]
-        .as_array()
+    let devices = v["devices"].as_array();
+    let looks_like_device_list = devices
         .map(|a| a.iter().any(|d| d.get("mac").is_some()))
         .unwrap_or(false);
     if tool == "ble_list_devices" || looks_like_device_list {
         return summarize_ble_devices(v);
+    }
+    // WSL 端口映射设备表（`ui_get_state{section:"wslDevices"}`）同理：它没有 mac，靠 busid 认。
+    // 不认出它的话，通用渲染只会展开前 3 台 —— "哪台是 COM7"很可能一个字都不在文本里。
+    let looks_like_wsl_device_list = devices
+        .map(|a| a.iter().any(|d| d.get("busid").is_some()))
+        .unwrap_or(false);
+    if looks_like_wsl_device_list {
+        return summarize_wsl_devices(v);
     }
     summarize_for_text(v)
 }
@@ -2043,6 +2098,82 @@ fn summarize_ble_devices(v: &Value) -> String {
     out
 }
 
+/// WSL 端口映射设备表的紧凑摘要：`共 3 台（已映射 1）：2-1 COM7 USB-SERIAL CH340 →/dev/ttyUSB0 | …`
+///
+/// 与 `summarize_ble_devices` 是**同一个教训**：通用渲染对数组只展开前 3 个元素，
+/// 于是"到底哪台是 COM7、它的 busid 是多少"很可能一个字都不在文本里 —— 而这正是
+/// 用户要 AI 做的第一件事（"把 COM7 映射到 WSL 当中"）。一行一台，把
+/// **busid + COM 名 + 设备名 + 映射状态**都放进去。
+fn summarize_wsl_devices(v: &Value) -> String {
+    let devices = v["devices"].as_array().cloned().unwrap_or_default();
+    let count = v["count"].as_u64().unwrap_or(devices.len() as u64);
+    let running = v["wslRunning"].as_bool().unwrap_or(false);
+    let mut out = format!(
+        "共 {} 台设备（WSL {}，已映射 {}）",
+        count,
+        if running { "运行中" } else { "未运行" },
+        v["mapped"].as_u64().unwrap_or(0)
+    );
+    if !running {
+        if let Some(r) = v["mapUnavailableReason"].as_str().filter(|s| !s.is_empty()) {
+            out.push_str(" · ");
+            out.push_str(r);
+        }
+    }
+    if devices.is_empty() {
+        // 空表必须区分"这台机器没有 USB 设备"和"面板还没打开过、所以还没加载"
+        if let Some(n) = v["note"].as_str().filter(|s| !s.is_empty()) {
+            out.push_str(" · ");
+            out.push_str(n);
+        }
+        return out;
+    }
+    out.push_str("：");
+    let mut shown = 0usize;
+    for d in &devices {
+        let busid = d["busid"].as_str().unwrap_or("?");
+        let port = d["port"].as_str().filter(|s| !s.is_empty() && *s != "-");
+        let name = d["name"].as_str().filter(|s| !s.is_empty());
+        let mapped = d["status"].as_str() == Some("mapped");
+        let path = d["wslPath"].as_str().filter(|s| !s.is_empty());
+        // busid 必须在前：它是稳定身份（COM 名和下标都会变）
+        let mut one = String::from(busid);
+        if let Some(p) = port {
+            one.push(' ');
+            one.push_str(p);
+        }
+        if let Some(n) = name {
+            one.push(' ');
+            one.push_str(n);
+        }
+        if d["busy"].as_bool().unwrap_or(false) {
+            one.push_str(" [操作中]");
+        } else if mapped {
+            one.push_str(" [已映射");
+            if let Some(p) = path {
+                one.push_str("→");
+                one.push_str(p);
+            }
+            one.push(']');
+        }
+        let used = out.chars().count() + one.chars().count() + 3;
+        if used + 60 > TEXT_SUMMARY_MAX_CHARS {
+            break;
+        }
+        if shown > 0 {
+            out.push_str(" | ");
+        }
+        out.push_str(&one);
+        shown += 1;
+    }
+    if shown < devices.len() {
+        out.push_str(&format!(
+            " …还有 {} 台没列出（全量在 structuredContent.devices，含 mapControlPath）",
+            devices.len() - shown
+        ));
+    }
+    out
+}
 /// 文本摘要的总长上限：它是**重复**信息（structuredContent 里都有），
 /// 太长会白占模型上下文，所以宁可截断并指路。
 const TEXT_SUMMARY_MAX_CHARS: usize = 600;
@@ -2941,9 +3072,9 @@ mod tests {
                     "builtinToolCount", "callLog", "configFile", "dropped", "enabled", "endpointFile",
                     "errorReports", "hasUi", "host", "lastError", "limits", "logHub", "maxSessions",
                     "port", "readOnly", "registry", "requests", "running", "sessions", "stateChanges",
-                    "statusEmits", "tokenMasked", "toolCalls", "toolCount", "uiInFlight",
-                    "uptimeSecs", "version",
-                ], &["urlMasked"])),
+                    "statusEmits", "streamableHttp", "tokenMasked", "toolCalls", "toolCount", "transport",
+                    "uiInFlight", "uptimeSecs", "version",
+                ], &["urlMasked", "streamableUrlMasked"])),
                 ("serial_list_ports", json!({}), Backend(&["count", "ports"], &[])),
                 ("log_channels", json!({}), Backend(&[
                     "channelCount", "channelSkips", "channels", "enabled", "lockSkips",
@@ -3336,7 +3467,34 @@ mod tests {
                             }
                         }
                         "list" => json!({ "ok": true, "value": { "controls": [], "total": 0 } }),                        "describe" | "get" => json!({ "ok": true, "value": { "path": "serial.conn.portSelect", "value": "COM1" } }),
-                        "getState" => json!({ "ok": true, "value": { "theme": "dark" } }),
+                        // 按 section 回**不同形状**：只回一个固定 `{theme}` 的话，
+                        // "区段转发到前端了没有""回来的形状对不对"两件事都测不到
+                        // （下面那两个 `ui_get_state` 用例的 keys 就成了摆设）。
+                        "getState" => {
+                            let sec = payload["section"].as_str().unwrap_or("");
+                            match sec {
+                                "theme" => json!({ "ok": true, "value": { "theme": "dark", "themeStyle": "default" } }),
+                                "bleDevices" => json!({ "ok": true, "value": {
+                                    "total": 105, "offset": payload.get("offset").and_then(|v| v.as_u64()).unwrap_or(0),
+                                    "limit": payload.get("limit").and_then(|v| v.as_u64()).unwrap_or(0),
+                                    "returned": 1, "hasMore": true, "nextOffset": 60, "truncated": false,
+                                    "scanning": false, "note": null,
+                                    "devices": [{ "mac": "AA:BB:CC:DD:EE:FF", "name": "Ai-WB2", "rssi": -55 }],
+                                }}),
+                                "wslDevices" => json!({ "ok": true, "value": {
+                                    "wslRunning": true, "targetDistro": "", "panelOpened": true,
+                                    "count": 2, "mapped": 1, "note": null, "mapUnavailableReason": null,
+                                    "devices": [
+                                        { "busid": "2-1", "port": "COM7", "name": "USB-SERIAL CH340",
+                                          "vidpid": "1A86:7523", "hasCom": true, "status": "unmapped",
+                                          "wslPath": "", "wslSerial": "", "busy": false,
+                                          "mapControlPath": "wsl.ui.wslMap_2_1",
+                                          "autoMapControlPath": "wsl.ui.wslAutoMap_2_1" },
+                                    ],
+                                }}),
+                                _ => json!({ "ok": true, "value": { "theme": "dark" } }),
+                            }
+                        }
                         "set" | "click" => json!({ "ok": true, "value": { "results": [], "effects": [] } }),
                         other => json!({ "ok": false, "error": format!("假前端不认识 op: {}", other) }),
                     }
@@ -3601,12 +3759,19 @@ mod tests {
                 Case { tool: "ui_get_state", args: json!({ "section": "theme" }),
                     pre_connected: None,
                     calls: vec![("getState", json!({ "section": "theme" }))],
-                    keys: &["theme"] },
+                    keys: &["theme", "themeStyle"] },
                 // 分页参数必须**转发到前端**（不转发 = 通用桥的分页静默失效，真机上踩到过）
                 Case { tool: "ui_get_state", args: json!({ "section": "bleDevices", "limit": 20, "offset": 40 }),
                     pre_connected: None,
                     calls: vec![("getState", json!({ "section": "bleDevices", "limit": 20, "offset": 40 }))],
-                    keys: &["theme"] },
+                    keys: &["devices", "offset", "limit", "total"] },
+                // WSL 端口映射设备表：行是动态 div、不在控件注册表里，只有这条通用桥的路能读到。
+                // 断言 `mapControlPath` 是有意的 —— 它就是"哪台设备对应哪个 ui_set 路径"，
+                // 少了它 AI 只能靠 busid 猜路径（2026-09 用户要的"把 COM7 映射到 WSL"卡在这）。
+                Case { tool: "ui_get_state", args: json!({ "section": "wslDevices" }),
+                    pre_connected: None,
+                    calls: vec![("getState", json!({ "section": "wslDevices" }))],
+                    keys: &["devices", "count", "mapped", "wslRunning", "mapUnavailableReason"] },
             ];
 
             let mut seen: Vec<&str> = Vec::new();
@@ -4168,6 +4333,26 @@ mod tests {
                 "查询危险工具表本身不该要确认（否则 AI 没法先问清后果）"
             );
         });
+    }
+
+    /// `pane_is_wsl` 的判据 —— `serial_open` 靠它决定"要不要拿 Windows 端口数卡一下"。
+    ///
+    /// 判错哪个方向都有代价：判成 WSL → 该拦的不拦（Windows 分栏在没有 COM 口时会白等 6 秒轮询）；
+    /// 判成 Windows → **WSL 分栏直接被拒**（"本机没有可用串口" -32006，而界面上点得通）。
+    ///
+    /// 注意整套工具仍然是**同一套** `serial_*`（靠 `pane` 区分分栏），没有为 WSL 单开工具 ——
+    /// 这里只是"同一个工具内部按分栏选数据源"。
+    #[test]
+    fn pane_is_wsl_matches_only_wsl_panes() {
+        assert!(pane_is_wsl(&json!({ "pane": "wsl" })));
+        assert!(pane_is_wsl(&json!({ "pane": "wsl-x1" })), "WSL 面板多开的监视器是 wsl-xN");
+        assert!(pane_is_wsl(&json!({ "pane": "  WSL  " })), "大小写与空格都不该影响判断");
+
+        assert!(!pane_is_wsl(&json!({})), "省略 pane = main（Windows 分栏），该走端口检查");
+        assert!(!pane_is_wsl(&json!({ "pane": "main" })));
+        assert!(!pane_is_wsl(&json!({ "pane": "extra-1" })));
+        assert!(!pane_is_wsl(&json!({ "pane": "wslx" })), "不能只按前缀误伤：wslx 不是分栏 id");
+        assert!(!pane_is_wsl(&json!({ "pane": "not-wsl" })));
     }
 
     #[test]
@@ -4952,6 +5137,87 @@ mod tests {
             assert_eq!(r["result"]["isError"], true, "上限值应放行：{}", r);
             let r = call(&c, &raw_call("ble_list_devices", &json!({}))).await;
             assert_eq!(r["result"]["isError"], true, "不给 limit 也应放行：{}", r);
+        });
+    }
+
+    /// `ui_get_state` 的区段清单里必须有 **WSL 设备表**，而且 schema 的 `enum` 与描述要一致。
+    ///
+    /// 为什么值得单独一条：这条链路的两端分别是"Rust 的 enum/描述"和"前端的 if-else 链"，
+    /// 少写一边的表现是**静默**的 —— 客户端照描述传 `section:"wslDevices"`，前端回一句
+    /// "没有这个区段"，而两端各自的单测都是绿的（与 2026-09 那次 `notFound` 丢字段同源）。
+    /// 前端那一半由 `.walkthrough/gen_ble_preview.js` 扫源码守着（AGENTS #11③）。
+    #[test]
+    fn ui_get_state_advertises_the_wsl_device_section() {
+        let def = tool_defs()
+            .into_iter()
+            .find(|t| t["name"] == "ui_get_state")
+            .expect("ui_get_state 必须存在");
+        let enums: Vec<String> = def["inputSchema"]["properties"]["section"]["enum"]
+            .as_array()
+            .expect("section 必须有 enum")
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        let desc = def["inputSchema"]["properties"]["section"]["description"]
+            .as_str()
+            .unwrap_or("");
+        for want in ["bleDevices", "wslDevices"] {
+            assert!(
+                enums.iter().any(|e| e == want),
+                "section 的 enum 里少了 {}：{:?}",
+                want,
+                enums
+            );
+            assert!(
+                desc.contains(want),
+                "section 的描述里少了 {}（调用方只会照描述传）：{}",
+                want,
+                desc
+            );
+        }
+        // `mapControlPath` 是这条路的**关键产出**：不说，AI 就只能靠 busid 猜控件路径
+        assert!(
+            desc.contains("mapControlPath"),
+            "描述里必须点出 mapControlPath 的用法：{}",
+            desc
+        );
+    }
+
+    /// WSL 设备表的文本摘要必须**报出 busid 与 COM 名**。
+    ///
+    /// 与 `ble_list_devices_text_carries_mac_and_name` 是同一条纪律（AGENTS #11③）：
+    /// 通用渲染对数组只展开前 3 个元素，设备一多，"哪台是 COM7"就一个字都不在文本里 ——
+    /// 而只读文本的客户端（和人）看到的正是这一行。用户要 AI 做的第一件事就是
+    /// "把 COM7 映射到 WSL"，所以 busid（稳定身份）+ COM 名（用户嘴里的名字）缺一不可。
+    #[test]
+    fn ui_get_state_wsl_devices_text_carries_busid_and_com() {
+        block_on(async {
+            let c = core();
+            {
+                let mut slot = c.test_ui.lock().unwrap_or_else(|e| e.into_inner());
+                *slot = Some(Box::new(|op: &str, payload: &Value| {
+                    assert_eq!(op, "getState", "wslDevices 该走通用桥的 getState");
+                    assert_eq!(payload["section"], "wslDevices");
+                    json!({ "ok": true, "value": {
+                        "wslRunning": true, "targetDistro": "", "panelOpened": true,
+                        "count": 1, "mapped": 0, "note": null, "mapUnavailableReason": null,
+                        "devices": [{ "busid": "2-1", "port": "COM7", "name": "USB-SERIAL CH340",
+                                      "vidpid": "1A86:7523", "hasCom": true, "status": "unmapped",
+                                      "wslPath": "", "wslSerial": "", "busy": false,
+                                      "mapControlPath": "wsl.ui.wslMap_2_1" }],
+                    }})
+                }));
+            }
+            let r = call(&c, &raw_call("ui_get_state", &json!({ "section": "wslDevices" }))).await;
+            assert_eq!(r["result"]["isError"], false, "{}", r);
+            let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+            assert!(text.contains("2-1"), "文本摘要里没有 busid: {}", text);
+            assert!(text.contains("COM7"), "文本摘要里没有 COM 名: {}", text);
+            assert_eq!(
+                r["result"]["structuredContent"]["devices"][0]["mapControlPath"],
+                "wsl.ui.wslMap_2_1",
+                "设备条目必须带上可直接交给 ui_set 的控件路径"
+            );
         });
     }
 

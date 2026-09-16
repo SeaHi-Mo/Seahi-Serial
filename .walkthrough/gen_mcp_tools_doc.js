@@ -8,6 +8,45 @@ const src = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol
 const i = src.indexOf('pub fn tool_defs()');
 const body = src.slice(i, src.indexOf('\n    ]', i));
 
+/**
+ * `pub const XXX: &str = "…";` 的表。
+ *
+ * 为什么要这一步：schema 里可能引用 Rust 常量（如 `PANE_DESC`）而不是直接写字符串 ——
+ * 那是 `json!` 宏里的**表达式**，抽出来的文本不是合法 JSON，`JSON.parse` 会直接抛。
+ * 也就是说"把重复的文案抽成常量"这个正常重构会把文档生成器搞挂（13 个串口工具共用
+ * `pane` 描述时就这么踩了一次）。这里先把常量读出来、再把引用换回字面量。
+ * 只认 `&str`（数值常量与 `&[&str]` 与 schema 无关）。
+ */
+const consts = {};
+for (const m of src.matchAll(/pub const ([A-Z][A-Z0-9_]*): &str =\s*"((?:[^"\\]|\\.)*)";/g)) {
+  consts[m[1]] = m[2];
+}
+
+/** 把 schema 文本里"字符串之外"的已知常量引用替换成它的字面量（JSON 转义过） */
+function resolveConsts(text) {
+  let out = '', k = 0, inStr = false;
+  while (k < text.length) {
+    const c = text[k];
+    if (inStr) {
+      out += c;
+      if (c === '\\') { out += text[k + 1] || ''; k += 2; continue; }
+      if (c === '"') inStr = false;
+      k++;
+      continue;
+    }
+    if (c === '"') { inStr = true; out += c; k++; continue; }
+    const m = /^[A-Z][A-Z0-9_]*/.exec(text.slice(k));
+    if (m && consts[m[0]] !== undefined) {
+      out += JSON.stringify(consts[m[0]]);
+      k += m[0].length;
+      continue;
+    }
+    out += c;
+    k++;
+  }
+  return out;
+}
+
 /** 读一个 JSON 字符串字面量（honor 转义），返回 [值, 结束下标] */
 function readStr(s, from) {
   const q = s.indexOf('"', from);
@@ -49,15 +88,15 @@ for (;;) {
   const [desc] = readStr(body, d + 14);
   const sch = body.indexOf('"inputSchema":', d);
   const [schemaText] = readObj(body, sch + 14);
-  tools.push({ name, desc, schema: JSON.parse(schemaText) });
+  tools.push({ name, desc, schema: JSON.parse(resolveConsts(schemaText)) });
   pos = sch + 14;
 }
 
 // 逐个工具的「读/写」+「返回结构」+ 备注（返回结构取自对真实服务实调抓的 structuredContent）
 const META = {
   // ===== 串口语义工具（S12）=====
-  serial_get_state: ['读', '{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, advOpen, outputLines, outputBytes, historyCount, panes, logChannels:{rx,tx}}', '**操作串口前先调它**；省略 pane 默认 main；`logChannels` 是"收发内容去哪读"的通道名'],
-  serial_select_port: ['写', '{pane, applied:[{name,ok,from,to}]}', '值必须是 serial_list_ports 里的端口名；给错 → 协议级 `-32602` 并**回列真实可选值**（来自界面下拉的选项），照着改就行'],
+  serial_get_state: ['读', '{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, advOpen, outputLines, outputBytes, historyCount, panes, portOptions:[{value,label,inUse}], logChannels:{rx,tx}}', '**操作串口前先调它**；省略 pane 默认 main；`logChannels` 是"收发内容去哪读"的通道名；`portOptions` 是**这个分栏**当前能选的端口（Windows 分栏是 COM 名，WSL 分栏是 `/dev/...` 路径）——选端口前先看它'],
+  serial_select_port: ['写', '{pane, applied:[{name,ok,from,to}]}', '值必须是**该分栏**端口下拉里的一个（就是 `serial_get_state` 的 `portOptions[].value`）；给错 → 协议级 `-32602` 并**回列真实可选值**，照着改就行。⚠️ 别拿 `serial_list_ports` 当依据：它只有 Windows 的 COM 口，WSL 分栏要的是 `/dev/ttyUSB0` 这类 WSL 内部路径'],
   serial_set_baud: ['写', '同上', '110..4000000；越界报 -32602'],
   serial_set_frame: ['写', '同上', 'dataBits/stopBits/parity 至少给一个；**连接中改帧格式无效**，先 serial_close'],
   serial_set_lines: ['写', '同上', 'dtr/rts 布尔；常用于让目标板复位或进下载模式'],
@@ -93,15 +132,15 @@ const META = {
   adb_shell_resize: ['写', '{serial, cols, rows, note?}', '`cols` / `rows` 都是 **2~1000**（`maxAdbCols` / `maxAdbRows`），越界或 0/1 → -32602。注意面板自己的尺寸同步（窗口/容器变化时）可能随后把 PTY 改回真实容器尺寸'],
   adb_close_shell: ['写', '{serial, opened:false, closed, note?}', '关掉当前会话（kill `adb shell` 子进程 + 移除终端）；本来就没开会话时是幂等的（`closed:false` + `note`），不是错误'],  serial_quick_cmd: ['读', '{pane, items:[{index,label,value,seq,delayMs,hex}], usable, file, source}', '不带 index 只列；带 index 才执行（→ {pane, ran, label, value, hex}）。`seq`/`delayMs`/`hex` 是**每条自己的发送参数**（顺序号 > 0 才进面板上的「循环发送」列表，`delayMs` 默认 1000，`hex` 默认关闭）；`source=file` 表示这个列表来自外部文件（面板里增删改会写回该文件），`file` 是它的路径；`source=config` 才是纯配置里的列表'],
   app_info: ['读', '`{name, version, profile, os, arch, pid, uptimeSecs}`', ''],
-  mcp_status: ['读', '打码后的服务器状态：`running/enabled/host/port/tokenMasked/sessions/statusEmits/readOnly/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`', '**不含 token 与完整 URL**（`urlMasked` 只在服务器通过界面启动、确实绑定了端口时出现）；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新；**`readOnly` 必须先看** —— 为 true 时所有写操作会被拒（-32007）'],
+  mcp_status: ['读', '打码后的服务器状态：`running/enabled/host/port/streamableHttp/tokenMasked/sessions/statusEmits/readOnly/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`', '**不含 token 与完整 URL**（`urlMasked` 与 `streamableUrlMasked` 只在服务器通过界面启动、确实绑定了端口时出现；**两条 URL 都打码**）；`streamableHttp` 为 false 时 `/mcp` 返回 404、只剩遗留 SSE；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新；**`readOnly` 必须先看** —— 为 true 时所有写操作会被拒（-32007）'],
   mcp_limits: ['读', '`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels, maxQuickCmdItems, maxQuickCmdLabelChars, maxQuickCmdValueChars, maxQuickCmdFileBytes, maxBleWriteChars, maxAdbWriteChars, maxAdbCols, maxAdbRows, maxAdbReadLines}`', '用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**'],
-  serial_list_ports: ['读', '`{count, ports:[{portName, friendlyName, productName}]}`', '不会打开端口；**端口名在 `portName`**（字段一律驼峰，别去猜 `port_name`）'],
+  serial_list_ports: ['读', '`{count, ports:[{portName, friendlyName, productName}]}`', '不会打开端口；**端口名在 `portName`**（字段一律驼峰，别去猜 `port_name`）。⚠️ **只列 Windows 侧的 COM 口** —— WSL 分栏的端口是 WSL 内部的 `/dev/...`，不在这里（用 `serial_get_state` 的 `portOptions`）'],
   ui_list: ['读', '`{total, controls:[{path, kind, panel, group, label, enabled, disabledReason, value?, options?}], nextCursor?}`', '`enabled=false` 时 `disabledReason` 会说明原因（如"串口未连接"）；建议先枚举再操作'],
   ui_describe: ['读', '`{…控件公开字段…, description, inputSchema}`', '等于"这个控件怎么用"的说明书'],
   ui_get: ['读', '`{path, value, enabled, disabledReason}`', ''],
-  ui_set: ['写', '`{results:[{path, ok, notFound?, error?, from?, to?}], effects:[{path, from, to}]}`（**单目标失败时不会有这个结构**：整个调用直接失败）', '**会真的改界面**；支持批量 `items:[{path,value}]`（整批一次回执）；只给一个 `path`/`value` 时按**单目标语义**——失败即整次调用失败（路径不存在 → `-32602`；控件被禁用 → `isError`+`-32006`）'],
-  ui_get_state: ['读', '当前会话配置快照（与界面「保存配置」同一份真源）；**section 给 bleDevices 时返回蓝牙扫描结果全量**（设备卡片是动态 div、不在控件注册表里，只有通用桥的客户端就从这里读），`ble` 段里带一份前 10 台的 `scanResult`', ''],
-  ui_click: ['写', '`{results:[{path, ok, notFound?, error?}], effects:[…]}`（**单目标失败时不会有这个结构**：整个调用直接失败）', '**会真的点下去**（例如"开始监控"）；用于 setter 够不到的动作；点击不存在/不可用的控件 → `-32602` / `isError`+`-32006`，**不会**假装成功'],
+  ui_set: ['写', '`{results:[{path, ok, notFound?, error?, from?, to?, mapRequest?}], effects:[{path, from, to}]}`（**单目标失败时不会有这个结构**：整个调用直接失败）', '**会真的改界面**；支持批量 `items:[{path,value}]`（整批一次回执）；只给一个 `path`/`value` 时按**单目标语义**——失败即整次调用失败（路径不存在 → `-32602`；控件被禁用 → `isError`+`-32006`）。⚠️ 少数动作**点了才开始跑**（典型：WSL 端口映射那个复选框要过 usbipd、还可能弹授权框等用户点）—— 那时结果里会带 `mapRequest.settled=false` + `note`：**别重试**，稍后用 `ui_get_state{section:"wslDevices"}` 看 status 是否变成 `mapped`'],
+  ui_get_state: ['读', '当前会话配置快照（与界面「保存配置」同一份真源）；**两张"运行时设备表"都要从它读**：`section:"bleDevices"` = 蓝牙扫描结果全量、`section:"wslDevices"` = WSL 端口映射的 USB 设备表（`{wslRunning, targetDistro, panelOpened, count, mapped, devices:[{busid, port, name, vidpid, hasCom, status, wslPath, wslSerial, busy, mapControlPath, autoMapControlPath}], note, mapUnavailableReason}`）—— 两处的行都是**动态 div、不在控件注册表里**，只有通用桥的客户端只能从这里读；`ble` 段里另带一份前 10 台的 `scanResult`', ''],
+  ui_click: ['写', '`{results:[{path, ok, notFound?, error?, mapRequest?}], effects:[…]}`（**单目标失败时不会有这个结构**：整个调用直接失败）', '**会真的点下去**（例如"开始监控"）；用于 setter 够不到的动作；点击不存在/不可用的控件 → `-32602` / `isError`+`-32006`，**不会**假装成功。⚠️ 同 `ui_set`：WSL 端口映射那种"点了才开始跑"的动作会带 `mapRequest.settled=false`，**别重试**'],
   log_channels: ['读', '`{enabled, channelCount, channels:[{channel, lines, bytes, capBytes, seqFrom, seqTo, dropped, lastTs}], totalBytes, totalCapBytes, maxChannels, lockSkips, channelSkips, reclaims, reclaimedBytes}`', '不确定去哪找日志时先调它'],
   log_tail: ['读', '`{channel, lines:[{seq, ts, level, dir, text, rawBytes}], returned, dropped, seqTo, mayBeIncomplete, truncated}`', '给了 `sinceSeq` 就是增量拉取（旧拼写 `since_seq` 也认）；`mayBeIncomplete=true` 表示该通道丢过最旧的行'],
   log_search: ['读', '`{pattern, regex, scanned, hits:[{channel, seq, ts, level, text}], truncated}`', '不给 `channel` 就搜所有通道'],
@@ -159,12 +198,15 @@ md += '⚠️ 很多客户端只把 `content[].text` 给模型看，所以**摘�
 
 md += '## 1. 怎么连\n\n';
 md += '| | |\n|---|---|\n';
-md += '| 传输 | **只有 SSE**（HTTP+SSE）。没有 Streamable HTTP，因此只支持 Streamable HTTP 的客户端连不上 |\n';
-md += '| 端点 | `GET /sse`（建立会话，首帧下发 `event: endpoint`）→ `POST /messages?sessionId=…`（发 JSON-RPC，结果从 SSE 流回）|\n';
+md += '| 传输 | **两种并存**（默认）：① **Streamable HTTP**（`POST /mcp`，2025-03-26+ 规范，新版客户端默认走它）；② **遗留 SSE**（`GET /sse` + `POST /messages`，只支持 SSE 的老客户端）。也可以在弹窗里选「仅 /mcp」或「仅 SSE」—— 那时另一条端点返回 404 |\n';
+md += '| 端点（推荐，新客户端）| `POST /mcp?token=…` 发 JSON-RPC，**结果直接从这次 HTTP 响应回来**（`Content-Type: application/json`）；`initialize` 的响应头带 `Mcp-Session-Id`，后续请求用同名请求头带回来；`GET /mcp` 可另挂一条 SSE 流收服务端通知；`DELETE /mcp` 主动结束会话 |\n';
+md += '| 端点（老客户端）| `GET /sse`（建立会话，首帧下发 `event: endpoint`）→ `POST /messages?sessionId=…`（发 JSON-RPC，结果从 SSE 流回）|\n';
 md += '| 鉴权 | 每个请求都要带 token：`?token=…` 或 `Authorization: Bearer …`；`GET /healthz` 是唯一免鉴权端点，只回 `{"ok":true}` |\n';
 md += '| 监听 | **只监听回环**（`127.0.0.1` / `::1` / `localhost`），不对外网/局域网开放 |\n';
-md += '| 握手顺序 | 客户端必须先 `GET /sse` 拿到 endpoint，再 `POST` `initialize` → `notifications/initialized` → `tools/list` |\n';
-md += '| 地址从哪来 | 程序弹窗里的「连接 URL」，或 `%APPDATA%\\seahi-serial\\mcp-endpoint.json` |\n\n';
+md += '| 握手顺序（Streamable HTTP）| `POST /mcp` `initialize`（不带会话头）→ 从响应头拿 `Mcp-Session-Id` → 后续请求都带上它 → `notifications/initialized`（回 202）→ `tools/list` |\n';
+md += '| 握手顺序（遗留 SSE）| 客户端必须先 `GET /sse` 拿到 endpoint，再 `POST` `initialize` → `notifications/initialized` → `tools/list` |\n';
+md += '| 地址从哪来 | 程序弹窗里的「Streamable HTTP / 遗留 SSE」两块地址，或 `%APPDATA%\\seahi-serial\\mcp-endpoint.json`（`url` 与 `urlStreamable` 两个字段）|\n';
+md += '| 传输档位 | 弹窗里的「传输」三档：**两种都提供**（默认，兼容性最好）/ **仅 /mcp** / **仅 SSE**。配置键是 `server.transport`（老的 `server.streamableHttp` 布尔写法仍然认）。选单档时**另一条端点立刻返回 404**（切换立即生效，不用重启服务器）|\n\n';
 
 md += '## 2. 怎么拿工具列表\n\n';
 md += '- 运行时：`tools/list`（分页，每页 50，用 `nextCursor` 翻页）——这是**权威来源**，本页只是它的可读版本。\n';
@@ -224,11 +266,15 @@ md += '| 前端桥超时（界面动作 5 秒没回执） | `-32004`（`E_UI_TIM
 md += '| 前端桥在途请求过多 | `-32005`（`E_UI_BUSY`）|\n';
 md += '| 超过 60 次/分 | `-32000`（`E_RATE_LIMITED`）|\n';
 md += '| 工具内部 panic | `-32603`，消息里写明"已上报"；连接**不会**被打死，且会上报错误库 |\n';
+md += '| `POST /mcp` 带的 `Mcp-Session-Id` 不认识（过期/被表满淘汰/伪造） | HTTP 404 + `session not found`（**不是** JSON-RPC 错误）；规范里客户端拿到 404 应当重新 `initialize` |\n';
+md += '| `POST /mcp` 的 `MCP-Protocol-Version` 不认识 | HTTP 400，响应体里列出我们支持的版本（缺失该头按 2025-03-26 放行）|\n';
+md += '| `POST /mcp` 带了非回环的 `Origin`（`http://evil.com` / `https://…` / `null`） | HTTP 403（防 DNS rebinding；不带 Origin 的 SDK/curl 不受影响）|\n';
 md += '| token 不对 / 缺失 | HTTP 401（不是 JSON-RPC 层）|\n\n';
 
 md += '## 7. 上限与安全边界\n\n';
 md += '| 项 | 值 |\n|---|---|\n';
-md += '| 同时会话数 | 4（客户端断开**立刻**回收，不等空闲超时）|\n';
+md += '| 同时会话数 | 4，**两种传输共用一张表**：SSE 会话在流断开时立刻回收；HTTP 会话没有断连信号可依赖，靠 30 分钟空闲回收 + 客户端 `DELETE /mcp` |\n';
+md += '| 表满时（HTTP 新建会话）| **淘汰最久未活动的 HTTP 会话**（客户端下次请求得 404 并重新 `initialize`，可恢复）；只有剩下的全是 SSE 会话时才回 429 —— 淘汰 SSE 会话会把它那条长连接变成收不到东西的僵尸 |\n';
 md += '| 每会话出站队列 / 心跳 / 空闲回收 / 限流 | 256 条丢最旧 · 15s · 30 分钟 · 60 次/分 |\n';
 md += '| 请求体上限 | 1 MiB |\n';
 md += '| `ui_set` 单次 items | **200**（超了 -32602；这条链路跑在界面主线程上）|\n';
@@ -246,30 +292,54 @@ md += '| 桥回执超时 / 在途上限 | **界面动作 5 秒**、设备动作 
 md += '| `ble_list_devices` / `ui_get_state(bleDevices)` 每页 | 200 台（`limit` 只能是 **1~200**，0 与超限都是 -32602；要全量就**不给** limit，或用 `offset` 翻页）|\n\n';
 md += '安全边界：\n\n';
 md += '1. **只监听回环**，`server.host` 只接受 `127.0.0.1`/`::1`/`localhost`；\n';
-md += '2. 必须带 token；`/healthz` 是唯一免鉴权端点且只回 `{"ok":true}`；`/status` 需 token 且**不回显 token 与完整 URL**；\n';
+md += '2. 必须带 token；`/healthz` 是唯一免鉴权端点且只回 `{"ok":true}`；`/status` 需 token 且**两条 URL 都打码**（`urlMasked` / `streamableUrlMasked`），绝不回显 token 与完整 URL；`/mcp` 另外校验 `Origin`（只放行回环）；\n';
 md += '3. **工具不能改 token**（必须在界面点「重置令牌」）；\n';
 md += '4. AI 记录写独立的 `ai-calls.jsonl`，**用户配置 `config.json` 里不会出现任何 AI 痕迹**；\n';
 md += '5. 运行期错误走程序既有的错误上报（LogHub → 本地日志 → Sentry/自建服务），**上报前 token 打码**，同类错误 5 分钟只报一次；\n';
 md += '6. **MCP 的运行不得拖慢主程序**：串口收发热路径上只有一次非阻塞的日志旁路（`try_lock`，拿不到锁就丢并计数），上报走独立线程的 channel，SSE 出站是「有界队列 + `try_send`」（生产者绝不阻塞，慢客户端直接断开），界面命令有在途上限（32）与**分档超时**（界面动作 5s、设备动作 30s、连接 130s —— 连接要等用户点配对弹窗，按 5s 算必然假失败），**所有外部输入都有上限**（见上表）。\n\n';
 
 md += '## 8. 手测示例（curl）\n\n';
+md += '**Streamable HTTP（推荐，新版客户端走这条）**\n\n';
 md += '```bash\n';
-md += '# 1) 探活（不需要 token）\n';
+md += '# 1) initialize：不带会话头，从**响应头**里拿 Mcp-Session-Id（-i 才会打印响应头）\n';
+md += 'curl.exe -i -X POST "http://127.0.0.1:7777/mcp?token=<TOKEN>" \\\n';
+md += '  -H "Content-Type: application/json" \\\n';
+md += '  -H "MCP-Protocol-Version: 2025-06-18" \\\n';
+md += '  -d \'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"curl"}}}\'\n';
+md += '#   期望 HTTP 200 + content-type: application/json + 响应头 mcp-session-id: <SID>\n';
+md += '#   ⚠️ 结果**就在这个响应体里**（不必像 SSE 那样另开一条流等）\n\n';
+md += '# 2) 后续请求带上会话头（结果同样直接从响应回来）\n';
+md += 'curl.exe -i -X POST "http://127.0.0.1:7777/mcp?token=<TOKEN>" \\\n';
+md += '  -H "Content-Type: application/json" \\\n';
+md += '  -H "Mcp-Session-Id: <SID>" \\\n';
+md += '  -d \'{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"app_info"}}\'\n\n';
+md += '# 3) 通知：回 202 + 空体（规范要求，不是 200 加空 JSON）\n';
+md += 'curl.exe -i -X POST "http://127.0.0.1:7777/mcp?token=<TOKEN>" \\\n';
+md += '  -H "Content-Type: application/json" \\\n';
+md += '  -H "Mcp-Session-Id: <SID>" \\\n';
+md += '  -d \'{"jsonrpc":"2.0","method":"notifications/initialized"}\'\n\n';
+md += '# 4) 用完主动结束会话（立刻释放一个会话名额）\n';
+md += 'curl.exe -i -X DELETE "http://127.0.0.1:7777/mcp?token=<TOKEN>" -H "Mcp-Session-Id: <SID>"\n';
+md += '#   期望 HTTP 204\n';
+md += '```\n\n';
+md += '**遗留 SSE（只支持 SSE 的老客户端走这条）**\n\n';
+md += '```bash\n';
+md += '# 0) 探活（不需要 token）\n';
 md += 'curl.exe -i http://127.0.0.1:7777/healthz\n\n';
-md += '# 2) 建 SSE 会话，看首帧 endpoint（-N 关缓冲；这个连接要一直挂着）\n';
+md += '# 1) 建 SSE 会话，看首帧 endpoint（-N 关缓冲；这个连接要一直挂着）\n';
 md += 'curl.exe -N "http://127.0.0.1:7777/sse?token=<TOKEN>"\n';
 md += '#   event: endpoint\n';
 md += '#   data: /messages?sessionId=<SID>&token=<TOKEN>\n\n';
-md += '# 3) 另开一个窗口，往上面那个 SID 发 JSON-RPC\n';
+md += '# 2) 另开一个窗口，往上面那个 SID 发 JSON-RPC\n';
 md += 'curl.exe -i -X POST "http://127.0.0.1:7777/messages?sessionId=<SID>&token=<TOKEN>" \\\n';
 md += '  -H "Content-Type: application/json" \\\n';
 md += '  -d \'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","clientInfo":{"name":"curl"}}}\'\n';
-md += '#   期望 HTTP 202；结果从第 2 步的 SSE 流里出来\n\n';
-md += '# 4) 列工具（同样 202，结果从 SSE 流回）\n';
+md += '#   期望 HTTP 202；结果从第 1 步的 SSE 流里出来\n\n';
+md += '# 3) 列工具（同样 202，结果从 SSE 流回）\n';
 md += 'curl.exe -i -X POST "http://127.0.0.1:7777/messages?sessionId=<SID>&token=<TOKEN>" \\\n';
 md += '  -H "Content-Type: application/json" \\\n';
 md += '  -d \'{"jsonrpc":"2.0","id":2,"method":"tools/list"}\'\n\n';
-md += '# 5) 调一个只读工具\n';
+md += '# 4) 调一个只读工具\n';
 md += 'curl.exe -i -X POST "http://127.0.0.1:7777/messages?sessionId=<SID>&token=<TOKEN>" \\\n';
 md += '  -H "Content-Type: application/json" \\\n';
 md += '  -d \'{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"app_info"}}\'\n';

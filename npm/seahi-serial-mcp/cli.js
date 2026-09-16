@@ -97,8 +97,19 @@ function readEndpoint() {
   } catch (e) {
     return { ok: false, reason: `端点发现文件解析失败：${e.message}` };
   }
-  if (!ep || typeof ep.url !== 'string' || !ep.url) {
-    return { ok: false, reason: '端点发现文件里没有 url 字段' };
+  if (!ep || typeof ep !== 'object') {
+    return { ok: false, reason: '端点发现文件不是一个 JSON 对象' };
+  }
+  // ⚠️ **不能强求 `url` 存在**：应用侧传输是三档的，选「仅 /mcp」时 `url` 就是空串
+  // （另一条 URL 会被应用刻意写成空的，免得有人拿一个必然 404 的地址去配）。
+  // 只要两条里有一条，就交给 `pickUrl` 按 --transport 去挑，并在挑不到时说清原因。
+  const hasSse = typeof ep.url === 'string' && ep.url;
+  const hasHttp = typeof ep.urlStreamable === 'string' && ep.urlStreamable;
+  if (!hasSse && !hasHttp) {
+    return {
+      ok: false,
+      reason: '端点发现文件里既没有 url 也没有 urlStreamable（应用可能太旧，或者写文件时出错了）',
+    };
   }
   return { ok: true, endpoint: ep, file: f };
 }
@@ -211,12 +222,60 @@ function saveAtomic(file, obj) {
 }
 
 /** 供"拒绝硬改"时给用户的可粘贴片段 */
-function snippetFor(url) {
-  return JSON.stringify({ mcpServers: { [SERVER_KEY]: { type: 'sse', url } } }, null, 2);
+function snippetFor(url, transport) {
+  return JSON.stringify({ mcpServers: { [SERVER_KEY]: desiredEntry(url, transport) } }, null, 2);
 }
 
-function desiredEntry(url) {
-  return { type: 'sse', url };
+/**
+ * 要写进客户端配置的那一条。
+ *
+ * `transport`：
+ * - `'sse'`（**默认**）= 遗留 SSE（`GET /sse`），配置里写 `"type": "sse"`；
+ * - `'http'` = Streamable HTTP（`POST /mcp`，2025-03-26+ 规范），写 `"type": "http"`。
+ *
+ * 默认仍是 sse（**不改既有行为**）：已经用本工具配过的用户重跑一次不会把配置改坏，
+ * 而只支持 SSE 的老客户端也不会突然被换成它不认的形态。要用新形态就显式 `--transport http`。
+ * 少数客户端（Cline 等）认的是 `streamableHttp` 而不是 `http`，那种情况请手工把 type 改一下。
+ */
+function desiredEntry(url, transport) {
+  return { type: transport === 'http' ? 'http' : 'sse', url };
+}
+
+/**
+ * 按传输类型从发现文件里挑 URL。
+ * 返回 `{ ok, url }` 或 `{ ok:false, reason }`（reason 要能让人看懂下一步做什么）。
+ *
+ * 应用侧现在是**三档**（`both` / `http` / `sse`，见弹窗里的"传输"），所以只提供一种时，
+ * 另一条 URL 是**空串**。这时不能只说"缺字段"—— 得说清是"应用被设成了只提供另一种"，
+ * 并给出两条可操作的出路（换 --transport 或去弹窗里改档位）。
+ */
+function pickUrl(ep, transport) {
+  const mode = ep && typeof ep.transport === 'string' ? ep.transport : '';
+  const hasHttp = !!(ep && typeof ep.urlStreamable === 'string' && ep.urlStreamable);
+  const hasSse = !!(ep && typeof ep.url === 'string' && ep.url);
+  if (transport === 'http') {
+    if (!hasHttp) {
+      return {
+        ok: false,
+        reason:
+          (mode === 'sse'
+            ? '应用当前**只提供遗留 SSE**（弹窗里的"传输"选了「仅 SSE」），没有 /mcp 端点。\n'
+            : '这个应用没有给出 Streamable HTTP 端点（发现文件里缺 urlStreamable）。\n' +
+              '  两种可能：① 应用版本旧（升级到最新版即可）；② 弹窗里把传输设成了只提供一种。\n') +
+          '  出路：改用 --transport sse，或到应用弹窗里把传输切成「两种都提供」/「仅 /mcp」。',
+      };
+    }
+    return { ok: true, url: ep.urlStreamable };
+  }
+  if (!hasSse) {
+    return {
+      ok: false,
+      reason:
+        '应用当前**只提供 Streamable HTTP**（弹窗里的"传输"选了「仅 /mcp」），没有 /sse 端点。\n' +
+        '  出路：改用 --transport http（新版客户端推荐），或到弹窗里把传输切成「两种都提供」/「仅 SSE」。',
+    };
+  }
+  return { ok: true, url: ep.url };
 }
 
 /**
@@ -225,6 +284,7 @@ function desiredEntry(url) {
  */
 function installFor(id, url, opts) {
   opts = opts || {};
+  const transport = opts.transport === 'http' ? 'http' : 'sse';
   const file = clientConfigPath(id);
   const label = CLIENTS[id].label;
   const loaded = loadJsonStrict(file);
@@ -235,14 +295,17 @@ function installFor(id, url, opts) {
       label,
       file,
       reason: loaded.reason,
-      snippet: snippetFor(url),
+      snippet: snippetFor(url, transport),
     };
   }
   const cfg = loaded.data && typeof loaded.data === 'object' ? loaded.data : {};
   const servers = cfg.mcpServers && typeof cfg.mcpServers === 'object' ? cfg.mcpServers : {};
   const cur = servers[SERVER_KEY];
-  if (cur && cur.type === 'sse' && cur.url === url) {
-    return { status: 'unchanged', client: id, label, file, url };
+  const want = desiredEntry(url, transport);
+  // 幂等要**同时**比 type 与 url：否则"从 sse 换成 http（同一个应用、端口没变）"会被
+  // 判成"无需修改"，用户以为切过去了，实际上客户端还在按老形态连 —— 而且两边都不会报错。
+  if (cur && cur.type === want.type && cur.url === want.url) {
+    return { status: 'unchanged', client: id, label, file, url, transport };
   }
   if (opts.dryRun) {
     return {
@@ -251,12 +314,13 @@ function installFor(id, url, opts) {
       label,
       file,
       url,
+      transport,
       from: cur ? maskUrl(cur.url || '') : null,
     };
   }
   const next = Object.assign({}, cfg);
   next.mcpServers = Object.assign({}, servers);
-  next.mcpServers[SERVER_KEY] = desiredEntry(url);
+  next.mcpServers[SERVER_KEY] = want;
   const backup = saveAtomic(file, next);
   return {
     status: 'installed',
@@ -264,6 +328,7 @@ function installFor(id, url, opts) {
     label,
     file,
     url,
+    transport,
     backup,
     from: cur ? maskUrl(cur.url || '') : null,
   };
@@ -306,7 +371,17 @@ function defaultTargets() {
 }
 
 function parseArgs(argv) {
-  const out = { cmd: 'install', clients: null, url: null, dryRun: false, json: false, help: false };
+  const out = {
+    cmd: 'install',
+    clients: null,
+    url: null,
+    // 默认 sse：**不改既有行为**（已配过的用户重跑不会把配置改坏，老客户端也不受影响）
+    transport: 'sse',
+    transportExplicit: false,
+    dryRun: false,
+    json: false,
+    help: false,
+  };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -317,7 +392,13 @@ function parseArgs(argv) {
     else if (a.startsWith('--client=')) out.clients = a.slice(9).split(',').map((s) => s.trim()).filter(Boolean);
     else if (a === '--url') out.url = argv[++i];
     else if (a.startsWith('--url=')) out.url = a.slice(6);
-    else rest.push(a);
+    else if (a === '--transport') {
+      out.transport = String(argv[++i] || '').trim().toLowerCase();
+      out.transportExplicit = true;
+    } else if (a.startsWith('--transport=')) {
+      out.transport = a.slice(12).trim().toLowerCase();
+      out.transportExplicit = true;
+    } else rest.push(a);
   }
   if (rest.length) out.cmd = rest[0];
   return out;
@@ -333,22 +414,31 @@ const HELP = `seahi-serial-mcp v${PKG_VERSION} —— 把 SeaHi Serial 的 MCP �
 选项：
   --client a,b    只处理指定客户端（${Object.keys(CLIENTS).join(' / ')}）
   --url <url>     手动指定端点（跳过发现文件）
+  --transport t   用哪种传输：sse（默认，老客户端）| http（Streamable HTTP，新版客户端）
   --dry-run       只显示将要做什么，不写盘
   --json          机器可读输出
   -h, --help      显示帮助
 
 说明：安装前会确认应用在运行（发现文件 + /healthz 探活）。
-端口回退导致 URL 变化后，重跑一次 install 即可修正 —— 这就是它比手工粘贴强的地方。`;
+端口回退导致 URL 变化后，重跑一次 install 即可修正 —— 这就是它比手工粘贴强的地方。
+新版客户端（VS Code / Cline / 新版 Cursor / Claude Code）默认只走 Streamable HTTP，
+它们连不上时请改用 --transport http。少数客户端（Cline 等）认的 type 是 streamableHttp
+而不是 http，那种情况请手工改一下那个字段。`;
 
 async function statusAll(opts) {
   const ep = readEndpoint();
   const out = { app: { running: false }, clients: [], endpointFile: endpointFile() };
   if (ep.ok) {
-    out.app.endpoint = maskUrl(ep.endpoint.url);
+    // 探活只关心 host:port，所以拿哪个 URL 都行；url 缺失时退回 Streamable 那条
+    const probeUrl = ep.endpoint.url || ep.endpoint.urlStreamable || '';
+    out.app.endpoint = maskUrl(probeUrl);
+    out.app.endpointStreamable = ep.endpoint.urlStreamable ? maskUrl(ep.endpoint.urlStreamable) : null;
+    // 应用当前提供哪种传输（both / http / sse）。老发现文件没有这个字段 → null
+    out.app.transport = ep.endpoint.transport || null;
     out.app.pid = ep.endpoint.pid;
     out.app.pidAlive = pidAlive(ep.endpoint.pid);
     out.app.appVersion = ep.endpoint.appVersion;
-    const pr = await probe(ep.endpoint.url, opts.timeoutMs);
+    const pr = await probe(probeUrl, opts.timeoutMs);
     out.app.healthy = pr.ok;
     out.app.running = pr.ok;
     if (!pr.ok) out.app.reason = pr.reason;
@@ -367,7 +457,9 @@ async function statusAll(opts) {
       else {
         const cur = loaded.data && loaded.data.mcpServers && loaded.data.mcpServers[SERVER_KEY];
         if (!cur) state = '未配置';
-        else if (cur.url === ep.endpoint.url) state = '已配置且指向当前端点';
+        else if (ep.endpoint.url && cur.url === ep.endpoint.url) state = '已配置且指向当前端点（SSE）';
+        else if (ep.endpoint.urlStreamable && cur.url === ep.endpoint.urlStreamable)
+          state = '已配置且指向当前端点（Streamable HTTP）';
         else state = '已配置但 URL 已过期（重跑 install 即可修正）';
       }
       out.clients.push({ client: id, label: CLIENTS[id].label, file, exists, state });
@@ -397,6 +489,11 @@ function printStatus(s) {
   console.log(`应用：${s.app.running ? '在运行' : '未运行'}`);
   if (s.app.reason) console.log(`  原因：${s.app.reason}`);
   if (s.app.endpoint) console.log(`  端点：${s.app.endpoint}（pid ${s.app.pid}${s.app.pidAlive ? '，存活' : '，已退出'}）`);
+  if (s.app.endpointStreamable) console.log(`  Streamable HTTP 端点：${s.app.endpointStreamable}`);
+  if (s.app.transport) {
+    const label = { both: '两种都提供', http: '仅 Streamable HTTP（/mcp）', sse: '仅遗留 SSE' }[s.app.transport] || s.app.transport;
+    console.log(`  应用提供的传输：${label}`);
+  }
   if (s.app.appVersion) console.log(`  应用版本：${s.app.appVersion}`);
   console.log('发现文件：' + s.endpointFile);
   console.log('客户端：');
@@ -410,6 +507,7 @@ function printResult(r) {
   const tag = { installed: '已写入', unchanged: '无需修改', 'would-install': '将写入', refused: '拒绝写入', removed: '已移除', 'would-remove': '将移除' }[r.status] || r.status;
   console.log(`[${tag}] ${r.label}`);
   console.log(`  文件：${r.file}`);
+  if (r.transport) console.log(`  传输：${r.transport === 'http' ? 'Streamable HTTP（type: http）' : '遗留 SSE（type: sse）'}`);
   if (r.url) console.log(`  端点：${maskUrl(r.url)}`);
   if (r.from) console.log(`  原值：${r.from}`);
   if (r.backup) console.log(`  备份：${r.backup}`);
@@ -444,20 +542,34 @@ async function main(argv) {
     return 1;
   }
 
+  // 传输类型的校验要在**任何写盘之前**做（写错一个字的代价是"客户端静默按老形态解析"）
+  if (!['sse', 'http'].includes(args.transport)) {
+    console.error(`✗ --transport 只接受 sse 或 http，收到：${args.transport}`);
+    return 1;
+  }
+
   // 解析端点：显式 --url 优先；否则读发现文件并**必须探活成功**
   let url = args.url;
+  let sawHttpEndpoint = false;
   if (!url) {
     const ep = readEndpoint();
     if (!ep.ok) {
       console.error(`✗ ${ep.reason}`);
       return 2;
     }
-    const pr = await probe(ep.endpoint.url, PROBE_TIMEOUT_MS);
+    sawHttpEndpoint = !!(ep.endpoint && ep.endpoint.urlStreamable);
+    // 先按传输类型挑 URL，再探活：挑不出来时给的提示比"探活失败"有用得多
+    const pick = pickUrl(ep.endpoint, args.transport);
+    if (!pick.ok) {
+      console.error(`✗ ${pick.reason}`);
+      return 2;
+    }
+    const pr = await probe(pick.url, PROBE_TIMEOUT_MS);
     if (!pr.ok) {
       console.error(`✗ 应用没有响应（${pr.reason}）—— 不写入，免得客户端拿到一个连不上的地址`);
       return 2;
     }
-    url = ep.endpoint.url;
+    url = pick.url;
   }
 
   let targets = args.clients;
@@ -486,15 +598,18 @@ async function main(argv) {
   for (const t of targets) {
     results.push(
       args.cmd === 'install'
-        ? installFor(t, url, { dryRun: args.dryRun })
+        ? installFor(t, url, { dryRun: args.dryRun, transport: args.transport })
         : uninstallFor(t, { dryRun: args.dryRun })
     );
   }
 
   if (args.json) {
-    console.log(JSON.stringify({ url: maskUrl(url), results }, null, 2));
+    console.log(JSON.stringify({ url: maskUrl(url), transport: args.transport, results }, null, 2));
   } else {
-    console.log(`端点：${maskUrl(url)}${args.dryRun ? '（--dry-run：不会写盘）' : ''}`);
+    console.log(
+      `端点：${maskUrl(url)}（${args.transport === 'http' ? 'Streamable HTTP' : '遗留 SSE'}）` +
+        `${args.dryRun ? '（--dry-run：不会写盘）' : ''}`
+    );
     for (const r of results) printResult(r);
     const refused = results.filter((r) => r.status === 'refused');
     if (refused.length) {
@@ -511,6 +626,13 @@ async function main(argv) {
     );
     if (!args.dryRun && realChange) {
       console.log('请重启对应的 AI 客户端让它重新加载 MCP 配置。');
+    }
+    // 自动探测到 http 端点、但用户没显式选传输时提示一句：新版客户端只认 Streamable HTTP，
+    // 它们连不上时最可能就是这里选错了（而客户端这边的报错通常毫无信息量）
+    if (args.cmd === 'install' && !args.transportExplicit && !args.url && sawHttpEndpoint) {
+      console.log('\n提示：这个应用同时提供 Streamable HTTP（POST /mcp）。');
+      console.log('      新版客户端（VS Code / Cline / 新版 Cursor / Claude Code）默认只走它，');
+      console.log('      连不上时请重跑一次并加上 --transport http。');
     }
   }
   return 0;
@@ -533,6 +655,7 @@ module.exports = {
   saveAtomic,
   snippetFor,
   desiredEntry,
+  pickUrl,
   installFor,
   uninstallFor,
   defaultTargets,

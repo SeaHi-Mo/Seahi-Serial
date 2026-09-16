@@ -12,6 +12,11 @@
 //                                           #   其余有副作用的（无必填参数）跳过并如实标注
 //   node .walkthrough/mcp_smoke.js --full   # 连有副作用的写工具也真调（会动界面/发数据，自己确认）
 //   node .walkthrough/mcp_smoke.js --url http://127.0.0.1:7777/sse?token=xxx
+//   node .walkthrough/mcp_smoke.js --transport sse   # 强制用遗留 SSE（默认：发现文件里有 /mcp 就用它）
+//   node .walkthrough/mcp_smoke.js --transport http  # 强制用 Streamable HTTP（POST /mcp）
+//
+// 传输怎么选：`--transport` > `--url` 里的路径（含 /mcp 就走 http）> 发现文件里有 urlStreamable 就走 http，
+// 否则回落到遗留 SSE。**默认走 http 是有意的**：新版客户端走的正是它，自检得跟着默认路径走。
 //
 // 退出码：有"硬失败"（工具缺失、参数校验没生效、危险门没生效…）时为 1。
 const fs = require('fs');
@@ -24,9 +29,26 @@ const urlArg = (() => {
   const i = args.indexOf('--url');
   return i >= 0 ? args[i + 1] : null;
 })();
+/** 显式指定的传输；null = 自动（见文件头的选择顺序） */
+const TRANSPORT = (() => {
+  const i = args.indexOf('--transport');
+  const eq = args.find((a) => a.startsWith('--transport='));
+  const raw = i >= 0 ? args[i + 1] : eq ? eq.slice('--transport='.length) : '';
+  if (!raw) return null;
+  const t = String(raw).toLowerCase();
+  if (t !== 'sse' && t !== 'http') {
+    console.error('--transport 只接受 sse 或 http，收到：' + raw);
+    process.exit(2);
+  }
+  return t;
+})();
 
-function endpointUrl() {
-  if (urlArg) return urlArg;
+/** 挑端点：`--url` 优先，否则读发现文件；返回 { url, mode } */
+function pickEndpoint() {
+  if (urlArg) {
+    const isHttp = /\/mcp(\?|$)/.test(urlArg);
+    return { url: urlArg, mode: TRANSPORT || (isHttp ? 'http' : 'sse') };
+  }
   const f = path.join(process.env.APPDATA || '', 'seahi-serial', 'mcp-endpoint.json');
   if (!fs.existsSync(f)) {
     console.error('找不到 ' + f + '：MCP 服务器没在跑（先在应用里打开 MCP 服务器），或用 --url 指定');
@@ -34,7 +56,18 @@ function endpointUrl() {
   }
   const ep = JSON.parse(fs.readFileSync(f, 'utf8'));
   console.log('运行中的应用：version=' + ep.appVersion + ' pid=' + ep.pid + '  ' + ep.host + ':' + ep.port);
-  return ep.url;
+  const hasHttp = typeof ep.urlStreamable === 'string' && ep.urlStreamable;
+  const mode = TRANSPORT || (hasHttp ? 'http' : 'sse');
+  const url = mode === 'http' ? ep.urlStreamable : ep.url;
+  if (!url) {
+    console.error(
+      mode === 'http'
+        ? '这个应用没给出 Streamable HTTP 端点（发现文件缺 urlStreamable）：版本旧，或弹窗里把它关了。加 --transport sse 改用老路径。'
+        : '发现文件里没有 url 字段'
+    );
+    process.exit(2);
+  }
+  return { url, mode };
 }
 
 // ---- 源码侧的"应该有哪些工具、哪些算写/危险"（与 protocol.rs 同一份真源）----
@@ -82,11 +115,10 @@ function txtOf(r) {
   return (res.isError ? 'isError: ' : '') + t.replace(/\s+/g, ' ').slice(0, 200);
 }
 
-(async () => {
-  const url = endpointUrl();
-  const u = new URL(url);
-  const base = u.origin;
-  const token = u.searchParams.get('token');
+/**
+ * 遗留 SSE（2024-11-05）：`GET /sse` 建会话 → `POST /messages` 发报文 → 结果从 SSE 流里按 id 配对。
+ */
+async function connectSse(base, token) {
   const res = await fetch(base + '/sse?token=' + token, { headers: { accept: 'text/event-stream' } });
   if (!res.ok) { console.error('GET /sse → ' + res.status + '（token 不对？）'); process.exit(2); }
   const reader = res.body.getReader();
@@ -123,11 +155,67 @@ function txtOf(r) {
     for (let i = 0; i < 400 && !replies.has(id); i++) await sleep(25);
     return replies.get(id) || {};
   };
+  const notify = (method) => post({ jsonrpc: '2.0', method });
+  return { rpc, notify };
+}
+
+/**
+ * Streamable HTTP（2025-03-26+）：单端点 `POST /mcp`，**结果就在这次响应体里**（不用另开流）。
+ * 会话 id 从响应头 `Mcp-Session-Id` 拿，之后每个请求都带回去 —— 这也是真实客户端的行为，
+ * 自检走一遍就等于把"会话头这一跳"也测了。
+ */
+async function connectHttp(base, token) {
+  const url = base + '/mcp?token=' + token;
+  let sid = null;
+  let seq = 1;
+  const send = (msg) =>
+    fetch(url, {
+      method: 'POST',
+      headers: Object.assign(
+        { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        sid ? { 'mcp-session-id': sid } : {}
+      ),
+      body: JSON.stringify(msg),
+    });
+  const rpc = async (method, params) => {
+    const res = await send({ jsonrpc: '2.0', id: seq++, method, params });
+    const got = res.headers.get('mcp-session-id');
+    if (got) sid = got;
+    const text = await res.text();
+    if (!res.ok) {
+      console.error('POST /mcp → HTTP ' + res.status + '：' + text.slice(0, 200));
+      return { error: { code: res.status, message: 'HTTP ' + res.status + ' ' + text.slice(0, 120) } };
+    }
+    if (res.status === 202 || !text) return {};
+    try { return JSON.parse(text); } catch (e) { return { error: { code: -32700, message: text.slice(0, 120) } }; }
+  };
+  const notify = async (method) => {
+    const res = await send({ jsonrpc: '2.0', method });
+    const got = res.headers.get('mcp-session-id');
+    if (got) sid = got;
+    // 规范要求通知回 202 + 空体；别的状态码说明这一跳有问题，要说出来
+    if (res.status !== 202) console.error('通知 ' + method + ' → HTTP ' + res.status + '（期望 202）');
+  };
+  return { rpc, notify, sessionId: () => sid };
+}
+
+(async () => {
+  const { url, mode } = pickEndpoint();
+  const u = new URL(url);
+  const base = u.origin;
+  const token = u.searchParams.get('token');
+  console.log('传输：' + (mode === 'http' ? 'Streamable HTTP（POST /mcp）' : '遗留 SSE（GET /sse + POST /messages）'));
+  const conn = mode === 'http' ? await connectHttp(base, token) : await connectSse(base, token);
+  const { rpc, notify } = conn;
   const callTool = (name, a) => rpc('tools/call', { name, arguments: a || {} });
 
-  await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {},
-                            clientInfo: { name: 'seahi-smoke', version: '1' } });
-  await post({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  await rpc('initialize', {
+    // http 形态按它自己那版规范握手；SSE 形态用 2024-11-05（那是遗留传输对应的版本）
+    protocolVersion: mode === 'http' ? '2025-06-18' : '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: 'seahi-smoke', version: '1' },
+  });
+  await notify('notifications/initialized');
 
   // 只读（沙箱）模式会**整体改变写工具的预期**：`call_tool` 的门顺序是
   // 只读门（-32007）→ 危险确认门（-32006）→ 各工具自己的参数校验（-32602），

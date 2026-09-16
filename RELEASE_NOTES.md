@@ -1,3 +1,64 @@
+## v0.5.8
+
+这一版做两件事：**加上新版 AI 客户端默认要的 Streamable HTTP 传输**（并让"用哪种传输"由用户按需选择），
+以及**把 WSL 串口接进 MCP 的同时，修掉它背后一串真问题** —— 其中最要紧的一条是
+**没装 `sg` 的发行版上 WSL 串口根本打不开**（issue #21）。
+
+### ✨ 新增
+
+**Streamable HTTP 传输（`POST /mcp`）+ 传输三档**
+
+- 新版客户端（VS Code / Cline / 新版 Cursor / Claude Code）**默认只走 Streamable HTTP**，
+  只支持 SSE 的老客户端也还在用 —— 所以两条路都留，**共用同一套工具、同一张会话表、同一份上限**。
+- 弹窗里原来的「两个开关」换成一个**下拉框**：`HTTP` / `SSE` / `All`（默认 `All`）。
+  选单档时另一条端点返回 404，**立即生效**（不用重启）。
+- 客户端配置弹窗与 `npx seahi-serial-mcp` 都给出 `http` 与 `streamableHttp` 两种写法 ——
+  各家客户端认的名字不统一，写错的典型表现是**静默**按遗留 SSE 解析、然后一句"连不上"。
+
+**WSL 串口接进 MCP**
+
+- 新增 `ui_get_state{section:"wslDevices"}`：把 WSL 端口映射那张 USB 设备表交给 AI
+  （`busid` / `port`（Windows 侧 COM 名）/ `name` / `status` / `wslPath`，
+  以及**可直接交给 `ui_set` 的控件路径** `mapControlPath`）。
+- `serial_*` 的 `pane:"wsl"` 现在能正常寻址 WSL 分栏的串口监视器；
+  `serial_get_state` 新增 `portOptions`（**这个分栏**能选哪些端口 —— Windows 是 `COM3`，WSL 是 `/dev/ttyUSB0`）。
+
+### 🐛 修复
+
+- **WSL 串口打不开：没装 `sg` 的发行版上「开始监控」永远失败**（issue #21）。
+  bridge 原来硬写 `wsl -d <发行版> -e sg dialout -c "python3 …"`，而 `sg` 来自 `shadow` 包 ——
+  精简镜像 / Alpine 常常没有它，WSL 的 relay 直接
+  `ERROR: CreateProcessCommon:818: execvpe(sg) failed: No such file or directory`（端口映射本身是好的）。
+  现在**只在确认能非交互切组时才用 `sg`**，否则直接跑 `python3`；并补了"这个发行版缺 `sg` → 装 shadow"的提示。
+  顺带治掉同一行的另一种死法：`sg` 在、但用户不在 `dialout` 里时，`sg` 会**交互式要密码**
+  （它的 stdin 正是我们写 JSON 的管道）—— 表现是"启动超时"，且提示里看不出原因。
+- **WSL 分栏的串口工具被"本机没有可用串口"挡死**：`serial_open{pane:"wsl"}` 原来拿 Windows 的
+  COM 口数量做前置检查，而把 USB 串口 `usbipd bind` 进 WSL 之后 Windows 侧本来就没有那个口 ——
+  "工具说不行、界面说行"。现在按分栏分流：Windows 侧查 COM 口，WSL 侧不查。
+- **映射设备的"假成功"**：点那张映射复选框时**同步**就回成功，而真实动作要过 `usbipd`（几十秒），
+  需要提权时还会弹授权框等用户点。现在回执带 `mapRequest.settled=false` + 明确说明，
+  **不再让 AI 以为已经映射好了**（并且提示它别重试、去看 `status`）。
+- **点不准设备、甚至可能映射错设备**：设备行的控件原来**连 `id` 都没有**（AI 在 `ui_list` 里只看到
+  `input_127` 这种兜底名字），而且按**下标**寻址 —— 设备表每 5 秒重画一次，旧下标会去操作**另一台设备**。
+  现在行/映射/自动映射三个控件都有稳定 id（`wslMap-<busid>` 等）并带设备身份，
+  映射改为**按 busid 寻址**；注册表也会在元素被 `innerHTML` 换掉时重建（原来只比节点数量，
+  数量不变就留着一批已脱离 DOM 的旧元素 —— 点它是空气却回成功）。
+- **AI 动手时界面不切页**：`serial_*` 的**写**动作现在会先把该分栏所在的面板切到前台
+  （与 BLE / ADB 一致，用户得看得见 AI 在动哪一栏）；只读动作**一个页面都不切**
+  （客户端一轮询就把用户从当前页拽走，比看不见更烦人）。WSL 分栏是**懒创建**的，
+  写操作会顺带把它建出来，只读工具则明确提示"先打开面板"而不是只说"没有这个分栏"。
+- 描述修正：`serial_select_port` 原文写"值必须是 `serial_list_ports` 返回的端口名" ——
+  这对 WSL 分栏是**错的**（那里是 `/dev/ttyUSB0` 这类 WSL 内部路径）。
+
+### 📚 文档 / 测试
+
+- `doc/MCP.md` 新增「把 USB 串口映射进 WSL（一条完整的链路）」四步；
+  `doc/ARCHITECTURE.md` §5.8 记录 bridge 启动方式的**三条"别改回去"**。
+- 工具数不变（**55 个**）：WSL 那一块刻意**不新开一套工具**，仍是同一套 `serial_*` + `pane`，
+  只在数据来源上分流。
+- Rust 单测 **188 → 216**；前端无头断言集 **1494 → 1651**（其中一条把 `index.html` 的每个内联
+  `<script>` **整段**编译一次 —— "按名字抽函数"的断言盖不到"没被抽到的那个函数有语法错"）。
+
 ## v0.5.6
 
 修两个「一眼就看得见、但一直没人说清」的问题：**5 套深色主题的下拉菜单是半透明的** ——

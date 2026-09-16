@@ -13,7 +13,7 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/从机属性/busid 白名单/MCP 协议与日志中心）
 ```
 
-无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，188 条 + 4 条 `#[ignore]`
+无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，216 条 + 4 条 `#[ignore]`
 真机/诊断）。BLE 从机相关的三条（需蓝牙硬件）：
 
 ```bash
@@ -25,8 +25,8 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_builds -- --ignored -
 cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
 ```
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1494 条，随代码演进增补；MCP 的 npm 安装器另有
-`npm/seahi-serial-mcp/test/self-test.js`，62 条）：直接从
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1651 条，随代码演进增补；MCP 的 npm 安装器另有
+`npm/seahi-serial-mcp/test/self-test.js`，94 条）：直接从
 `src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，也有把渲染函数丢进假 DOM
 跑行为断言），改前端后应先跑
 `node .walkthrough/gen_ble_preview.js`。`.walkthrough/` 已纳入版本库（仅忽略 `__pycache__`）。
@@ -36,8 +36,9 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
 "每个工具你都需要测试工具调用结果"）：
 
 ```bash
-node .walkthrough/mcp_smoke.js          # 连上运行中的应用，把 49 个内置工具逐个真调一遍并打印结果
+node .walkthrough/mcp_smoke.js          # 连上运行中的应用，把 55 个内置工具逐个真调一遍并打印结果
 node .walkthrough/mcp_smoke.js --full   # 连有副作用的写工具也真调（会动界面/发数据，自己确认）
+node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /mcp）；默认有 /mcp 就走它
 ```
 
 它会先对"源码里的工具清单 vs 应用里 `tools/list` 的清单"报差异 —— **客户端看不到新工具时，
@@ -71,7 +72,7 @@ node .walkthrough/mcp_smoke.js --full   # 连有副作用的写工具也真调�
    最小化/最大化状态下不改写普通几何 —— 这三条各自对应一类真实故障：窗口每次开关往右下漂移、
    启动期隐藏窗口的瞬时尺寸（2068×2060）被写进记录、`-32000` 哨兵坐标污染位置。
 
-## MCP 的十一条关键约定（别改回去）
+## MCP 的十二条关键约定（别改回去）
 
 1. **MCP 服务器必须在应用进程内**：它要拿 `AppHandle` 才能访问托管状态、还要 `emit` 驱动 WebView 的 DOM。
    外部独立进程（含"做成 npm 包"）两样都做不到 —— 详见 `doc/MCP_DESIGN.md` §3.4。
@@ -137,7 +138,7 @@ node .walkthrough/mcp_smoke.js --full   # 连有副作用的写工具也真调�
     要同时出现在读入端与写入口，否则"内存里有、写回时被截断"会让用户数据不可逆丢失。
 11. **每个工具都必须有"返回值契约"和"调用情况"测试**（用户的要求："不然预期的结果怎么确定
     是否已经完成？"）。三条一起才叫测过：
-    ① **返回值契约**（`every_tool_has_a_tested_return_contract`）：49 个工具每个都要在表里交代
+    ① **返回值契约**（`every_tool_has_a_tested_return_contract`）：55 个工具每个都要在表里交代
     清楚 —— 纯后端工具断言**顶层字段**（多一个少一个都要改契约），界面工具断言无界面时
     必须是 `isError` + `-32006`，有副作用的注明谁在管它。表里漏一个工具就 fail，
     所以**新增工具时必须一起想清契约**。三条全局不变量对所有工具生效：
@@ -154,15 +155,59 @@ node .walkthrough/mcp_smoke.js --full   # 连有副作用的写工具也真调�
     新工具"——**运行的是旧构建**。Rust 侧另有两条守着"结果真的说出来了"：每个工具的文本摘要里必须
     出现 structuredContent 里的至少一个真实取值（`leaf_scalars`），以及 `ble_list_devices` 的摘要里
     必须有设备 MAC 与名称。
+12. **两种 MCP 传输并存，别拿一个换掉另一个**：`/mcp`（**Streamable HTTP**，2025-03-26+ 规范，新版客户端
+    VS Code / Cline / 新版 Cursor / Claude Code 默认走它）与 `/sse` + `/messages`（遗留 SSE，只支持 SSE 的
+    老客户端）**共用同一套工具、同一张会话表与同一份上限**。落地记录见 `doc/MCP_DESIGN.md` §17 的
+    2026-09-16 一条。四条别改回去：
+    ① **`POST /mcp` 直接回 `application/json`** —— 我们的工具是一问一答（没有进度通知、没有中途消息），
+    规范允许服务器在 JSON 与 SSE 之间二选一；别为了"更像规范"去实现"POST 返回 SSE 流"，
+    那只是多一层分帧、多一处能出错的地方；
+    ② **表满时只淘汰最久未活动的 HTTP 会话**：SSE 会话的长连接已经建立，把表项删掉只会让它变成
+    收不到东西的僵尸；也**不能**直接回 429（客户端拿到 429 无从下手，只能干等 30 分钟空闲回收 ——
+    会话泄漏那次就是这么炸的）。HTTP 会话被淘汰是干净可恢复的：下次请求得 404，按规范重新 `initialize`。
+    ⚠️ **判据是 `Session::kind`，不是 `tx`**：`tx` 只表示"有没有推送通道"，而 HTTP 会话按规范挂上
+    `GET /mcp` 流之后也有 `tx` —— 用它当判据会让这类客户端**全部变成"不可淘汰"**，4 个占满后第 5 个
+    直接吃 429（2026-09 实测证实：淘汰候选 = 0 → `HTTP/1.1 429`；回归测试
+    `http_sessions_with_a_get_stream_are_still_evictable` 守着）。同理 **`DELETE /mcp` 只许删 HTTP 会话**，
+    目标是 SSE 会话时回 404（403 等于告诉对方"这个 sid 存在，只是不归你"）；
+    ③ **`GET /mcp` 的流断开只摘通道、不删会话**（`SseBody::keep_session`）—— 那个会话还要继续给 POST 用；
+    ④ **新入口必须共用** `read_body_limited`（1 MiB 上限：先看 `Content-Length`，再用 `Limited` 兜住 chunked）
+    与 `handle_raw_guarded`（panic 兜底）—— 断言集里有两条专门数这两处的调用次数，少一处就 fail。
+    另外 `/mcp` 是唯一做 `Origin` 校验的路径（只放行回环，防 DNS rebinding；不带 Origin 的 SDK/curl 不受影响），
+    `MCP-Protocol-Version` 不认识的值回 400 **并把支持列表写进响应体**（光一个 400，调用方只能靠猜）。
+    客户端配置里 http 传输的 `type` 写法**各家不统一**（VS Code 用 `http`、Cline 认 `streamableHttp`），
+    所以弹窗与 npm 安装器两种都给 —— 写错的典型表现是客户端**静默**按遗留 SSE 解析，然后一句没头没尾的"连不上"。
+    ⑤ **传输是三档的**（`server.transport`：`both` 默认 / `http` / `sse`），不是"两种都必须开着"：
+    选单档时另一条端点返回 404（**立即生效**，路由每次请求都读配置，不用重启）；界面只展示当前档的连接方式。
+    界面上它是一个**下拉框**（`HTTP` / `SSE` / `All`），与「启用/关闭 MCP 服务器」「只读模式」挤在**同一行**
+    （从左到右：开关按钮 → 下拉框 → 只读模式 → 右端重置令牌）。三个选项的后果、以及只读模式的**开/关状态**
+    都写在**悬停说明**里 —— 用户明确要求界面不摆灰字提示、按钮文案也不带状态（"只读模式：开（AI 只能看）"
+    改成固定的「只读模式」，状态只进悬停说明；"写操作全被拒（-32007）""两条都在跑…"也删了，**都别再加回来**）。
+    ⚠️ **这些说明不能再用原生 `title` 承载**（用户看界面后提的两条意见，都是 title 的固有毛病）：
+    ① 它"鼠标一扫就弹"，划过一排按钮会**一闪一闪**；② 它一行铺开不换行，长说明**横跨整个窗口**；
+    ③ 它还会被控件注册表当成 label 抄给 AI（`mcpMakeEntry` 读的是 `title || aria-label`），
+    于是 AI 在 `ui_list` 里看到的"控件名"是一整句话。所以：说明走 **`data-mcp-tip`**（文案里的换行用 `&#10;`），
+    由 `mcpTipBind()` **停顿 450ms** 才显示在弹窗里那块**常驻说明区**（`#mcpTipRow` + `.mcp-tip`，
+    `min-height` 占位不跳动、`pre-line` 能换行）；控件名交给简短的 **`aria-label`** ——
+    **删了 title 必须补 aria-label**，否则 label 会退化成元素 id（AI 那边等于失去了这个控件的说明）。
+    按钮文案固定之后，**在途反馈也要留个出口**（这里是把说明置为「处理中…」），否则"点了没反应"的观感会回来。
+    改这块时守住两条纪律（下拉框那一层还有一条：在途要禁用、**失败要把选中值拨回真实值** ——
+    否则界面停在一个没生效的值上，比报错更让人困惑）：
+    **其一，默认必须是 `both`** —— 不能让"升级"本身把某类客户端弄断（用户没做任何选择）；
+    **其二，迁移必须在 `load_in` 里做规范化**（老配置只有 `streamableHttp` 这个 bool）：只在序列化端处理的话，
+    `transport` 会是 `null`、老字段被 `skip_serializing` 丢掉，于是"只 SSE"的意愿**在写回一轮后就变成 both**
+    （有回归测试 `old_config_migrates_transport_mode` 守着"读进来 sse → 写回 → 再读还是 sse"）。
+    端点发现文件里**不提供的那条 URL 写空串**，别留一个必然 404 的地址；npm 安装器的 `readEndpoint`
+    也因此不能强求 `url` 存在（只提供 `/mcp` 时它就是空的）。
 
 
 
 ## 项目结构
 
 - `src/index.html` — 整个前端（单文件，约 10400 行，含 12 套主题变量；串口 / WSL / ADB / 蓝牙 四个面板）
-- `src-tauri/src/mcp/` — **MCP 服务器**（模块级，约 5700 行）：`transport.rs`（hyper + SSE + 会话/鉴权/限流/广播）、`protocol.rs`（JSON-RPC + 工具定义与分派）、`bridge.rs`（前端桥：emit + 回执 + 超时回收）、`registry.rs`（控件注册表 → `ctl_*` 工具）、`loghub.rs`（日志中心）、`calllog.rs`（`ai-calls.jsonl`）、`aiconfig.rs`（`ai-config.json`）、`report.rs`（运行期错误 → 程序既有的错误上报通道）、`mod.rs`（启停/生命周期 + 8 个命令）
-- `npm/seahi-serial-mcp/` — **MCP 客户端配置安装器**（零依赖 CLI + 62 条自测；`npx seahi-serial-mcp install`）
-- `doc/MCP.md` — MCP 使用说明（面向使用者）｜`doc/MCP_TOOLS.md` — **49 个工具的参考手册**（工具名/描述/入参由 `.walkthrough/gen_mcp_tools_doc.js` 从 `protocol.rs` 生成，返回结构是实调抓的）｜`doc/MCP_DESIGN.md` — MCP 设计文档（含每步的实施记录）
+- `src-tauri/src/mcp/` — **MCP 服务器**（模块级，约 6300 行）：`transport.rs`（hyper 服务器 + **Streamable HTTP `/mcp`** + 遗留 SSE `/sse` + 会话/鉴权/限流/广播）、`protocol.rs`（JSON-RPC + 工具定义与分派）、`bridge.rs`（前端桥：emit + 回执 + 超时回收）、`registry.rs`（控件注册表 → `ctl_*` 工具）、`loghub.rs`（日志中心）、`calllog.rs`（`ai-calls.jsonl`）、`aiconfig.rs`（`ai-config.json`）、`report.rs`（运行期错误 → 程序既有的错误上报通道）、`mod.rs`（启停/生命周期 + 10 个命令）
+- `npm/seahi-serial-mcp/` — **MCP 客户端配置安装器**（零依赖 CLI + 94 条自测；`npx seahi-serial-mcp install`，`--transport sse|http`）
+- `doc/MCP.md` — MCP 使用说明（面向使用者）｜`doc/MCP_TOOLS.md` — **55 个工具的参考手册**（工具名/描述/入参由 `.walkthrough/gen_mcp_tools_doc.js` 从 `protocol.rs` 生成，返回结构是实调抓的）｜`doc/MCP_DESIGN.md` — MCP 设计文档（含每步的实施记录）
 - `src-tauri/src/main.rs` — 整个 Rust 后端（约 7700 行，91 个 `#[tauri::command]`）：串口枚举（SetupAPI）、多串口连接/断开、DTR/RTS 切换、收发数据、WSL 端口映射、USB 设备管理、ADB 会话、**快速指令外部文件（导入/导出/写回，见 `quick_cmds_*`）**、**BLE 主机（btleplug，代码在 `fn main()` 内）与 BLE 从机（WinRT `GattServiceProvider`，代码在模块级）**
 - `src-tauri/Cargo.toml` — Rust 依赖（serialport 3.3, rfd 0.15, winapi 0.3, windows-sys 0.59, **windows 0.62 + windows-future 0.3（BLE 配对与 BLE 从机用 WinRT）**, **tokio（`time::timeout` + MCP 的 `rt/net/sync/io-util`，刻意不开 `macros`）**, reqwest 0.12, base64 0.22, btleplug 0.13, **hyper 1 + hyper-util + http-body-util + bytes（MCP 的 SSE 服务器；都已由 reqwest 带入依赖树，无新增下载）**）
 - `src-tauri/vendor/btleplug/` — **btleplug 的 vendored fork**（`[patch.crates-io]` 指向此处），共 4 处本地补丁；**升级依赖时必须按 `vendor/btleplug/VENDOR.md` 重新打**
@@ -233,7 +278,7 @@ node .walkthrough/mcp_smoke.js --full   # 连有副作用的写工具也真调�
   ⚠️ **改了文件格式/列名/上限/写回规则，必须同步 `doc/QUICK_CMDS.md`**（面向使用者的那份格式说明；断言里有 7 条守着它别烂掉）。
   循环发送的开关状态**不持久化**（开机自动发指令太危险），
   掉线/关监视器/列表里再无可发条目时必须**自愈停止**并提示。
-- WSL 串口转发通过 Python bridge 脚本实现，使用持久化 shell 避免 fork 延迟
+- WSL 串口转发通过 Python bridge 脚本实现，使用持久化 shell 避免 fork 延迟。⚠️ **bridge 的启动方式别改回硬写 `-e sg dialout`**：能**非交互**切组时才用 `sg`，否则直接跑 `python3` —— 没装 `sg` 的发行版会 `execvpe(sg) failed`（issue #21），不在 `dialout` 组里时 `sg` 会**卡在密码提示**上。三条细节（探测用"真试一次"而不是查 `id -nG`、拿不准时不用、提示里"没有 sg"要排在"切组失败"前面）见 `doc/ARCHITECTURE.md` §5.8
 - USB 设备映射到 WSL 依赖 `usbipd-win` 工具，需管理员权限
 
 ## CI/CD

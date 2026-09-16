@@ -2294,10 +2294,69 @@ fn deploy_bridge(distro: &str) -> Result<(), String> {
     }
 }
 
-/// 启动 bridge 进程（使用 hidden_command 隐藏窗口 + sg dialout 切换组）
+/// 启动 bridge 进程用的参数（纯函数，便于单测）。
+///
+/// 为什么要分两种：`sg`（switch group，来自 `shadow` 包）是用来把进程补上 `dialout` 附加组的
+/// —— 用户在 WSL 会话**启动之后**才被加进 `dialout` 时，本次会话的组集合是旧的，直接跑
+/// `python3` 会以 EACCES 打不开 `/dev/ttyACM*`，`sg` 会重新读一遍组数据库补上。
+///
+/// ⚠️ 但 `sg` 有**两种**会让整条链路起不来的失败，都必须绕开：
+///   ① **`sg` 根本不存在**（精简镜像、Alpine 等常没装 shadow）→ WSL relay 直接
+///      `execvpe(sg) failed: No such file or directory`（2026-09-16 issue #21 就是这句）；
+///   ② **`sg` 在、但当前用户不在 `dialout` 里** → `sg` 会**交互式要密码**，而它的 stdin
+///      正是我们写 JSON 的管道 —— 表现是"bridge 启动超时（5 秒没等到 ready）"，
+///      而且提示里看不出原因（那不是错误文本，是**卡住**）。
+///
+/// 两种的正确处置是同一条：**别用 `sg`，直接跑 `python3`**。真的缺权限时 bridge 自己会回
+/// `无权访问 /dev/xxx，请在 WSL 终端执行: sudo chmod 666 /dev/xxx` —— 那句话可操作得多。
+fn bridge_wsl_args(distro: &str, use_sg: bool) -> Vec<String> {
+    let script = format!("python3 {}", BRIDGE_SCRIPT_PATH);
+    let mut args = vec!["-d".to_string(), distro.to_string(), "-e".to_string()];
+    if use_sg {
+        args.extend(
+            ["sg", "dialout", "-c"]
+                .iter()
+                .map(|s| s.to_string())
+                .chain(std::iter::once(script)),
+        );
+    } else {
+        args.push("python3".to_string());
+        args.push(BRIDGE_SCRIPT_PATH.to_string());
+    }
+    args
+}
+
+/// 探测结果（`None` = 拿不准/超时）→ 用不用 `sg`。**纯函数**，把这条判断钉住。
+///
+/// 拿不准时**不用**：用错的代价是"整条链路起不来、提示还看不出原因"，
+/// 不用的代价只是"缺权限时 bridge 回一句 sudo chmod 666"——后者可操作得多。
+/// 这是**故意的不对称**，别为了"保守起见沿用旧行为"改成 `true`（旧行为就是 #21）。
+fn bridge_use_sg(probe: Option<bool>) -> bool {
+    probe.unwrap_or(false)
+}
+
+/// 试一次：**当前用户能不能非交互地** `sg dialout`。
+///
+/// 为什么是"真的试一次"而不是去查 `id -nG` / `/etc/group`：
+/// `sg` 的判据是**组数据库**，而"本会话的组集合过期"恰恰是 `sg` 存在的理由 ——
+/// 用 `id -nG`（反映本会话）去判断，会把**正该用 `sg`** 的场景误判成"别用"，等于把
+/// 这个功能废掉。直接跑 `sg dialout -c true` 是把结论建立在**真正会发生的那件事**上，
+/// 一次 WSL 往返同时覆盖上文 ① ② 两种失败（外加"串口组不叫 dialout"这种发行版差异）。
+///
+/// 两道保险：`stdin` 设成 **null**（万一它真要密码，读不到，也不会把我们写 JSON 的管道吃掉）、
+/// 带 **4 秒超时**（真卡住就杀）。超时/失败统一算"不能"。
+fn wsl_sg_can_switch(distro: &str) -> Option<bool> {
+    let mut cmd = hidden_command("wsl");
+    cmd.args(["-d", distro, "-e", "sg", "dialout", "-c", "true"])
+        .stdin(std::process::Stdio::null());
+    // 注意：run_output_timeout 只接管 stdout/stderr，上面设的 stdin 会保留。
+    run_output_timeout(&mut cmd, 4000).map(|o| o.status.success())
+}
+
+/// 启动 bridge 进程（使用 hidden_command 隐藏窗口；能非交互切组时才用 `sg`）
 fn spawn_bridge(distro: &str) -> Result<std::process::Child, String> {
     let child = hidden_command("wsl")
-        .args(["-d", distro, "-e", "sg", "dialout", "-c", &format!("python3 {}", BRIDGE_SCRIPT_PATH)])
+        .args(bridge_wsl_args(distro, bridge_use_sg(wsl_sg_can_switch(distro))))
         .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).stdin(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| {
@@ -2379,13 +2438,22 @@ fn bridge_startup_error(exited: bool, stderr_tail: &str) -> String {
     msg
 }
 
-/// stderr 里最常见的三种"起不来"给一句可执行的提示（纯函数）
+/// stderr 里最常见的几种"起不来"给一句可执行的提示（纯函数）
+///
+/// ⚠️ **顺序有讲究**：`sg: not found` 同时含 `sg:`，所以"sg 不存在"必须排在"sg 切组失败"**前面**，
+/// 否则后者会把它吞掉，用户拿到的提示就是"你不在 dialout 组里"——而真实原因是**根本没装 sg**
+/// （2026-09-16 issue #21：截图里那句 `execvpe(sg) failed: No such file or directory` 一个分支都没命中，
+/// 用户只能看到原始 WSL 报错）。现在 `spawn_bridge` 已经不会在缺 sg 时去调它，这一段是**兜底**
+/// （探测与真正 spawn 之间可能出岔子）。
 fn bridge_stderr_hint(tail: &str) -> Option<&'static str> {
     let t = tail.to_ascii_lowercase();
     if t.contains("python3: command not found") || t.contains("python3: not found") {
         Some("这个发行版里没有 python3：Debian/Ubuntu 上先 sudo apt install -y python3 python3-serial")
     } else if t.contains("can't open file") || t.contains("cannot open") {
         Some("脚本没落到 /tmp：重新连接会重新部署；也可以看 /tmp 是否可写、是否已满")
+    } else if t.contains("execvpe(sg)") || t.contains("sg: not found") || t.contains("sg: command not found") {
+        Some("这个发行版里没有 sg（shadow 包）：装上即可 —— Debian/Ubuntu `sudo apt install -y shadow`，\
+              Alpine `apk add shadow`。装好后重连一次（本程序会自动改用它）")
     } else if t.contains("sg:") || (t.contains("dialout") && t.contains("group")) {
         Some("sg 切 dialout 组失败：有些发行版串口组叫 uucp/tty，或当前用户不在组里")
     } else {
@@ -6356,6 +6424,72 @@ mod log_maintenance_tests {
         assert!(!m4.contains("【"), "认不出的 stderr 不乱猜原因: {}", m4);
     }
 
+    /// `sg` 不存在时**必须**给出"装 shadow"，而不是"你不在 dialout 组里"。
+    ///
+    /// 这条是 issue #21 的正身：用户在 WSL 分栏点「开始监控」拿到的是
+    /// `<3>WSL (…) ERROR: CreateProcessCommon:818: execvpe(sg) failed: No such file or directory`
+    /// —— 原文既没有 `sg:` 也没有 `dialout`，旧的分支链**一个都不命中**，
+    /// 于是只把原始 WSL 报错丢给用户，没有任何下手处。
+    #[test]
+    fn bridge_stderr_hint_recognizes_missing_sg() {
+        // WSL relay 的真实原文（issue #21 截图里那句）
+        let relay = "<3>WSL (744341 - Relay) ERROR: CreateProcessCommon:818: execvpe(sg) failed: No such file or directory";
+        let m = bridge_startup_error(true, relay);
+        assert!(m.contains("execvpe(sg)"), "原始 stderr 要原样带上: {}", m);
+        assert!(m.contains("shadow"), "缺 sg 要提示装 shadow 包: {}", m);
+        assert!(!m.contains("uucp"), "别退化成'你不在 dialout 组里'（那不是这个原因）: {}", m);
+
+        // shell 报的另外两种写法也要认
+        for s in ["sg: not found", "bash: sg: command not found"] {
+            let h = bridge_stderr_hint(s).unwrap_or("");
+            assert!(h.contains("shadow"), "{} 应识别为缺 sg，实际: {}", s, h);
+        }
+        // 「sg 在，但组不对」仍走原来那条（顺序不能颠倒 —— `sg: not found` 也含 `sg:`）
+        let g = bridge_stderr_hint("sg: group 'dialout' does not exist").unwrap_or("");
+        assert!(g.contains("uucp"), "组不存在仍是原来那条提示: {}", g);
+    }
+
+    /// `sg` 有就带切组、没有就直接跑 python3 —— 这条是 #21 的修法本身。
+    #[test]
+    fn bridge_wsl_args_falls_back_when_sg_is_missing() {
+        let with = bridge_wsl_args("Ubuntu", true);
+        assert_eq!(
+            with,
+            vec!["-d", "Ubuntu", "-e", "sg", "dialout", "-c", "python3 /tmp/seahi_serial_bridge.py"],
+            "有 sg：保持原来那条切组路径（组集合过期的用户就靠它）"
+        );
+        let without = bridge_wsl_args("Alpine", false);
+        assert_eq!(
+            without,
+            vec!["-d", "Alpine", "-e", "python3", "/tmp/seahi_serial_bridge.py"],
+            "没有 sg：**不能**再硬写 -e sg（WSL relay 会 execvpe 失败，监视器永远打不开）"
+        );
+        // 关键不变量：无论哪条路，`-d <distro>` 与"python3 + 脚本"都得在，且不能再出现裸 `sg`。
+        // 注意两条路的形态不同 —— 有 sg 时"python3 <脚本>"是**一个** argv（交给 `sg -c` 解析），
+        // 没有时是**两个** argv（直接 execvp）。所以这里 join 起来看。
+        for (args, sg) in [(&with, true), (&without, false)] {
+            assert_eq!(args[0], "-d");
+            assert_eq!(args[1], if sg { "Ubuntu" } else { "Alpine" });
+            let joined = args.join(" ");
+            assert!(joined.contains("python3 /tmp/seahi_serial_bridge.py"), "{}", joined);
+            assert_eq!(args.iter().filter(|a| *a == "sg").count(), if sg { 1 } else { 0 });
+        }
+    }
+
+    /// "能不能非交互切组"的探测结果 → 用不用 `sg`。
+    ///
+    /// 重点是那条**故意的不对称**：**拿不准（超时）时不用**。
+    /// 用错的代价是 issue #21 那两种死法（`execvpe(sg)` 起不来 / `sg` 卡在密码提示上，
+    /// 两者都表现为"整条链路不可用、提示还看不出原因"），
+    /// 不用的代价只是"权限不够时 bridge 回一句 `sudo chmod 666`"——可操作得多。
+    /// 若有人为了"保守起见沿用旧行为"把它改成 `true`，这个测试会红。
+    #[test]
+    fn bridge_use_sg_prefers_plain_python3_when_unsure() {
+        assert!(bridge_use_sg(Some(true)), "确认能非交互切组 → 用 sg（会话组集合过期的用户靠它）");
+        assert!(!bridge_use_sg(Some(false)), "确认切不了（没装 sg / 不在组里 / 组名不同）→ 别用");
+        assert!(!bridge_use_sg(None), "探测超时（可能正卡在密码提示上）→ 也不能用；别退回旧的硬写行为");
+    }
+
     /// 每个测试用独立临时目录（带 tag + pid），避免并行执行时互相踩
     fn tmp_dir(tag: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("seahi-test-{}-{}", tag, std::process::id()));
@@ -8099,6 +8233,7 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
             mcp::mcp_status,
             mcp::mcp_set_enabled,
             mcp::mcp_set_read_only,
+            mcp::mcp_set_transport,
             mcp::mcp_reset_token,
             mcp::mcp_client_config,
             mcp::mcp_ui_ack,

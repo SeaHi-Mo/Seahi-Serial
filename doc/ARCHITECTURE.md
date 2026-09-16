@@ -455,6 +455,40 @@ WSL 串口通过 Python bridge 脚本实现：
 3. 通过 stdin/stdout JSON 协议通信
 4. WSL shell 使用持久化进程避免每次 fork 的 300ms 延迟
 
+#### bridge 的启动方式：**能非交互切组才用 `sg`**（别改回硬写）
+
+`spawn_bridge` 的 argv 由 `bridge_wsl_args(distro, use_sg)` 生成，`use_sg` 来自
+`bridge_use_sg(wsl_sg_can_switch(distro))`：
+
+| 情况 | 启动方式 |
+|---|---|
+| 当前用户**能**非交互 `sg dialout` | `wsl -d <d> -e sg dialout -c "python3 /tmp/seahi_serial_bridge.py"` |
+| 其余全部（没装 `sg` / 不在 `dialout` 组里 / 串口组叫 `uucp` / 探测超时） | `wsl -d <d> -e python3 /tmp/seahi_serial_bridge.py` |
+
+`sg` 的作用是把进程补上 `dialout` 附加组 —— 用户在 WSL 会话**启动之后**才被加进该组时，
+本次会话的组集合是旧的，直接跑 `python3` 会 EACCES 打不开 `/dev/ttyACM*`。所以它**不能删**。
+
+但硬写它有两种死法，都必须绕开（2026-09-16 issue #21 是第 ① 种）：
+
+1. **`sg` 根本不存在** → WSL relay 直接
+   `ERROR: CreateProcessCommon:818: execvpe(sg) failed: No such file or directory`；
+2. **`sg` 在、但用户不在组里** → `sg` **交互式要密码**，而它的 stdin 正是我们写 JSON 的管道
+   → 表现是"bridge 启动超时（5 秒没等到 ready）"，且提示里看不出原因（不是错误文本，是**卡住**）。
+
+两种的正确处置是同一条：**别用 `sg`，直接 `python3`**。真的缺权限时 bridge 会回
+`无权访问 /dev/xxx，请在 WSL 终端执行: sudo chmod 666 /dev/xxx`（`seahi_serial_bridge.py`），
+比"命令都起不来 / 卡在密码上"可操作得多。
+
+三条**别改回去**：
+
+- 探测方式是**真的跑一次** `wsl -d <d> -e sg dialout -c true`（stdin 设 `null`、4 秒超时），
+  **不是** 去查 `id -nG` / `/etc/group`：`sg` 的判据是组数据库，而"本会话组集合过期"正是它存在的
+  理由 —— 用 `id -nG`（反映本会话）判断会把**正该用 `sg`** 的场景误判成"别用"，等于废掉这个功能。
+- **拿不准（探测超时）时不用 `sg`**（`bridge_use_sg(None) == false`）。这条不对称是故意的：
+  用错的代价是整条链路不可用且提示无用，不用的代价只是一句 `sudo chmod 666`。
+- `bridge_stderr_hint` 里"**没有 sg**"必须排在"**sg 切组失败**"**前面** —— `sg: not found`
+  也含 `sg:`，顺序颠倒就会被后者吞掉，用户拿到的是**错**的原因（"你不在 dialout 组里"）。
+
 ---
 
 ## 6. 关键功能实现

@@ -1331,6 +1331,17 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
             padding:8px 64px 8px 8px; margin:0; background:var(--input-bg); border:1px solid var(--border);
             border-radius:5px; color:var(--text); max-height:132px; overflow:auto; white-space:pre; }
 .mcp-hint { font-size:11px; color:var(--text-d); line-height:1.7; word-break:break-all; }
+/* MCP 弹窗顶栏的说明区：**常驻占位**（鼠标移上去不会让布局跳动），空的时候就是一块留白。
+ *
+ * 为什么不用原生 `title`（用户两张截图指出）：① 它"鼠标一扫就弹"，划过一排按钮一闪一闪；
+ * ② 它一行铺开不换行，长说明横跨整个窗口；③ 它还会被控件注册表当成 label 抄给 AI
+ * （`mcpMakeEntry` 读的是 `title || aria-label`），于是 AI 看到的"控件名"是一整句话。
+ * 所以说明改走 `data-mcp-tip`：**停顿一下才显示**在下方的说明区里，并且允许换行
+ * （`pre-line` + 文案里的换行符）；控件名交给简短的 `aria-label`。 */
+.mcp-tip { min-height:52px; margin:-2px 0 8px; padding:6px 8px; box-sizing:border-box;
+           font-size:11px; line-height:1.7; color:var(--text-d);
+           white-space:pre-line; border:1px solid transparent; border-radius:5px; }
+.mcp-tip.show { background:var(--input-bg); border-color:var(--border); }
 .mcp-reason { font-size:11px; color:var(--accent-red); margin-top:6px; word-break:break-all; }
 /* 状态点：灰=未启用 / 绿=监听中 / 蓝=有会话 / 红=失败 */
 .mcp-dot { width:7px; height:7px; border-radius:50%; background:var(--text-muted);
@@ -2530,30 +2541,40 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
             <span class="mcp-hint" id="mcpStateText" style="flex:1;">读取中…</span>
         </div>
         <div class="ble-modal-body" style="flex-direction:column;align-items:stretch;overflow-y:auto;">
-            <div class="mcp-row">
-                <button class="ble-modal-btn primary" id="mcpToggleBtn" onclick="mcpToggleEnabled()">启用 MCP 服务器</button>
+            <div class="mcp-row" style="flex-wrap:wrap;">
+                <button class="ble-modal-btn primary" id="mcpToggleBtn" onclick="mcpToggleEnabled()" aria-label="启用/关闭 MCP 服务器">启用 MCP 服务器</button>
+                <select class="ble-pf-select" id="mcpTransportSel" style="width:76px;flex:none;" onchange="mcpTransportPicked(this.value)" aria-label="传输形态" data-mcp-tip="传输形态（切换立即生效）：&#10;· HTTP —— 只服务 Streamable HTTP（/mcp），/sse 与 /messages 立刻变成 404（只支持 SSE 的老客户端会连不上）&#10;· SSE —— 只服务遗留 SSE，/mcp 立刻变成 404（只认 /mcp 的新版客户端会连不上）&#10;· All —— 两条都提供（默认，兼容性最好）">
+                    <option value="http">HTTP</option>
+                    <option value="sse">SSE</option>
+                    <option value="both" selected>All</option>
+                </select>
+                <button class="ble-modal-btn" id="mcpReadOnlyBtn" onclick="mcpToggleReadOnly()" aria-label="只读模式">只读模式</button>
                 <span class="mcp-hint" id="mcpToggleHint"></span>
                 <span style="flex:1;"></span>
-                <button class="ble-modal-btn" onclick="mcpResetToken()" title="重新生成访问令牌：旧令牌立即失效，客户端需重新复制配置">重置令牌</button>
+                <button class="ble-modal-btn" id="mcpResetTokenBtn" onclick="mcpResetToken()" aria-label="重置令牌" data-mcp-tip="重新生成访问令牌：旧令牌立即失效，已粘贴到客户端的配置需要重新复制。">重置令牌</button>
             </div>
-            <div class="mcp-row">
-                <button class="ble-modal-btn" id="mcpReadOnlyBtn" onclick="mcpToggleReadOnly()">只读模式：关</button>
-                <span class="mcp-hint" id="mcpReadOnlyHint"></span>
-                <span style="flex:1;"></span>
-            </div>
+            <div class="mcp-tip" id="mcpTipRow"></div>
             <div id="mcpOnBox" style="display:none;">
-                <div class="mcp-field">
-                    <span class="mcp-label" title="AI 客户端要连接的地址（已含访问令牌，等同于密码，别外发）">连接 URL</span>
+                <div class="mcp-field" id="mcpStreamableField">
+                    <span class="mcp-label" title="Streamable HTTP（2025-03-26 起的新传输）：新版客户端（VS Code / Cline / 新版 Cursor / Claude Code）默认走这个形态。地址已含访问令牌，等同于密码，别外发">Streamable HTTP（新版客户端用这个）</span>
                     <div class="mcp-box">
-                        <span class="mcp-url" id="mcpUrl"></span>
-                        <button class="ble-modal-btn mcp-copy-btn" onclick="mcpCopy('url', this)" title="复制完整连接地址（含访问令牌）">复制</button>
+                        <span class="mcp-url" id="mcpStreamableUrl"></span>
+                        <button class="ble-modal-btn mcp-copy-btn" onclick="mcpCopy('streamableUrl', this)" title="复制 Streamable HTTP 连接地址（含访问令牌）">复制</button>
+                    </div>
+                    <div class="mcp-box" style="margin-top:6px;">
+                        <pre class="mcp-code" id="mcpClientCfgStreamable"></pre>
+                        <button class="ble-modal-btn mcp-copy-btn" onclick="mcpCopy('clientConfigStreamable', this)" title="复制 Streamable HTTP 的客户端配置 JSON（type 一般写 http；Cline 等要写 streamableHttp）">复制</button>
                     </div>
                 </div>
-                <div class="mcp-field">
-                    <span class="mcp-label" title="粘进 AI 客户端配置文件 mcpServers 里的片段">客户端配置</span>
+                <div class="mcp-field" id="mcpSseField">
+                    <span class="mcp-label" title="遗留 SSE（HTTP+SSE，2024-11-05 规范）：只支持 SSE 的老客户端走这条。地址已含访问令牌">遗留 SSE（老客户端用这个）</span>
                     <div class="mcp-box">
+                        <span class="mcp-url" id="mcpUrl"></span>
+                        <button class="ble-modal-btn mcp-copy-btn" onclick="mcpCopy('url', this)" title="复制 SSE 连接地址（含访问令牌）">复制</button>
+                    </div>
+                    <div class="mcp-box" style="margin-top:6px;">
                         <pre class="mcp-code" id="mcpClientCfg"></pre>
-                        <button class="ble-modal-btn mcp-copy-btn" onclick="mcpCopy('clientConfig', this)" title="复制客户端配置 JSON：粘进 Claude / Cursor 的 mcpServers">复制</button>
+                        <button class="ble-modal-btn mcp-copy-btn" onclick="mcpCopy('clientConfig', this)" title="复制 SSE 客户端配置 JSON（type=sse）：粘进 Claude / Cursor 的 mcpServers">复制</button>
                     </div>
                 </div>
                 <div class="mcp-field">
@@ -4885,8 +4906,9 @@ function flushBatch(mid, fragment) {
 }
 
 /* ===== MCP 服务器入口（标题栏图标 + 弹窗）=====
- * 服务器本身跑在 Rust 侧（进程内、只监听回环、只用 SSE）；这里只负责开关、展示连接 URL
- * 与"安装提示词"，并把状态点画出来。所有状态都来自后端 mcp_status，前端不自己猜。 */
+ * 服务器本身跑在 Rust 侧（进程内、只监听回环、同时提供 Streamable HTTP 与遗留 SSE）；
+ * 这里只负责开关、展示两种连接地址与"安装提示词"，并把状态点画出来。
+ * 所有状态都来自后端 mcp_status，前端不自己猜。 */
 var _mcpStatus = null;
 var _mcpConfig = null;
 // 正在发 mcp_set_enabled 的那一小会儿：按钮要禁用，否则连点会陆续发出两条相反的 IPC
@@ -4894,10 +4916,62 @@ var _mcpBusy = false;
 // 同上，只读模式那颗按钮自己的在途标志。**必须独立一份**：共用一个标志的话，
 // 一边在处理中会把另一颗按钮也连带置灰（两个开关本来就是互不相干的命令）。
 var _mcpReadOnlyBusy = false;
+// 同上，传输档位（both / http / sse）自己的在途标志（同理：不能与上两个共用）
+var _mcpTransportBusy = false;
+// 在途期间用户点了哪一档：用来**立刻**把高亮画过去（反馈要快），
+// 后端状态回来后由 renderMcpStatus 统一覆盖。失败时就清掉，回到真实状态。
+var _mcpTransportCur = null;
+
+/* MCP 弹窗顶栏控件的悬停说明：**停顿一下才显示**，且显示在下方那块常驻说明区里（能换行）。
+ *
+ * 为什么不用原生 `title`（用户两张截图指出）：
+ *   ① 它"鼠标一扫就弹"，鼠标划过一排按钮时会一闪一闪；
+ *   ② 它一行铺开不换行，长说明横跨整个窗口；
+ *   ③ 它还会被控件注册表当成 label 抄给 AI —— `mcpMakeEntry` 读的是 `title || aria-label`，
+ *      于是 AI 看到的"控件名"是一整句话（所以这几个控件现在只留简短的 `aria-label`）。
+ * 说明放 `data-mcp-tip`（文案里的换行用 `&#10;`，配合 CSS 的 `white-space:pre-line`）。 */
+var _mcpTipTimer = null;
+var _mcpTipBound = false;
+function mcpTipBind() {
+    if (_mcpTipBound) return; // 弹窗是常驻 DOM，重复绑定会挂上一堆计时器
+    var row = document.getElementById('mcpTipRow');
+    if (!row) return;
+    _mcpTipBound = true;
+    // 停顿多久才显示：鼠标只是"路过"时什么都不要闪，停住看了才给说明
+    var TIP_DELAY_MS = 450;
+    var clear = function() {
+        if (_mcpTipTimer) { clearTimeout(_mcpTipTimer); _mcpTipTimer = null; }
+        row.textContent = '';
+        // 用 className 而不是 classList：断言集里的假 DOM 只有 className
+        row.className = 'mcp-tip';
+    };
+    var show = function(el) {
+        var tip = el.getAttribute && el.getAttribute('data-mcp-tip');
+        if (!tip) return;
+        row.textContent = tip;
+        row.className = 'mcp-tip show';
+    };
+    ['mcpToggleBtn', 'mcpTransportSel', 'mcpReadOnlyBtn', 'mcpResetTokenBtn'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (!el || !el.addEventListener) return;
+        el.addEventListener('mouseenter', function() {
+            if (_mcpTipTimer) clearTimeout(_mcpTipTimer);
+            _mcpTipTimer = setTimeout(function() { _mcpTipTimer = null; show(el); }, TIP_DELAY_MS);
+        });
+        el.addEventListener('mouseleave', clear);
+        // 键盘 Tab 过去也要能看到（无障碍）；focus 不延迟 —— 那是明确的意图
+        el.addEventListener('focus', function() { show(el); });
+        el.addEventListener('blur', clear);
+    });
+}
 
 function openMcpModal() {
     var m = document.getElementById('mcpModal');
     if (!m) return;
+    mcpTipBind();
+    // 别把上次留下的说明挂在上面（弹窗是常驻 DOM，关了再开还在）
+    var tip = document.getElementById('mcpTipRow');
+    if (tip) { tip.textContent = ''; tip.className = 'mcp-tip'; }
     m.classList.add('show');
     refreshMcpStatus();
 }
@@ -4944,13 +5018,17 @@ function renderMcpStatus(st) {
     if (tg) {
         tg.disabled = !!_mcpBusy;
         tg.textContent = running ? '关闭 MCP 服务器' : '启用 MCP 服务器';
-        tg.title = running ? '关闭 MCP 服务器：释放端口并清空日志中心的内存'
-            : '开启 MCP 服务器：只监听本机 127.0.0.1，让 AI 客户端连上本程序';
+        // 说明走 `data-mcp-tip`（延迟显示在下方说明区里），**不写 title**：
+        // 原生 title 会一闪一闪，还会被控件注册表当成 label 抄给 AI。
+        tg.setAttribute('data-mcp-tip', running
+            ? '关闭 MCP 服务器 —— 释放端口，并清空日志中心的内存。'
+            : '开启 MCP 服务器 —— 只监听本机 127.0.0.1，让 AI 客户端连上本程序。');
     }
     var tgh = document.getElementById('mcpToggleHint');
     if (tgh) {
-        tgh.textContent = _mcpBusy ? '处理中…'
-            : (running ? '点按钮可停止' : '');
+        // 只在命令在途时给一行反馈；**运行时不写任何提示**（用户 2026-09-16 要求删掉"点按钮可停止"）。
+        // 元素留着是因为在途的"处理中…"是这颗按钮唯一的文字反馈（它的文案在途时不改，只置灰）。
+        tgh.textContent = _mcpBusy ? '处理中…' : '';
     }
 
     var box = document.getElementById('mcpOnBox');
@@ -4968,15 +5046,31 @@ function renderMcpStatus(st) {
         // 于是这颗"关它的唯一入口"永远点不动，只能重启应用（或手改 ai-config.json）。
         // 所以禁用态**只认 `_mcpReadOnlyBusy`**，与 mcpToggleBtn 的 `_mcpBusy` 同一套口径。
         ro.disabled = !!_mcpReadOnlyBusy;
-        ro.textContent = _mcpReadOnlyBusy ? '只读模式：处理中…'
-            : (on ? '只读模式：开（AI 只能看）' : '只读模式：关');
-        ro.title = on ? '当前 AI 只能读、不能改（写操作一律被拒，界面与配置不变）。点一下放开设限'
-                      : '打开后 AI 只能读、不能改：所有写操作被拒（错误码 -32007），界面与配置文件一个字都不变。适合"先让 AI 自由探索、确认无误再放开"';
+        // 文案**固定**「只读模式」，状态只写在悬停说明里（用户 2026-09-16 要求：
+        // 不要"只读模式：开（AI 只能看）"这种把状态塞进按钮文字的写法 —— 那一栏还要放下
+        // 传输下拉框，文案越长越挤）。
+        ro.textContent = '只读模式';
+        // 状态与解释都进说明区（`data-mcp-tip`），**不写 title** —— 同上：title 会闪、
+        // 而且会被注册表当成控件的 label 抄给 AI。
+        ro.setAttribute('data-mcp-tip', _mcpReadOnlyBusy ? '处理中…'
+            : (on ? '只读模式：开 —— AI 只能看。写操作一律被拒（错误码 -32007），界面与配置文件一个字都不变。点一下放开设限。'
+                  : '只读模式：关 —— AI 可以改界面、发串口。点一下打开只读模式（AI 只能看，写操作全被拒）。'));
     }
-    var roh = document.getElementById('mcpReadOnlyHint');
-    if (roh) {
-        roh.textContent = (st && st.readOnly) ? '写操作全被拒（-32007）' : '关上＝AI 可改界面/发串口';
+    // 传输形态**下拉框**（`http` / `sse` / `both`，界面显示 HTTP / SSE / All）。
+    // 只有被选中的传输才展示连接方式 —— 一屏同时摆两套地址+两份配置，用户不知道该复制哪份。
+    // 在途时先用用户选的那个画（反馈要快），状态回来后由这里统一覆盖；
+    // 失败时 `_mcpTransportCur` 会被清掉，于是这一句把下拉框**拨回真实值**。
+    var shownTransport = _mcpTransportCur || (st && st.transport) || 'both';
+    var sel = document.getElementById('mcpTransportSel');
+    if (sel) {
+        sel.disabled = !!_mcpTransportBusy;
+        sel.value = shownTransport;
     }
+    // 只展示当前档**确实提供**的连接方式
+    var httpField = document.getElementById('mcpStreamableField');
+    if (httpField) httpField.style.display = (shownTransport === 'sse') ? 'none' : 'block';
+    var sseField = document.getElementById('mcpSseField');
+    if (sseField) sseField.style.display = (shownTransport === 'http') ? 'none' : 'block';
 
     // 原来底部那行"版本 · 工具 · 请求 · 丢弃 · 发现文件"按用户要求删掉了；
     // 这些数字仍然有用（排查时想知道丢了多少条），所以挪到状态文案的悬停提示里，
@@ -5004,8 +5098,20 @@ function renderMcpStatus(st) {
 function renderMcpConfig(cfg) {
     var urlEl = document.getElementById('mcpUrl');
     if (urlEl) urlEl.textContent = (cfg && cfg.url) || (_mcpStatus && _mcpStatus.url) || '';
+    var sEl = document.getElementById('mcpStreamableUrl');
+    if (sEl) sEl.textContent = (cfg && cfg.streamableUrl) || (_mcpStatus && _mcpStatus.streamableUrl) || '';
     var c = document.getElementById('mcpClientCfg');
     if (c) c.textContent = (cfg && cfg.clientConfig) || '';
+    var cs = document.getElementById('mcpClientCfgStreamable');
+    if (cs) {
+        // 各家客户端对 http 传输的类型名不统一（`http` / `streamableHttp`）。猜错的代价是
+        // 客户端**静默**按遗留 SSE 解析 → 一句没头没尾的连不上，所以这里明确写一句提示。
+        var alt = (cfg && cfg.clientConfigStreamableAlias) || '';
+        var note = alt
+            ? '\n\n（若该客户端不认 "type":"http"，就把这一行改成 "type":"streamableHttp" —— Cline 等属于这种）'
+            : '';
+        cs.textContent = ((cfg && cfg.clientConfigStreamable) || '') + note;
+    }
     var p = document.getElementById('mcpPrompt');
     if (p) p.textContent = (cfg && cfg.installPrompt) || '';
 }
@@ -5047,6 +5153,42 @@ function mcpToggleReadOnly() {
     });
 }
 
+/* 传输形态：下拉框选 HTTP / SSE / All（值分别是 http / sse / both）。
+ *
+ * 切换**立即生效**（后端路由每次请求都读配置），所以选单档时另一条传输会立刻变成 404 ——
+ * 三个选项各自的后果写在 select 的悬停说明里，切完还有一条 toast 说明结果。 */
+function mcpTransportPicked(mode) {
+    if (_mcpTransportBusy) {
+        // 在途时又拨了一下：按真实状态画回去，别让下拉框停在"没生效的值"上
+        renderMcpStatus(_mcpStatus);
+        return;
+    }
+    var cur = (_mcpStatus && _mcpStatus.transport) || 'both';
+    // 选到当前档 = 什么都不做：别白写一次盘、也别白发一次 IPC
+    if (cur === mode) return;
+    // 与 mcpToggleReadOnly 同一套：**禁用态的唯一来源就是 _mcpTransportBusy**，
+    // 回来后由 renderMcpStatus 统一解禁（漏掉解禁 = 这个下拉框再也动不了）
+    _mcpTransportBusy = true;
+    _mcpTransportCur = mode; // 先画选中态（反馈要快）
+    renderMcpStatus(_mcpStatus);
+    invoke('mcp_set_transport', { transport: mode }).then(function(st) {
+        _mcpTransportBusy = false;
+        _mcpTransportCur = null;
+        _mcpStatus = st;
+        renderMcpStatus(st);
+        // 地址区块要跟着刷新（换档会换掉展示的连接方式）
+        refreshMcpStatus();
+        showToast(mode === 'both' ? '两条传输都在提供：老客户端走 /sse、新客户端走 /mcp'
+            : mode === 'http' ? '只提供 Streamable HTTP：/mcp 可用，/sse 与 /messages 已变成 404'
+                              : '只提供遗留 SSE：/sse 可用，/mcp 已变成 404', 'info');
+    }).catch(function(e) {
+        _mcpTransportBusy = false;
+        _mcpTransportCur = null; // 失败就回到真实状态（下拉框会被拨回去）
+        renderMcpStatus(_mcpStatus);
+        showToast('传输切换失败: ' + e, 'error');
+    });
+}
+
 function mcpSetEnabled(on) {
     _mcpBusy = true;
     renderMcpStatus(_mcpStatus); // 立刻把按钮置灰（"处理中…"），挡住连点
@@ -5079,9 +5221,11 @@ function mcpResetToken() {
 function mcpCopy(kind, btn) {
     var text = '';
     if (kind === 'url') text = (_mcpStatus && _mcpStatus.url) || '';
+    else if (kind === 'streamableUrl') text = (_mcpStatus && _mcpStatus.streamableUrl) || '';
     else if (kind === 'clientConfig') text = (_mcpConfig && _mcpConfig.clientConfig) || '';
+    else if (kind === 'clientConfigStreamable') text = (_mcpConfig && _mcpConfig.clientConfigStreamable) || '';
     else if (kind === 'installPrompt') text = (_mcpConfig && _mcpConfig.installPrompt) || '';
-    if (!text) { showToast('没有可复制的内容（服务器未启用？）', 'error'); return; }
+    if (!text) { showToast('没有可复制的内容（服务器未启用，或这条传输已被关闭）', 'error'); return; }
     writeClipboard(text).then(function(ok) {
         if (!ok) { showToast('复制失败', 'error'); return; }
         if (btn) {
@@ -5335,9 +5479,23 @@ function mcpBuildRegistry() {
 
 /// 懒重建：DOM 数量变了就重建（面板懒加载/增删监视器都会改变数量），
 /// 这样不用去改各面板的渲染代码。重建后顺带把注册表报给后端（S6）。
+///
+/// ⚠️ **数量没变也必须查"元素还在不在 DOM 里"**：面板经常用 `innerHTML` 整棵重画
+/// （WSL 设备表每 5 秒一次、端口下拉每次刷新一次），设备/选项个数不变时节点总数**恰好一样**。
+/// 只比数量的话注册表里会留着一批**已脱离 DOM 的旧元素** —— 它们照样 `enabled()`、照样能
+/// `click()`，于是 `ui_set` 点的是空气却回 `ok:true`；更糟的是行内 `onchange` 里可能还带着
+/// **旧下标**，会去操作另一台设备（WSL 映射那里原本就是这个形状）。
+/// `document.contains` 不存在时（无头假 DOM）退回原来的行为 —— 探测不到不该被当成 stale。
 function mcpEnsureRegistry(force) {
-    var n = document.querySelectorAll(MCP_SELECTOR).length;
-    if (force || n !== _mcpRegistrySig) {
+    var nodes = document.querySelectorAll(MCP_SELECTOR);
+    var stale = false;
+    if (!force && nodes.length === _mcpRegistrySig && document.contains) {
+        for (var i = 0; i < MCP_REGISTRY_LIST.length; i++) {
+            var el = MCP_REGISTRY_LIST[i].el;
+            if (!el || !document.contains(el)) { stale = true; break; }
+        }
+    }
+    if (force || stale || nodes.length !== _mcpRegistrySig) {
         mcpBuildRegistry();
         mcpReportRegistry();
     }
@@ -5549,6 +5707,12 @@ function mcpHandleUiCmd(op, payload) {
             // 一个读得到的入口；语义工具那边是 ble_list_devices（两者读的是同一份 _bleDevices）。
             // 同样支持 limit / offset 分页（payload 里给就行）。
             out = mcpBleScanResult(parseInt(payload.limit, 10), parseInt(payload.offset, 10));
+        } else if (sec === 'wslDevices') {
+            // 运行时数据（**不是配置**）：WSL 端口映射那张 USB 设备表。
+            // 与 `bleDevices` 是**同一个教训**（那段注释就在上面几行）：设备行是动态
+            // `innerHTML` 出来的、不在控件注册表里 —— 于是"面板上明明列着 COM7、AI 却读不到"。
+            // 用户 2026-09 原话是要 AI"把 COM7 映射到 WSL 当中"，而当时没有任何工具能读到这张表。
+            out = mcpWslDevicesState();
         } else if (sec === 'theme') {
             out = { theme: snap.theme, themeStyle: snap.themeStyle };
         } else if (sec === 'window') {
@@ -5557,7 +5721,7 @@ function mcpHandleUiCmd(op, payload) {
             return {
                 ok: false, notFound: true,
                 error: '没有这个区段: ' + sec
-                    + '（可用：serial / wsl / ble / bleDevices / theme / window / monitors）',
+                    + '（可用：serial / wsl / ble / bleDevices / wslDevices / theme / window / monitors）',
             };
         }
         return { ok: true, value: out };
@@ -5590,7 +5754,14 @@ function mcpHandleUiCmd(op, payload) {
                 var after = ent.write(it.value);
                 if (before !== after) effects.push({ path: ent.path, from: before, to: after });
                 changed.push(ent.path);
-                results.push({ path: ent.path, ok: true, value: after });
+                var itemRes = { path: ent.path, ok: true, value: after };
+                // 「点了才开始跑」的控件（目前只有 WSL 端口映射那个复选框）：同步回执**只能**说
+                // "发起了/没跑起来"，不能说"映射好了"。判据与理由见 mcpWslMapOutcome 的注释 ——
+                // 关键是它靠 `_wslBusy` 在**点击返回的同一刻**就能判定，所以不用等、不会撞桥的 5s 预算。
+                var mapBusid = (ent.el && ent.el.getAttribute)
+                    ? ent.el.getAttribute('data-wsl-busid') : null;
+                if (mapBusid) itemRes.mapRequest = mcpWslMapOutcome(mapBusid, after);
+                results.push(itemRes);
             }
         } finally {
             _mcpUiOrigin--;
@@ -6425,6 +6596,32 @@ function mcpSerialLogChannels(mid) {
     return { rx: p + ':rx', tx: p + ':tx' };
 }
 
+/// 某个分栏端口下拉里当前可选的端口。
+/// **与下拉本身读同一份 DOM**，不另存一份状态：Windows 分栏是 `refreshPorts` 填的 COM 列表，
+/// WSL 分栏是 `refreshWslMonPorts` 填的 `/dev/...` 列表 —— 两条路都往 `<mid>-portDrop` 里放
+/// `.sel-opt[data-val]`，所以这里读一次就够了，也就不会出现"下拉里明明有、工具却读不到"。
+///
+/// 为什么需要它：`serial_list_ports` 只列 **Windows** 的 COM 口，对 WSL 分栏是**误导**
+/// （把 USB 串口 usbipd bind 进 WSL 之后 Windows 侧本来就没有那个口）。而 AI 要选端口
+/// 必须知道"这个分栏"有哪些可选值 —— 那就是这里。
+function mcpSerialPortOptions(mid) {
+    var out = [];
+    var drop = document.getElementById(mid + '-portDrop');
+    if (!drop || !drop.querySelectorAll) return out;
+    var opts = drop.querySelectorAll('.sel-opt');
+    for (var i = 0; i < opts.length; i++) {
+        var val = opts[i].getAttribute('data-val');
+        if (!val) continue;   // "无可用端口"那条占位没有 data-val，跳过
+        out.push({
+            value: String(val),
+            label: String(opts[i].textContent || ''),
+            // 被别的分栏占着的端口在下拉里是灰的（`port-in-use`），工具里也要看得出来
+            inUse: !!(opts[i].classList && opts[i].classList.contains('port-in-use')),
+        });
+    }
+    return out;
+}
+
 /// 汇总一个分栏的完整状态：持久化配置（复用 collectConfigForMonitor）+ 运行时 + 开关状态
 function mcpSerialState(mid) {
     var m = monitors[mid];
@@ -6459,6 +6656,9 @@ function mcpSerialState(mid) {
         outputBytes: m._textDataLen || 0,
         historyCount: (m.sendHistory || []).length,
         panes: mcpSerialPanes(),
+        // 这个分栏**当前可选的端口**：Windows 分栏是 COM 名，WSL 分栏是 `/dev/...` 路径。
+        // 选端口前先看它 —— `serial_list_ports` 只有 Windows 的那一份，对 WSL 分栏不适用。
+        portOptions: mcpSerialPortOptions(mid),
         // 让 AI 知道"收发内容去哪读"：serial_get_output 直接读它，log_tail 也能按名字增量拉
         logChannels: mcpSerialLogChannels(mid),
     };
@@ -6536,13 +6736,61 @@ function mcpSerialApply(mid, items) {
     return { ok: true, value: { pane: mid, applied: results } };
 }
 
+/// 哪些 action 是"AI 动手"（要切页给用户看），哪些是纯读（**不**切）。
+/// 判据与 BLE 那边一致：**写切、读不切** —— 客户端一 poll 就把用户从别的页面拽走，
+/// 比"看不见"更烦人（`mcpBleOp` 顶部那段注释就是这条纪律的出处）。
+/// 读动作：`panes` / `state` / `history` / `quickList`。
+var MCP_SERIAL_WRITE_ACTIONS = {
+    apply: true, click: true, clear: true, refreshPorts: true, send: true,
+    quickLoop: true, quickAdd: true, quickUpdate: true, quickRemove: true,
+    quickGroup: true, quickRun: true, setSendAs: true,
+};
+
+/// 分栏名 → 该切到哪个面板（`serial` = 串口页，`wsl` = WSL 端口映射页）。
+/// 认不出的分栏名不猜，回串口页。
+function mcpSerialRevealForPane(pane) {
+    var panel = pane ? mcpPanelOfMid(pane) : 'serial';
+    if (panel !== 'serial' && panel !== 'wsl') panel = 'serial';
+    mcpRevealPaneFor(panel);
+}
+
+/// 分栏"不存在"时的**可操作**提示。
+///
+/// ⚠️ 分栏有两种"不存在"，AI 看到的都是同一句"没有这个分栏"，但出路完全不同：
+/// ① 名字写错了；② **还没被创建出来** —— WSL 分栏要等面板第一次打开
+/// （`openWslMapping` → `initWslMonitor('wsl')`），额外监视器要等用户加一个。
+/// 而配置里却有它们（`ui_get_state` 的 `monitors` 里有 `wsl`），所以第 ② 种会让 AI
+/// 觉得"工具自相矛盾"（2026-09 真机实测：`panes = ["main"]`，
+/// 而 `monitors` = `["main","wsl"]`）。这里把第 ② 种说破，并指出**写操作不需要它手动开面板**。
+function mcpSerialMissingPaneHint(paneName) {
+    var name = String(paneName == null ? '' : paneName);
+    if (!name || monitors[name]) return '';
+    if (/^wsl(-x\d+)?$/.test(name)) {
+        return '。⚠️ WSL 分栏是**懒创建**的：WSL 端口映射面板没打开过时它还不存在（配置里有、运行时还没有）。'
+             + '先 ui_click{"path":"global.ui.wslToggleBtn"} 打开面板，再重试。'
+             + '（**写操作会自动打开它** —— serial_open / serial_send / serial_select_port 这类不用你手动开，'
+             + '只有只读工具才会碰到这个提示。）';
+    }
+    if (/^extra-\d+$/.test(name)) {
+        return '。⚠️ 这个额外监视器还没创建（额外分栏是"加一个才有一个"）：'
+             + '先 ui_click{"path":"global.ui.addMonitorBtn"}。';
+    }
+    return '';
+}
+
 function mcpSerialOp(payload) {
     payload = payload || {};
     var action = payload.action;
+    // **AI 动手时先把对应页面显示出来** —— 否则用户看到的是"AI 在操控 WSL 分栏的串口，
+    // 界面上却还停在别处"，等于看不见 AI 在干什么（这正是当初加 mcpRevealPaneFor 的原因）。
+    // 顺带解决第二件事：WSL / 额外分栏都是**懒创建**的，切页这一步恰好把 `monitors['wsl']` 建出来，
+    // 所以**冷启动（面板从没打开过）时写操作也能直接成功**，不用让 AI 先手动开面板。
+    if (MCP_SERIAL_WRITE_ACTIONS[action]) mcpSerialRevealForPane(payload.pane);
     var mid = mcpSerialResolvePane(payload.pane);
     if (!mid) {
         return { ok: false, notFound: true,
-                 error: '没有这个分栏: ' + (payload.pane || '(默认)') + '；可用分栏: ' + mcpSerialPanes().join(', ') };
+                 error: '没有这个分栏: ' + (payload.pane || '(默认)') + '；可用分栏: ' + mcpSerialPanes().join(', ')
+                      + mcpSerialMissingPaneHint(payload.pane) };
     }
     var m = monitors[mid];
 
@@ -6570,7 +6818,15 @@ function mcpSerialOp(payload) {
         return { ok: true, value: { pane: mid, cleared: true, outputLines: m._textCount || 0 } };
     }
     if (action === 'refreshPorts') {
-        MCP_SERIAL_FUNCS.refreshPorts(mid);
+        // ⚠️ 两种分栏的端口**来源不同**：Windows 分栏是本机 COM 口（`list_ports`），
+        // WSL 分栏是 WSL 里的设备（`refreshWslMonPorts` → `get_wsl_serial_devices`）。
+        // 这个坑在"设备变更"那条路径上**已经踩过一次**（见 device-changed 分支里的注释：
+        // "此前统一用 refreshPorts，会导致…把 WSL 监视器端口填成 Windows COM 列表"），当时漏了这里。
+        // 工具仍然是**同一套** `serial_*`（靠 pane 区分分栏），这里只是数据源按分栏取。
+        // 注：目前没有工具发这个 action（界面那颗"刷新端口"按钮走它自己的 onclick），
+        // 所以它还没被真正触发过 —— 但留一条"一调就把 WSL 下拉填成 COM 列表"的分支就是雷。
+        if (m.isWsl) refreshWslMonPorts(mid);
+        else MCP_SERIAL_FUNCS.refreshPorts(mid);
         return { ok: true, value: { pane: mid, refreshing: true } };
     }
     if (action === 'send') {
@@ -14053,6 +14309,117 @@ function wslNameHeaderMargin() {
     return _wslNameHeaderMargin;
 }
 
+/* ===== WSL 端口映射：给 MCP 通用桥读的那一份 =====
+ *
+ * 为什么要有这一块：设备行是 `renderWslDeviceList` 用 `innerHTML` 拼出来的**动态 DOM**，
+ * 行里的「映射」复选框原本连 id 都没有 —— 于是它在控件注册表里只能落到
+ * "标签名_全局序号" 的兜底命名（`input_127`），**既读不到设备表、也认不出哪一行是哪台设备**
+ * （用户 2026-09 问"怎么让 AI 把 COM7 映射进 WSL"时，缺口正在这里）。
+ * 现在两侧一起补：① 本函数把设备表按结构化返回（`ui_get_state{section:"wslDevices"}`）；
+ * ② 行里的控件带稳定 id（`wslMap-<busid>`），AI 拿到的 `mapControlPath` 就是可直接交给
+ *    `ui_set` 的路径 —— 与 `serial_quick_cmd` 返回 `domIds` 是同一个用意，别让 AI 猜路径。
+ */
+
+/// busid → 设备对象（`_wslDevices` 是唯一真源，不另存一份）
+function mcpWslDeviceByBusid(busid) {
+    var want = String(busid == null ? '' : busid);
+    for (var i = 0; i < _wslDevices.length; i++) {
+        if (String(_wslDevices[i].busid) === want) return _wslDevices[i];
+    }
+    return null;
+}
+
+/// 设备行里某个控件在注册表里的路径。**规则只写这一处**：
+/// 控件 id 是 `wslMap-<busid>` / `wslAutoMap-<busid>`，它不匹配 `mcpEntryFor` 的
+/// `<分栏>-<字段>` 前缀（`wsl` 后面不是 `-`），所以走 id 分支：
+/// 面板由祖先 `#wsl-pane` 决定（`wsl`）、分组固定 `ui`、名字就是 id。
+/// 用 `mcpJoinPath` 而不是手拼字符串，是为了和注册表那边的 slug 规则**永远一致**。
+function mcpWslControlPath(busid, which) {
+    var prefix = (which === 'auto') ? 'wslAutoMap-' : 'wslMap-';
+    return mcpJoinPath('wsl', 'ui', prefix + String(busid == null ? '' : busid));
+}
+
+/// WSL 端口映射区的结构化快照（`ui_get_state{section:"wslDevices"}` 的载荷）
+function mcpWslDevicesState() {
+    var list = _wslDevices.map(function(d) {
+        return {
+            busid: d.busid || '',
+            // Windows 侧识别到的 COM 名（识别不到时后端给的是 "-"）。
+            // 用户嘴里的"把 COM7 映射到 WSL"就是靠它和设备表对上号。
+            port: d.port || '',
+            name: d.name || '',
+            vidpid: d.vidpid || '',
+            hasCom: !!d.hasCom,
+            status: d.status || 'unmapped',
+            wslPath: d.wslPath || '',
+            wslSerial: d.wslSerial || '',
+            busy: !!_wslBusy[d.busid],
+            mapControlPath: mcpWslControlPath(d.busid, 'map'),
+            autoMapControlPath: mcpWslControlPath(d.busid, 'auto'),
+        };
+    });
+    var mapped = 0;
+    for (var i = 0; i < list.length; i++) if (list[i].status === 'mapped') mapped++;
+    // 面板是**懒初始化**的（第一次 openWslMapping 才建 DOM、才去 list_wsl_devices），
+    // 所以"设备表是空的"有两种意思 —— 必须说清是哪一种，别让 AI 以为"这台机器没有 USB 设备"。
+    var opened = !!document.getElementById('main-wslDeviceList');
+    return {
+        wslRunning: !!_wslRunning,
+        targetDistro: _wslTargetDist || '',
+        panelOpened: opened,
+        count: list.length,
+        mapped: mapped,
+        devices: list,
+        note: opened ? null
+            : 'WSL 端口映射面板还没打开过，设备表此刻是空的。先 ui_click{"path":"global.ui.wslToggleBtn"} 打开它，再重读本区段。',
+        mapUnavailableReason: _wslRunning ? null
+            : 'WSL 当前没有运行：映射复选框是灰的（`ui_set` 会被拒并说明原因）。',
+    };
+}
+
+/// 一次 WSL 映射写入的**真实**结果 —— 只说"发出去了没有"，绝不假装"已经映射好了"。
+///
+/// 为什么不能直接信那个复选框：`toggleWslMapping` 是 async，映射要过 `usbipd`
+/// （几十秒），需要提权时还会弹出 `#wsl-map-approval-overlay` 等**用户在机器上点**
+/// 「授权并映射」（60 秒自动取消）。这期间 `el.click()` 早就返回了，而 `mcpWriteEl`
+/// 读到的 `checked=true` 只代表"这个框被点过"——那就是一次假成功。
+///
+/// 判据用 `_wslBusy[busid]`：`toggleWslMapping` 在**第一个 await 之前**就把它置起来了，
+/// 所以 `el.click()` 一返回就能确定"到底跑起来没有"。**因此不需要等待、不需要轮询**，
+/// 也就不会去撞界面桥的 5s 超时预算（等过头只会把一个正在正常进行的操作变成
+/// `-32004`「界面可能正忙」的假失败 —— 与 BLE 那次 `ble_connect` 的教训同源）。
+function mcpWslMapOutcome(busid, want) {
+    var out = { busid: String(busid == null ? '' : busid), want: !!want };
+    var d = mcpWslDeviceByBusid(busid);
+    if (!d) {
+        // 列表每 5 秒刷新一次 → 拿旧 busid 来操作是可能的。这是**真错误**，要能自解释。
+        out.stale = true;
+        out.settled = true;
+        out.note = '设备 ' + out.busid + ' 已经不在当前设备表里（列表每 5 秒刷新）。'
+                 + '重新调 ui_get_state{section:"wslDevices"} 拿最新的 busid 与 mapControlPath 再试。';
+        return out;
+    }
+    out.port = d.port || '';
+    out.name = d.name || '';
+    out.status = d.status || 'unmapped';
+    if (_wslBusy[d.busid]) {
+        // 真在跑：**回执只能说"发起了"**，完成与否要去看 status
+        out.settled = false;
+        out.inFlight = true;
+        out.note = '映射动作已发起，但**还没有完成**（usbipd 映射可能要几十秒；需要管理员权限时会弹授权框等用户确认）。'
+                 + '**不要重试** —— 稍后用 ui_get_state{section:"wslDevices"} 看这台设备的 status 是否变成 mapped。';
+        return out;
+    }
+    // 没跑起来：要么本来就是这个状态（幂等），要么前置条件不满足
+    out.settled = true;
+    var already = (d.status === 'mapped') === !!want;
+    out.alreadyInTargetState = already;
+    out.note = already
+        ? '目标状态本来就是这样，无需改动。'
+        : '映射动作没有跑起来 —— 检查 ui_get_state{section:"wslDevices"} 里的 wslRunning 与 mapUnavailableReason。';
+    return out;
+}
+
 function renderWslDeviceList(mid) {
     var container = document.getElementById(mid + '-wslDeviceList');
     if (!container) return;
@@ -14092,6 +14459,8 @@ function renderWslDeviceList(mid) {
         var rowBorder = isMapped ? 'var(--mapped-border)' : 'var(--border)';
         var safeBusid = escapeHtml(device.busid || '');
         var safePort = escapeHtml(device.port || '');
+        // 进 JS 字符串字面量的那一份（属性值走上面的 HTML 转义，两者不能混用）
+        var jsBusid = String(device.busid || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
         var displayName = device.name || '';
         var safeName = escapeHtml(displayName);
         var sub = (device.vidpid || '').toUpperCase();
@@ -14102,7 +14471,17 @@ function renderWslDeviceList(mid) {
         // 自动映射开关始终可切换（即使当前未识别到 WSL 运行）；仅当该设备正在映射操作中时禁用
         var autoDisabled = isBusy;
 
-        html += '<div class="wsl-device-row' + (selected ? ' selected' : '') + '" style="display:flex;align-items:center;padding:5px 10px 5px 14px;min-height:48px;gap:14px;border-radius:4px;background:' + rowBg + ';border:1px solid ' + rowBorder + ';' + (isBusy ? 'opacity:0.6;' : '') + '" onclick="selectWslRow(\'' + safeBusid + '\',event)">';
+        // 给 AI（和人）看得懂的控件身份：优先 COM 名，其次 WSL 路径，最后退回 busid。
+        // 没有它的话，这三个控件在注册表里只有"标签名_全局序号"式的兜底名字（`input_127`），
+        // 连 `ui_list` 都认不出哪一行是哪台设备 —— 那正是"AI 读得到控件却点不准设备"的根因。
+        var devIdentity = (device.port && device.port !== '-') ? device.port
+            : (device.wslPath || device.busid || '');
+        if (device.name) devIdentity += '（' + device.name + '）';
+        var safeRowLabel = escapeHtml('USB 设备 ' + devIdentity);
+        var safeMapLabel = escapeHtml('映射到 WSL：' + devIdentity + '（busid ' + (device.busid || '') + '）');
+        var safeAutoLabel = escapeHtml('插入时自动映射到 WSL：' + devIdentity + '（VID:PID ' + (device.vidpid || '') + '）');
+
+        html += '<div class="wsl-device-row' + (selected ? ' selected' : '') + '" id="wslRow-' + safeBusid + '" aria-label="' + safeRowLabel + '" style="display:flex;align-items:center;padding:5px 10px 5px 14px;min-height:48px;gap:14px;border-radius:4px;background:' + rowBg + ';border:1px solid ' + rowBorder + ';' + (isBusy ? 'opacity:0.6;' : '') + '" onclick="selectWslRow(\'' + safeBusid + '\',event)">';
         // BUSID
         html += '<span style="width:64px;flex-shrink:0;font-family:monospace;font-size:12px;color:var(--text-d);font-weight:500;text-align:center;">' + safeBusid + '</span>';
         // 端口
@@ -14124,12 +14503,17 @@ function renderWslDeviceList(mid) {
         html += '<span style="width:40px;flex-shrink:0;text-align:center;" title="' + escapeHtml(status.tip) + '"><span class="wsl-status-dot ' + status.cls + '"></span></span>';
         // 自动映射（按 VID:PID 匹配）
         html += '<span style="width:60px;flex-shrink:0;text-align:center;">';
-        html += '<label class="wsl-auto-toggle"><input type="checkbox" name="wsl-auto-map" ' + (autoOn ? 'checked' : '') + ' ' + (autoDisabled ? 'disabled' : '') + ' onchange="toggleAutoMap(\'' + (device.vidpid||'').replace(/'/g,"\\'") + '\', \'' + safePort.replace(/'/g,"\\'") + '\', this.checked)"><span class="wsl-auto-slider"></span></label>';
+        html += '<label class="wsl-auto-toggle"><input type="checkbox" name="wsl-auto-map" id="wslAutoMap-' + safeBusid + '" aria-label="' + safeAutoLabel + '" ' + (autoOn ? 'checked' : '') + ' ' + (autoDisabled ? 'disabled' : '') + ' onchange="toggleAutoMap(\'' + (device.vidpid||'').replace(/'/g,"\\'") + '\', \'' + safePort.replace(/'/g,"\\'") + '\', this.checked)"><span class="wsl-auto-slider"></span></label>';
         html += '</span>';
         // 映射
         var mapDisabled = isBusy || !_wslRunning;
         html += '<span style="width:60px;flex-shrink:0;text-align:center;">';
-        html += '<input type="checkbox" name="wsl-map" class="wsl-checkbox" ' + (isMapped ? 'checked' : '') + ' ' + (mapDisabled ? 'disabled' : '') + ' onchange="toggleWslMapping(\'' + mid + '\', ' + idx + ', this.checked)">';
+        // 映射复选框：**按 busid 寻址**（不再传下标）。
+        // 下标会过期 —— 设备表每 5 秒 `innerHTML` 重画一次，而行里控件的注册表路径是由
+        // busid 决定的；用旧下标去操作 = "AI 点的"和"实际动的"是两台设备。
+        // `data-wsl-busid` 是给 MCP 回执用的：`mcpHandleUiCmd` 靠它把"复选框被点过"和
+        // "映射真的跑起来了"区分开（见 mcpWslMapOutcome）。
+        html += '<input type="checkbox" name="wsl-map" class="wsl-checkbox" id="wslMap-' + safeBusid + '" data-wsl-busid="' + safeBusid + '" aria-label="' + safeMapLabel + '" ' + (isMapped ? 'checked' : '') + ' ' + (mapDisabled ? 'disabled' : '') + ' onchange="toggleWslMapping(\'' + jsBusid + '\', this.checked)">';
         html += '</span>';
         html += '</div>';
     });
@@ -14207,13 +14591,18 @@ function showWslMapApproval(device, distro) {
     });
 }
 
-async function toggleWslMapping(mid, idx, checked) {
+/// 映射/取消映射一台设备。
+///
+/// **按 busid 寻址，不按下标**：设备表每 5 秒 `innerHTML` 重画一次，下标随时会过期；
+/// 而行里控件的注册表路径（`wsl.ui.wslMap_<busid>`）是由 busid 决定的 —— 拿旧下标操作
+/// 就等于"AI 点的"和"实际动的"是两台设备。`mid` 也省了：WSL 设备区是共享单实例（容器 id 写死 `main-`）。
+async function toggleWslMapping(busid, checked) {
     if (!_wslRunning) return;
-    var device = _wslDevices[idx];
+    var device = mcpWslDeviceByBusid(busid);
     if (!device || _wslBusy[device.busid]) return;
     
     _wslBusy[device.busid] = true;
-    renderWslDeviceList(mid);
+    renderWslDeviceList('main');
     
     var attachId = device.hasCom ? device.port : device.busid;
     
@@ -14249,13 +14638,13 @@ async function toggleWslMapping(mid, idx, checked) {
     finally {
         // 无论成功/失败/取消授权都释放 busy，避免该设备行永久禁用
         delete _wslBusy[device.busid];
-        renderWslDeviceList(mid);
+        renderWslDeviceList('main');
     }
     
     // 映射/断开后自动刷新所有 WSL 监视器的端口列表（授权取消的 early return 不会跑到这里）
     setTimeout(function() { getWslMonitorIds().forEach(function(wmid) { refreshWslMonPorts(wmid); }); }, 1000);
     // 后台静默刷新：合并最新数据并解析 WSL 路径（tty 节点出现有延迟，自动重试）
-    retryResolveWslPaths(mid, 0);
+    retryResolveWslPaths('main', 0);
 }
 
 // 拉取最新 WSL 设备列表并合并到当前列表（保留 wslPath），完成后重新渲染
