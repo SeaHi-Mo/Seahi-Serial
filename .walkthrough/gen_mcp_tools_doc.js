@@ -106,7 +106,7 @@ const META = {
   serial_send: ['写', '{pane, sent:true, mode, bytes, data}', '需要该分栏已在监控中；mode=hex 时 data 按十六进制解析；lineEnding 会**留在界面上**（不是临时覆盖）'],
   serial_clear: ['写', '{pane, cleared:true, outputLines}', '**只清界面**，不动磁盘会话日志缓存'],
   serial_get_history: ['读', '{pane, total, items:[…]}', '最近的在前'],
-  serial_get_output: ['读', '{pane, direction, isConnected, channels:{rx,tx}, count, items:[{seq,ts,dir,text,bytes}], truncated, note?}', '**串口监视器的核心：读设备回了什么**。默认收+发按时间归并；数据与 `log_tail` 同一份存储，但**不需要你知道通道名**，且"还没收到数据"返回空列表 + note 而不是报错'],
+  serial_get_output: ['读', '{pane, direction, format, isConnected, channels:{rx,tx}, count, items:[{seq,ts,dir,text,bytes}], truncated, note?}（`format:"text"` 时改为 `{…, text}`，**没有再给 items**）', '**串口监视器的核心：读设备回了什么**。默认收+发按时间归并；数据与 `log_tail` 同一份存储，但**不需要你知道通道名**，且"还没收到数据"返回空列表 + note 而不是报错。**优先用 `format:"text"`**（一行一条 `[时刻] [rx|tx] 正文`，比 json 省一半以上 token；头部那行带着两通道各自的 dropped/mayBeIncomplete，正文在 content 文本里）'],
   // ===== BLE 语义（第一批：状态 + 从机）=====
   ble_get_state: ['读', '{scanning, deviceCount, selected, connected, addr, connName, serviceCount, notifySubs, logCount, monitorOpen}', '**操作蓝牙前先调它**；只反映面板内存里的状态，不会去碰适配器'],
   ble_list_devices: ['读', '{scanning, total, offset, limit, returned, hasMore, nextOffset, devices:[{mac,name,rssi,paired,selected}], selected, note?}', '**每调一次都会现问一次后端**（不是只读面板缓存）—— 刚 ble_start_scan 完立刻问也拿得到。**支持分页**：`limit` 每页几台（省略=全量）、`offset` 从第几台开始，返回里给 `hasMore`/`nextOffset` 接着翻。空列表时 `note` 会说下一步（含"设备不广播就只能按 MAC 直连"）；RSSI 是负数，越接近 0 越强'],
@@ -117,18 +117,17 @@ const META = {
   ble_write: ['写', '{pane, uuid, hex, bytes, writeType, format, lineEnding}', '**打开面板那个写入窗并点「发送」**：HEX/文本解析、行尾、写响应/无响应全用面板那套（写入窗会留在界面上）。单次最多 `maxBleWriteChars` 个字符；特征的写入方式不支持时要的错误里会把可选值列出来'],
   ble_connect: ['写', '{pane, connected, addr, name, via, serviceCount, paired?}', '`via=list`（扫描列表里点卡片连）/ `direct`（列表里没有 → 按 MAC 直连，**不依赖广播**）/ `selected`（用面板已选中的那台）。**等连接真的成功才返回**；需要配对时会弹出配对窗等用户确认'],
   ble_disconnect: ['写', '{pane, connected:false, addr, changed}', '断开后面板的服务树、订阅状态、本次会话数据日志一并清空（与点那颗「断开设备」按钮完全一样）'],
-  ble_get_output: ['读', '{pane, count, total, channels:{rx}, items:[{seq,ts,kind,hex,text,dim}]}', '**本次会话的蓝牙数据日志**（切设备/断开就清空）。要跨会话用 `channels.rx` 去 log_tail；`sinceSeq` 增量跟进'],
+  ble_get_output: ['读', '{pane, count, scanned, mode, total, channels:{rx}, items:[{seq,ts,kind,hex,text,dim}]}；`mode:"matches"` 时是 `hits:[{seq,ts,kind,match}]`，`mode:"count"` 时是 `total`/`totalMatches`（**都没有 items**），后两档另外带 `pattern`/`regex`', '**本次会话的蓝牙数据日志**（切设备/断开就清空）。要跨会话用 `channels.rx` 去 log_tail；`sinceSeq` 增量跟进。**要"这条 ERROR 出现几次"别拉条目**：给 `pattern` + `mode`（`count` 只回计数、`matches` 只回片段）；匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也搜得到）'],
   ble_refresh_rssi: ['读', '{addr, rssi, raw}', '只问一次射频、不改状态；没连设备时直接报"先连上"'],
   ble_get_services: ['读', '{connected, addr, serviceCount, services:[{uuid,name,chars:[{uuid,props,descs}]}]}', '**取的是面板已经拉到的那份服务树**（不会重新去问设备）；还没连设备时 `note` 会说明'],
-  ble_periph_status: ['读', '{advertising, serviceUuid, chars, discoverable, connectable, manualReply, warning?}', '**关键**：`advertising=false` 表示"服务建好了但没在广播"（蓝牙关着/不支持外设角色时 `warning` 会给真实原因），别把它当成功'],
-  ble_periph_start: ['写⚠️', '{pane, started, advertising, serviceUuid, warning?}', '**危险动作：对外广播**（附近设备都能看到并连上来）。必须带 `confirm:true`，否则不执行并回 `-32006`；用的是面板上已配置好的服务/特征'],
-  ble_periph_stop: ['写⚠️', '{pane, started, advertising, serviceUuid, warning?}', '**危险动作**：停掉对外广播（已连上来的中心设备会断开）。必须带 `confirm:true`'],
+  // ⚠️ BLE **从机**（外设）的三个工具已于 2026-09 删除：本机适配器自报支持外设角色，
+  // 但实测广播起不来（Aborted），整条方向下线。客户端拿旧名字调过来会得到"已删除 + 还能用什么"的 -32602。
   mcp_danger: ['读', '{tools:[{name, consequence, confirm}], total, note}', '危险工具清单（会对外产生不可撤销影响的那些）。**先问后果再确认**：不带 confirm 调用它们不会执行'],
   // ===== ADB 语义（§16.6.2 第三批的 ADB 部分）=====
   adb_list_devices: ['读', '{total, ready, devices:[{serial,state,model,product}], note?}', '**只有 `state=device` 的那台可用**（`unauthorized` 表示设备上还没点「允许 USB 调试」）。读的是 `adb devices -l` 的实时结果（与面板那颗「刷新」同一个命令），不吃面板 5 秒轮询的空窗'],
   adb_open_shell: ['写⚠️', '{serial, opened, cols, rows, note?}', '**危险动作**（开出来之后就能在设备上执行任意命令），必须带 `confirm:true`，否则不执行并回 `-32006`。开之前先确认设备 `state=device`（`serial` 省略=用第一台可用的）；**等 PTY 真的建出来才返回**（最长 10 秒），失败会如实说清是"这台机器没有可用设备"还是"serial 不存在"'],
   adb_shell_write: ['写⚠️', '{serial, written, bytes, data}', '**危险动作**（写进去的内容会被设备真的执行），必须带 `confirm:true`。命令要自己带 `\\n`，不带只是填在命令行上；单次最多 `maxAdbWriteChars` 个字符（超了 -32602）。走的就是面板终端敲键盘那条命令'],
-  adb_shell_read: ['读', '{serial, channel, count, items:[{seq,ts,level,dir,bytes,text}], truncated, dropped, mayBeIncomplete, note?}', '读日志中心 `adb:rx` —— PTY 读线程在**生产端**旁路的一份副本（**不会抢走界面终端要显示的队列**）。`items` 是 PTY 的**输出块**、不是按行切好的文本；`truncated=true` 表示凑满了一页（还有更多，用 `sinceSeq` 接着拉）；`mayBeIncomplete=true` 表示通道丢过最旧的行。**纯后端工具，没有界面也能用**'],
+  adb_shell_read: ['读', '{serial, channel, count, scanned, mode, items:[{seq,ts,level,dir,bytes,text}], truncated, dropped, mayBeIncomplete, note?}；`mode:"matches"` 时是 `hits:[{seq,ts,level,dir,match}]`，`mode:"count"` 时是 `total`/`totalMatches`（**都没有 items**），后两档另外带 `pattern`/`regex`', '读日志中心 `adb:rx` —— PTY 读线程在**生产端**旁路的一份副本（**不会抢走界面终端要显示的队列**）。`items` 是 PTY 的**输出块**、不是按行切好的文本；`truncated=true` 表示凑满了一页（还有更多，用 `sinceSeq` 接着拉）；`mayBeIncomplete=true` 表示通道丢过最旧的行。**`logcat` 刷屏时先给 `pattern` + `mode`**：`count` 只回"命中多少块/多少处"（几十 token），`matches` 只回片段。**纯后端工具，没有界面也能用**'],
   adb_shell_resize: ['写', '{serial, cols, rows, note?}', '`cols` / `rows` 都是 **2~1000**（`maxAdbCols` / `maxAdbRows`），越界或 0/1 → -32602。注意面板自己的尺寸同步（窗口/容器变化时）可能随后把 PTY 改回真实容器尺寸'],
   adb_close_shell: ['写', '{serial, opened:false, closed, note?}', '关掉当前会话（kill `adb shell` 子进程 + 移除终端）；本来就没开会话时是幂等的（`closed:false` + `note`），不是错误'],
   serial_quick_cmd: ['读', '{pane, items:[{index,label,value,seq,timeoutMs,expect,retry,okGoto,errGoto,hex}], usable, file, source}', '不带 index 只列；带 index 才执行（→ {pane, ran, label, value, hex}）。`seq`/`timeoutMs`/`expect`/`retry`/`okGoto`/`errGoto`/`hex` 是**每条自己的等待参数**（顺序号 > 0 才进面板上的「循环发送」列表；`timeoutMs` = 这条发出去最多等多久、缺省 3000、**填 0 = 这条不等响应**；`expect` = 追加的成功词（`|` 分隔）、`retry` = 收到 ERROR 后重发几次、缺省 3；**`okGoto`/`errGoto` = 跳转**：收到 OK 走前者、ERROR 用尽**或超时**走后者，取值 `留空`/`下一条`（缺省）/ 数字=顺序号 / `结束` —— 这就是"分支与循环"）；除 `timeoutMs` 外这几项**面板上都没有入口**，写在指令文件的同名列里；add/update 也收 `delayMs`（**旧拼写**，与 `timeoutMs` 同值）；`source=file` 表示这个列表来自外部文件（面板里增删改会写回该文件），`file` 是它的路径；`source=config` 才是纯配置里的列表'],
@@ -147,11 +146,13 @@ const META = {
   ui_get_state: ['读', '当前会话配置快照（与界面「保存配置」同一份真源）；**两张"运行时设备表"都要从它读**：`section:"bleDevices"` = 蓝牙扫描结果全量、`section:"wslDevices"` = WSL 端口映射的 USB 设备表（`{wslRunning, targetDistro, panelOpened, count, mapped, devices:[{busid, port, name, vidpid, hasCom, status, wslPath, wslSerial, busy, mapControlPath, autoMapControlPath}], note, mapUnavailableReason}`）—— 两处的行都是**动态 div、不在控件注册表里**，只有通用桥的客户端只能从这里读；`ble` 段里另带一份前 10 台的 `scanResult`', ''],
   ui_click: ['写', '`{results:[{path, ok, notFound?, error?, mapRequest?}], effects:[…]}`（**单目标失败时不会有这个结构**：整个调用直接失败）', '**会真的点下去**（例如"开始监控"）；用于 setter 够不到的动作；点击不存在/不可用的控件 → `-32602` / `isError`+`-32006`，**不会**假装成功。⚠️ 同 `ui_set`：WSL 端口映射那种"点了才开始跑"的动作会带 `mapRequest.settled=false`，**别重试**'],
   log_channels: ['读', '`{enabled, channelCount, channels:[{channel, lines, bytes, capBytes, seqFrom, seqTo, dropped, lastTs}], totalBytes, totalCapBytes, maxChannels, lockSkips, channelSkips, reclaims, reclaimedBytes}`', '不确定去哪找日志时先调它'],
-  log_tail: ['读', '`{channel, lines:[{seq, ts, level, dir, text, rawBytes}], returned, dropped, seqTo, mayBeIncomplete, truncated}`', '给了 `sinceSeq` 就是增量拉取（旧拼写 `since_seq` 也认）；`mayBeIncomplete=true` 表示该通道丢过最旧的行'],
-  log_search: ['读', '`{pattern, regex, scanned, hits:[{channel, seq, ts, level, text}], truncated}`', '不给 `channel` 就搜所有通道'],
+  log_tail: ['读', '`{channel, format, lines:[{seq, ts, level, dir, text, rawBytes}], returned, dropped, seqFrom, seqTo, missed, nextSinceSeq, mayBeIncomplete, truncated}`（`format:"text"` 时是 `{…, text}`，**没有再给 lines**）', '**读日志优先用 `format:"text"`**：一行一条纯文本（头部一行元信息 + `[时刻] [级别] 正文`），同样数据比 json 省一半以上 token —— 实测 200 条短行 **101 字节/行 → 29 字节/行（3.5 倍）**，行越长省得越少。增量跟进用 `sinceSeq`，并把**返回里的 `nextSinceSeq`** 当下次的入参（**别直接跳到 `seqTo`**，那会跳过 `missed` 那些行）；`missed>0` = 这一段还有行没给你（含已被裁掉的），`mayBeIncomplete=true` = 该通道丢过最旧的行。text 格式的**正文在 content 文本里**，structuredContent 只给元信息（要逐行字段就用默认 json）。渠道名见 `log_channels`'],
+  log_search: ['读', '`{pattern, regex, mode, hits:[{channel, seq, ts, level, dir, text, before?, after?}], scanned, truncated}`；`mode:"matches"` 时 `hits[]` 里是 `{channel, seq, ts, level, dir, match}`（**没有整行 text**）；`mode:"count"` 时是 `{pattern, regex, mode, total, channels:[{channel, count, scanned}], scanned, scannedChannels, truncated:false}`（**没有 hits**）', '**三档按需要的信息量选**：`count` 只回计数（几十 token —— "ERROR 出现过几次""到底有没有超时"就用它）；`matches` 只回匹配片段（一行多处算多条，长行日志用它比回整行省得多）；`lines`（默认）回命中行，可配 `context` 0~5 带前后几行。不给 `channel` 就搜所有通道；`matches`/`count` 的图案同样按字面量处理（`+`/`(` 不用转义）'],
   log_stats: ['读', '`{enabled, channels:[{channel, lines, bytes, dropped, warnOrError, spanSecs, linesPerSec}], totalBytes, totalCapBytes, maxChannels, lockSkips, channelSkips, reclaims, reclaimedBytes}`', '用来判断"是不是在刷屏"'],
   log_clear: ['写', '`{clearedChannels, channel}`', '省略 `channel` 清全部；**通道名不存在会报 -32602**（不静默成功）；清空后通道仍在，`log_tail` 返回 0 行而不是报错'],
-  log_export: ['读', '`{channels, lines, text, truncated}`', '只返回文本，不写文件'],
+  // `log_export` 已于 2026-09 删除（用户要求）：它是唯一能把全部通道日志一次塞进返回体的工具，
+  // 而返回体没有大小上限 —— 一次可能几十 MB。要看全量用 log_tail{format:"text"} 增量跟进。
+  // 客户端拿旧名字调过来会得到一句"已删除 + 现在用什么"的 -32602。
   mcp_calls: ['读', '`{calls:[{seq, ts, session, tool, args, ok, error, durationMs, effects}], returned, scanned, tailOnly, file, enabled, note}`', '返回值默认不记（`includeResults` 打开才记）；只读文件尾部窗口 —— `tailOnly=true` 表示更早的记录**没被扫到**，`returned` 小于 `limit` 时别当成"历史上就这么多"（用 export 或直接读文件）'],
   mcp_stats: ['读', '`{callLog:{totalCalls, seq, dropped, byTool, firstAt, lastAt, settings, enabled, file, fileBytes}, sessionToolCalls:{工具名: 次数}}`', ''],
   mcp_config_get: ['读', '`{server:{host, port, tokenMasked, …}, callLog:{…}, expose:{autoControlTools, namespaces, readOnly}, version}`', 'token 打码；`expose.readOnly` 是只读（沙箱）模式的开关状态'],
@@ -160,13 +161,12 @@ const META = {
 
 const GROUPS = [
   ['串口语义工具（**优先用这些**，比 ui_* 通用桥更准）', ['serial_get_state', 'serial_select_port', 'serial_set_baud', 'serial_set_frame', 'serial_set_lines', 'serial_set_display', 'serial_open', 'serial_close', 'serial_send', 'serial_clear', 'serial_get_history', 'serial_get_output', 'serial_quick_cmd', 'serial_workflow', 'serial_workflow_run']],
-  ['蓝牙语义工具（BLE）', ['ble_get_state', 'ble_list_devices', 'ble_start_scan', 'ble_stop_scan', 'ble_connect', 'ble_disconnect', 'ble_get_services', 'ble_read', 'ble_write', 'ble_subscribe', 'ble_get_output', 'ble_refresh_rssi',
-                    'ble_periph_status', 'ble_periph_start', 'ble_periph_stop']],
+  ['蓝牙语义工具（BLE，**主机方向**）', ['ble_get_state', 'ble_list_devices', 'ble_start_scan', 'ble_stop_scan', 'ble_connect', 'ble_disconnect', 'ble_get_services', 'ble_read', 'ble_write', 'ble_subscribe', 'ble_get_output', 'ble_refresh_rssi']],
   ['ADB 语义工具（ADB shell）', ['adb_list_devices', 'adb_open_shell', 'adb_shell_write', 'adb_shell_read', 'adb_shell_resize', 'adb_close_shell']],
   ['安全与策略', ['mcp_danger']],
   ['应用与服务器', ['app_info', 'mcp_status', 'mcp_limits', 'serial_list_ports']],
   ['界面操作（走合成 DOM 事件，和用户点击同一条路径）', ['ui_list', 'ui_describe', 'ui_get', 'ui_set', 'ui_click', 'ui_get_state']],
-  ['日志中心', ['log_channels', 'log_tail', 'log_search', 'log_stats', 'log_clear', 'log_export']],
+  ['日志中心', ['log_channels', 'log_tail', 'log_search', 'log_stats', 'log_clear']],
   ['调用记录与配置', ['mcp_calls', 'mcp_stats', 'mcp_config_get', 'mcp_config_set']],
 ];
 
@@ -200,6 +200,8 @@ md += '> 有四个参数历史上写成了蛇形，**旧拼写仍然认**（`sin
 md += '> 直接改名会让按旧写法调用的人**静默失效**，那比报错更危险。\n\n';
 md += '⚠️ 返回结构里**没有**的字段就是真的没有（例如串口项只有 `portName / friendlyName / productName`，没有 VID/PID）。\n';
 md += '⚠️ 很多客户端只把 `content[].text` 给模型看，所以**摘要必须把数据说出来**（`serial_list_ports` 的文本里就带着端口名）。\n\n';
+md += '💡 **读日志优先用 `format:"text"`**（`log_tail` / `serial_get_output`）：一行一条纯文本，同样内容比默认 json 省一半以上 token。实测（200 条短行）：**json 101 字节/行 → text 29 字节/行，省 3.5 倍**；行越长省得越少（长行只剩 ~30%）。text 编码的正文放在 `content[].text`（**只有一份**），`structuredContent` 只给元信息，所以"省 token"不会变成"看不到日志"。\n\n';
+md += '💡 **要"有没有 / 几次"就别拉命中行**：`log_search{mode:"count"}` 只回计数（几十 token），`mode:"matches"` 只回片段，`mode:"lines"`（默认）才回整行。三档的数据是同一份，差的只是**回多少**。\n\n';
 
 md += '## 1. 怎么连\n\n';
 md += '| | |\n|---|---|\n';
@@ -293,6 +295,10 @@ md += '| `adb_shell_read` 一次行数 | 默认 200，上限 **2000** |\n';
 md += '| 工具列表每页 | 50 |\n';
 md += '| `ctl_*` 上限 | 400 |\n';
 md += '| 日志单条 / 每通道 / 总量 / 通道数 | 8 KiB 截断 · 128 KiB~1 MiB · 16 MiB（超了裁最大通道）· 64 个 |\n';
+md += '| 读日志的编码（`log_tail` / `serial_get_output`） | 默认 `json`（逐行 `seq/ts/t/level/dir/bytes/text`）；`format:"text"` 一行一条纯文本（头部一行元信息 + `[时刻] [级别/方向] 正文`）。**两种编码的数据与丢弃账完全一致**：`returned` / `seqFrom` / `seqTo` / `missed` / `dropped` / `mayBeIncomplete` / `truncated` / `nextSinceSeq` |\n';
+md += '| 一次日志读取的行数 | `log_tail` 默认 100 · `serial_get_output` 默认 50 · `adb_shell_read` 默认 200，三者上限都是 **2000**（text 编码只改写法，不改这个上限） |\n';
+md += '| `log_search` 的 `limit` / `context` | `limit` 默认 100、上限 **500**（`matches` 档算的是**匹配处数**，一行多处算多条）；`context` **0~5**，超了或配在非 `lines` 档上都是 -32602 |\n';
+md += '| 检索图案 `pattern` 的长度 | **512 字符**（`maxSearchPatternChars`；`log_search` / `adb_shell_read` / `ble_get_output` 共用）—— 图案要被编译成正则，1 MiB 的请求体塞得进一条巨型正则，所以**在碰主程序之前**就拦 |\n';
 md += '| 桥回执超时 / 在途上限 | **界面动作 5 秒**、设备动作 30 秒、`ble_connect` 130 秒 · 32 |\n';
 md += '| `ble_list_devices` / `ui_get_state(bleDevices)` 每页 | 200 台（`limit` 只能是 **1~200**，0 与超限都是 -32602；要全量就**不给** limit，或用 `offset` 翻页）|\n\n';
 md += '安全边界：\n\n';

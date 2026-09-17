@@ -57,9 +57,10 @@ pub fn timeout_for(op: &str, payload: &Value) -> u64 {
     match payload.get("action").and_then(|a| a.as_str()).unwrap_or("") {
         // 最坏路径见 UI_TIMEOUT_CONNECT_MS 的注释
         "connect" => UI_TIMEOUT_CONNECT_MS,
-        "read" | "write" | "subscribe" | "refreshRssi" | "getServices" | "periphStart"
-        | "periphStop" => UI_TIMEOUT_DEVICE_MS,
-        // state / listDevices / getOutput / periphStatus / startScan / stopScan 都是读内存/发个指令，
+        // （原来还有 `periphStart` / `periphStop`：BLE 从机方向已于 2026-09 删除，
+        //   那两个 action 不会再被发出 —— 留着只会让这张表读起来像还有这个功能。）
+        "read" | "write" | "subscribe" | "refreshRssi" | "getServices" => UI_TIMEOUT_DEVICE_MS,
+        // state / listDevices / getOutput / startScan / stopScan 都是读内存/发个指令，
         // 与前端的同步分支等价 —— 仍按界面动作的 5 秒算
         _ => UI_TIMEOUT_MS,
     }

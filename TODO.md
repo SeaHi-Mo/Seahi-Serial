@@ -80,9 +80,9 @@ BLE 设备列表/广播解析、WSL 映射状态这类**连绕都绕不到**（�
 |---|---|---|
 | V1 | `npx seahi-serial-mcp install` 的**真实写入**（改各客户端的 MCP 配置）| ⏳ 只跑过 `--dry-run`，等你授权 |
 | V2 | 慢消费者浸泡：RSS 增幅 < 10 MiB | ⏳ 只能看任务管理器（堆快照降 ≠ RSS 降）|
-| V3 | 真实 AI 客户端里连一次：`tools/list` 应有 **33** 个工具、`ui_click` 界面真的动 | ⏳ 需要客户端 |
+| V3 | 真实 AI 客户端里连一次：`tools/list` 应有 **53** 个工具、`ui_click` 界面真的动 | ⏳ 需要客户端 |
 | V4 | 满负荷下的界面流畅度（几百次 `ui_list`/`ui_set` 连打）| ⏳ 需要你看着界面点，我这边打请求 |
-| V5 | BLE 从机"真的在对外广播吗" | ⏳ 需蓝牙硬件；见 `doc/BLE_PERIPHERAL.md` 第 5 节（该 `#[ignore]` 用例当前失败）|
+| ~~V5~~ | ~~BLE 从机"真的在对外广播吗"~~ | ❌ **已定案：做不出来** —— 适配器自报支持外设角色，实测广播 `Aborted`。2026-09 整条方向删除（后端 / 前端 UI / 3 个 MCP 工具 / 文档一起清），证据留在 `doc/BLE_PERIPHERAL.md` |
 
 ---
 
@@ -91,7 +91,7 @@ BLE 设备列表/广播解析、WSL 映射状态这类**连绕都绕不到**（�
 | # | 事项 | 说明 |
 |---|---|---|
 | T1 | `cargo build`（不带 `cfg(test)`）有 **6 条死代码警告** | `calllog::in_dir`、`loghub::handle`、`protocol::handle_raw`、`registry::MAX_TOOL_NAME_LEN`、`registry::replace`、`report::guard` —— 全部只被 `#[cfg(test)]` 引用。既有、非本轮引入（AGENTS.md 说的"0 警告"指 `cargo test`）。修法：加 `#[cfg(test)]` 或 `#[allow(dead_code)]` |
-| T2 | `log_export` **没有总长上限** | 最多 64 通道 × 每通道 20000 行，一次可能拼出几十 MB 的字符串（有界但过大）。可加整体字符上限 + `truncated` |
+| T2 | ~~`log_export` **没有总长上限**~~ ✅ **已消除（2026-09 删除该工具）** | 它最多 64 通道 × 每通道 20000 行、一次可能拼出几十 MB，而**返回体没有大小上限**（`MAX_BODY_BYTES` 只管请求体）。与其加"整体字符上限"，不如不做这个工具：要全量用 `log_tail{format:"text"}` 增量跟进；旧名字调过来会得到"已删除 + 替代方案"的 -32602（有测试守着） |
 | T3 | 桥会丢弃 `detail` / `results` | `unwrap_ui_result` 只往外传 `error`，多目标批量失败时 AI 只看到**第一条**错误（单目标语义已修好）。可把逐项结果附进错误文本 |
 | T4 | **Streamable HTTP（`POST /mcp`）未实现** | 现在只支持 SSE，而我们广告的是 `2025-06-18`。见第六节 D2/D3 |
 | T5 | 一致性检查脚本**不在仓库里** | 这是明确要求（测试工具不入库）。所以把"怎么复现"写在文末，别让它失传 |
@@ -126,8 +126,14 @@ BLE 设备列表/广播解析、WSL 映射状态这类**连绕都绕不到**（�
 | `345ad7b` | `serial_get_output`（读串口监控数据）+ 按"不得影响主程序"补齐输入上限 |
 | `dbb9561` | 修掉错误码分流在真机上失效的链路断点（`notFound` 丢在回执里）|
 
-**Agent 调用效率（第五轮，回答"沙箱里反复调用失败怎么办"）**：握手时下发 `initialize.instructions`
-（8 条工作方式，真机已验证客户端收到 600+ 字符）／限流回包带上本次请求的真实 `id`（原来 `id:null`
+**日志的三件套（2026-09，回答"日志会不会截断 / 全给 AI 读贵不贵 / 要不要用 ripgrep"）**：
+`log_tail` / `serial_get_output` 加 `format:"text"`（短行日志实测省 3.5 倍；正文搬进 `content` **只发一份**，
+`structuredContent` 只留元信息）；`log_search` 加 `mode: lines|matches|count` 与 `context`（用信息量换 token）；
+**删掉 `log_export`**（T2，唯一能把全量日志一次塞进返回体的工具，而返回体没有上限）。
+**ripgrep 评估结论：不集成** —— 子进程光启动就 20 ms，而我们全通道扫描 13 ms，
+且数据本来就在内存里（要交给 rg 得先落盘）。详见 `doc/MCP_DESIGN.md` §17。
+
+**Agent 调用效率（第五轮，回答"沙箱里反复调用失败怎么办"）**：握手时下发 `initialize.instructions`（8 条工作方式，真机已验证客户端收到 600+ 字符）／限流回包带上本次请求的真实 `id`（原来 `id:null`
 导致调用挂到超时后重试）／没有串口设备时 `serial_open` **立刻**失败，不再白等 6 秒轮询超时。
 
 **只读（沙箱）模式（同轮落地，设计 D3 的欠账）**：`expose.readOnly` → 所有写操作在

@@ -1489,6 +1489,233 @@ BLE 面板有两套完全不同的东西：**主机**（当中央去连别人的
 
 ## 17. 实施记录
 
+### 2026-09-17 · **删除 BLE 从机（外设）方向** + 发布 v0.5.10 ✅
+
+**定案依据**：`ble_periph_starts_advertising`（那条 `#[ignore]` 真机用例）在本机一直失败 ——
+适配器自报 `present=true / low_energy=true / peripheral_role=true`、**GATT 服务与特征建得出来**
+（`ble_periph_builds` 通过），但 `StartAdvertisingWithParameters` 的落定状态是 **Aborted**：
+广播起不来 ⇒ 中心设备永远发现不了本机 ⇒ 整条从机链路没有意义。用户据此拍板：
+"从机方向的代码删除，确认是实现不了了。"
+
+**删了什么**（一条方向必须删干净，否则会留下"能点但必然失败"的入口）：
+
+| 层 | 内容 |
+|---|---|
+| Rust 后端 | `main.rs` 的从机模块（~1170 行）+ `mod ble_periph_tests`（~580 行，含那 3 条 `#[ignore]`）+ 9 个 `#[tauri::command]` + `BlePeripheralState` 托管状态 + 退出时的"停止广播"清理 + `bridge.rs` 超时档里的 `periphStart`/`periphStop` |
+| MCP | 3 个工具（`ble_periph_status/start/stop`）的定义 / 分派 / 契约表 / 调用情况用例 / 假前端分支，以及 `WRITE_TOOLS` 与 **`DANGER_TOOLS`** 里的条目 |
+| 前端 | 从机模式 UI（模式切换器 / 表单 / 预设 / 多套配置 / 事件轮询 / 写入弹窗的两态分支）、配置键 `mode`/`periph`/`periphSaved`、只属于从机的 CSS（`.ble-pf-*`、`.ble-mode-*`）、`30-mcp.js` 的三个 action 与 domId 映射 |
+| 依赖 | `windows` 里只它用到的三个 feature（`GenericAttributeProfile` / `Storage_Streams` / `Radios`）+ `windows-future` 依赖 |
+| 文档/断言 | `BLE_PERIPHERAL.md` 加**归档抬头**（证据保留：它是"为什么不行"的唯一记录）、`BLE_VERIFICATION` / `README` / `TODO`（V5 结案）/ `HANDOVER` / `FRONTEND_LAYOUT` / `MCP.md` / `AGENTS` 同步；工具数 **56 → 53**；断言集删掉从机检查 |
+
+**旧客户端怎么办**：工具定义**编译在 exe 里**，客户端要重连才会重读 `tools/list`，所以配置里很可能还留着
+旧名字。三个旧工具名调过来会得到一句"**已删除 + 现在有什么**（主机方向那一串）"的 `-32602`，
+而不是含糊的"未知工具"（后者会让 AI 反复试同一个名字）；由
+`ble_peripheral_tools_are_gone_and_the_old_names_point_somewhere` 一路钉到错误码与文案。
+
+**顺手修的顺序依赖**：`adb_shell_read_reads_the_loghub_channel_incrementally` 把 seq 写死成 1/2 ——
+而 `hub.clear()` **只清内容、不重置 `next_seq`**，于是新增一个也用 `adb:rx` 的用例就会让它随执行顺序
+随机失败（本批新增用例时暴露）。现在改成"由第一条的 seq 推出后一条"，钉的是**连续**。
+
+**验证**：`cargo test` **232 通过 + 1 ignored**（3 条从机 ignore 用例随模块删除）、`cargo build` **0 警告**；
+前端断言集 **1566 通过**（原 1730，减 164 条全是从机断言）；`doc/MCP_TOOLS.md` 重生成
+（**53** 个工具 = 19 通用 + 16 串口语义 + 12 蓝牙语义 + 6 ADB 语义）。
+
+**发布**：版本号 5 处同步 → **0.5.10**（`Cargo.toml` / `tauri.conf.json` / `installer.iss` / `package.json` / `Cargo.lock`），
+由 CI 打安装包并发布 Release。
+
+### 2026-09-17 · 检索档铺到 `adb_shell_read` / `ble_get_output`（顺带修掉一个**从来没生效过**的参数 + 补 `pattern` 上限） ✅
+
+**接着上一批**（`log_search{mode}` 三档）做：用户批准"把 mode 也加到 `ble_get_output` / `adb_shell_read`"。
+两个数据源**形状不同**，处理方式也不同：
+
+- `adb_shell_read` 读的是日志中心的 `adb:rx` 通道 → 直接复用同一套整理逻辑；
+- `ble_get_output` 读的是**蓝牙面板自己那份会话缓冲**（在前端），
+  ⚠️ **不能**改用 `ble:rx` 通道（那是跨会话的另一份数据，混用会让"给不给 pattern"返回两套来源）。
+
+**做法：把匹配语义抽成一份 `LogMatcher`**（`loghub.rs`），三个工具共用 ——
+`log_search` 与这两个工具对同一个图案必须给出**同样的答案**，各写一遍迟早漂移
+（"count 说 3 次、matches 说 2 处"这种最难查）。两档仍是上一批那条纪律：
+只要布尔（lines）时字面量走 `contains`（memchr 级），要区间/处数（matches/count）才编译 regex。
+顺手把 `count` 说清成两个数：`total`=命中**行/条目**数（`rg -c`）、
+`totalMatches`=命中**处**数（`rg --count-matches`）—— "出现几次"原来是含糊的。
+
+**顺手抓到一个真 bug（`ble_get_output` 的 `limit`/`sinceSeq` 从来没生效）**：
+schema 里声明了两个参数，但分派写的是 `ble_call(core, "getOutput", args, json!({}))`
+—— `ble_call` 只注入 `pane`，**参数根本没到前端**；前端 `parseInt(payload.limit)` 永远是 `NaN`
+→ 每次返回全量（`limit` 形同不存在）。这正是 AGENTS #11 ② 说的"只校验不转发"。
+调用测试原来只写 `calls: vec![("ble", json!({"action":"getOutput"}))]`（子集比较），
+**恰好漏掉了它**；现在期望里必须带 `limit`，并由注释写明原因。
+另外：检索档**故意不转发 `limit`**（要让"数一数出现几次"扫整份缓冲，转发会变成"数最后 N 条"），
+`scanned` 会把真实扫过的条数报出来。
+
+**补上一个该有的上限**：`pattern` 过去**没有长度限制** —— 请求体上限是 1 MiB，
+而图案会被编译成正则，一条几十万字符的图案足以让这次调用卡住。
+新增 `MAX_SEARCH_PATTERN_CHARS = 512`（`check_search_pattern` 在**碰主程序之前**拦，
+报错里指路 `mcp_limits.maxSearchPatternChars`），三个工具共用；
+`adb`/`ble` 的校验发生在**碰界面/设备之前**（测试里没有 GUI 也拿到 -32602 而不是 -32006）。
+
+**顺手修了一个测试的顺序依赖**：`adb_shell_read_reads_the_loghub_channel_incrementally`
+把 seq 写死成 1/2 —— 而 `hub.clear()` 只清内容、**不重置 `next_seq`**，
+于是新增一个也用 `adb:rx` 的用例就会让它随执行顺序随机失败。现在改成"由第一条的 seq 推出后一条"，
+钉的是**连续**（那才是它真正关心的性质）。
+
+**没做**：这两个工具**不给 `context`** —— 条目是输出块/通知，不是按行切好的日志，
+"块的前后几块"对调试没有意义。要上下文就用返回里的通道名去 `log_tail{format:"text"}`（文档里写明了）。
+
+**验证**：`cargo test` **248 通过 + 4 ignored**（+3：adb 检索档（块里多次命中也数得对）、
+ble 转发+过滤（含"text 为空时按 hex 搜"）、三方共用的图案上限；另修 1 条顺序依赖）；
+前端断言集 **1751 通过**（+4 条源级断言：共用匹配器、ble 真转发、图案上限、三条测试在）；
+`doc/MCP_TOOLS.md` 重生成。
+
+### 2026-09-17 · **删掉 `log_export`**：唯一能把"全量日志"塞进返回体的工具 ✅
+
+**起因**：用户一句"全量 log 的工具需要删除"。指的就是 `log_export` —— 我在评估 token 成本时点过它：
+省略 `channels` 时它把**全部通道**（最多 64）× 每通道最多 **20000 行**按时间归并成一段文本，
+而**返回体没有任何大小上限**（`MAX_BODY_BYTES` 只管请求体，`transport.rs` 的响应侧没闸）。
+一次调用就可能拼出几十 MB：撑爆 AI 的上下文，客户端解析也会打摆。它也没有任何落盘能力
+（实现里只回文本 `"本轮只返回文本，不写文件"`），所以它对普通用户唯一的价值就是"看全量"，
+而那件事有不炸上下文的正确做法。
+
+**怎么删的**（连引用一起清干净，避免"工具没了但断言/文档还当它在"）：
+
+- `protocol.rs`：工具定义、分派分支、**契约表条目**、两处测试里的工具名清单、
+  `log_tools_work_without_gui` 里那段实调、以及两处提到它名字的注释。
+- `loghub.rs`：`LogHub::export()`（只被这个工具用）+ 它的单测（否则就是死代码警告）。
+  ⚠️ `CallLog::export()` **不能删** —— 那是 `mcp_calls{format:"md"}` 在用的另一回事。
+- `.walkthrough`：文档生成器的 META/GROUPS、断言集里的工具名清单；
+  另加两条**守着"别顺手加回来"**的断言（源码里不许再出现 `"name": "log_export"`，
+  且必须存在"旧名字能指路"的实现与测试）。
+- 文档与计数：`doc/MCP.md`（工具表 + 一段"它为什么被删了、现在用什么"）、`README.md`
+  （顺手修掉两处早就过期的"33 个工具"）、`TODO.md` **T2 结案**（那条技术债说的正是它）、
+  `AGENTS.md` / `doc/HANDOVER.md` 的工具数 57 → **56**、`doc/MCP_TOOLS.md` 重生成。
+
+**旧客户端怎么办**：工具定义**编译在 exe 里**，客户端要重连才会重读 `tools/list`，
+所以配置里很可能还留着这个名字。因此没有让它掉进通用的"未知工具"分支（只回
+`未知工具: log_export` 会让 AI 反复试同一个名字），而是专门一条分支回：
+
+> `log_export 已删除：…（为什么）…要读日志用 log_tail{format:"text"}（配合 sinceSeq 增量跟进）
+> 或 serial_get_output{format:"text"}；只想知道"出现几次"用 log_search{mode:"count"}。`
+
+由 `log_export_is_gone_and_the_old_name_points_somewhere` 一路测到错误码与文案（要求含"已删除"
+且提到替代工具）。
+
+**没做（留给以后）**：如果确实需要"导出文件"，正确的形状是**写文件**（用户可见的原生框选路径，
+与 `quick_cmds_*` / `save_log` 同一套纪律）+ 硬上限，而不是把字节倒进对话里。
+
+**验证**：`cargo test` **245 通过 + 4 ignored**；前端断言集 **1747 通过**；
+`doc/MCP_TOOLS.md` 重生成（**56 个**工具，页内计数由生成器写死取自实际清单）。
+
+### 2026-09-17 · 评估"日志改用 ripgrep" → **不集成**；改成给 `log_search` 加三档返回 + 修掉自己引入的回归 ✅
+
+**起因**：用户在上一批（`format:"text"`）之后问："log 采用 ripgrep 可不可行，是不是会更省，又不会影响 AI 查看"。
+
+**先把搜索本身量了**（`loghub::search`，1820 行/通道的同一批数据）：
+
+| 任务 | 我们的内存实现 | ripgrep 15.1.0 子进程 |
+|---|---|---|
+| 纯进程启动 | — | **20.28 ms** |
+| 单通道字面量未命中 | **0.42~0.50 ms** | 20.78 / 24.59 ms |
+| 单通道正则 | 1.38~2.23 ms | 22.64 ms |
+| 全通道（4.7 MB 正文 / 58,240 行） | **13.0~15.7 ms**（冷缓存 23.2 ms） | 29.52 / 32.09 ms |
+
+**结论：不集成**，四条理由（写进这里免得下次再评估一遍）：
+
+1. **数据在内存里**，要交给 rg 就得先落盘 —— 等于在串口收发热路径旁边再造一套"独立线程 + 有界队列
+   + 轮转 + 丢弃记账"，还把"退出即消失"的日志永久留在用户磁盘上；
+2. **要随安装包分发 `rg.exe`**（用户机器上通常没有，本机有是我的环境）；
+3. **进程启动 20 ms 就打不过 0.56 ms** —— 单通道场景慢 ~40 倍，全量场景只是打平；
+4. **rg 的强项用不上**：mmap、并行遍历目录树、ignore 规则都不存在；而"字面量预过滤"我们**本来就有**
+   （`regex 1.12.3` 的依赖树里已经带着 `aho-corasick 1.1.4` 与 `memchr 2.8.1`）。
+
+**该抄的是它的"少输出"**（省 token 的关键是回多少文本，不是搜得多快），于是给 `log_search` 加了三档：
+
+- `mode:"count"`（`rg -c`）：只回 `total` + 每个有命中的通道各几次。**必须扫完**才能给出正确数字，
+  所以这一档故意**不受 `limit` 影响**（有单测钉着：300 行 / limit=5 仍报 100）。
+- `mode:"matches"`（`rg -o`）：每条命中只回 `match` 片段（一行多处算多条），
+  长行日志（HEX dump、一行几十 KB 的 JSON）用它比回整行省得多；零长匹配跳过（否则 `a*` 会塞满 limit）。
+- `mode:"lines"`（默认，行为不变）+ 新增 `context` 0~5：命中行前后各带几行，省掉"再 tail 一次"的往返；
+  配在非 `lines` 档上是 **-32602**（静默忽略会让调用方以为上下文已经给了）。
+
+三档的 token 量级差一个数量级（单测直接比 `structuredContent` 体积：`count` < `matches` < `lines`，
+且 `count * 10 < lines`）。
+
+**过程中自己踩了一个坑，值得记**：为了给 `matches` 拿到原文里的**字节区间**，
+第一版把**所有**搜索都改成"编译 regex"（子串先 `escape`）—— 结果 1820 行的未命中扫描从 0.56 ms
+涨到 **1.27 ms**。旧实现走 `contains`（memchr 级）才是对的。现在只有"要正则"或"要区间（matches）"
+时才编译 regex，`lines`/`count` 的字面量继续走 `contains`（回到 0.42 ms），
+并由 `literal_search_treats_metacharacters_as_plain_text` 钉住"字面量按字面量处理"。
+
+**另一个"量完就撤"的改动**：我原本判断"搜索每次克隆整个通道（每行一次 malloc）比匹配还贵"，
+于是把 `LogLine::text` 从 `Box<str>` 换成 `Arc<str>`。隔离实测（1820 行/次快照 ×20）：
+
+- 克隆 `Vec<LogLine>`（Arc 版）1.686 ms → **84 µs/次**
+- 等价的独占字符串克隆 1.901 ms → **95 µs/次**
+
+差 ~11 µs ≈ 搜索时间的 **2.6%**；而 `Arc<str>` 每行多 16 字节引用计数头，
+同样内存预算下**少存约 11% 的日志**。**换回来了**（`LogLine::text` 仍是 `Box<str>`）。
+真正的成本在**逐行子串匹配的固定开销**（~186 ns/行，`contains` 的 TwoWay 短 haystack 起步价），
+而 0.4 ms/通道、全局上限 ~13 ms 对一次工具调用本来就不是瓶颈 —— **不值得为它动内存账**。
+
+**验证**：`cargo test` **245 通过 + 4 ignored**（+3 `log_search` 契约/行为：三档体积与精确计数、
+`context` 边界、参数误用四种；+2 loghub：`count` 精确、`matches` 片段与零长跳过；+1 字面量不当正则）；
+前端断言集 **1747 通过**（+8 条源级断言：三档存在、白名单、`contains` 快路径、零长跳过、
+`context` 校验、以及"text 是独占字符串"这条反向守护）；`doc/MCP_TOOLS.md` 重生成（57 个工具）、
+`doc/MCP.md` 加了「找东西时先选对要多少信息」。
+
+**留给以后**：真要再快，只有换数据布局（连续 arena）这一条路，收益也不值得；
+真要搜"跨会话历史"就去读 `%APPDATA%\seahi-serial\log-cache\session-*.log`
+（用户自己 `rg` 即可，或者将来做一个进程内读文件的工具）。
+
+### 2026-09-17 · 读日志加一档 `format:"text"`：省 token，但**不许少看一行** ✅
+
+**起因**：用户两连问 —— ① "串口运行的日志在 MCP 中会截断吗？"；② "如果所有 log 都给 AI 读，
+是不是很消耗 Token？"。把账算出来之后，答案是**非常耗，而且"全给"物理上不可能**：
+`log_tail` 每行都带 `seq/ts/t/level/dir/bytes/text` 六个字段，**每行固定烧掉 ~100 字节**
+（实测 200 条短行 **101 字节/行**，包装比正文长十几倍）；而 `serial:` 通道上限 512 KiB，
+短行能存 ~6200 行 → **一个分栏的完整日志就是几十万 token，超过 200k 上下文**；
+顶到全局 16 MiB 就是百万级。串口调试恰恰**全是短行**（`OK`、`AT+GMR`），
+是 token 效率最差的一类输入。
+
+**做成什么样**（`log_tail` 与 `serial_get_output` 共用一套）：
+
+- 新增参数 `format`：`json`（默认，行为完全不变）/ `text`（一行一条纯文本）。
+  取值不认识 → `-32602` 并把可选值写出来；**绝不静默退回 json**（静默会让"我想省 token"悄悄失效）。
+- text 编码的写法：**头部一行元信息** + 一行一条 `[HH:MM:SS.mmm] [级别] 正文`
+  （`serial_get_output` 用 `[时刻] [rx|tx] 正文` —— 那边两个方向是归并在一起的，不标就分不清谁说的）。
+  **实测 200 条短行：json 101 字节/行 → text 29 字节/行（省 3.5 倍）**；
+  行越长省得越少（长行只剩 ~30%，因为包装是固定的、正文是变长的）——
+  所以"省多少"取决于日志形状，别把它当固定折扣。
+- **正文搬进 `content[].text`，`structuredContent` 只留元信息**（`take_rendered_text`）。
+  这一条是这个功能的**关键**，两个理由：
+  ① 很多客户端只把 `content[].text` 给模型看，而通用摘要把整段日志压成 600 字 ——
+     那正好把"省 token 的编码"变成"AI 看不到日志"；
+  ② 两个渠道都会发给客户端，**同一段日志写两遍等于把省下的 token 又花回去**。
+  搬运发生在 `calllog.record` **之后**，所以 `ai-calls.jsonl` 里仍然有全文。
+  新增同类工具必须登记进 `TEXT_PAYLOAD_TOOLS`（`text_format_tools_are_all_in_the_text_payload_list`
+  从 `inputSchema` 反查，漏登记就 fail）。
+- **两种编码的数据与丢弃账完全一致**：`returned`/`seqFrom`/`seqTo`/`missed`/`dropped`/
+  `mayBeIncomplete`/`truncated`/`nextSinceSeq`。还顺手补了两个原来缺的信号：
+  - `missed`：给了 `sinceSeq` 时"这段窗口里存在过但没给你"的行数（seq 逐条连续，所以减法精确）。
+    旧实现一次拉不完时会**静默跳行**，而 `truncated` 的旧口径要求 `dropped>0`，于是"取满 2000 行
+    但没丢过"会**谎报 false** —— 现在 `truncated` 只表示"被行数顶住"，漏多少看 `missed`。
+  - `nextSinceSeq`：下次该带的 `sinceSeq`。**推进到它才不会漏**（直接跳到 `seqTo` 会把没拿到的行永远跳过）。
+- 正文里的 CR/LF 转义成字面量 `\r`/`\n`（转义规则**只有一处** `push_text_line`/`push_escaped`）：
+  日志必须"一行一条"，否则 ADB 那种多行块会撑破页面结构、甚至**伪造出头部行**。
+- 上限一个字没动：还是 2000 行、8 KiB/行、每通道 128 KiB~1 MiB、全局 16 MiB、64 通道 ——
+  **编码只改写法，不改能拿多少**。
+
+**顺带修掉一个记录在案的测试隐式依赖**：`every_tool_has_a_tested_return_contract` 单跑必失败
+（`log_tail` 要的 `app` 通道还没被别的用例建出来）。现在用例开头 `ensure_channel("app")`
+（不写内容、也不要求 hub 处于启用态）。
+
+**验证**：`cargo test` **239 通过 + 4 ignored**（+3 loghub 编码/转义/漏读，+2 loghub 的 `missed`/`truncated`，
++4 契约与"真的更省"，+1 文本页头部）；前端断言集 **1739 通过**（+9 条源级断言：编码档、转义、
+头部丢弃账、登记表、以及"有测试守着它"）；`doc/MCP_TOOLS.md` 重生成（57 个工具）、
+`doc/MCP.md` 加了一节「读日志怎么才不烧 token」。
+
+**没做（留给以后）**：`adb_shell_read` / `ble_get_output` 也还是纯 JSON，同一个模式可以照着套；
+真要再省，下一步是"服务端先归并"（把 6000 行 `AT+GMR` 压成模板 + 计数），而不是继续砍写法。
+
 ### 2026-09-17 · 快速指令加「跳转」两列（分支与循环，不引入新语法）✅
 
 **起因**：用户问"快捷指令的条件发送既然是文件驱动的，能不能更全面一点，比如支持文档里的 mermaid 流程图来执行发送循环？"。
@@ -2127,6 +2354,9 @@ npm 安装器 62 通过；`doc/MCP_TOOLS.md` 重生成（49 个工具）；`doc/
 （`log_tail` 要的 `app` 通道还没被建出来），整套跑时别的用例会先建出这个通道才过 ——
 即测试之间有隐式依赖。不影响 CI（CI 跑整套），但"单跑一个用例"会误报。
 修法：那条 log_tail 用例自己在前面推一条 `app` 通道的日志，或让 LogHub 在启动时就建好默认通道。
+
+> **已修（2026-09，读日志的文本编码那一批）**：改成用例开头调 `loghub::hub().ensure_channel("app")`
+> —— 预建通道不写内容、也不要求 hub 处于启用态，单跑不再误报。
 
 **下一批**：连接/断开（把内联 connect 流程抽成 `connectBleDevice(addr)`，与 `ble_connect_direct` 并成一条路）、
 特征写入（`ble_write`：面板那颗写按钮会弹一个小窗填数据，要复用那个弹窗的提交路径）、

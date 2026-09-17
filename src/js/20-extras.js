@@ -97,15 +97,15 @@ function clampBleLeftWidth(startW, startX, curX, viewportW) {
     return Math.max(BLE_LEFT_MIN, Math.min(max, Math.round(w)));
 }
 
-/// 把记住的宽度套到两种模式的左栏上（主机 .ble-left / 从机 .ble-pf-left 必须同宽）
+/// 把记住的宽度套到蓝牙页左栏上
 function applyBleLeftWidth() {
     var w = _bleLeftWidth || BLE_LEFT_DEFAULT;
-    document.querySelectorAll('.ble-left, .ble-pf-left').forEach(function(col) {
+    document.querySelectorAll('.ble-left').forEach(function(col) {
         col.style.flex = '0 0 ' + w + 'px';
     });
 }
 
-/// 绑左栏宽度拖拽手柄（两个模式各一个，按 class 绑定）
+/// 绑左栏宽度拖拽手柄
 function initBleLeftResize() {
     document.querySelectorAll('.ble-left-resize').forEach(function(handle) {
         if (handle._bound) return;
@@ -128,7 +128,7 @@ function initBleLeftResize() {
         }
         handle.addEventListener('mousedown', function(e) {
             e.preventDefault();
-            col = handle.previousElementSibling;          // .ble-left / .ble-pf-left
+            col = handle.previousElementSibling;          // .ble-left
             if (!col) return;
             startX = e.clientX;
             startW = col.offsetWidth;
@@ -153,13 +153,8 @@ function collectBleState(s) {
         filterText: s.filterText || '',
         filterOpen: !!s.filterOpen,
         selected: s.selected || '',
-        // 主机 / 从机模式与从机表单（配置随用户配置文件保留）
-        mode: s.mode === 'periph' ? 'periph' : 'host',
-        periph: s.periph || null,
         // 扫描自动停止时长（秒），0 = 持续
         scanSecs: (s.scanSecs === 0 || s.scanSecs) ? s.scanSecs : 15,
-        // 用户保存的多套从机配置
-        periphSaved: Object.prototype.toString.call(s.periphSaved) === '[object Array]' ? s.periphSaved : [],
     };
 }
 
@@ -177,25 +172,9 @@ function restoreBleState(b) {
     _bleRestoreMon = b.monitor ? { width: _bleMonWidth, cfg: b.monitorCfg || null } : null;
     // 左栏宽度：纯数据，DOM 建好后由 openBle → applyBleLeftWidth 套上去
     _bleLeftWidth = (typeof b.leftWidth === 'number' && b.leftWidth > 0) ? b.leftWidth : BLE_LEFT_DEFAULT;
-    // 从机模式同样是纯数据，DOM 建好后由 openBle → setBleMode 渲染。
-    // 入口关闭时强制主机模式：配置里残留的 "periph" 不能让启动落在隐藏模式里
-    _bleMode = (BLE_PERIPH_MODE_ENABLED && b.mode === 'periph') ? 'periph' : 'host';
-    restoreBlePeriphForm(b.periph);
+    // 老配置里可能残留已删除的 BLE 从机键（模式 / 表单 / 多套配置）：
+    // 这里不读它们，未知键自然被忽略，加载不报错；保存时也不再写出（见 collectBleState）。
     _bleScanSecs = (typeof b.scanSecs === 'number') ? b.scanSecs : 15;
-    restoreBlePeriphSaved(b.periphSaved);
-}
-
-// 恢复用户保存的从机配置。形状不对就整段丢掉 —— 别让一个坏配置把面板弄成空白。
-function restoreBlePeriphSaved(list) {
-    if (Object.prototype.toString.call(list) !== '[object Array]') { _blePeriphSaved = []; return; }
-    var out = [];
-    list.forEach(function(it) {
-        if (!it || typeof it !== 'object') return;
-        if (typeof it.name !== 'string' || !it.name) return;
-        if (!it.form || typeof it.form !== 'object') return;
-        out.push({ name: it.name, form: it.form });
-    });
-    _blePeriphSaved = out;
 }
 
 // 顶栏按钮状态跟随开关：打开时高亮 + 标题改为"关闭…"，关闭时还原。

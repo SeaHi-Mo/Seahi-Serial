@@ -69,10 +69,7 @@ function collectConfig() {
         filterText: _bleFilterText,
         filterOpen: _bleFilterOpen,
         selected: _bleSelected || '',
-        mode: _bleMode,
-        periph: blePfCollectForm(),
         scanSecs: _bleScanSecs,
-        periphSaved: _blePeriphSaved,
     });
     Object.keys(monitors).forEach(function(mid) {
         var m = monitors[mid];

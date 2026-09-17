@@ -644,10 +644,10 @@ console.log('preview ->', out);
   check(!/ble-modal-label/.test(html), '弹窗不再有 Value 标签');
   check(!/ble-modal-sub/.test(html), '已清掉随之变成孤儿的 .ble-modal-sub 样式');
   check(/id="bleWriteModeWrap"/.test(html), 'HEX/文本（写响应/无响应）选择器保留');
-  check(/标题区分四种用途/.test(html), '标题按目标区分特征/描述符（UUID 副标题删除后的信息补偿）');
+  check(/标题区分两种用途/.test(html), '标题按目标区分特征/描述符（UUID 副标题删除后的信息补偿）');
   check(/id="bleWriteTitle">写入特征值</.test(html), '标题默认「写入特征值」');
   check(/bleWriteTitle'\)[\s\S]{0,120}'写入描述符值'/.test(html), '描述符写入时标题变「写入描述符值」');
-  check(/else if \(kind === 'desc' && shortUuid\(uuid\) === '2902'\) inp0\.placeholder =/.test(html),
+  check(/if \(kind === 'desc' && shortUuid\(uuid\) === '2902'\) inp0\.placeholder =/.test(html),
     'placeholder 按目标动态设置（CCCD 给取值提示）');
   check(/支持 \\\\r \\\\n \\\\t 转义，HEX 形如 01 A0 FF/.test(html),
     '转义/HEX 提示已并入 placeholder');
@@ -718,7 +718,7 @@ console.log('preview ->', out);
   check(/leLog: \(hexMode \|\| leVal === 'none'\) \? '' : ' · 行尾 ' \+ leVal\.toUpperCase\(\)/.test(html),
     '日志里标明追加的行尾');
   check((html.match(/\+ leLog \+/g) || []).length === 2, '特征与描述符两条发送日志都带上行尾信息');
-  // 四种用途（主机特征 / 描述符 / 从机设值 / 从机下发）共用同一份弹窗内容解析
+  // 两种用途（特征 / 描述符）共用同一份弹窗内容解析
   check(/function bleReadWriteModalInput\(\)/.test(html), '弹窗内容解析已抽成共用函数');
   check(/var r = bleReadWriteModalInput\(\);/.test(html) && /bleReadWriteModalInput\(\)/.test(html),
     '主机发送走共用解析');
@@ -1174,10 +1174,6 @@ console.log('preview ->', out);
   check(sbFmt.bleFmtBytes([0x5C, 0x6E]) === '\\\\n', '反斜杠本身被转义（不会与 \\n 混淆）',
     JSON.stringify(sbFmt.bleFmtBytes([0x5C, 0x6E])));
 
-  // ---------- 9) BLE 从机（外设）模式 ----------
-  // 本机作为从机对外广播：预设表 / HEX 解析 / 事件文案 / 配置往返 / 与后端属性表一致
-  console.log('\n【BLE 从机模式】');
-
   // 抽取 `var NAME = <标量|数组|对象>;`
   // 注意单行字面量（`var X = { a: 1 };`）：必须按本行收尾，否则会一路吞到文件后面某个 `};`
   function extractVar(name) {
@@ -1202,133 +1198,7 @@ console.log('preview ->', out);
     return firstLine;
   }
 
-  const PF_PRESETS = extractVar('BLE_PERIPH_PRESETS');
-  const PF_ORDER = extractVar('BLE_PERIPH_PROP_ORDER');
-  const PF_LABEL = extractVar('BLE_PERIPH_PROP_LABEL');
-  const PF_MAX = extractVar('BLE_PERIPH_CHAR_MAX');
-  const PF_FORM = extractVar('_blePeriphForm');
-  const PF_FMT_DEPS = ['bleBytesToHex', 'hexToBytes', 'bleCanShowAsText', 'bleFmtBytes', 'bleFmtHex']
-    .map(extractFunction).join('\n');
-
-  const sbPf = { console, document: { getElementById() { return null; } } };
-  vm.createContext(sbPf);
-  vm.runInContext([
-    PF_PRESETS, PF_ORDER, PF_LABEL, PF_MAX, PF_FORM, PF_FMT_DEPS,
-    extractFunction('shortUuid'),
-    extractFunction('blePeriphPreset'),
-    extractFunction('blePeriphHexBytes'),
-    extractFunction('blePeriphFmtEvent'),
-    extractFunction('restoreBlePeriphForm'),
-    extractFunction('blePfCollectOptions'),
-    extractFunction('blePfCollectForm'),
-  ].join('\n'), sbPf);
-
-  // --- 9a) 预设表自洽 ---
-  check(sbPf.BLE_PERIPH_PRESETS.length >= 3, '至少内置 3 套从机预设', String(sbPf.BLE_PERIPH_PRESETS.length));
-  let presetOk = true, presetBad = '';
-  sbPf.BLE_PERIPH_PRESETS.forEach((p) => {
-    if (!p.id || !p.name || !p.service) { presetOk = false; presetBad = p.id + ' 缺 id/name/service'; }
-    if (!p.chars || !p.chars.length) { presetOk = false; presetBad = p.id + ' 没有特征'; }
-    if (!p.hint) { presetOk = false; presetBad = p.id + ' 缺 hint'; }
-    (p.chars || []).forEach((c) => {
-      if (!c.uuid) { presetOk = false; presetBad = p.id + ' 有特征缺 UUID'; }
-      if (!c.props || !c.props.length) { presetOk = false; presetBad = p.id + ' 有特征没属性'; }
-      (c.props || []).forEach((pr) => {
-        if (sbPf.BLE_PERIPH_PROP_ORDER.indexOf(pr) < 0) { presetOk = false; presetBad = p.id + ' 未知属性 ' + pr; }
-      });
-    });
-  });
-  check(presetOk, '每套预设都自洽（服务/特征/属性/提示齐全）', presetBad);
-  check(sbPf.blePeriphPreset('nus') !== null
-    && sbPf.blePeriphPreset('nus').service === '6E400001-B5A3-F393-E0A9-E50E24DCCA9E',
-    'Nordic UART 预设的服务 UUID 正确');
-  check(sbPf.blePeriphPreset('不存在') === null, '未知预设 id 返回 null（不静默换成别的服务）');
-  check(sbPf.BLE_PERIPH_PRESETS.map((p) => p.id).filter((v, i, a) => a.indexOf(v) === i).length
-    === sbPf.BLE_PERIPH_PRESETS.length, '预设 id 不重复');
-
-  // --- 9b) 属性表必须与后端一致 ---
-  // 少一个 → 前端能勾但后端报"不支持的属性"；多一个 → 勾了静默不生效
-  const pfFn = mainRs.slice(mainRs.indexOf('fn ble_periph_props_from_names('),
-                            mainRs.indexOf('fn ble_periph_props_to_names('));
-  const backendProps = [...pfFn.matchAll(/"([a-z_]+)"\s*=>/g)].map((m) => m[1]);
-  const pfMissing = sbPf.BLE_PERIPH_PROP_ORDER.filter((p) => backendProps.indexOf(p) < 0);
-  check(pfMissing.length === 0, '前端每个属性后端都认 [' + backendProps.join(',') + ']', pfMissing.join(','));
-  check(sbPf.BLE_PERIPH_PROP_ORDER.every((p) => !!sbPf.BLE_PERIPH_PROP_LABEL[p]),
-    '每个属性都有中文标签（界面不出现英文 key）');
-  check(backendProps.indexOf('broadcast') >= 0 && sbPf.BLE_PERIPH_PROP_ORDER.indexOf('broadcast') < 0,
-    'broadcast 仅后端支持（WinRT 本地特征不支持无连接广播，界面不给以免勾了不生效）');
-  check(/const BLE_PERIPH_CHAR_MAX: usize = 16;/.test(mainRs) && sbPf.BLE_PERIPH_CHAR_MAX === 16,
-    '前端/后端特征数量上限一致（16）');
-
-  // --- 9c) HEX 解析（初值 / 广播服务数据）---
-  const hexOf = (s) => sbPf.blePeriphHexBytes('x', s);
-  check(JSON.stringify(hexOf('48656C6C6F').bytes) === JSON.stringify([0x48, 0x65, 0x6C, 0x6C, 0x6F]),
-    'HEX 文本解析成字节');
-  check(JSON.stringify(hexOf('01 A0 FF').bytes) === JSON.stringify([1, 0xA0, 0xFF]), '带空格的 HEX 也认');
-  check(JSON.stringify(hexOf('01:a0-ff').bytes) === JSON.stringify([1, 0xA0, 0xFF]),
-    '冒号 / 连字符分隔也认（从手册粘贴常见）');
-  check(!hexOf('').error && hexOf('').bytes.length === 0, '留空表示不填初值（合法，不是错误）');
-  check(!!hexOf('ABC').error, '奇数长度报错（不能静默当空值）');
-  check(!!hexOf('ZZ').error, '非十六进制字符报错');
-  check(hexOf('ZZ').error.indexOf('ZZ') > 0, '报错信息带上原值，便于定位是哪个字段', hexOf('ZZ').error);
-  check(JSON.stringify(hexOf('0x01 02').bytes) === JSON.stringify([0x01, 0x02]),
-    '容忍 0x 前缀（粘贴十六进制时常见）');
-
-  // --- 9d) 事件 → 日志文案 ---
-  const eWrite = sbPf.blePeriphFmtEvent({
-    kind: 'write', uuid: '0000ffe1-0000-1000-8000-00805f9b34fb',
-    value_hex: '01 A0', peer: 'AA:BB:CC:DD:EE:FF', note: '写响应',
-  });
-  check(eWrite.text.indexOf('[收到写入]') === 0 && eWrite.text.indexOf('0xFFE1') > 0,
-    '写入事件带方向前缀与短 UUID', eWrite.text);
-  check(eWrite.text.indexOf('AA:BB:CC:DD:EE:FF') > 0, '写入事件带上来连的主机地址');
-  check(eWrite.text.indexOf('写响应') > 0, '写入事件标明是否带响应');
-  check(eWrite.dim.indexOf('01 A0') > 0 && eWrite.dim.indexOf('0x01A0') > 0, '十六进制部分灰显展示', eWrite.dim);
-  const eRead = sbPf.blePeriphFmtEvent({ kind: 'read', uuid: '0000ffe1-0000-1000-8000-00805f9b34fb', value_hex: '41' });
-  check(eRead.text.indexOf('[主机读取]') === 0, '读取事件用「主机读取」措辞', eRead.text);
-  check(sbPf.blePeriphFmtEvent({ kind: 'subscribe', uuid: '0000fff2-0000-1000-8000-00805f9b34fb', subscribed: 2 })
-    .text.indexOf('2 台主机') > 0, '订阅事件带上订阅主机数');
-  check(sbPf.blePeriphFmtEvent({ kind: 'subscribe', uuid: '0000fff2-0000-1000-8000-00805f9b34fb', subscribed: 0 })
-    .text.indexOf('取消') > 0, '取消订阅单独成句');
-  const eAbort = sbPf.blePeriphFmtEvent({ kind: 'adv', status: 'Aborted' });
-  check(eAbort.text.indexOf('Aborted') > 0 && eAbort.text.indexOf('蓝牙') > 0,
-    '广播被中止时给出排查方向（不只丢一个状态码）', eAbort.text);
-  check(sbPf.blePeriphFmtEvent({ kind: 'start', uuid: '0000ffe0-0000-1000-8000-00805f9b34fb', note: '1 个特征' })
-    .text.indexOf('1 个特征') > 0, '启动事件带特征数');
-  check(sbPf.blePeriphFmtEvent({}).text.indexOf('[事件]') === 0, '未知/空事件不抛错');
-
-  // --- 9e) 配置往返与坏配置容错 ---
-  check(sbPf._blePeriphForm.presetId === 'nus' && sbPf._blePeriphForm.chars.length === 2,
-    '默认表单 = NUS 两个特征（打开就能用）');
-  sbPf.restoreBlePeriphForm(null);
-  check(sbPf._blePeriphForm.chars.length === 2, '配置缺失时保持默认预设');
-  sbPf.restoreBlePeriphForm({ presetId: '不存在', service: '', chars: 'bad', discoverable: 'yes' });
-  check(sbPf._blePeriphForm.presetId === 'nus', '未知预设 id 不改动当前选择');
-  check(sbPf._blePeriphForm.service === '6E400001-B5A3-F393-E0A9-E50E24DCCA9E', '空服务 UUID 不覆盖默认值');
-  check(sbPf._blePeriphForm.chars.length === 2, '非法 chars 不破坏特征列表');
-  check(sbPf._blePeriphForm.discoverable === true, 'discoverable 缺省即为 true（默认可被发现）');
-  const round = sbPf.blePfCollectForm();
-  sbPf.restoreBlePeriphForm(JSON.parse(JSON.stringify(round)));
-  check(JSON.stringify(sbPf.blePfCollectForm()) === JSON.stringify(round),
-    'collect → restore 往返一致（配置不会自己漂移）', JSON.stringify(sbPf.blePfCollectForm()));
-  sbPf.restoreBlePeriphForm({ chars: Array.from({ length: 40 }, (_, i) => ({
-    uuid: '0000000' + i + '-0000-1000-8000-00805f9b34fb', props: ['read', 'bogus'], value: '' })) });
-  check(sbPf._blePeriphForm.chars.length === 16, '配置里的特征数被夹到上限 16（不让坏配置撑爆界面）',
-    String(sbPf._blePeriphForm.chars.length));
-  check(sbPf._blePeriphForm.chars[0].props.indexOf('bogus') < 0
-    && sbPf._blePeriphForm.chars[0].props.indexOf('read') >= 0,
-    '配置里的未知属性被丢弃、已知属性保留');
-
-  // --- 9f) 前后端命令契约 ---
-  const PF_CMDS = ['ble_periph_start', 'ble_periph_stop', 'ble_periph_status',
-                   'ble_periph_set_value', 'ble_periph_notify', 'ble_periph_poll_events'];
-  PF_CMDS.forEach((cmd) => {
-    check(new RegExp('async fn ' + cmd + '\\(').test(mainRs), '后端实现 ' + cmd);
-    check(new RegExp('^\\s*' + cmd + ',\\s*$', 'm').test(mainRs), '后端已注册 ' + cmd);
-    check(html.indexOf("invoke('" + cmd + "'") > 0, '前端调用 ' + cmd);
-  });
-
-  // --- 9g) 关键不变量（源码层）---
+  // --- 图标表自洽（主机侧服务树渲染用）---
   // 图标引用必须存在：BLE_ICONS 少一个键 → 界面上会直接渲染出字面 "undefined"
   const BLE_ICON_SET = extractObject('BLE_ICONS');
   const iconKeysAll = [...BLE_ICON_SET.matchAll(/^ {4}(\w+)\s*:/gm)].map((m) => m[1]);
@@ -1341,156 +1211,10 @@ console.log('preview ->', out);
   check(metaIcons.length > 0 && metaIcons.every((k) => iconKeysAll.indexOf(k) >= 0),
     'BLE_PROP_META / BLE_DESC_META 的图标名都存在', metaIcons.filter((k) => iconKeysAll.indexOf(k) < 0).join(','));
 
-  // --- 9h) 从机特征运行态渲染：行为断言（这部分代码要等广播通了才会跑，更该在这里守住）---
-  const sbChars = { console, _byId: {} };
-  sbChars.document = {
-    getElementById(id) { return (sbChars._byId[id] = sbChars._byId[id] || fakeEl()); },
-  };
-  vm.createContext(sbChars);
-  vm.runInContext([
-    PF_LABEL, PF_FMT_DEPS, extractObject('BLE_ICONS'), extractFunction('escapeHtml'),
-    extractFunction('shortUuid'), extractFunction('renderBlePeriphStatusChars'),
-  ].join('\n'), sbChars);
-  sbChars._blePeriphRunning = true;
-  sbChars._blePeriphStatusChars = [
-    { uuid: '0000ffe1-0000-1000-8000-00805f9b34fb', props: ['read', 'write'], value_hex: '48 69', subscribed: 1 },
-    { uuid: '0000ffe2-0000-1000-8000-00805f9b34fb', props: ['write'], value_hex: 'AB', subscribed: 0 },
-    { uuid: '0000ffe3-0000-1000-8000-00805f9b34fb', props: ['notify'], value_hex: '', subscribed: 0 },
-  ];
-  sbChars.renderBlePeriphStatusChars();
-  const chRows = sbChars._byId['blePfChars'].innerHTML.split('<div class="ble-char">').slice(1);
-  check(chRows.length === 3, '特征运行态渲染出 3 行', String(chRows.length));
-  check(/data-act="set"/.test(chRows[0]) && !/data-act="notify"/.test(chRows[0]),
-    '可读可写特征：有「设值」、无「下发」（该特征没有 notify 属性）');
-  check(!/data-act="set"/.test(chRows[1]),
-    '只写特征：不显示「设值」（主机根本读不到，设了纯属误导）');
-  check(/主机写入 /.test(chRows[1]), '只写特征的值标为「主机写入」');
-  check(/data-act="notify"/.test(chRows[2]) && !/data-act="set"/.test(chRows[2]),
-    'notify 特征：有「下发」、无「设值」');
-  check(/已订阅 1/.test(chRows[0]) && /未订阅/.test(chRows[1]), '订阅数按特征分别渲染');
-  check(/主机读到 /.test(chRows[0]), '可读特征的值标为「主机读到」');
-  check(/（空）/.test(chRows[2]), '空值显示为（空）而不是留白');
-  check(/0xFFE1/.test(chRows[0]) && /0xFFE3/.test(chRows[2]), '每行显示短 UUID');
-  sbChars._blePeriphRunning = false;
-  sbChars._blePeriphStatusChars = [];
-  sbChars.renderBlePeriphStatusChars();
-  check(/还未启动广播/.test(sbChars._byId['blePfChars'].innerHTML), '未启动时给出明确空态');
-
-  // 失败后回读真实状态：否则界面会停在"上一次是运行中"的假象里
-  check(/return refreshBlePeriphStatus\(\);\s*\n\s*\}\)\.then\(function\(\) \{\s*\n\s*if \(btn\) btn\.disabled = false;/.test(html),
-    '启动失败后回读一次真实状态');
-  check(/if \(\(c\.props \|\| \[\]\)\.indexOf\('read'\) < 0\) \{ showToast\('该特征不可读，设值无效'/.test(html),
-    '设值前再校验一次可读性（兜住过期 DOM）');
-  check(/max_notify/.test(mainRs) && /MaxNotificationSize\(\)/.test(mainRs),
-    '订阅事件带上单次通知最大字节数（下发长数据失败时最需要它）');
-  check(/单次最多 ' \+ ev\.max_notify \+ ' 字节'/.test(html), '日志里显示单次通知上限');
-  check(/var _bleMode = 'host';/.test(html)
-    && /_bleMode = \(BLE_PERIPH_MODE_ENABLED && b\.mode === 'periph'\) \? 'periph' : 'host';/.test(html),
-    '主机/从机模式随用户配置持久化与恢复（入口关闭时强制回主机）');
-  check(/mode: _bleMode,[\s\S]{0,60}periph: blePfCollectForm\(\),/.test(html), '从机表单随配置一起保存');
-  check(/if \(st && st\.advertising\) \{/.test(html),
-    '启动后按 advertising 判定，不把「服务建好但广播被中止」报成成功');
-  check(/showToast\('服务已建好，但' \+ why, 'error'\)/.test(html),
-    '广播未生效时明确提示，且优先用后端 warning（真实原因）而不是状态码');
-  check(/var why = \(st && st\.warning\) \? st\.warning :/.test(html), 'warning 优先于 advertising_status');
-  check(/id="blePfAdapter"/.test(html) && /外设角色 ' \+ \(a\.peripheral_role \? '驱动已声明'/.test(html),
-    '面板只说"驱动已声明"，不把能力位写成"支持"（本机实测：声明了也广播不了）');
-  check(/adapterEl\.title = '「驱动已声明」只是适配器驱动程序上报的能力位/.test(html),
-    '悬停解释"声明 ≠ 能用"');
-  check(/a\.radio_access === 'DeniedByUser'/.test(html) && /无线电访问权异常/.test(html),
-    '面板单独提示无线电访问权异常（扫描能用但广播起不来，易被忽略）');
-  check(/if \(st\.warning && warn\.firstChild\) warn\.firstChild\.textContent = st\.warning;/.test(html),
-    '后端 warning 走 textContent 渲染（不给自己留注入口）');
-  check(/charsBox\.addEventListener\('click', function\(e\) \{[\s\S]{0,260}data-act/.test(html),
-    '从机特征行操作按钮走事件委托');
-  check(!/onclick="blePeriphCharAction/.test(html), '没有把 UUID 拼进内联 onclick');
-  check(/stopBlePeriphPoll\(\);\s*\n\}/.test(html), '离开蓝牙页停止从机轮询（广播留在后端继续）');
-  // 模式切换：代码结构保留（两套左栏共用同一个生成函数），但**入口默认关闭** ——
-  // 本机实测无法广播，摆一个点不亮的入口只会让后来者再踩一遍（见 doc/BLE_PERIPHERAL.md 第 5 节）
-  check(/var BLE_PERIPH_MODE_ENABLED = false;/.test(html),
-    '从机模式入口的开关默认关闭，且有一个显式常量（不是散落的硬编码）');
-  check(/function bleModeSegHtml\(\)/.test(html) && /if \(!BLE_PERIPH_MODE_ENABLED\) return '';/.test(html),
-    '模式切换器由 bleModeSegHtml() 生成：关掉入口就不渲染按钮');
-  check(/data-ble-mode="host"[^>]*>主机模式</.test(html) && /data-ble-mode="periph"[^>]*>从机模式</.test(html),
-    '切换文案仍是「主机模式 / 从机模式」');
-  check((html.match(/bleModeSegHtml\(\)/g) || []).length === 3,
-    '两处左栏各调一次 bleModeSegHtml()（外加函数定义本身）',
-    String((html.match(/bleModeSegHtml\(\)/g) || []).length));
-  check(!/class="ble-mode-bar"/.test(html), '已删除横贯顶部的模式栏');
-  check(!/id="bleModeHost"/.test(html) && !/id="bleModePeriph"/.test(html),
-    '不再用重复 id（两处同 id 会让 getElementById 取错）');
-  check(/document\.querySelectorAll\('#ble-pane \.ble-mode-btn'\)/.test(html),
-    '用 querySelectorAll 同步切换器（入口关闭时是空集合，天然安全）');
-  // 关掉入口时，配置里残留的 "periph" 必须折回主机 —— 否则启动就落进一个没有出口的隐藏模式
-  check(/if \(mode === 'periph' && !BLE_PERIPH_MODE_ENABLED\) \{/.test(html),
-    'setBleMode 把被关掉的 periph 折回 host');
-  check(/_bleMode = \(BLE_PERIPH_MODE_ENABLED && b\.mode === 'periph'\) \? 'periph' : 'host';/.test(html),
-    '恢复配置时同样折回，不会落进隐藏模式');
-  // "保留"的验证：面板、命令、表格导入导出都还在（只是从界面进不去）
-  check(/<div class="ble-periph" id="blePeriph">/.test(html) && /function startBlePeriph\(\)/.test(html)
-    && /function blePfImportTable\(\)/.test(html),
-    '从机面板与逻辑整体保留（隐藏入口 ≠ 删功能）');
-  check(/async fn ble_periph_start\(/.test(mainRs) && /ble_periph_start,/.test(mainRs),
-    '后端从机命令仍然注册着（换机器时改一个常量即可启用）');
-  // 主机 / 从机 左栏宽度必须一致（宽度值本身由上面的 BLE 左栏那一组断言守着）
-  check(/\.ble-left, \.ble-pf-left \{/.test(html) && /flex:0 0 288px; min-width:240px; max-width:38%;/.test(html),
-    '两种模式的左栏共用同一套宽度（切模式布局不跳）');
-  const pfLeftRule = /^\.ble-pf-left \{[^}]*\}/m.exec(html);
-  check(!!pfLeftRule && !/width:/.test(pfLeftRule[0]),
-    '从机左栏不再自带宽度（否则和主机左栏不一致）', pfLeftRule ? pfLeftRule[0] : '(没有这条规则)');
-  // 滚动条：从机模式下所有可滚动区都套上统一样式（MCP 弹窗后来也并进了同一份规则）。
-  // 断言按"成员是否在这条规则的选择器列表里"来查，而不是钉死整段文本 —— 以后往里加
-  // 选择器（这次就加了 MCP 弹窗主体）不必再改断言。
-  const sbRuleSel = (/([^\n]*(?:,\s*\n[^\n]*)*) \{ width:10px; height:10px; \}/.exec(html) || [, ''])[1];
-  const inSbRule = (s) => sbRuleSel.indexOf(s + '::-webkit-scrollbar') >= 0;
-  check(sbRuleSel !== '' && inSbRule('.ble-log') && inSbRule('.ble-pf-left') && inSbRule('.ble-pf-chars'),
-    '从机左栏与特征列表都套上统一滚动条样式（默认那条又宽又亮，很丑）');
-  check(/\.ble-pf-left \.ble-mode-seg \{ position:sticky; top:0; z-index:3; \}/.test(html),
-    '从机左栏滚动时模式切换钉在顶部（不会滚走）');
-
-  check(/function sendBlePeriphWrite\(\)/.test(html)
-    && /_bleWriteTarget\.kind === 'periph_set' \|\| _bleWriteTarget\.kind === 'periph_notify'/.test(html),
-    '从机设值/下发复用主机写入弹窗');
+  // 写入弹窗只有一个（描述符与特征共用，不重复造第二个）
   check(/function openBleWriteModal\(uuid, name, modes, target\)/.test(html)
     && (html.match(/id="bleWriteModal"/g) || []).length === 1,
-    '从机与主机共用一个写入弹窗（不重复造一个）');
-
-  // 界面去噪：说明文字不再占版面，改到 placeholder / title / 下拉 tooltip 里
-  check(!/id="blePfPresetHint"/.test(html), '预设说明不再单独占一行');
-  check(/sel\.title = p\.name \+ '：' \+ p\.hint;/.test(html), '预设说明改挂在下拉框 title 上');
-  check(!/初值按 HEX 填（可留空）；主机读取时返回的就是它/.test(html), '特征区的说明段已删');
-  check(!/勾上后，主机的每次写入都会挂起等你点/.test(html), '手动应答的说明段已删（改挂 title）');
-  check(/title="勾上后主机的每次写入都会挂起/.test(html), '手动应答说明移到 checkbox 的 title');
-  check(!/设备名由 Windows 决定（= 本机蓝牙名称），这里改不了/.test(html), '设备名说明段已删（移到模式按钮 title）');
-  check(/手机看到的设备名是电脑名，由 Windows 决定/.test(html), '设备名限制信息仍在（放进从机模式按钮 title）');
-  check(/placeholder="6E400001-B5A3-F393-E0A9-E50E24DCCA9E 或 0xFFE0"/.test(html),
-    '短写提示并进服务 UUID 的 placeholder');
-  check(/只能广播一个服务/.test(html), '「只能广播一个服务」仍在（挪到标签上，不再是下方提示段）');
-  check(/class="ble-pf-warnline" id="blePfAdvLen"/.test(html),
-    '广播数据长度改用只在异常时出现的告警行');
-  check(/el\.textContent = \(w && w\.indexOf\('偏长'\) >= 0\) \? w : '';/.test(html),
-    '长度正常时不留任何提示（不占版面）');
-
-  check(/function updateBleModeHint\(\)/.test(html)
-    && /从机广播仍在后台运行/.test(html),
-    '切回主机模式时提示「从机广播仍在后台运行」（不会让人忘了还开着广播）');
-  check(/refreshBlePeriphStatus\(\)\.then\(updateBleModeHint\)/.test(html),
-    '切模式后刷新一次真实状态再更新提示（不靠可能过期的内存标志）');
-  check(/广播被系统中止：本机实测\*\*能\*\*发广播/.test(mainRs),
-    'Aborted 的文案指向"能发广播、但带服务 UUID 的广播被拒"这个实测现象');
-  check(/平台限制（缺应用标识）/.test(mainRs), '文案给出"非打包应用平台限制"这条并列可能');
-  check(/详见 doc\/BLE_PERIPHERAL\.md 第 5 节/.test(mainRs), '文案指向文档里的排查清单');
-  check(/ConsentStore/.test(mainRs) === false || /不该断言是隐私设置导致/.test(mainRs),
-    '不把 DeniedByUser 说死成"隐私设置拒绝"（本机 ConsentStore 是 Allow）');
-  check(/fn ble_periph_probe_warning\(/.test(mainRs) && /IsPeripheralRoleSupported/.test(mainRs),
-    '后端启动前探测适配器能力（否则只会得到一个 Aborted）');
-  check(/本机没有蓝牙适配器/.test(mainRs) && /外设角色/.test(mainRs),
-    '探测结论覆盖"没适配器"与"不支持外设角色"两种硬件原因');
-  check(/ble_periph_probe_warning\(&adapter\)[\s\S]{0,120}or_else\(\|\| ble_periph_adv_warning/.test(mainRs),
-    '告警优先级：适配器能力 > 广播状态码（方向别指错）');
-  check(/Radio::RequestAccessAsync\(\)/.test(mainRs) && /radio_access/.test(mainRs),
-    '后端探测无线电访问权（被拒时广播恒 Aborted，而扫描仍可用）');
-  check(/fn ble_periph_diagnose\(/.test(mainRs), '有一条环境诊断测试可一键打全排查信息');
+    '描述符与特征共用一个写入弹窗（不重复造一个）');
 
   // ---------- 10) 主机方向缺口修复（G1/G2/G3/G5/G6/G8） ----------
   console.log('\n【主机方向修复】');
@@ -1566,182 +1290,6 @@ console.log('preview ->', out);
   check(/\}, 250\);/.test(html), 'G8 通知轮询加密到 250ms');
   check(/var items = \(res && res\.items\) \? res\.items : res;/.test(html),
     'G8 前端兼容新的 {items,dropped} 与旧的纯数组');
-
-  // ---------- 11) 从机侧缺口修复 ----------
-  console.log('\n【从机侧修复】');
-
-  const sbP2 = { console, TextEncoder, TextDecoder };
-  vm.createContext(sbP2);
-  vm.runInContext([
-    extractFunction('blePeriphHexBytes'),
-    extractFunction('blePeriphParseDescriptors'),
-    extractFunction('blePeriphAdvDataWarnText'),
-  ].join('\n'), sbP2);
-
-  // 描述符解析：默认 HEX，T: 前缀按 UTF-8 文本
-  check(sbP2.blePeriphParseDescriptors('').descs.length === 0, '描述符留空 → 空列表（合法）');
-  const d1 = sbP2.blePeriphParseDescriptors('0000FFF1-0000-1000-8000-00805F9B34FB=0102').descs;
-  check(d1.length === 1 && JSON.stringify(d1[0].value) === '[1,2]', '描述符默认按 HEX 解析', JSON.stringify(d1));
-  const d2 = sbP2.blePeriphParseDescriptors('2901=T:温度计').descs;
-  check(d2.length === 1 && d2[0].value.length === 9, 'T: 前缀按 UTF-8 文本编码', JSON.stringify(d2[0].value));
-  check(new TextDecoder().decode(new Uint8Array(d2[0].value)) === '温度计',
-    'T: 文本内容按 UTF-8 正确编码', JSON.stringify(d2[0].value));
-  const d3 = sbP2.blePeriphParseDescriptors('0000FFF1-0000-1000-8000-00805F9B34FB=01; 0000FFF2-0000-1000-8000-00805F9B34FB=02\n0000FFF3-0000-1000-8000-00805F9B34FB=T:x').descs;
-  check(d3.length === 3, '分号与换行都能分隔多个描述符', String(d3.length));
-  check(!!sbP2.blePeriphParseDescriptors('没有等号').error, '缺 = 报错');
-  check(!!sbP2.blePeriphParseDescriptors('=0102').error, '缺 UUID 报错');
-  check(!!sbP2.blePeriphParseDescriptors('0000FFF1-0000-1000-8000-00805F9B34FB=ZZ').error,
-    '值是非法 HEX 时报错（不静默当空）');
-
-  // 广播数据长度提示
-  check(sbP2.blePeriphAdvDataWarnText(0) === '', '没填广播数据时不显示长度提示');
-  check(/够用/.test(sbP2.blePeriphAdvDataWarnText(4)), '短数据提示"够用"');
-  check(/偏长/.test(sbP2.blePeriphAdvDataWarnText(25)) && /31 字节/.test(sbP2.blePeriphAdvDataWarnText(25)),
-    '超 24 字节提示偏长并说明 31 字节总额', sbP2.blePeriphAdvDataWarnText(25));
-
-  // 手动写入应答
-  check(/id="blePfManualReply"/.test(html), '界面有「写入需手动应答」开关');
-  check(/manualReply: p\.manualReply/.test(html), '手动应答开关随启动参数下发');
-  check(/async fn ble_periph_respond_write\(/.test(mainRs) && /ble_periph_respond_write,/.test(mainRs),
-    '后端有并注册了 ble_periph_respond_write');
-  check(/invoke\('ble_periph_respond_write'/.test(html), '前端调用应答命令');
-  check(/RespondWithProtocolError\(code\)/.test(mainRs), '拒绝时回协议错误码');
-  check(/BLE_PERIPH_REPLY_TIMEOUT_MS/.test(mainRs) && /超时未应答，已按协议错误/.test(mainRs),
-    '无人应答时有兜底超时，不让主机一直挂着');
-  check(/id="blePfPending"/.test(html) && /function renderBlePfPending\(\)/.test(html),
-    '右列有待应答区（接受 / 拒绝）');
-  check(/"pending_id": id/.test(mainRs) && /"pending_id": pending_id/.test(mainRs),
-    '事件里带 pending_id，前端才能对上号');
-  check(/for \(_, w\) in pending\.drain\(\)/.test(mainRs),
-    '停止广播时把待应答请求全部回掉（不留挂起的主机）');
-
-  // 长写 Offset
-  check(/req\.Offset\(\)/.test(mainRs), '后端读写请求的 Offset');
-  check(/fn ble_periph_apply_write\(value: &mut Vec<u8>, offset: usize, data: &\[u8\]\)/.test(mainRs),
-    '长写按 offset 落值（不再当成互相覆盖的独立写入）');
-  check(/ble_periph_apply_write\(&mut v, offset, &bytes\)/.test(mainRs), '写回调里真的用了它');
-
-  // 自定义描述符
-  check(/CreateDescriptorAsync\(dguid, &dparams\)/.test(mainRs), '后端支持创建自定义描述符');
-  check(/fn ble_periph_desc_reserved\(/.test(mainRs) && /不能手工创建/.test(mainRs),
-    '标准描述符（0x2900~0x290F）在本地就挡住并说明原因（真机实测 0x2901 会被拒）');
-  check(/descriptors: vec!\[BlePeriphDescSpec/.test(mainRs), '真机冒烟覆盖了描述符创建路径');
-  check(/描字符?|描述符（可选）/.test(html), '特征行有描述符输入框');
-
-  // 前后端一致性：设值必须校验可读
-  check(/fn ble_periph_props_readable\(/.test(mainRs) && /没有 read 属性/.test(mainRs),
-    '后端 set_value 校验特征可读（与前端隐藏入口一致）');
-  check(/data-act="set"[\s\S]{0,200}canRead/.test(html) || /\(canRead \? '<span class="ble-ch-action ready" data-act="set"/.test(html),
-    '前端只对可读特征显示「设值」');
-
-  // 一个服务提供者只能广播一个服务：必须在**界面上**说，而不只是注释里
-  check(/只能广播一个服务/.test(html), '界面说明了「一个服务提供者只能广播一个服务」');
-  const svcLabelZone = html.slice(html.indexOf('id="blePfService"') - 300, html.indexOf('id="blePfService"'));
-  check(/只能广播一个服务/.test(svcLabelZone), '说明就贴在服务 UUID 输入框的标签上（就地提示）');
-
-  // 多套从机配置保存
-  check(/function blePfSaveAs\(\)/.test(html) && /function blePfLoadSaved\(/.test(html)
-    && /function blePfDeleteSaved\(\)/.test(html), '有保存 / 载入 / 删除三件套');
-  check(/periphSaved: _blePeriphSaved,/.test(html) && /restoreBlePeriphSaved\(b\.periphSaved\)/.test(html),
-    '保存的配置随用户配置持久化与恢复');
-  check(/function restoreBlePeriphSaved\(/.test(html), '恢复时校验形状（坏配置不让面板变空白）');
-  check(/desc: c\.desc \|\| ''/.test(html) && /desc: typeof c\.desc === 'string'/.test(html),
-    '描述符文本随表单一起保存与恢复');
-
-  // ---------- 12) 广播配置的表格文件（导入 / 导出） ----------
-  console.log('\n【广播配置表格】');
-  const sbT = { console, _blePeriphForm: { presetId: 'nus', service: '', chars: [], discoverable: true,
-                 connectable: true, advData: false, advDataHex: '', manualReply: false },
-                document: { getElementById() { return null; } } };
-  vm.createContext(sbT);
-  vm.runInContext([
-    extractVar('BLE_PF_TABLE_HEADER'),
-    extractFunction('blePfTableCells'),
-    extractFunction('blePfParseTable'),
-    extractFunction('blePfBuildTable'),
-    extractFunction('blePfCollectOptions'),
-    extractFunction('blePfCollectForm'),
-    'var BLE_PERIPH_CHAR_MAX = 16;',
-  ].join('\n'), sbT);
-
-  check(sbT.BLE_PF_TABLE_HEADER.join(',') === '服务UUID,特征UUID,属性,初值HEX,描述符',
-    '表头固定 5 列', sbT.BLE_PF_TABLE_HEADER.join(','));
-
-  // CSV
-  const csv = [
-    '服务UUID,特征UUID,属性,初值HEX,描述符',
-    '6E400001-B5A3-F393-E0A9-E50E24DCCA9E,6E400002-B5A3-F393-E0A9-E50E24DCCA9E,write;write_without_response,,',
-    '6E400001-B5A3-F393-E0A9-E50E24DCCA9E,6E400003-B5A3-F393-E0A9-E50E24DCCA9E,notify,41,2901=T:温度计',
-  ].join('\n');
-  const rc = sbT.blePfParseTable(csv);
-  check(!rc.error && rc.chars.length === 2, 'CSV 解析出 2 个特征', rc.error || String(rc.chars && rc.chars.length));
-  check(rc.service === '6E400001-B5A3-F393-E0A9-E50E24DCCA9E', '服务 UUID 取第一列', rc.service);
-  check(JSON.stringify(rc.chars[0].props) === '["write","write_without_response"]',
-    '属性按 ; 拆开', JSON.stringify(rc.chars[0].props));
-  check(rc.chars[1].value === '41' && rc.chars[1].desc === '2901=T:温度计',
-    '初值与描述符逐列取到', rc.chars[1].value + ' / ' + rc.chars[1].desc);
-
-  // Markdown 表格
-  const md = [
-    '| 服务UUID | 特征UUID | 属性 | 初值HEX | 描述符 |',
-    '|---|---|---|---|---|',
-    '| 6E400001-B5A3-F393-E0A9-E50E24DCCA9E | 0000FFF1-0000-1000-8000-00805F9B34FB | read;write | 48656C6C6F | 2901=T:含\\|竖线 |',
-  ].join('\n');
-  const rm = sbT.blePfParseTable(md);
-  check(!rm.error && rm.chars.length === 1, 'Markdown 表格也能解析（自动跳过分隔行）', rm.error || '');
-  check(JSON.stringify(rm.chars[0].props) === '["read","write"]',
-    'Markdown 里属性用 ; 分隔', JSON.stringify(rm.chars[0].props));
-  check(rm.chars[0].desc === '2901=T:含|竖线',
-    'Markdown 单元格里的 \\| 按规范还原成竖线', rm.chars[0].desc);
-  check(rm.chars[0].value === '48656C6C6F', 'Markdown 表格的初值列取对', rm.chars[0].value);
-
-  // 注释与空行
-  const rc2 = sbT.blePfParseTable('# 我的透传模块\n\n6E400001-B5A3-F393-E0A9-E50E24DCCA9E,6E400002-B5A3-F393-E0A9-E50E24DCCA9E,write,,');
-  check(!rc2.error && rc2.chars.length === 1, '空行与 # 注释行被忽略');
-
-  // 出错情形：报错必须说明是哪一行/为什么
-  check(/只有 1 列/.test(sbT.blePfParseTable('6E400001-B5A3-F393-E0A9-E50E24DCCA9E').error || ''),
-    '列数不足报错');
-  check(/特征 UUID 为空/.test(sbT.blePfParseTable('6E400001-B5A3-F393-E0A9-E50E24DCCA9E,').error || ''),
-    '特征 UUID 为空报错');
-  check(/只能广播一个服务/.test(sbT.blePfParseTable(
-    '6E400001-B5A3-F393-E0A9-E50E24DCCA9E,6E400002-B5A3-F393-E0A9-E50E24DCCA9E,write,,\n' +
-    '0000FFF0-0000-1000-8000-00805F9B34FB,0000FFF1-0000-1000-8000-00805F9B34FB,read,,').error || ''),
-    '文件里出现第二个服务 UUID 时明确报错（平台只支持一个）');
-  check(/没有解析到任何特征行/.test(sbT.blePfParseTable('服务UUID,特征UUID,属性,初值HEX,描述符').error || ''),
-    '只有表头时给出可理解的报错');
-  check(/没有解析到任何特征行/.test(sbT.blePfParseTable('').error || ''), '空文件报错');
-  check(/特征数量超过上限/.test(sbT.blePfParseTable(
-    Array.from({ length: 20 }, (_, i) => '6E400001-B5A3-F393-E0A9-E50E24DCCA9E,6E40000' + i + '-B5A3-F393-E0A9-E50E24DCCA9E,read,,').join('\n')).error || ''),
-    '超过特征数量上限时报错');
-
-  // 导出 → 再导入，必须等价（往返一致）
-  sbT._blePeriphForm.service = '6E400001-B5A3-F393-E0A9-E50E24DCCA9E';
-  sbT._blePeriphForm.chars = [
-    { uuid: '6E400002-B5A3-F393-E0A9-E50E24DCCA9E', props: ['write', 'write_without_response'], value: '', desc: '' },
-    { uuid: '6E400003-B5A3-F393-E0A9-E50E24DCCA9E', props: ['read', 'notify'], value: '41 42', desc: '2901=T:温度计' },
-  ];
-  const outCsv = sbT.blePfBuildTable();
-  const back = sbT.blePfParseTable(outCsv);
-  check(!back.error, '导出的 CSV 能被自己解析回来', back.error || '');
-  check(back.service === sbT._blePeriphForm.service && back.chars.length === 2, '往返后服务与特征数一致');
-  check(JSON.stringify(back.chars[1].props) === '["read","notify"]' && back.chars[1].value === '41 42'
-    && back.chars[1].desc === '2901=T:温度计', '往返后属性/初值/描述符都不丢', JSON.stringify(back.chars[1]));
-  check(outCsv.split('\r\n')[0] === '服务UUID,特征UUID,属性,初值HEX,描述符', '导出第一行是表头');
-  check(/","|"/.test(sbT.blePfBuildTable({ service: 'S', chars: [{ uuid: 'U', props: ['read'], value: '', desc: 'T:含,逗号' }] })),
-    '值里有逗号时按 CSV 规范加引号（Excel 才不会拆错列）');
-
-  // 前后端契约
-  check(/fn ble_periph_pick_config_file\(/.test(mainRs) && /ble_periph_pick_config_file,/.test(mainRs),
-    '后端有并注册了"选表格文件"命令');
-  check(/fn ble_periph_save_config_file\(/.test(mainRs) && /ble_periph_save_config_file,/.test(mainRs),
-    '后端有并注册了"导出表格"命令');
-  check(/invoke\('ble_periph_pick_config_file'\)/.test(html) && /invoke\('ble_periph_save_config_file'/.test(html),
-    '前端两个命令都接了');
-  check(/add_filter\("表格文件", &\["csv", "md", "markdown", "txt"\]\)/.test(mainRs),
-    '文件框限定表格类扩展名');
-  check(/id="blePfImportBtn"/.test(html) && /id="blePfExportBtn"/.test(html),
-    '广播配置区有「导入表格 / 导出表格」两个按钮');
 
   console.log('\n【内存与磁盘上限（L3a / M28 / M29）】');
 
@@ -2061,18 +1609,22 @@ console.log('preview ->', out);
   check(/stText\.title = parts\.join\(' · '\)/.test(html),
     '这些数字挪进状态文案的悬停提示（排查"丢了多少条"时还查得到）');
   check(/class="ble-modal-mask" id="mcpModal"/.test(html), '弹窗复用现有模态框外观');
-  // 滚动条：同一个弹窗里不能一半是细灰条、一半是 Chromium 默认的白宽条
+  // 滚动条：同一个弹窗里不能一半是细灰条、一半是 Chromium 默认的白宽条。
+  // 断言按"成员是否在这条规则的选择器列表里"来查，而不是钉死整段文本 —— 以后往里加
+  // 选择器（这次就加了 MCP 弹窗主体）不必再改断言。
+  const sbRuleSel = (/([^\n]*(?:,\s*\n[^\n]*)*) \{ width:10px; height:10px; \}/.exec(html) || [, ''])[1];
+  const inSbRule = (s) => sbRuleSel.indexOf(s + '::-webkit-scrollbar') >= 0;
   check(inSbRule('.mcp-url') && inSbRule('.mcp-code') && inSbRule('#mcpModal .ble-modal-body'),
     '连接 URL / 客户端配置 / 安装提示词 / 弹窗主体（窗口太矮时滚动）都套上同一份滚动条规则');
   check(/\.mcp-url::-webkit-scrollbar-thumb,[\s\S]{0,220}?background-clip:content-box/.test(html),
-    'MCP 弹窗的滚动条滑块与从机面板同一套配色（半透明中性灰）');
+    'MCP 弹窗的滚动条滑块与面板日志同一套配色（半透明中性灰）');
   // 横竖交汇处（corner）：只改 track/thumb 不够，漏了这块就留一个白色方块（用户截图指出来了）
   check(/\.mcp-code::-webkit-scrollbar-corner,[\s\S]{0,120}?\{ background:transparent; \}/.test(html),
     '滚动条交汇处不再是默认白方块（MCP 弹窗）');
   check(/\.ble-log::-webkit-scrollbar-corner,[\s\S]{0,400}?background:transparent/.test(html),
-    '滚动条交汇处一并覆盖从机面板（同一个毛病，别只修看得见的那一处）');
-  check((html.match(/::-webkit-scrollbar-corner/g) || []).length === 6,
-    '六个可滚动区都写了 corner（3 从机 + 2 MCP 内容框 + 弹窗主体）',
+    '滚动条交汇处一并覆盖数据日志区（同一个毛病，别只修看得见的那一处）');
+  check((html.match(/::-webkit-scrollbar-corner/g) || []).length === 4,
+    '四个可滚动区都写了 corner（数据日志 + 2 MCP 内容框 + 弹窗主体）',
     (html.match(/::-webkit-scrollbar-corner/g) || []).length);
   // 标题在上、内容占满整行；复制按钮压在**内容框内的右上角**（用户指定的两轮调整结果）
   check(/\.mcp-label \{ display:block; font-size:12px; color:var\(--text-d\); margin-bottom:5px; \}/.test(html),
@@ -2755,7 +2307,7 @@ console.log('preview ->', out);
   const dangerNoUi = {};
   [...dangerNoUiSrc.matchAll(/^\s*([a-z_]+):/gm)].forEach((m) => { dangerNoUi[m[1]] = true; });
   const dangerNamed = Object.keys(dangerUi).concat(Object.keys(dangerNoUi)).sort();
-  check(dangerTools.length >= 4, '扫到了 Rust 的危险动作表（不是空扫）', dangerTools.join(','));
+  check(dangerTools.length >= 3, '扫到了 Rust 的危险动作表（不是空扫）', dangerTools.join(','));
   check(JSON.stringify(dangerTools) === JSON.stringify(dangerNamed),
     '危险动作表里每个工具都交代了"界面上有没有另一个入口"（有 → skip；没有 → 写清为什么）'
     + '—— 以后新增危险工具时漏了这条就会 fail',
@@ -3204,9 +2756,15 @@ console.log('preview ->', out);
   check(/_mcpLogFlushMs = 200/.test(html), '回灌节流 200ms（避免高频串口把 IPC 打爆）');
 
   // 源码：日志工具与硬约束
-  ['log_channels', 'log_tail', 'log_search', 'log_stats', 'log_clear', 'log_export'].forEach((t) => {
+  ['log_channels', 'log_tail', 'log_search', 'log_stats', 'log_clear'].forEach((t) => {
     check(new RegExp('"name": "' + t + '"').test(mcpSrc), '日志工具已定义 ' + t);
   });
+  // `log_export` 被故意删掉（2026-09，用户要求）：它是唯一能把全部通道日志一次塞进返回体的工具
+  // （省略 channels = 全部 × 上限 20000 行/通道），而**返回体没有大小上限** —— 一次可能几十 MB。
+  // 这条守着"别顺手加回来"，以及"旧客户端拿着旧名字调过来要能被指路"。
+  check(!/"name": "log_export"/.test(mcpProd) && /log_export 已删除/.test(mcpProd)
+    && /fn log_export_is_gone_and_the_old_name_points_somewhere/.test(mcpSrc),
+    'log_export 已删除，且旧名字会得到"已删除 + 替代方案"的报错（有测试守着）');
   check(/fn drop_all/.test(mcpSrc), '停用时真正释放通道，而不是只清空内容');
   // 全局内存兜底必须**被执行**，不能只是报告值（`log_stats` 里的 totalCapBytes 曾是空头承诺）
   check(/pub const TOTAL_CAP_BYTES/.test(mcpSrc) && /pub const MAX_CHANNELS/.test(mcpSrc),
@@ -3230,6 +2788,69 @@ console.log('preview ->', out);
   check(/OVERHEAD_PER_LINE/.test(mcpSrc), '字节统计含每行固定开销（否则上限形同虚设）');
   check(/enabled: AtomicBool::new\(false\)/.test(mcpSrc), '默认关闭：MCP 停用时零成本');
   check(/since_seq/.test(mcpSrc), '支持按 seq 增量拉取日志');
+  // 读日志的**编码档**（省 token，2026-09）：json 逐行结构化是默认，text 是一行一条纯文本。
+  // 三条底线：① 两种编码共用同一次选取（数据/丢弃账一致）；② "一行一条"的写法只有一处；
+  // ③ 头部必须带丢弃账与漏读量 —— 省 token 不能变成"让 AI 以为日志是完整的"。
+  check(/pub enum LogFormat/.test(mcpProd) && /pub fn tail_fmt\(/.test(mcpProd)
+    && /LogFormat::Json => \{[\s\S]{0,200}?out\["lines"\]/.test(mcpProd),
+    '读日志有 json/text 两档编码，且共用同一次选取（换编码只换写法）');
+  check(/pub fn push_text_line\(/.test(mcpProd) && /fn push_escaped\(/.test(mcpProd),
+    '"一行一条"的文本写法（含转义）只有一处，两个工具不许各写一遍');
+  check(/'\\n' => out\.push_str/.test(mcpProd) && /'\\r' => out\.push_str/.test(mcpProd),
+    '正文里的 CR/LF 必须转义：否则一条记录跨多行、还能伪造出头部行');
+  check(/fn render_text_page\(/.test(mcpProd) && /missed=/.test(mcpProd)
+    && /dropped=/.test(mcpProd) && /mayBeIncomplete=/.test(mcpProd)
+    && /nextSinceSeq=/.test(mcpProd),
+    'text 编码的头部必须带 dropped/missed/mayBeIncomplete/nextSinceSeq');
+  check(/fn serial_text_header\(/.test(mcpProd) && /fn serial_output_reads_rx_tx/.test(mcpSrc),
+    'serial_get_output 的文本页头部同样带两通道各自的丢弃账');
+  check(/fn log_format_arg\(/.test(mcpProd) && /"enum": \["json", "text"\]/.test(mcpProd),
+    'format 只认 json/text，写错报 -32602（绝不静默退回 json）');
+  check(/const TEXT_PAYLOAD_TOOLS: &\[&str\] = &\["log_tail", "serial_get_output"\]/.test(mcpProd)
+    && /fn take_rendered_text\(/.test(mcpProd),
+    'text 编码的正文要搬进 content 文本（只一份，不重复计费），工具清单登记在案');
+  check(/fn text_format_tools_are_all_in_the_text_payload_list/.test(mcpSrc)
+    && /fn log_tail_text_format_puts_the_logs_in_the_content_text/.test(mcpSrc)
+    && /fn log_tail_text_format_is_cheaper_on_the_wire/.test(mcpSrc),
+    '有测试守着"漏登记就退化成摘要"和"确实更省 token"');
+  check(/"truncated": returned >= lines/.test(mcpProd),
+    'truncated 只表示"这一页被行数顶住"（漏了多少另有 missed），不再要求 dropped>0');
+  // log_search 的三档模式（用**信息量**换 token）+ 字面量快路径。
+  // 起因：用户问"日志改用 ripgrep 会不会更省" —— 实测 rg 子进程光启动就 20 ms，
+  // 而我们全通道扫描 13~23 ms，省 token 的关键是**回多少文本**，不是搜得多快。
+  check(/pub enum SearchMode/.test(mcpProd) && /pub fn search_with\(/.test(mcpProd)
+    && /"mode": "count"/.test(mcpProd) && /"mode": "matches"/.test(mcpProd),
+    'log_search 有三档 mode（lines/matches/count），且各档在返回里自报 mode');
+  check(/fn search_mode_arg\(/.test(mcpProd) && /"enum": \["lines", "matches", "count"\]/.test(mcpProd),
+    'mode 取值白名单在 Rust 侧也拦一道（写错报 -32602，不静默退回 lines）');
+  check(/if use_regex \|\| need_ranges/.test(mcpProd)
+    && /text\.contains\(&self\.literal\)/.test(mcpProd),
+    '字面量 + 只要布尔值时走 contains 快路径（全塞进 regex 会慢 3 倍）');
+  check((mcpProd.match(/filter\(\|m\| !m\.is_empty\(\)\)/g) || []).length >= 2,
+    'matches/count 都跳过零长匹配（否则 `a*` 之类会用空片段把 limit 塞满）');
+  check(/context 只对 mode/.test(mcpProd) && /MAX_SEARCH_CONTEXT/.test(mcpProd),
+    'context 只对 lines 档有意义、且有上限（配错档要报错，不静默忽略）');
+  check(/count 不该被它截断|必须扫完/.test(mcpProd),
+    'count 档必须扫完（被 limit 提前打断会让"有几次"这个数字变成错的）');
+  check(/fn log_search_modes_trade_information_for_tokens/.test(mcpSrc)
+    && /fn count_mode_scans_everything_and_is_exact/.test(mcpSrc)
+    && /fn literal_search_treats_metacharacters_as_plain_text/.test(mcpSrc),
+    '有测试守着"计数精确""三档体积拉开""字面量不当正则"');
+  check(/text: Box<str>,/.test(mcpProd) && !/text: Arc<str>/.test(mcpProd),
+    '日志正文是独占字符串（Arc 试过又换回：省 2.6% 搜索时间，代价是多花 11% 日志内存）');
+  // 读输出类工具（adb / ble）与 log_search 共用同一套检索词汇与**同一份匹配器**
+  check(/fn parse_output_query\(/.test(mcpProd) && /fn shape_output_items\(/.test(mcpProd)
+    && (mcpProd.match(/LogMatcher::new\(/g) || []).length >= 3,
+    'adb_shell_read / ble_get_output 与 log_search 共用检索参数与匹配器（不许各写一遍）');
+  check(/fn ble_get_output\(/.test(mcpProd) && /extra\["limit"\] = json!\(n\)/.test(mcpProd)
+    && /extra\["sinceSeq"\]/.test(mcpProd),
+    'ble_get_output 真的把 limit/sinceSeq 转发给前端（老实现只转 action/pane，两个参数从来没生效）');
+  check(/fn check_search_pattern\(/.test(mcpProd) && /maxSearchPatternChars/.test(mcpProd),
+    'pattern 有长度上限且能在 mcp_limits 里查到（1 MiB 请求体塞得进一条巨型正则）');
+  check(/fn adb_shell_read_modes_search_the_pty_blocks/.test(mcpSrc)
+    && /fn ble_get_output_forwards_paging_and_searches_the_items/.test(mcpSrc)
+    && /fn search_pattern_length_is_capped_across_the_three_tools/.test(mcpSrc),
+    '有测试守着 adb 检索档 / ble 转发+过滤 / 三方共用的图案上限');
 
   // 行为：批量与上限
   const logCalls = [];
@@ -3478,7 +3099,7 @@ console.log('preview ->', out);
                        mcpSrc.indexOf('\n    ]', mcpSrc.indexOf('pub fn tool_defs()')))
         .matchAll(/"name":\s*"([a-z][a-z0-9_]*)"/g)].map((m) => m[1])
     )];
-    check(srcTools.length === 57, '源码里是 57 个内置工具（20 通用 + 15 串口语义 + 16 蓝牙语义 + 6 ADB 语义）', srcTools.length);
+    check(srcTools.length === 53, '源码里是 53 个内置工具（19 通用 + 16 串口语义 + 12 蓝牙语义 + 6 ADB 语义）', srcTools.length);
     const missing = srcTools.filter((n) => toolsDoc.indexOf('#### `' + n + '`') < 0);
     check(missing.length === 0, '工具参考文档 doc/MCP_TOOLS.md 列出了全部内置工具', '缺：' + missing.join(','));
     check((toolsDoc.match(/^#### `/gm) || []).length === srcTools.length,
@@ -3565,7 +3186,7 @@ console.log('preview ->', out);
       'serial_quick_cmd 按**调用**判定（不带 index 是只读列举，带 index 才是真的发出去）');
 
     // 一页速查表里的「读/写」列：`写⚠️` 必须也渲染成写
-    // （原先只认 rw === '写'，ble_periph_start/stop 这两个危险写被标成了「读」）
+    // （原先只认 rw === '写'，带 ⚠️ 的危险写被标成了「读」）
     const dangerNames = [...(/pub const DANGER_TOOLS: &\[\(&str, &str\)\] = &\[([\s\S]*?)\n\];/.exec(mcpProd) || ['', ''])[1]
       .matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
     check(dangerNames.length >= 2, '扫到了危险动作表（不是空扫）', dangerNames.join(','));
@@ -5199,8 +4820,7 @@ console.log('preview ->', out);
         'ui_call 的 ble 面板接上了 mcpBleOp（与 serial 同构）');
       for (const a of ['state', 'listDevices', 'startScan', 'stopScan', 'getServices', 'read', 'subscribe',
                       'write', 'connect', 'disconnect',
-                      'getOutput', 'refreshRssi',
-                      'periphStatus', 'periphStart', 'periphStop']) {
+                      'getOutput', 'refreshRssi']) {
         check(html.indexOf("action === '" + a + "'") >= 0, "mcpBleOp 有 " + a + " 分支");
       }
       // 特征读写/连接都复用面板自己的那条路（DOM 合成事件 + 面板函数），不另写一份
@@ -5221,15 +4841,7 @@ console.log('preview ->', out);
         'ble_connect 对"扫描列表里没有的 MAC"走面板的按地址直连入口');
       check(/return bleDisconnect\(\)\.then\(function \(r\) \{/.test(html),
         'ble_disconnect 复用面板同一条断开路径（bleDisconnect）');
-      // 启动/停止走面板那颗按钮的函数，不给 AI 另写一套
-      check(/typeof startBlePeriph === 'function' \? startBlePeriph\(\)/.test(html)
-        && /typeof stopBlePeriph === 'function' \? stopBlePeriph\(\)/.test(html),
-        'BLE 从机启停复用面板的 startBlePeriph/stopBlePeriph（不是 AI 专用逻辑）');
-      check(/return invoke\('ble_periph_start'/.test(html) && /return invoke\('ble_periph_stop'/.test(html),
-        '两个从机函数返回各自的 promise（MCP 才能等它完成再读状态）');
       // 危险动作：Rust 侧的表与二次确认门
-      check(/pub const DANGER_TOOLS[\s\S]{0,400}ble_periph_start[\s\S]{0,400}ble_periph_stop/.test(proto),
-        '危险动作表里有 BLE 从机启停（对外广播 = 不可撤销）');
       check(/danger_note\(name\)[\s\S]{0,500}E_DEVICE_NOT_READY/.test(proto)
         && /confirm/.test(proto) && /这一步\*\*没有执行\*\*/.test(proto),
         '二次确认门：没带 confirm 就不执行，并回 -32006 说明后果');
@@ -5241,13 +4853,12 @@ console.log('preview ->', out);
                      ['ble_get_services', 'getServices'], ['ble_read', 'read'], ['ble_subscribe', 'subscribe'],
                      ['ble_write', 'write'], ['ble_connect', 'connect'], ['ble_disconnect', 'disconnect'],
                      ['ble_get_output', 'getOutput'],
-                     ['ble_refresh_rssi', 'refreshRssi'], ['ble_periph_status', 'periphStatus'],
-                     ['ble_periph_start', 'periphStart'], ['ble_periph_stop', 'periphStop']];
+                     ['ble_refresh_rssi', 'refreshRssi']];
       const bad = pairs.filter(p => proto.indexOf('"' + p[0] + '"') < 0
         || proto.indexOf('ble_call(core, "' + p[1] + '"') < 0);
       check(bad.length === 0, '每个 ble_* 工具都能映射到前端的 action', JSON.stringify(bad));
-      check(/"mcp_danger"/.test(proto) && /pub const WRITE_TOOLS[\s\S]{0,700}"ble_periph_start"/.test(proto),
-        'mcp_danger 工具在、BLE 启停也算写（只读模式拦得下）');
+      check(/"mcp_danger"/.test(proto) && /pub const WRITE_TOOLS[\s\S]{0,1500}"serial_workflow_run"/.test(proto),
+        'mcp_danger 工具在、危险动作也算写（只读模式拦得下）');
       // Rust 侧**必须把参数放进 payload**：`ble_call` 只转 pane，光 require_str 校验不够
       // （batch 4 的 ble_read 就是这么把 char 吞掉的 —— 前端永远收不到）
       check(/ble_call\(core, "read", args, json!\(\{ "char": ch \}\)\)/.test(proto)
@@ -5663,9 +5274,9 @@ console.log('preview ->', out);
     }
     // ---- 回执那一跳（mcpUiCmdReply）必须能等 Promise ----
     // 真实事故（2026-09）：这一跳原先直接读 `res.ok`，而不少分支返回的是 Promise
-    // （连设备 / 读写特征 / 从机启停 / 读 RSSI…）→ Promise 上没有 ok → 回执成了
+    // （连设备 / 读写特征 / 读 RSSI…）→ Promise 上没有 ok → 回执成了
     // ok:false + error:null → 客户端只看到一句没头没尾的"前端执行失败"
-    // （ble_periph_status 实测就是这样，明明原因是"从机模式没开"）。
+    // （真实原因是"设备还没连"，AI 却什么都拿不到）。
     {
       const flush = () => new Promise((r) => setTimeout(r, 0));
       const mkReply = (impl) => {
@@ -5684,9 +5295,9 @@ console.log('preview ->', out);
       await flush();
       check(a2.length === 1 && a2[0].ok === true && a2[0].value.changed === true,
         '**返回 Promise 的分支也要回执真实结果**（不 await 就会变成"前端执行失败"）', JSON.stringify(a2));
-      const a3 = mkReply(() => Promise.resolve({ ok: false, error: '读从机状态失败: 从机模式未启用' }));
+      const a3 = mkReply(() => Promise.resolve({ ok: false, error: '读 RSSI 失败: 设备未连接' }));
       await flush();
-      check(a3.length === 1 && a3[0].ok === false && /从机模式未启用/.test(a3[0].error),
+      check(a3.length === 1 && a3[0].ok === false && /设备未连接/.test(a3[0].error),
         '返回 Promise 的失败分支：错误原因要原样带给客户端', JSON.stringify(a3));
       const a4 = mkReply(() => { throw new Error('同步炸了'); });
       await flush();
@@ -6496,7 +6107,7 @@ console.log('preview ->', out);
   }
   }   // 外部文件这一段与上面的分栏断言共用同一个沙箱（sbSide 是块内 const）
 
-  // ---------- BLE 页左栏（设备列表 / 从机配置）宽度：改窄 + 可拖 ----------
+  // ---------- BLE 页左栏（设备列表）宽度：改窄 + 可拖 ----------
   {
     const sbBle = { console };
     vm.createContext(sbBle);
@@ -6514,16 +6125,15 @@ console.log('preview ->', out);
     check(sbBle.clampBleLeftWidth(288, 0, 9999, 400) === 240, '窄视口下上限不会低于下限（Math.min/max 不打架）', String(sbBle.clampBleLeftWidth(288, 0, 9999, 400)));
 
     // CSS：默认宽度改了、手柄样式在、旧值不留
-    check(/\.ble-left, \.ble-pf-left \{[^}]*flex:0 0 288px;[^}]*min-width:240px;[^}]*max-width:38%/.test(html),
-      '主机/从机左栏共用同一条宽度规则（切模式不横向跳动）且已收窄');
+    check(/\.ble-left \{[^}]*flex:0 0 288px;[^}]*min-width:240px;[^}]*max-width:38%/.test(html),
+      '蓝牙页左栏宽度已收窄（288px 起、可拖到视口 38%）');
     check(!/flex:0 0 400px/.test(html), '旧的 400px 固定宽度已不存在');
     check(/\.ble-left-resize \{[^}]*cursor:col-resize/.test(html) &&
           /\.ble-left-resize:hover, \.ble-left-resize\.dragging \{ background:var\(--split-line\)/.test(html),
       '左栏拖拽手柄的样式与既有两个手柄一致（col-resize + --split-line）');
     // 手柄必须是**行容器里的兄弟节点**：左栏是纵向 flex，塞进去会变成一条横线
-    check(/class="ble-left-resize" id="ble-leftResize"[\s\S]{0,60}class="ble-right"/.test(html) &&
-          /class="ble-left-resize" id="ble-pfResize"[\s\S]{0,60}class="ble-pf-right"/.test(html),
-      '两个模式各有一个手柄，且都紧贴在左栏右边（是行容器的兄弟，不是列内子元素）');
+    check(/class="ble-left-resize" id="ble-leftResize"[\s\S]{0,60}class="ble-right"/.test(html),
+      '手柄紧贴在左栏右边（是行容器的兄弟，不是列内子元素）');
     check(/col = handle\.previousElementSibling;/.test(html) &&
           /document\.removeEventListener\('mousemove', onMouseMove\)/.test(html) &&
           /document\.removeEventListener\('mouseup', onMouseUp\)/.test(html),

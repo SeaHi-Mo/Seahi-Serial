@@ -27,9 +27,8 @@
 - **WSL 端口映射** — 通过 usbipd-win 将 USB 串口映射到 WSL 环境
 - **WSL 串口监控** — 在 WSL 内直接调试串口设备
 - **蓝牙调试（主机）** — 扫描周边 BLE 设备（含原始广播字节解析、设备类型识别、RSSI），连接后浏览 GATT 服务树并读写特征 / 描述符、订阅通知与指示、WinRT 配对
-- **蓝牙调试（从机）** — 本机作为 BLE 外设对外广播，被手机 / 其它主机搜索并连接；内置 Nordic UART、FFE0 透传等预设，可收发主机写入、改可读值、向已订阅主机下发通知
 - **USB 设备插拔检测** — 设备插拔自动刷新列表
-- **MCP 服务器（AI 控制接口）** — 程序内置 Model Context Protocol 服务器（SSE 模式 / 仅监听回环），把串口、日志、界面控件暴露成 33 个内置工具（20 通用 + 13 串口语义）供 AI 客户端调用；工具操作**与前端界面实时同步**，调用记录写在独立的 `ai-calls.jsonl`，绝不污染用户配置
+- **MCP 服务器（AI 控制接口）** — 程序内置 Model Context Protocol 服务器（Streamable HTTP + 遗留 SSE，仅监听回环），把串口、蓝牙、ADB、日志、界面控件暴露成 53 个内置工具供 AI 客户端调用；工具操作**与前端界面实时同步**，调用记录写在独立的 `ai-calls.jsonl`，绝不污染用户配置
 - **首次使用引导** — 9 步聚光灯引导，快速上手
 - **自动更新** — 启动时检测 GitHub 最新版本
 
@@ -115,7 +114,7 @@ serial-debugger-tauri/
 | 应用信息 | `app_info`、`mcp_status`、`mcp_limits` |
 | 串口语义（**优先用这些**，比按控件路径操作更准）| `serial_get_state`、`serial_list_ports`、`serial_select_port`、`serial_set_baud`、`serial_set_frame`、`serial_set_lines`、`serial_set_display`、`serial_open`、`serial_close`、`serial_send`、`serial_clear`、`serial_get_history`、`serial_get_output`、`serial_quick_cmd` |
 | 界面控件 | `ui_list`、`ui_describe`、`ui_get`、`ui_set`、`ui_click`、`ui_get_state` |
-| 日志中心 | `log_channels`、`log_tail`、`log_search`、`log_stats`、`log_clear`、`log_export` |
+| 日志中心 | `log_channels`、`log_tail`、`log_search`、`log_stats`、`log_clear` |
 | MCP 自身 | `mcp_calls`、`mcp_stats`、`mcp_config_get`、`mcp_config_set` |
 
 典型的串口主流程：`serial_get_state` → `serial_select_port` → `serial_set_baud` → `serial_open` → `serial_send` → `serial_get_output`（看设备回了什么）→ `serial_close`。
@@ -146,7 +145,7 @@ npx seahi-serial-mcp uninstall
 
 也可以在程序顶栏点击 MCP 图标，弹窗内直接复制「连接地址」与「安装提示词」手动配置。
 
-> 详细使用说明见 [`doc/MCP.md`](./doc/MCP.md)；**33 个工具的完整参考（入参 + 返回结构）见 [`doc/MCP_TOOLS.md`](./doc/MCP_TOOLS.md)**；架构与设计取舍见 [`doc/MCP_DESIGN.md`](./doc/MCP_DESIGN.md)。
+> 详细使用说明见 [`doc/MCP.md`](./doc/MCP.md)；**53 个工具的完整参考（入参 + 返回结构）见 [`doc/MCP_TOOLS.md`](./doc/MCP_TOOLS.md)**；架构与设计取舍见 [`doc/MCP_DESIGN.md`](./doc/MCP_DESIGN.md)。
 
 ## 开发进度与待办
 
@@ -154,10 +153,10 @@ npx seahi-serial-mcp uninstall
 
 | 章节 | 内容 |
 |---|---|
-| 当前状态实测快照 | 33 个工具 / 182 个界面控件 / 会话与限流上限 / 日志中心容量 / 协议版本；外加三套测试的通过与真机一致性检查结果 |
+| 当前状态实测快照 | 53 个内置工具 / 182 个界面控件 / 会话与限流上限 / 日志中心容量 / 协议版本；外加三套测试的通过与真机一致性检查结果 |
 | 语义工具四批计划 | 批次 1（串口 13 个）**已落地**；批次 2（BLE 主机 ~16）、批次 3（ADB/WSL ~16）、批次 4（全局 + 危险动作二次确认）待做 |
 | ⛔ 阻塞项 | 串口的收发链路验证需要**真实串口设备**，当前没有设备（列了 H1~H7 与设备到位后的验证顺序）|
-| 已知问题与技术债 | 构建警告、`log_export` 上限、Streamable HTTP 未实现等，逐条写明范围与修法 |
+| 已知问题与技术债 | 构建警告、Streamable HTTP 未实现等，逐条写明范围与修法（`log_export` 上限那条已随工具删除而消除） |
 | 待拍板 | 需要产品决策的几项（危险动作确认策略、是否补 Streamable HTTP、协议版本广告等）|
 
 > 逐次的技术细节（改了什么、为什么、怎么验证的）记在 [`doc/MCP_DESIGN.md`](./doc/MCP_DESIGN.md) §17「实施记录」。
@@ -169,7 +168,7 @@ npx seahi-serial-mcp uninstall
 - **桌面框架**：Tauri 2
 - **原生对话框**：`rfd 0.15`
 - **WSL 桥接**：Python bridge 脚本 + `usbipd-win`
-- **蓝牙**：`btleplug 0.13`（主机，vendored fork）+ `windows 0.62`（从机 / 配对）
+- **蓝牙**：`btleplug 0.13`（主机，vendored fork）+ `windows 0.62`（配对）
 - **MCP 服务器**：`hyper 1` + `hyper-util` + `http-body-util`（SSE，均随 `reqwest` 进入依赖树，无新增下载）
 
 ## 自动构建（GitHub Actions）

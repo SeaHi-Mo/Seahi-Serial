@@ -12,22 +12,19 @@
 npm install        # 安装前端依赖 (@tauri-apps/cli)
 npm run dev        # 开发模式（热重载）
 npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
-cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/从机属性/busid 白名单/MCP 协议与日志中心）
+cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/busid 白名单/MCP 协议与日志中心）
 ```
 
-无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，229 条 + 4 条 `#[ignore]`
-真机/诊断）。BLE 从机相关的三条（需蓝牙硬件）：
+无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，**232 条 + 1 条 `#[ignore]`**：
+那条 ignore 是手工联调用的 `mcp_serve_for_manual_check`，要跑 60 秒）。
 
-```bash
-# 环境诊断：一次性打全"广播为什么起不来"的证据（适配器/权限/能力位/真实广播结果）
-cargo test --manifest-path src-tauri/Cargo.toml ble_periph_diagnose -- --ignored --nocapture
-# 已证实：GATT 服务与特征建得出来（任何 Windows 机器都应通过）
-cargo test --manifest-path src-tauri/Cargo.toml ble_periph_builds -- --ignored --nocapture
-# 未达成：真的在对外广播吗（当前失败，见 doc/BLE_PERIPHERAL.md 第 5 节）
-cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
-```
+> ⛔ **BLE 从机（外设）方向已于 2026-09 整条删除**（用户确认"实现不了了"）：本机适配器自报支持
+> 外设角色，但实测**广播起不来**（`Aborted`）。原来那三条 `#[ignore]` 真机/诊断用例
+> （`ble_periph_diagnose` / `ble_periph_builds` / `ble_periph_starts_advertising`）随之删除，
+> 证据与结论留在 `doc/BLE_PERIPHERAL.md`（已标归档）。**别再往这个方向加功能** ——
+> 先在真机上把广播跑起来再说。本应用现在的 BLE 能力只有**主机方向**。
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1730 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1566 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，94 条）：抽取前端真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，
 也有把渲染函数丢进假 DOM 跑行为断言）。前端 2026-09 已从单文件拆成
 `src/index.html`（骨架）+ `src/css/*.css` + `src/js/*.js`，**布局与加载顺序见 `doc/FRONTEND_LAYOUT.md`**；
@@ -40,7 +37,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
 "每个工具你都需要测试工具调用结果"）：
 
 ```bash
-node .walkthrough/mcp_smoke.js          # 连上运行中的应用，把 57 个内置工具逐个真调一遍并打印结果
+node .walkthrough/mcp_smoke.js          # 连上运行中的应用，把 53 个内置工具逐个真调一遍并打印结果
 node .walkthrough/mcp_smoke.js --full   # 连有副作用的写工具也真调（会动界面/发数据，自己确认）
 node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /mcp）；默认有 /mcp 就走它
 ```
@@ -142,7 +139,7 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
     要同时出现在读入端与写入口，否则"内存里有、写回时被截断"会让用户数据不可逆丢失。
 11. **每个工具都必须有"返回值契约"和"调用情况"测试**（用户的要求："不然预期的结果怎么确定
     是否已经完成？"）。三条一起才叫测过：
-    ① **返回值契约**（`every_tool_has_a_tested_return_contract`）：57 个工具每个都要在表里交代
+    ① **返回值契约**（`every_tool_has_a_tested_return_contract`）：53 个工具每个都要在表里交代
     清楚 —— 纯后端工具断言**顶层字段**（多一个少一个都要改契约），界面工具断言无界面时
     必须是 `isError` + `-32006`，有副作用的注明谁在管它。表里漏一个工具就 fail，
     所以**新增工具时必须一起想清契约**。三条全局不变量对所有工具生效：
@@ -212,9 +209,9 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
   **目录结构、加载顺序、"原 index.html 行号 ↔ 新文件"映射、以及拆分时逐字符校验的记录，全在 `doc/FRONTEND_LAYOUT.md`** —— 改前端前先看它（尤其"只用普通 `<script src>`、绝不用 `type="module"`"这一条）
 - `src-tauri/src/mcp/` — **MCP 服务器**（模块级，约 6300 行）：`transport.rs`（hyper 服务器 + **Streamable HTTP `/mcp`** + 遗留 SSE `/sse` + 会话/鉴权/限流/广播）、`protocol.rs`（JSON-RPC + 工具定义与分派）、`bridge.rs`（前端桥：emit + 回执 + 超时回收）、`registry.rs`（控件注册表 → `ctl_*` 工具）、`loghub.rs`（日志中心）、`calllog.rs`（`ai-calls.jsonl`）、`aiconfig.rs`（`ai-config.json`）、`report.rs`（运行期错误 → 程序既有的错误上报通道）、`mod.rs`（启停/生命周期 + 10 个命令）
 - `npm/seahi-serial-mcp/` — **MCP 客户端配置安装器**（零依赖 CLI + 94 条自测；`npx seahi-serial-mcp install`，`--transport sse|http`）
-- `doc/MCP.md` — MCP 使用说明（面向使用者）｜`doc/MCP_TOOLS.md` — **57 个工具的参考手册**（工具名/描述/入参由 `.walkthrough/gen_mcp_tools_doc.js` 从 `protocol.rs` 生成，返回结构是实调抓的）｜`doc/MCP_DESIGN.md` — MCP 设计文档（含每步的实施记录）
-- `src-tauri/src/main.rs` — 整个 Rust 后端（约 7700 行，91 个 `#[tauri::command]`）：串口枚举（SetupAPI）、多串口连接/断开、DTR/RTS 切换、收发数据、WSL 端口映射、USB 设备管理、ADB 会话、**快速指令外部文件（导入/导出/写回，见 `quick_cmds_*`）**、**BLE 主机（btleplug，代码在 `fn main()` 内）与 BLE 从机（WinRT `GattServiceProvider`，代码在模块级）**
-- `src-tauri/Cargo.toml` — Rust 依赖（serialport 3.3, rfd 0.15, winapi 0.3, windows-sys 0.59, **windows 0.62 + windows-future 0.3（BLE 配对与 BLE 从机用 WinRT）**, **tokio（`time::timeout` + MCP 的 `rt/net/sync/io-util`，刻意不开 `macros`）**, reqwest 0.12, base64 0.22, btleplug 0.13, **hyper 1 + hyper-util + http-body-util + bytes（MCP 的 SSE 服务器；都已由 reqwest 带入依赖树，无新增下载）**）
+- `doc/MCP.md` — MCP 使用说明（面向使用者）｜`doc/MCP_TOOLS.md` — **53 个工具的参考手册**（工具名/描述/入参由 `.walkthrough/gen_mcp_tools_doc.js` 从 `protocol.rs` 生成，返回结构是实调抓的）｜`doc/MCP_DESIGN.md` — MCP 设计文档（含每步的实施记录）
+- `src-tauri/src/main.rs` — 整个 Rust 后端（约 7700 行，91 个 `#[tauri::command]`）：串口枚举（SetupAPI）、多串口连接/断开、DTR/RTS 切换、收发数据、WSL 端口映射、USB 设备管理、ADB 会话、**快速指令外部文件（导入/导出/写回，见 `quick_cmds_*`）**、**BLE 主机（btleplug，代码在 `fn main()` 内；原「BLE 从机」方向已于 2026-09 删除）**
+- `src-tauri/Cargo.toml` — Rust 依赖（serialport 3.3, rfd 0.15, winapi 0.3, windows-sys 0.59, **windows 0.62 + windows-future 0.3（BLE 配对用 WinRT）**, **tokio（`time::timeout` + MCP 的 `rt/net/sync/io-util`，刻意不开 `macros`）**, reqwest 0.12, base64 0.22, btleplug 0.13, **hyper 1 + hyper-util + http-body-util + bytes（MCP 的 SSE 服务器；都已由 reqwest 带入依赖树，无新增下载）**）
 - `src-tauri/vendor/btleplug/` — **btleplug 的 vendored fork**（`[patch.crates-io]` 指向此处），共 4 处本地补丁；**升级依赖时必须按 `vendor/btleplug/VENDOR.md` 重新打**
 - `src-tauri/tauri.conf.json` — Tauri 窗口配置，CSP 设为 `null`；**不要擅自设 CSP**：Tauri 会注入 nonce，按规范 `'unsafe-inline'` 即失效，本应用的行内 `style="…"` 属性与行内 `onclick`（拆分时 HTML 里 51 处 + JS 模板串里 151 处）会全被拦（界面掉样式、按钮点了没反应）。要设 CSP 必须先做「事件委托化 + 行内样式外置」重构。
   ⚠️ 2026-09 拆分已把**内联 `<style>` 块与内联 `<script>` 块**外置成 `src/css/*` `src/js/*`（这一步做掉了），但**行内 `onclick` 与 `style="…"` 属性仍在**，所以"设 CSP"仍然是不能顺手做的一件事
@@ -222,7 +219,7 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
 - `src-tauri/wsl-daemon/` — WSL bridge 脚本（base64 编码嵌入）
 - `installer.iss` — Inno Setup 安装脚本（包含 usbipd-win.msi 打包）
 - `doc/FRONTEND_LAYOUT.md` — **前端目录结构**（4 个 CSS + 14 个 JS + 骨架的加载顺序、原单文件行号映射、拆分校验记录）
-- `doc/` — 架构、交接、代码评估（`CODE_REVIEW_FULL_2026-09.md`）、BLE 真机验证（`BLE_VERIFICATION.md`，主机方向）、**BLE 从机（`BLE_PERIPHERAL.md`）** 等
+- `doc/` — 架构、交接、代码评估（`CODE_REVIEW_FULL_2026-09.md`）、BLE 真机验证（`BLE_VERIFICATION.md`，主机方向）、**BLE 从机（`BLE_PERIPHERAL.md`，已归档：确认做不出来、代码已删）** 等
 - `skills/seahi-serial-dev/SKILL.md` — AI 开发技能指南
 
 ## 版本号同步

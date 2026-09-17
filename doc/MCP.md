@@ -123,11 +123,11 @@ token 放在 URL 里是为了兼容"只会填 url、不会填 headers"的客户�
 | 类别 | 工具 |
 |---|---|
 | **串口语义（推荐优先用这些）** | `serial_get_state`、`serial_select_port`、`serial_set_baud`、`serial_set_frame`、`serial_set_lines`、`serial_set_display`、`serial_open`、`serial_close`、`serial_send`、`serial_clear`、`serial_get_history`、`serial_quick_cmd`、`serial_workflow`、`serial_workflow_run` |
-| **蓝牙语义** | `ble_get_state`、`ble_list_devices`、`ble_start_scan`、`ble_stop_scan`、`ble_connect`、`ble_disconnect`、`ble_get_services`、`ble_read`、`ble_write`、`ble_subscribe`、`ble_get_output`、`ble_refresh_rssi`、`ble_periph_status`、`ble_periph_start`、`ble_periph_stop` |
+| **蓝牙语义** | `ble_get_state`、`ble_list_devices`、`ble_start_scan`、`ble_stop_scan`、`ble_connect`、`ble_disconnect`、`ble_get_services`、`ble_read`、`ble_write`、`ble_subscribe`、`ble_get_output`、`ble_refresh_rssi` |
 | **ADB 语义** | `adb_list_devices`、`adb_open_shell`、`adb_shell_write`、`adb_shell_read`、`adb_shell_resize`、`adb_close_shell` |
 | 应用/服务器 | `app_info`、`mcp_status`、`mcp_limits`、`serial_list_ports` |
 | 界面操作 | `ui_list`、`ui_describe`、`ui_get`、`ui_set`、`ui_click`、`ui_get_state` |
-| 日志 | `log_channels`、`log_tail`、`log_search`、`log_stats`、`log_clear`、`log_export` |
+| 日志 | `log_channels`、`log_tail`、`log_search`、`log_stats`、`log_clear` |
 | 记录与配置 | `mcp_calls`、`mcp_stats`、`mcp_config_get`、`mcp_config_set` |
 
 **串口语义工具与通用界面桥的区别**：前者用"**分栏 + 语义字段**"寻址（`pane` = `main` / `extra-N` 为 Windows 分栏，
@@ -238,9 +238,6 @@ WSL 侧是 WSL 里的设备（`get_wsl_serial_devices` / `open_wsl_serial`）。
 | `ble_disconnect` | 断开当前设备（服务树/订阅/本次会话日志一并清空，与那颗按钮完全一样） | 写 |
 | `ble_get_output` | **本次会话**的蓝牙数据日志（收到的通知/读回的内容、发出的写）；要跨会话历史用 `channels.rx` 去 `log_tail` | 读 |
 | `ble_refresh_rssi` | 已连设备的信号强度（只问一次射频，不改状态） | 读 |
-| `ble_periph_status` | **从机**（本机当外设）状态：是否真的在对外广播、服务 UUID、特征数、可发现/可连接、手动应答、后端告警 | 读 |
-| `ble_periph_start` | 按面板上已配置的服务/特征**对外广播** | **写 ⚠️ 危险** |
-| `ble_periph_stop` | 停掉对外广播 | **写 ⚠️ 危险** |
 
 #### 扫描结果怎么读（三条路，读的是同一份数据）
 
@@ -320,7 +317,7 @@ ADB 面板（点顶栏「ADB 调试」）那条链路也能从 MCP 走。与 `se
 // 先问清有哪些危险动作与各自的后果
 {"name": "mcp_danger"}
 // 想清楚再动手（不带 confirm 的调用什么都不会发生）
-{"name": "ble_periph_start", "arguments": {"confirm": true}}
+{"name": "adb_open_shell", "arguments": {"confirm": true}}
 ```
 
 - 普通工具**不需要** `confirm`（传了也会被忽略）—— 别把"确认"当成万能钥匙
@@ -376,6 +373,50 @@ ADB 面板（点顶栏「ADB 调试」）那条链路也能从 MCP 走。与 `se
 
 日志是**内存里的环形缓冲**，有上限、会丢最旧的，并且会明确告诉你丢了多少（`log_channels` 里的 `dropped`）。要长期留存的会话内容看 `log-cache\` 目录或界面的日志缓存。
 
+### 读日志怎么才不烧 token（`format:"text"`）
+
+`log_tail` / `serial_get_output` 都有两档输出编码，**数据完全一样，只是写法不同**：
+
+| 编码 | 长什么样 | 代价 |
+|---|---|---|
+| `json`（默认） | 一行一个对象：`{seq, ts, t, level, dir, bytes, text}` | 每行固定 ~100 字节。串口调试全是短行（`OK`、`AT+GMR`），**包装比正文长十几倍**（实测 101 字节/行） |
+| `text`（推荐） | 头部一行元信息 + 一行一条：`[12:34:56.789] [info] AT+GMR`（`serial_get_output` 是 `[时刻] [rx\|tx] 正文`） | 同样那 200 条短行实测 **29 字节/行 → 省 3.5 倍**；行越长省得越少（长行约 30%） |
+
+三条不会因为换编码而变的保证（**省 token 不等于少看日志**）：
+
+1. **可见性**：`text` 编码的正文放在 `content[].text` 里（很多客户端只把这一份给模型看），`structuredContent` 只给元信息 —— 同一段日志**只发一份**，不会重复计费，也不会被压成 600 字摘要。
+2. **完整性**：两种编码的 `returned` / `seqFrom` / `seqTo` / `missed` / `dropped` / `mayBeIncomplete` / `truncated` 一模一样，头部那行也把丢弃账写出来。
+3. **行数上限**：还是 2000，编码只改写法，不改能拿多少。
+
+配合增量拉取最省：先 `log_stats` 看哪个通道在刷，再用 `log_tail{channel, sinceSeq: nextSinceSeq, format:"text"}` 小步跟进 —— **把返回里的 `nextSinceSeq` 当下次的 `sinceSeq`**（别直接跳到 `seqTo`，那会跳过 `missed` 那些行）。要定位具体内容优先 `log_search`，别整段拉回来。
+
+### 找东西时先选对"要多少信息"（`log_search` 三档）
+
+`log_search` 的 `mode` 就是"用信息量换 token"的旋钮，三档查的是**同一批数据**：
+
+| `mode` | 回什么 | 什么时候用 |
+|---|---|---|
+| `count`（最省） | 只有 `total` + 每个有命中的通道各几次 | "到底有没有超时""ERROR 出现几次" —— 几十 token 就够 |
+| `matches` | 每条命中只回**匹配片段**（`match` 字段） | 长行日志定位（HEX dump、一行几十 KB 的 JSON），比回整行省得多 |
+| `lines`（默认） | 命中行本身（可加 `context` 0~5 带前后几行） | 真的要读上下文；命中多时先别用这档 |
+
+图案一律按**字面量**处理（`AT+CGMR`、`([` 都不用转义），除非显式 `regex:true`；不给 `channel` 就搜所有通道。`limit` 上限 500（`matches` 档算的是**匹配处数**）。
+
+同一套 `pattern` + `mode` 也适用于**另外两个"读输出"入口**（同一个匹配器，答案一致）：
+
+| 工具 | 数据 | 检索档扫什么 | 匹配哪段文本 |
+|---|---|---|---|
+| `adb_shell_read` | 日志中心 `adb:rx` 的 PTY **输出块** | 最近 2000 块 | 块正文 |
+| `ble_get_output` | 蓝牙面板**本次会话**的条目 | 整份面板缓冲 | `text`，为空时用 `hex` |
+
+`mode:"count"` / `mode:"matches"` 在这两个工具上**必须给 `pattern`**（这两档就是检索）；`count` 回 `total`（命中条目数）+`totalMatches`（命中处数），`matches` 只回片段 + 条目自己的 `kind`/`level`。注意它们**没有 `context`**：条目是输出块/通知，不是按行切好的日志 —— 要上下文就用返回里的 `channels.rx`（或 `channel`）去 `log_tail{format:"text"}`。
+
+> ⚠️ **旧版有个 `log_export`（把若干通道的日志一次拼成一段文本）已被删除**：省略 `channels` 时它会把
+> **全部通道**× 每通道最多 20000 行塞进一次返回，而返回体**没有大小上限** —— 一次调用就可能几十 MB，
+> 撑爆上下文、客户端也会解析打摆。要看全量就用 `log_tail{format:"text"}` 配合 `sinceSeq` 增量跟进；
+> 长期留存看 `%APPDATA%\seahi-serial\log-cache\`（用户自己 `rg` 搜都很方便）。
+> 客户端若还留着旧工具名，调用时会得到一句"已删除 + 现在该用什么"的 `-32602`。
+
 ## 6. 上限（`mcp_limits` 也能查）
 
 | 项 | 值 |
@@ -398,6 +439,9 @@ ADB 面板（点顶栏「ADB 调试」）那条链路也能从 MCP 走。与 `se
 | 日志每通道上限 | 128 KiB ~ 1 MiB（按通道类型） |
 | **日志总量上限** | **16 MiB**（各通道另有更小的上限；超了会裁掉最大通道的旧日志，回收次数与回收字节数在 `log_stats` 里能看到） |
 | 日志通道数上限 | 64（到顶后新通道不再创建，丢弃条数计入 `channelSkips`） |
+| 读日志的编码 | 默认 `json`；`format:"text"` 是一行一条纯文本（更省 token）。两种编码的数据与丢弃账完全一致，行数上限也都是 2000 |
+| `log_search` 的 `limit` / `context` | `limit` 默认 100、上限 500（`matches` 档算**匹配处数**）；`context` 0~5，超了或配在非 `lines` 档上都是 -32602 |
+| 检索图案 `pattern` 的长度 | **512 字符**（三个"读日志"工具共用）—— 图案要被编译成正则，所以**在碰主程序之前**就拦 |
 
 ## 7. 排错
 

@@ -352,8 +352,6 @@ var MCP_SELECTOR = 'button, input, select, textarea, [onclick], [role="tab"]';
    没有 → 别 skip（那等于把 AI 唯一的路也堵了），先补一个带确认门的工具。
    这张表的 key 必须与 Rust `DANGER_TOOLS` **完全一致**（断言守着：不漏、不虚）。 */
 var MCP_DANGER_CONTROLS = {
-    ble_periph_start:    'blePfStartBtn',   // 从机「开始广播」
-    ble_periph_stop:     'blePfStopBtn',    // 从机「停止广播」
     serial_workflow_run: 'wf-run-btn',      // 工作流每条规则那颗「运行/停止」
 };
 /* 危险动作里**界面上本来就没有可点入口**的那些（显式列出来，免得"漏了一个"和"本来就没有"分不清）：
@@ -720,10 +718,9 @@ var _mcpUiOrigin = 0;   // >0 表示当前变更由 AI 触发（用于回声抑�
 
 // AI 下发的界面命令 → 执行 → 回执（后端在等这个 ack，5s 超时）。
 //
-// **必须能等 Promise**：不少分支返回的是 Promise（连设备 / 读写特征 / 从机启停 / 读 RSSI…），
+// **必须能等 Promise**：不少分支返回的是 Promise（连设备 / 读写特征 / 读 RSSI…），
 // 而这里原先直接读 `res.ok` —— Promise 上没有 ok，于是回执变成 `ok:false` + `error:null`，
-// 客户端只看到一句没头没尾的"前端执行失败"（2026-09 实测：`ble_periph_status` 就是这样，
-// 明明是"从机模式没开"，AI 却拿到一句无信息量的错误）。
+// 客户端只看到一句没头没尾的"前端执行失败"（真实原因是"设备还没连"，AI 却什么都不知道）。
 // ackFn(ack) 由调用方给出（生产里是 `invoke('mcp_ui_ack', …)`），便于无头断言"到底等了没等"。
 function mcpUiCmdReply(cmd, ackFn) {
     var p = cmd || {};
@@ -909,11 +906,8 @@ function mcpHandleUiCmd(op, payload) {
 /* ===== BLE 语义层（给 MCP 的 ble_* 工具用）=====
  *
  * 与 `mcpSerialOp` 同构：一个 action 分支表，**每个分支都调面板那颗按钮走的函数**
- * （启动/停止广播就是 `startBlePeriph()` / `stopBlePeriph()`），不给 AI 另写一套。
- * 只读的两个（state / periphStatus）保证没有任何副作用。
- *
- * ⚠️ 从机启停是**危险动作**（对外广播，撤不回来）：Rust 侧 `DANGER_TOOLS` 要求 `confirm:true`
- * 才会走到这里（见 protocol.rs 的二次确认门）。
+ * （连接就是 `connectBleDirect()` / 断开就是 `bleDisconnect()`），不给 AI 另写一套。
+ * 只读的几个（state / listDevices / getServices / getOutput / refreshRssi）保证没有任何副作用。
  */
 // 在已渲染的服务树里按「特征 UUID + 属性」找到那颗操作图标（读/写/订阅共用同一套 DOM 结构）。
 // 找不到返回 null —— 调用方据此说明"这个特征不支持该操作"，而不是去猜或另写一套读写逻辑。
@@ -1081,11 +1075,10 @@ function mcpBleOp(payload) {
     payload = payload || {};
     var action = payload.action;
     // AI **动手**时先把蓝牙页显示出来（用户得看得见 AI 在干什么）。
-    // 纯读状态那几条（state / listDevices / getServices / getOutput / refreshRssi / periphStatus）
+    // 纯读状态那几条（state / listDevices / getServices / getOutput / refreshRssi）
     // **不切页**：客户端一 poll 就把用户从别的页面拽走，比看不见更烦人。
     if (action === 'startScan' || action === 'stopScan' || action === 'connect' || action === 'disconnect'
-        || action === 'read' || action === 'write' || action === 'subscribe'
-        || action === 'periphStart' || action === 'periphStop') {
+        || action === 'read' || action === 'write' || action === 'subscribe') {
         bleEnsurePaneVisible();
     }
 
@@ -1103,45 +1096,6 @@ function mcpBleOp(payload) {
             logCount: (_bleLog || []).length,
             monitorOpen: !!_bleExtraMon,
         } };
-    }
-    if (action === 'periphStatus') {
-        // 只读：直接问后端（面板的 refreshBlePeriphStatus 会捎带渲染，这里只取状态）
-        return invoke('ble_periph_status').then(function (st) {
-            st = st || {};
-            return { ok: true, value: {
-                advertising: !!st.advertising,
-                serviceUuid: st.serviceUuid || null,
-                chars: (st.characteristics || st.chars || []).length,
-                discoverable: !!st.discoverable,
-                connectable: !!st.connectable,
-                manualReply: !!st.manualReply,
-                warning: st.warning || null,
-            } };
-        }).catch(function (e) { return { ok: false, error: '读从机状态失败: ' + e }; });
-    }
-    if (action === 'periphStart' || action === 'periphStop') {
-        // 走面板那颗按钮的函数（含它自己的表单校验与 toast）
-        try {
-            var p = action === 'periphStart'
-                ? (typeof startBlePeriph === 'function' ? startBlePeriph() : null)
-                : (typeof stopBlePeriph === 'function' ? stopBlePeriph() : null);
-            var done = (p && typeof p.then === 'function')
-                ? p
-                : invoke('ble_periph_status');        // 函数没回 promise（老版本）→ 直接读状态兜底
-            return Promise.resolve(done).then(function () {
-                return invoke('ble_periph_status');
-            }).then(function (st) {
-                st = st || {};
-                return { ok: true, value: {
-                    pane: 'ble', started: action === 'periphStart',
-                    advertising: !!st.advertising,
-                    serviceUuid: st.serviceUuid || null,
-                    warning: st.warning || null,
-                } };
-            }).catch(function (e) { return { ok: false, error: (action === 'periphStart' ? '启动' : '停止') + '广播失败: ' + e }; });
-        } catch (e) {
-            return { ok: false, error: '从机操作失败: ' + e };
-        }
     }
     if (action === 'listDevices') {
         // 读扫描结果。**不能只读面板缓存** `_bleDevices`：它由面板每 2 秒的轮询刷新，
@@ -1389,7 +1343,7 @@ function mcpBleOp(payload) {
     }
     return { ok: false, invalidParams: true, error: '未知的 ble action: ' + action
         + '（可用：state / listDevices / startScan / stopScan / getServices / read / subscribe / write'
-        + ' / connect / disconnect / getOutput / refreshRssi / periphStatus / periphStart / periphStop）' };
+        + ' / connect / disconnect / getOutput / refreshRssi）' };
 }
 
 /* ===== ADB 语义层（给 MCP 的 adb_* 工具用）=====

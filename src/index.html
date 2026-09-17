@@ -95,7 +95,7 @@
         <div class="ble-modal-body" style="flex-direction:column;align-items:stretch;overflow-y:auto;">
             <div class="mcp-row" style="flex-wrap:wrap;">
                 <button class="ble-modal-btn primary" id="mcpToggleBtn" onclick="mcpToggleEnabled()" aria-label="启用/关闭 MCP 服务器">启用 MCP 服务器</button>
-                <select class="ble-pf-select" id="mcpTransportSel" style="width:76px;flex:none;" onchange="mcpTransportPicked(this.value)" aria-label="传输形态" data-mcp-tip="传输形态（切换立即生效）：&#10;· HTTP —— 只服务 Streamable HTTP（/mcp），/sse 与 /messages 立刻变成 404（只支持 SSE 的老客户端会连不上）&#10;· SSE —— 只服务遗留 SSE，/mcp 立刻变成 404（只认 /mcp 的新版客户端会连不上）&#10;· All —— 两条都提供（默认，兼容性最好）">
+                <select class="mcp-transport-sel" id="mcpTransportSel" style="width:76px;flex:none;" onchange="mcpTransportPicked(this.value)" aria-label="传输形态" data-mcp-tip="传输形态（切换立即生效）：&#10;· HTTP —— 只服务 Streamable HTTP（/mcp），/sse 与 /messages 立刻变成 404（只支持 SSE 的老客户端会连不上）&#10;· SSE —— 只服务遗留 SSE，/mcp 立刻变成 404（只认 /mcp 的新版客户端会连不上）&#10;· All —— 两条都提供（默认，兼容性最好）">
                     <option value="http">HTTP</option>
                     <option value="sse">SSE</option>
                     <option value="both" selected>All</option>

@@ -108,13 +108,13 @@ serial-debugger-tauri/
 | 自动化工作流（规则 UI 与边界） | `src/js/60-workflow.js` |
 | 配置保存恢复、自动更新、主题切换 | `src/js/70-config.js` |
 | WSL 映射与 WSL 串口监视器 | `src/js/80-wsl.js` |
-| BLE 主机面板 / 配对 / 从机 | `src/js/81-ble.js` |
+| BLE 主机面板 / 配对 | `src/js/81-ble.js` |
 | ADB 面板与会话 | `src/js/82-adb.js` |
 | WSL 端口映射（MCP 通用桥那一份）、授权窗口 | `src/js/83-wsl-mcp.js` |
 | 窗口控制、标题栏拖动、初始化、tooltip、首次引导 | `src/js/90-init.js` |
 
 > 各功能的**行为约定与"别改回去"清单**不在这里 —— 在 `AGENTS.md`（通用/MCP/BLE/窗口几何）、
-> `doc/QUICK_CMDS.md`（快速指令文件格式）、`doc/MCP_TOOLS.md`（57 个工具）里。
+> `doc/QUICK_CMDS.md`（快速指令文件格式）、`doc/MCP_TOOLS.md`（56 个工具）里。
 
 ### 4.2 后端 (main.rs)
 

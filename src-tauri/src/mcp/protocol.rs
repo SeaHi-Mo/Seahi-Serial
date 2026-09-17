@@ -102,9 +102,8 @@ pub const WRITE_TOOLS: &[&str] = &[
     "ui_click",
     "log_clear",
     "mcp_config_set",
-    // BLE 从机的启停：写 + **危险**（见 DANGER_TOOLS，还要 confirm:true）
-    "ble_periph_start",
-    "ble_periph_stop",
+    // （原来还有 `ble_periph_start` / `ble_periph_stop`：BLE 从机方向已于 2026-09 删除 ——
+    //   本机适配器自报支持外设角色，但实测广播起不来，功能无法交付。）
     // 扫描占用射频、会让附近设备应答 —— 算写（只读模式下不该开）
     "ble_start_scan",
     "ble_stop_scan",
@@ -134,14 +133,8 @@ pub const WRITE_TOOLS: &[&str] = &[
 /// 表里的每个工具调用时都必须带 `confirm: true`，否则**不执行**并回 `-32006`
 /// （"前置条件没满足"那一类：Agent 该做的是"确认后再来"，不是改参数重试）。
 pub const DANGER_TOOLS: &[(&str, &str)] = &[
-    (
-        "ble_periph_start",
-        "让本机变成 BLE 外设并**对外广播**服务（附近设备都能看到、能连上来）",
-    ),
-    (
-        "ble_periph_stop",
-        "停掉正在对外广播的 BLE 外设（已连上来的中心设备会断开）",
-    ),
+    // ⚠️ `ble_periph_start` / `ble_periph_stop`（对外广播 BLE 外设）曾在这张表里，
+    // 已随 BLE 从机方向一起删除（2026-09）：本机实测广播起不来，功能无法交付。
     (
         "adb_open_shell",
         "在**别人的设备上**开一个交互式 shell（开出来之后就能在上面执行任意命令）",
@@ -372,13 +365,14 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "serial_get_output",
-            "description": "读该分栏**实际收发的内容**（串口监视器的核心：设备刚才回了什么）。默认收+发都返回，按时间归并；每条带 dir 区分。数据取自日志中心，与 log_tail 是同一份存储；本工具额外的好处是**不需要你知道通道名**，且「还没收到数据」会返回空列表而不是报错。",
+            "description": "读该分栏**实际收发的内容**（串口监视器的核心：设备刚才回了什么）。默认收+发都返回，按时间归并；每条带 dir 区分。数据取自日志中心，与 log_tail 是同一份存储；本工具额外的好处是**不需要你知道通道名**，且「还没收到数据」会返回空列表而不是报错。**读内容优先用 `format:\"text\"`**（一行一条 `[时刻] [rx|tx] 正文`，比默认 json 省一半以上 token）；要逐行结构化字段时才用 json。text 格式的正文在 content 文本里，structuredContent 只给元信息。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "pane": { "type": "string", "description": PANE_DESC },
                     "direction": { "type": "string", "enum": ["rx", "tx", "both"], "description": "只要收(rx)/只要发(tx)/都要(both，默认)" },
-                    "lines": { "type": "number", "description": "最多返回多少行，默认 50，上限 2000" }
+                    "lines": { "type": "number", "description": "最多返回多少行，默认 50，上限 2000" },
+                    "format": { "type": "string", "enum": ["json", "text"], "description": "输出编码：text=一行一条纯文本（推荐，省 token）；json=逐行结构化对象（默认）" }
                 },
                 "additionalProperties": false
             }
@@ -454,7 +448,7 @@ pub fn tool_defs() -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
-        // ===== BLE 语义工具（§16.6.1 第一批：状态 + 从机）=====
+        // ===== BLE 语义工具（§16.6.1 第一批；从机那批已于 2026-09 删除）=====
         // 与 serial_* 同构：工具名 → 前端 `mcpBleOp` 的 action；读写分类见 is_write_call。
         json!({
             "name": "ble_get_state",
@@ -542,12 +536,16 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "ble_get_output",
-            "description": "读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。只读。",
+            "description": "读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。**要\"这条 ERROR 出现几次\"别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `count` 只回计数、`matches` 只回片段、`lines`（默认）回条目。匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也能搜）。只读。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "limit": { "type": "number", "description": "只要最后 N 条（省略=全部）" },
-                    "sinceSeq": { "type": "number", "description": "增量：只要 seq 大于它的（与返回的 items[].seq 对齐）" }
+                    "sinceSeq": { "type": "number", "description": "增量：只要 seq 大于它的（与返回的 items[].seq 对齐）" },
+                    "pattern": { "type": "string", "description": "要检索的内容（字符串按**字面量**处理，regex=true 才是正则）。上限 512 字符" },
+                    "mode": { "type": "string", "enum": ["lines", "matches", "count"], "description": "count=只回计数（最省）/ matches=只回匹配片段 / lines=条目本身（默认）。后两档**必须**给 pattern" },
+                    "regex": { "type": "boolean", "description": "true 时 pattern 按正则解释，默认 false" },
+                    "caseSensitive": { "type": "boolean", "default": false, "description": "区分大小写；也接受旧拼写 case_sensitive" }
                 },
                 "additionalProperties": false
             }
@@ -561,33 +559,12 @@ pub fn tool_defs() -> Vec<Value> {
             "name": "ble_get_services",
             "description": "当前已连接设备的 GATT 服务树（服务 UUID / 名称，每个服务下的特征 UUID、属性 props、描述符个数）。只读，取的是面板已经拉到的那份，不会重新去问设备。",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
-        }),        json!({
-            "name": "ble_periph_status",
-            "description": "BLE **从机**（把本机变成外设）的状态：是否真的在对外广播、服务 UUID、特征数、是否可被发现/可连接、是否手动应答写请求、以及后端给出的告警（蓝牙关着 / 不支持外设角色等）。只读。",
-            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
-        json!({
-            "name": "ble_periph_start",
-            "description": "启动 BLE 从机：按面板上已配置好的服务/特征**对外广播**。⚠️ 这是危险动作（附近设备都能看到并连上来），必须带 confirm:true；不带时不会执行，并返回 -32006 说明后果。",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "confirm": { "type": "boolean", "description": "危险动作确认：必须为 true 才会执行（想清楚再传）" }
-                },
-                "additionalProperties": false
-            }
-        }),
-        json!({
-            "name": "ble_periph_stop",
-            "description": "停止 BLE 从机广播。⚠️ 危险动作（已连上来的中心设备会断开），必须带 confirm:true。",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "confirm": { "type": "boolean", "description": "危险动作确认：必须为 true 才会执行" }
-                },
-                "additionalProperties": false
-            }
-        }),
+        // ⚠️ 这里原来还有三个 BLE **从机**工具（`ble_periph_status` / `ble_periph_start` /
+        // `ble_periph_stop`：把本机当外设对外广播）。2026-09 **整条方向删除**：
+        // 本机适配器自报支持外设角色，但实测广播起不来（`ble_periph_starts_advertising`
+        // 一直是失败的那个，见 doc/BLE_PERIPHERAL.md）—— 交付不了的功能不该留在工具表里。
+        // 客户端拿着旧名字调过来会得到一句"已删除 + 现在有什么"的 -32602（见分派那一处）。
         // ===== ADB 语义工具（§16.6.2 第三批的 ADB 部分；前端 mcpAdbOp）=====
         // 与 serial_*/ble_* 同构：工具名 → 前端 action，每个 action 都走面板那条真实路径。
         // ADB 面板是**单会话**模型（一次只有一台设备开着 shell），所以除 open 之外的动作
@@ -624,12 +601,16 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "adb_shell_read",
-            "description": "读 ADB shell 已经产生的输出（日志中心 adb:rx 通道：PTY 读线程在生产端旁路的一份副本，**不会抢走界面终端要显示的队列**）。**items 是 PTY 的输出块、不是按行切好的文本**（终端输出本来就没有行边界，ANSI 光标序列会跨块）。用 sinceSeq 增量跟进：下一次传返回 items 里最后一条的 seq。只读，不需要界面。",
+            "description": "读 ADB shell 已经产生的输出（日志中心 adb:rx 通道：PTY 读线程在生产端旁路的一份副本，**不会抢走界面终端要显示的队列**）。**items 是 PTY 的输出块、不是按行切好的文本**（终端输出本来就没有行边界，ANSI 光标序列会跨块）。用 sinceSeq 增量跟进：下一次传返回 items 里最后一条的 seq。**`logcat` 刷屏时先别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `mode:\"count\"` 只回\"命中多少条/多少处\"，`mode:\"matches\"` 只回命中片段，`mode:\"lines\"`（默认）回条目本身（给了 pattern 就只回命中的）。只读，不需要界面。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "sinceSeq": { "type": "number", "description": "只要 seq 大于它的行（增量跟进；省略=取尾部 limit 行）" },
-                    "limit": { "type": "number", "description": "最多回多少行，默认 200，上限 2000（mcp_limits.maxAdbReadLines）" }
+                    "limit": { "type": "number", "description": "最多回多少行，默认 200，上限 2000（mcp_limits.maxAdbReadLines）" },
+                    "pattern": { "type": "string", "description": "要检索的内容（字符串按**字面量**处理，regex=true 才是正则）。上限 512 字符" },
+                    "mode": { "type": "string", "enum": ["lines", "matches", "count"], "description": "count=只回计数（最省）/ matches=只回匹配片段 / lines=条目本身（默认）。后两档**必须**给 pattern" },
+                    "regex": { "type": "boolean", "description": "true 时 pattern 按正则解释，默认 false" },
+                    "caseSensitive": { "type": "boolean", "default": false, "description": "区分大小写；也接受旧拼写 case_sensitive" }
                 },
                 "additionalProperties": false
             }
@@ -747,13 +728,14 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "log_tail",
-            "description": "取某个通道的尾部若干行。给了 sinceSeq 就只取它之后的（增量拉取：不重复也不丢）。返回里 mayBeIncomplete=true 表示这个通道曾丢掉过最旧的行。",
+            "description": "取某个通道的尾部若干行。**读日志优先用 `format:\"text\"`** —— 一行一条纯文本，同样内容比默认的 json 省一半以上 token（实测短行日志 3.5 倍：101 字节/行 → 29 字节/行，短行的开销几乎全在每行的 JSON 包装上）；要逐行的结构化字段（seq/时间戳/字节数/方向）时才用 json。给了 `sinceSeq` 就是增量拉取：返回里的 `nextSinceSeq` 是**下次该带的值**（推进到它就不会漏也不会重复；直接跳到 `seqTo` 会把没拿到的行永远跳过），`missed>0` 表示这一段还有行没给你，`mayBeIncomplete=true` 表示该通道丢过最旧的行（别把日志当完整证据）。text 格式的日志正文在 content 文本里，structuredContent 只给元信息。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "channel": { "type": "string", "description": "通道名，如 app / error / mcp / serial:main:rx / ble:rx / ui:sys" },
                     "lines": { "type": "number", "description": "最多返回多少行，默认 100，上限 2000" },
-                    "sinceSeq": { "type": "number", "description": "只取 seq 大于它的行（用于增量跟进）；也接受旧拼写 since_seq" }
+                    "sinceSeq": { "type": "number", "description": "只取 seq 大于它的行（用于增量跟进）；也接受旧拼写 since_seq" },
+                    "format": { "type": "string", "enum": ["json", "text"], "description": "输出编码：text=一行一条纯文本（推荐，省 token）；json=逐行结构化对象（默认）" }
                 },
                 "required": ["channel"],
                 "additionalProperties": false
@@ -761,15 +743,17 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "log_search",
-            "description": "在日志里检索（子串或正则）。不给 channel 就搜所有通道。返回命中行及其 channel/seq，便于继续 log_tail。",
+            "description": "在日志里检索（子串或正则）。不给 channel 就搜所有通道。**先想清楚要多少信息再选 `mode`**：`count` 只回计数（`total` + 有命中的通道各几次，几十 token —— 问\"ERROR 出现过几次\"\"到底有没有超时\"就用它）；`matches` 只回匹配片段（一行里每处命中一条，只有 `match` 字段，长行日志用它比回整行省得多）；`lines`（默认）回命中行本身，另可用 `context` 带前后几行。每条命中都带 channel/seq，便于接着 log_tail 看上下文。⚠️ 要成段读某个通道就用 `log_tail{format:\"text\"}`，别把本工具当\"读全部\"用。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "pattern": { "type": "string" },
+                    "pattern": { "type": "string", "description": "要找的内容（不能为空串；regex=true 时按正则解释）" },
                     "channel": { "type": "string", "description": "限定通道；省略=全部" },
                     "regex": { "type": "boolean", "description": "true 时 pattern 按正则解释，默认 false" },
                     "caseSensitive": { "type": "boolean", "default": false, "description": "区分大小写；也接受旧拼写 case_sensitive" },
-                    "limit": { "type": "number", "description": "最多命中数，默认 100，上限 500" }
+                    "limit": { "type": "number", "description": "最多回多少条（matches 模式是**匹配处数**，一行多处算多条），默认 100，上限 500" },
+                    "mode": { "type": "string", "enum": ["lines", "matches", "count"], "description": "返回什么：count=只回计数（最省）/ matches=只回匹配片段（rg -o 那种）/ lines=命中行（默认）" },
+                    "context": { "type": "number", "description": "命中行前后各带几行（0~5，默认 0；**只对 mode:\"lines\" 有意义**）" }
                 },
                 "required": ["pattern"],
                 "additionalProperties": false
@@ -789,18 +773,15 @@ pub fn tool_defs() -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
-        json!({
-            "name": "log_export",
-            "description": "把若干通道的日志按时间归并成一段纯文本（带时间戳/通道/级别前缀）。本轮只返回文本，不写文件。",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "channels": { "type": "array", "items": { "type": "string" }, "description": "要导出的通道名；省略=全部通道" },
-                    "maxLinesPerChannel": { "type": "number", "description": "每个通道最多取多少行，默认 2000，上限 20000；也接受旧拼写 max_lines_per_channel" }
-                },
-                "additionalProperties": false
-            }
-        }),
+        // ⚠️ 这里原来有个 `log_export`（把全部通道按时间归并成一段纯文本）。
+        // 2026-09 **删掉了**：它是唯一能把"全量日志"一次性塞进返回体的工具
+        // （省略 channels = 全部通道 × 默认 2000 行/通道、上限 20000），
+        // 而返回体**没有大小上限**（`MAX_BODY_BYTES` 只管请求），
+        // 于是一次调用就可能拼出几十 MB —— 既撑爆 AI 的上下文，也让客户端解析打摆。
+        // 它也没有普通用户会用到的落盘能力（实现里只回文本）。
+        // 要看全量：用 log_tail{format:"text"} 增量跟进，或让用户直接看
+        // `%APPDATA%\seahi-serial\log-cache\`。真需要"导出文件"就重做一个
+        // **用户可见路径 + 硬上限**的写文件工具，而不是把字节倒进对话里。
         // ===== AI 调用记录与配置（S8）=====
         json!({
             "name": "mcp_calls",
@@ -1420,12 +1401,20 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
             }
             ble_call(core, "write", args, extra).await
         }
-        "ble_get_output" => ble_call(core, "getOutput", args, json!({})).await,
+        "ble_get_output" => ble_get_output(core, args).await,
         "ble_refresh_rssi" => ble_call(core, "refreshRssi", args, json!({})).await,
         "ble_get_services" => ble_call(core, "getServices", args, json!({})).await,
-        "ble_periph_status" => ble_call(core, "periphStatus", args, json!({})).await,
-        "ble_periph_start" => ble_call(core, "periphStart", args, json!({})).await,
-        "ble_periph_stop" => ble_call(core, "periphStop", args, json!({})).await,
+        // BLE 从机三个工具已删除（理由见 `tool_defs()` 那段注释）。这里同样专门留一条分支
+        // 指路，而不是掉进"未知工具"：工具定义编译在 exe 里，客户端要重连才会重读 tools/list。
+        "ble_periph_status" | "ble_periph_start" | "ble_periph_stop" => Err(RpcError::new(
+            E_INVALID_PARAMS,
+            "ble_periph_status / ble_periph_start / ble_periph_stop 已删除：\
+             BLE **从机（对外广播）**方向做不出来 —— 本机适配器自报支持外设角色，\
+             但实测广播起不来（Aborted），所以整条方向下线了。本应用现在的 BLE 能力是**主机方向**：\
+             ble_start_scan / ble_list_devices / ble_connect（含按 MAC 直连）/ ble_get_services / \
+             ble_read / ble_write / ble_subscribe / ble_get_output。"
+                .to_string(),
+        )),
         // ===== ADB 语义工具（前端 mcpAdbOp；与 serial_*/ble_* 同构）=====
         "adb_list_devices" => adb_call(core, "listDevices", json!({})).await,
         "adb_open_shell" => {
@@ -1556,21 +1545,51 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         "log_tail" => {
             let channel = require_str(args, "channel")?;
             let lines = opt_u64(args, "lines").unwrap_or(100) as usize;
+            let fmt = log_format_arg(args)?;
             super::loghub::hub()
-                .tail(&channel, opt_u64_alias(args, "sinceSeq", "since_seq"), lines)
+                .tail_fmt(&channel, opt_u64_alias(args, "sinceSeq", "since_seq"), lines, fmt)
                 .map_err(|e| RpcError::new(E_INVALID_PARAMS, e))
         }
         "log_search" => {
+            // `require_str` 已经拒了空串 —— 这里必须拒的理由不只是"参数没意义"：
+            // 子串模式会先 `regex::escape`，空图案转义后是"匹配每一行"的正则，
+            // `count` 还会给出每行都中（含行尾空匹配）的假数字。
             let pattern = require_str(args, "pattern")?;
+            check_search_pattern(args)?;
             let ch = opt_str(args, "channel");
+            let mode = search_mode_arg(args)?;
+            let context = opt_u64(args, "context").unwrap_or(0) as usize;
+            // 上下文只对"回命中行"那一档有意义：另两档根本不知道命中在哪一行上。
+            // 静默忽略会比报错更糟 —— 调用方会以为上下文已经给了
+            if context > 0 && mode != super::loghub::SearchMode::Lines {
+                return Err(RpcError::new(
+                    E_INVALID_PARAMS,
+                    format!(
+                        "context 只对 mode:\"lines\" 有意义（当前 mode={}）；要么改成 lines，要么先 matches 定位再用 log_tail 看上下文",
+                        mode.as_str()
+                    ),
+                ));
+            }
+            if context > super::loghub::MAX_SEARCH_CONTEXT {
+                return Err(RpcError::new(
+                    E_INVALID_PARAMS,
+                    format!(
+                        "context 最大 {} 行（收到 {}）",
+                        super::loghub::MAX_SEARCH_CONTEXT,
+                        context
+                    ),
+                ));
+            }
             super::loghub::hub()
-                .search(
-                    ch.as_deref(),
-                    &pattern,
-                    opt_bool(args, "regex", false),
-                    opt_bool_alias(args, "caseSensitive", "case_sensitive", false),
-                    opt_u64(args, "limit").unwrap_or(100) as usize,
-                )
+                .search_with(super::loghub::SearchOpts {
+                    channel: ch.as_deref(),
+                    pattern: &pattern,
+                    use_regex: opt_bool(args, "regex", false),
+                    case_sensitive: opt_bool_alias(args, "caseSensitive", "case_sensitive", false),
+                    limit: opt_u64(args, "limit").unwrap_or(100) as usize,
+                    mode,
+                    context,
+                })
                 .map_err(|e| RpcError::new(E_INVALID_PARAMS, e))
         }
         "log_stats" => Ok(super::loghub::hub().stats()),
@@ -1595,28 +1614,18 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
             let n = super::loghub::hub().clear(ch.as_deref());
             Ok(json!({ "clearedChannels": n, "channel": ch }))
         }
-        "log_export" => {
-            let channels: Vec<String> = match args.get("channels") {
-                Some(v) if v.is_array() => v
-                    .as_array()
-                    .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
-                    .unwrap_or_default(),
-                Some(_) => return Err(RpcError::new(E_INVALID_PARAMS, "channels 必须是字符串数组")),
-                None => {
-                    // 省略 = 全部通道（先问 hub 有哪些）
-                    super::loghub::hub().channels()["channels"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|c| c["channel"].as_str().map(|s| s.to_string()))
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                }
-            };
-            let max = opt_u64_alias(args, "maxLinesPerChannel", "max_lines_per_channel").unwrap_or(2000) as usize;
-            Ok(super::loghub::hub().export(&channels, max))
-        }
+        // `log_export` 已删除（理由见 `tool_defs()` 里那段注释）。
+        // ⚠️ 这里专门留一条分支而不是让它掉进"未知工具"：工具定义**编译在 exe 里**，
+        // 客户端配置里很可能还留着旧工具名（要重连才会刷新 tools/list），
+        // 只回"未知工具: log_export"会让 AI 反复试同一个名字。
+        // 所以直接告诉它"为什么没了 + 现在该用什么"。
+        "log_export" => Err(RpcError::new(
+            E_INVALID_PARAMS,
+            "log_export 已删除：它是唯一能把全部通道的日志一次塞进返回体的工具，\
+             而返回体没有大小上限（省略 channels 时一次可能几十 MB，撑爆上下文、客户端也会解析打摆）。\
+             要读日志用 log_tail{format:\"text\"}（配合 sinceSeq 增量跟进）或 serial_get_output{format:\"text\"}；\
+             只想知道\"出现几次\"用 log_search{mode:\"count\"}。",
+        )),
         // ===== AI 调用记录与配置（S8）=====
         "mcp_calls" => {
             let limit = opt_u64(args, "limit").unwrap_or(50) as usize;
@@ -1886,12 +1895,55 @@ pub fn limits_json() -> Value {
         "logMaxLineBytes": loghub::MAX_LINE_BYTES,
         "logTotalCapBytes": loghub::TOTAL_CAP_BYTES,
         "logMaxChannels": loghub::MAX_CHANNELS,
+        // 检索图案的上限（`log_search` / `adb_shell_read` / `ble_get_output` 共用；**被执行**：
+        // `check_search_pattern` 在碰主程序之前就拦，因为图案要被编译成正则）
+        "maxSearchPatternChars": loghub::MAX_SEARCH_PATTERN_CHARS,
+        "maxSearchContextLines": loghub::MAX_SEARCH_CONTEXT,
         "protocolVersion": PROTOCOL_VERSION,
         "protocolFallback": PROTOCOL_FALLBACK,
     })
 }
 
 // ===== 分派 =====
+
+/// 解析"读日志"类工具共用的 `format` 参数：`json`（默认，逐行结构化）或 `text`（省 token）。
+///
+/// 取值不认识时**报 -32602 并把可选值写出来**，绝不静默退回 json ——
+/// 静默退回会让"我想省 token"这件事悄悄失效，而调用方以为拿到的是 text
+/// （`ble_write` 的 `format` 是另一回事：那边是 `text`/`hex` 的**载荷**格式）。
+fn log_format_arg(args: &Value) -> Result<super::loghub::LogFormat, RpcError> {
+    match opt_str(args, "format").as_deref() {
+        None | Some("json") => Ok(super::loghub::LogFormat::Json),
+        Some("text") => Ok(super::loghub::LogFormat::Text),
+        Some(other) => Err(RpcError::new(
+            E_INVALID_PARAMS,
+            format!(
+                "format 只能是 json（默认，逐行结构化）或 text（一行一条纯文本，省 token）；收到 {:?}",
+                other
+            ),
+        )),
+    }
+}
+
+/// 解析 `log_search` 的 `mode`：`lines`（默认，命中行）/ `matches`（只回片段）/ `count`（只回计数）。
+///
+/// 取值不认识时报 -32602 并列出可选值 —— 静默退回 `lines` 会把"我只想要个计数"
+/// 变成一次几千 token 的返回（正好和这个参数的用途相反）。
+fn search_mode_arg(args: &Value) -> Result<super::loghub::SearchMode, RpcError> {
+    use super::loghub::SearchMode;
+    match opt_str(args, "mode").as_deref() {
+        None | Some("lines") => Ok(SearchMode::Lines),
+        Some("matches") => Ok(SearchMode::Matches),
+        Some("count") => Ok(SearchMode::Count),
+        Some(other) => Err(RpcError::new(
+            E_INVALID_PARAMS,
+            format!(
+                "mode 只能是 lines（默认，回命中行）/ matches（只回匹配片段）/ count（只回计数）；收到 {:?}",
+                other
+            ),
+        )),
+    }
+}
 
 /// 这个 `pane` 是 WSL 分栏吗？
 ///
@@ -1962,6 +2014,234 @@ async fn adb_call(core: &Arc<McpCore>, action: &str, extra: Value) -> Result<Val
     core.ui_call("adb", payload).await
 }
 
+/// `pattern` 的**长度上限**校验（`log_search` / `adb_shell_read` / `ble_get_output` 共用）。
+///
+/// 为什么必须有：请求体上限是 1 MiB，而 `pattern` 会被编译成**正则** ——
+/// 一条几十万字符的图案足以让这次调用卡住（AGENTS #10："任何接受外部字符串的参数都要有上限，
+/// 且校验要发生在碰主程序之前"）。上限本身报在 `mcp_limits.maxSearchPatternChars` 里。
+fn check_search_pattern(args: &Value) -> Result<(), RpcError> {
+    let Some(p) = args.get("pattern").and_then(|v| v.as_str()) else {
+        return Ok(());
+    };
+    let n = p.chars().count();
+    if n > super::loghub::MAX_SEARCH_PATTERN_CHARS {
+        return Err(RpcError::new(
+            E_INVALID_PARAMS,
+            format!(
+                "pattern 太长：{n} 个字符，上限 {}（见 mcp_limits.maxSearchPatternChars）—— 要更复杂的检索就分几次搜",
+                super::loghub::MAX_SEARCH_PATTERN_CHARS
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// 解析"读输出"类工具（`adb_shell_read` / `ble_get_output`）共用的检索参数。
+///
+/// 键名与语义**故意和 `log_search` 一致**（`pattern` / `mode` / `regex` / `caseSensitive` / `limit`），
+/// 匹配也走同一份 [`super::loghub::LogMatcher`] —— 三个工具对同一个图案必须给同样的答案。
+struct OutputQuery {
+    pattern: Option<String>,
+    mode: super::loghub::SearchMode,
+    regex: bool,
+    case_sensitive: bool,
+    limit: usize,
+}
+
+/// 解析并校验"读输出"类工具的检索参数（**在碰界面/设备之前**）。
+///
+/// ⚠️ `limit` 在这两个工具里**同时**是两件事：① 各工具自己的"这一页回多少条"
+/// （adb = 页大小、ble = 最后 N 条，默认值各自不同，由工具自己再从 `args` 取一次）；
+/// ② `matches` 档最多回多少条命中。这里给的是 ② 的封顶（默认 100、上限 2000）。
+fn parse_output_query(args: &Value) -> Result<OutputQuery, RpcError> {
+    check_search_pattern(args)?;
+    let mode = search_mode_arg(args)?;
+    let pattern = opt_str(args, "pattern");
+    // `matches` / `count` 就是"检索"本身：没有图案无从谈起（要"有多少条输出"看 `count` 字段，
+    // 那是分页用的条目数，不是搜索结果）
+    if pattern.is_none() && mode != super::loghub::SearchMode::Lines {
+        return Err(RpcError::new(
+            E_INVALID_PARAMS,
+            format!(
+                "mode={} 必须同时给 pattern：这两档就是检索（{}）",
+                mode.as_str(),
+                if mode == super::loghub::SearchMode::Count {
+                    "count=这一批输出里命中多少次"
+                } else {
+                    "matches=命中片段是哪几段"
+                }
+            ),
+        ));
+    }
+    Ok(OutputQuery {
+        pattern,
+        mode,
+        regex: opt_bool(args, "regex", false),
+        case_sensitive: opt_bool_alias(args, "caseSensitive", "case_sensitive", false),
+        limit: opt_u64(args, "limit").unwrap_or(100).clamp(1, 2000) as usize,
+    })
+}
+
+/// 一条"输出条目"的规范化视图：**匹配用的文本**与**原条目**分开，
+/// 这样 `adb`（PTY 块）与 `ble`（通知条目）能共用同一套整理逻辑。
+struct OutItem<'a> {
+    seq: u64,
+    ts: String,
+    /// 拿去匹配的文本（adb 是块正文；ble 是 text，text 为空时用 hex）
+    hay: String,
+    /// 命中条目里额外要带的字段（ble 带 `kind`）
+    extra: Value,
+    raw: &'a Value,
+}
+
+/// 读蓝牙面板**本次会话**的数据日志（面板自己那份缓冲，不是 LogHub 通道）。
+///
+/// ⚠️ 修了一个**从来没生效过**的参数（2026-09）：`limit` / `sinceSeq` 声明在 schema 里，
+/// 但分派那边过去写的是 `ble_call(core, "getOutput", args, json!({}))` —— 只转发 `action`/`pane`，
+/// 两个参数**根本没到前端**（前端 `parseInt(payload.limit)` 永远是 NaN → 每次返回全量）。
+/// 现在显式放进 `extra`，并由调用测试要求"发给前端的 payload 必须带 limit"。
+///
+/// `pattern` / `mode`（与 `adb_shell_read` 同一套词汇）：条目形状是
+/// `{seq, ts, kind, hex, text, dim}`，匹配的文本取 `text`，**`text` 为空时取 `hex`**
+/// （HEX 通知在面板上就是那个样子；只看 text 的话十六进制数据永远搜不到）。
+async fn ble_get_output(core: &Arc<McpCore>, args: &Value) -> Result<Value, RpcError> {
+    let q = parse_output_query(args)?;
+    let mut extra = json!({});
+    // 显式转发：参数在 schema 里声明了就必须真的传下去（AGENTS #11 ②）。
+    // ⚠️ `limit` **只在 lines 档**转发：检索档（matches/count）要扫的是**整份面板缓冲**，
+    // 转发"最后 N 条"会让"数一数出现几次"悄悄变成"数最后 N 条里出现几次"
+    //（`scanned` 会把真实扫过的条数报出来）。
+    if q.mode == super::loghub::SearchMode::Lines {
+        if let Some(n) = opt_u64(args, "limit") {
+            extra["limit"] = json!(n);
+        }
+    }
+    if let Some(n) = opt_u64_alias(args, "sinceSeq", "since_seq") {
+        extra["sinceSeq"] = json!(n);
+    }
+    let v = ble_call(core, "getOutput", args, extra).await?;
+
+    let all: Vec<Value> = v["items"].as_array().cloned().unwrap_or_default();
+    let items: Vec<OutItem<'_>> = all
+        .iter()
+        .map(|l| {
+            let text = l["text"].as_str().unwrap_or("");
+            let hex = l["hex"].as_str().unwrap_or("");
+            OutItem {
+                seq: l["seq"].as_u64().unwrap_or(0),
+                ts: l["ts"].as_str().unwrap_or("").to_string(),
+                // 面板上"这条长什么样"就按什么匹配：有文本用文本，否则用 HEX
+                hay: if text.is_empty() { hex.to_string() } else { text.to_string() },
+                extra: json!({ "kind": l["kind"].as_str().unwrap_or("") }),
+                raw: l,
+            }
+        })
+        .collect();
+    let shaped = shape_output_items(items, &q);
+    let count = if q.mode == super::loghub::SearchMode::Lines {
+        shaped["items"].as_array().map(|a| a.len()).unwrap_or(0)
+    } else {
+        all.len()
+    };
+
+    // 面板自己的元信息原样带出（`count`/`items` 由上面的模式决定，其余照抄前端回执）
+    let mut out = json!({
+        "pane": v["pane"].clone(),
+        "count": count,
+        "scanned": all.len(),
+        "total": v["total"].clone(),
+        "channels": v["channels"].clone(),
+    });
+    if let Some(o) = shaped.as_object() {
+        let obj = out.as_object_mut().expect("上面刚构造的对象");
+        for (k, val) in o {
+            obj.insert(k.clone(), val.clone());
+        }
+    }
+    if let Some(p) = &q.pattern {
+        out["pattern"] = json!(p);
+        out["regex"] = json!(q.regex);
+    }
+    Ok(out)
+}
+
+/// 把一批输出条目整理成某个 `mode` 要的形状。返回要**并进工具自己的响应对象**的那些字段。
+///
+/// - `lines`：`items`（`pattern` 给了就只留命中的条目），保持工具原本的形状；
+/// - `matches`：`hits`（一处命中一条：`seq`/`ts`/`match` + 条目自己的额外字段）；
+/// - `count`：`total`（命中**条目**数）+ `totalMatches`（命中**处**数）。
+///
+/// 三种模式都会给 `mode`，让调用方一眼知道拿到的是哪种形状。
+fn shape_output_items(items: Vec<OutItem<'_>>, q: &OutputQuery) -> Value {
+    use super::loghub::SearchMode;
+    let matcher = match super::loghub::LogMatcher::new(
+        q.pattern.as_deref().unwrap_or(""),
+        q.regex,
+        q.case_sensitive,
+        q.mode != SearchMode::Lines,
+    ) {
+        Ok(m) => m,
+        // 图案不合法（正则写错）在 `parse_output_query` 之后才可能发生 ——
+        // 让 `is_match`/`count` 退化成"不命中"比 panic 好，但这条路径实际到不了
+        // （`log_search` 已先把非法正则报成 -32602；这里只做兜底）
+        Err(_) => super::loghub::LogMatcher::new("", false, true, false).expect("空图案必成功"),
+    };
+    let scanned = items.len();
+    match q.mode {
+        SearchMode::Lines => {
+            let kept: Vec<Value> = match &q.pattern {
+                Some(_) => items
+                    .iter()
+                    .filter(|it| matcher.is_match(&it.hay))
+                    .map(|it| it.raw.clone())
+                    .collect(),
+                None => items.iter().map(|it| it.raw.clone()).collect(),
+            };
+            json!({ "mode": "lines", "items": kept })
+        }
+        SearchMode::Matches => {
+            let mut hits: Vec<Value> = Vec::new();
+            'outer: for it in &items {
+                for frag in matcher.fragments(&it.hay, q.limit - hits.len()) {
+                    let mut h = json!({ "seq": it.seq, "ts": it.ts, "match": frag });
+                    if let Some(o) = it.extra.as_object() {
+                        for (k, v) in o {
+                            h[k] = v.clone();
+                        }
+                    }
+                    hits.push(h);
+                    if hits.len() >= q.limit {
+                        break 'outer;
+                    }
+                }
+            }
+            json!({
+                "mode": "matches",
+                "hits": hits,
+                "scanned": scanned,
+                "truncated": hits.len() >= q.limit,
+            })
+        }
+        SearchMode::Count => {
+            let mut total = 0u64;
+            let mut total_matches = 0u64;
+            for it in &items {
+                if matcher.is_match(&it.hay) {
+                    total += 1;
+                    total_matches += matcher.count(&it.hay);
+                }
+            }
+            json!({
+                "mode": "count",
+                "total": total,
+                "totalMatches": total_matches,
+                "scanned": scanned,
+                "truncated": false,
+            })
+        }
+    }
+}
+
 /// 读 ADB shell 已经产生的输出（**纯后端**，没有界面时也能用）。
 ///
 /// 数据来源是日志中心的 `adb:rx` 通道，**不是面板轮询的那个 crossbeam 队列** ——
@@ -1971,16 +2251,28 @@ async fn adb_call(core: &Arc<McpCore>, action: &str, extra: Value) -> Result<Val
 ///
 /// **通道不存在不算错误**：那只是"还没有任何 shell 输出"。`log_tail` 对同样的输入会报
 /// `-32602`「没有这个通道」，而 AI 会据此得出"不支持读 ADB 输出"这种错结论。
+///
+/// `pattern`/`mode`（2026-09 加）：PTY 的条目是**输出块**（不是按行切好的文本），
+/// 所以这一层没有 `context` —— "块的前后几块"对调试没有意义。要按行看就先用
+/// `adb_shell_read{mode:"matches"}` 定位，再 `log_tail{channel:"adb:rx", format:"text"}` 看整段。
 fn adb_shell_read(core: &Arc<McpCore>, args: &Value) -> Result<Value, RpcError> {
     const CHANNEL: &str = "adb:rx";
-    let want = opt_u64(args, "limit")
-        .unwrap_or(200)
-        .clamp(1, MAX_ADB_READ_LINES) as usize;
-    let since = opt_u64(args, "sinceSeq");
+    let q = parse_output_query(args)?;
+    // 扫多少块：
+    // - `lines` 档：`limit` 就是页大小（默认 200、上限 2000），给了 pattern 就在这一页里过滤；
+    // - `matches` / `count` 档：`limit` 改指"最多回多少条命中"，所以**扫满允许的窗口**
+    //   （最近 MAX_ADB_READ_LINES 块）—— 否则"数一数有多少 ERROR"会变成"数最近 200 块里有多少"，
+    //   而 `scanned` 会把真实扫过的块数报出来。
+    let want = if q.mode == super::loghub::SearchMode::Lines {
+        opt_u64(args, "limit").unwrap_or(MAX_ADB_READ_LINES).clamp(1, MAX_ADB_READ_LINES) as usize
+    } else {
+        MAX_ADB_READ_LINES as usize
+    };
+    let since = opt_u64_alias(args, "sinceSeq", "since_seq");
     // serial 取**后端自己那份会话状态**（不是镜像界面）：面板是单会话模型，
     // 0 个或切换设备的瞬间有多个时如实回 null，而不是猜一台。
     let serial = core.adb_active_serial();
-    let (items, dropped, may_be_incomplete) = match super::loghub::hub().tail(CHANNEL, since, want) {
+    let (all_items, dropped, may_be_incomplete) = match super::loghub::hub().tail(CHANNEL, since, want) {
         Ok(v) => (
             v["lines"].as_array().cloned().unwrap_or_default(),
             v["dropped"].as_u64().unwrap_or(0),
@@ -1989,13 +2281,35 @@ fn adb_shell_read(core: &Arc<McpCore>, args: &Value) -> Result<Value, RpcError> 
         // 通道还不存在 = 还没有数据（**不是**错误，理由见上面的注释）
         Err(_) => (Vec::new(), 0, false),
     };
-    // `truncated` 的口径与 `log_search`/`log_export` 一致：凑满一页就说明"后面可能还有"。
-    // （`log_tail` 的 `truncated` 还额外要求 `dropped>0`，于是"行数到上限但没丢过"会谎报 false
-    // —— 那是它的历史口径，新工具不跟着抄。）
-    let truncated = items.len() >= want;
+    // `truncated` 的口径与 `log_search` 一致：凑满一页就说明"后面可能还有"。
+    let truncated = all_items.len() >= want;
+
+    // 条目是 PTY 输出块：匹配用块正文（`text`），额外带上级别/方向（serde_json 的键是**有序**的，
+    // 这里显式取字段，不靠 Map 顺序）
+    let items: Vec<OutItem<'_>> = all_items
+        .iter()
+        .map(|l| OutItem {
+            seq: l["seq"].as_u64().unwrap_or(0),
+            ts: l["ts"].as_str().unwrap_or("").to_string(),
+            hay: l["text"].as_str().unwrap_or("").to_string(),
+            extra: json!({
+                "level": l["level"].as_str().unwrap_or("info"),
+                "dir": l["dir"].as_str().unwrap_or("none"),
+            }),
+            raw: l,
+        })
+        .collect();
+    let shaped = shape_output_items(items, &q);
+    // `count` 老口径 = "回了多少条"（lines 档就是过滤后的条目数，与 `items.len()` 一致）；
+    // 另给 `scanned` = 这次**扫过**多少条目 —— 两者不等就说明 pattern 滤掉了一部分。
+    let count = if q.mode == super::loghub::SearchMode::Lines {
+        shaped["items"].as_array().map(|a| a.len()).unwrap_or(0)
+    } else {
+        all_items.len()
+    };
 
     let mut notes: Vec<String> = Vec::new();
-    if items.is_empty() {
+    if all_items.is_empty() {
         notes.push(
             "adb:rx 还没有数据：先 adb_open_shell 开一个会话，再用 adb_shell_write 发命令（命令要带 \\n）。"
                 .to_string(),
@@ -2010,14 +2324,26 @@ fn adb_shell_read(core: &Arc<McpCore>, args: &Value) -> Result<Value, RpcError> 
     let mut out = json!({
         "serial": serial,
         "channel": CHANNEL,
-        "count": items.len(),
-        "items": items,
+        "count": count,
+        "scanned": all_items.len(),
         "truncated": truncated,
         // 丢弃要能读出来（AGENTS #6）：通道被裁过时 mayBeIncomplete=true，
         // 否则调用方会以为"设备就输出了这么多"。
         "dropped": dropped,
         "mayBeIncomplete": may_be_incomplete,
     });
+    // 模式专属字段并进来（lines 档给 items，matches 给 hits，count 给 total）
+    if let Some(o) = shaped.as_object() {
+        let obj = out.as_object_mut().expect("上面刚构造的对象");
+        for (k, v) in o {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    // 给了图案才回 `pattern`/`regex`（没给就别占字段）
+    if let Some(p) = &q.pattern {
+        out["pattern"] = json!(p);
+        out["regex"] = json!(q.regex);
+    }
     if !notes.is_empty() {
         out["note"] = json!(notes.join(" "));
     }
@@ -2040,6 +2366,8 @@ async fn serial_get_output(core: &Arc<McpCore>, args: &Value) -> Result<Value, R
             "direction 只能是 rx / tx / both",
         ));
     }
+    // 编码先校验（参数问题要在碰主程序之前报掉）
+    let fmt = log_format_arg(args)?;
     let want = opt_u64(args, "lines").unwrap_or(50).clamp(1, 2000) as usize;
 
     // 顺带完成分栏名校验（分栏不存在 → 前端回 notFound → 协议级 -32602）
@@ -2048,38 +2376,117 @@ async fn serial_get_output(core: &Arc<McpCore>, args: &Value) -> Result<Value, R
     let chans = st.get("logChannels").cloned().unwrap_or_else(|| json!({}));
     let connected = st["isConnected"].as_bool().unwrap_or(false);
 
-    let (per_dir, items, truncated) = collect_serial_output(&chans, &direction, want);
+    let page = collect_serial_output(&chans, &direction, want, fmt);
     let empty_dirs: Vec<&str> = ["rx", "tx"]
         .into_iter()
         .filter(|d| direction == "both" || direction == *d)
-        .filter(|d| per_dir.get(*d).map(|v| v["count"].as_u64() == Some(0)).unwrap_or(false))
+        .filter(|d| page.per_dir.get(*d).map(|v| v["count"].as_u64() == Some(0)).unwrap_or(false))
         .collect();
+
+    let note = if empty_dirs.len() == 2 {
+        Some("这个分栏还没有收发任何数据。若期望有数据：先用 serial_get_state 看 isConnected，未连接就 serial_open。".to_string())
+    } else if empty_dirs.len() == 1 {
+        Some(format!(
+            "{} 方向还没有数据。",
+            if empty_dirs[0] == "rx" { "接收" } else { "发送" }
+        ))
+    } else {
+        None
+    };
 
     let mut out = json!({
         "pane": pane,
         "direction": direction,
+        "format": fmt.as_str(),
         "isConnected": connected,
-        "channels": per_dir,
-        "count": items.len(),
-        "items": items,
-        "truncated": truncated,
+        "channels": page.per_dir,
+        "count": page.count,
+        "truncated": page.truncated,
     });
-    if empty_dirs.len() == 2 {
-        out["note"] = json!("这个分栏还没有收发任何数据。若期望有数据：先用 serial_get_state 看 isConnected，未连接就 serial_open。");
-    } else if empty_dirs.len() == 1 {
-        out["note"] = json!(format!(
-            "{} 方向还没有数据。",
-            if empty_dirs[0] == "rx" { "接收" } else { "发送" }
-        ));
+    match fmt {
+        super::loghub::LogFormat::Json => out["items"] = json!(page.items),
+        super::loghub::LogFormat::Text => {
+            // 文本页：头部一行元信息（含**每个方向自己的丢弃账**，AGENTS #6）+
+            // 一行一条 `[时刻] [rx|tx] 正文`。方向必须留：这里是归并后的结果。
+            let mut text = serial_text_header(&out, &page);
+            if let Some(n) = &note {
+                text.push_str("# note: ");
+                text.push_str(n);
+                text.push('\n');
+            }
+            text.push_str(&page.text);
+            out["text"] = json!(text);
+        }
+    }
+    if let Some(n) = note {
+        out["note"] = json!(n);
     }
     Ok(out)
 }
 
+/// 文本编码的头部：一行说清"这一页是什么、有多少、有没有被截、每个方向丢过没有"。
+///
+/// 为什么值得花这几十个 token：`log_tail` 那边头部是每个通道一行，这里是**归并**后的结果，
+/// 分栏/方向/两个通道各自的 `dropped`/`mayBeIncomplete` 都没有别的出口
+/// （正文里只有时刻、方向和内容）。省 token 不能省掉"日志可能不完整"这件事。
+fn serial_text_header(out: &Value, page: &SerialOutputPage) -> String {
+    let mut s = String::new();
+    s.push_str("# pane=");
+    s.push_str(out["pane"].as_str().unwrap_or("main"));
+    s.push_str(" direction=");
+    s.push_str(out["direction"].as_str().unwrap_or("both"));
+    s.push_str(" count=");
+    s.push_str(&page.count.to_string());
+    s.push_str(" truncated=");
+    s.push_str(if page.truncated { "true" } else { "false" });
+    for dir in ["rx", "tx"] {
+        let Some(d) = page.per_dir.get(dir).and_then(|v| v.as_object()) else {
+            continue;
+        };
+        s.push_str(" | ");
+        s.push_str(dir);
+        s.push_str(" count=");
+        s.push_str(&d.get("count").and_then(|v| v.as_u64()).unwrap_or(0).to_string());
+        s.push_str(" dropped=");
+        s.push_str(&d.get("dropped").and_then(|v| v.as_u64()).unwrap_or(0).to_string());
+        s.push_str(" mayBeIncomplete=");
+        s.push_str(if d.get("mayBeIncomplete").and_then(|v| v.as_bool()).unwrap_or(false) {
+            "true"
+        } else {
+            "false"
+        });
+    }
+    s.push('\n');
+    s
+}
+
+/// 一页"分栏收发内容"：json 给 `items`，text 给 `text`，**元信息两边必须一致**。
+struct SerialOutputPage {
+    /// 每个方向的元信息（`channel`/`count`/`dropped`/`mayBeIncomplete`）
+    per_dir: Value,
+    /// 归并后的行（仅 json 编码）
+    items: Vec<Value>,
+    /// 文本页（仅 text 编码）
+    text: String,
+    /// 归并后的行数（两种编码下同一个数）
+    count: usize,
+    truncated: bool,
+}
+
 /// 从日志中心取某个分栏的 rx/tx 内容并按时间归并（纯函数，便于单测）。
 ///
-/// 返回 `(每个方向的元信息, 归并后的行, 是否被截断)`。**通道不存在在这里不是错误** —— 那只是
-/// "这个方向还没有数据"（对 AI 来说，这和"读不到数据"是完全不同的两件事）。
-fn collect_serial_output(chans: &Value, direction: &str, want: usize) -> (Value, Vec<Value>, bool) {
+/// `**通道不存在在这里不是错误**` —— 那只是"这个方向还没有数据"
+/// （对 AI 来说，这和"读不到数据"是完全不同的两件事）。
+///
+/// 两种编码共用**同一次选取**（同一批行、同一个 `count`/`truncated`）——
+/// 换编码只换写法，不许换数据。
+fn collect_serial_output(
+    chans: &Value,
+    direction: &str,
+    want: usize,
+    fmt: super::loghub::LogFormat,
+) -> SerialOutputPage {
+    use super::loghub::LogFormat;
     let hub = super::loghub::hub();
     let mut per_dir = serde_json::Map::new();
     let mut picked: Vec<Value> = Vec::new();
@@ -2120,7 +2527,30 @@ fn collect_serial_output(chans: &Value, direction: &str, want: usize) -> (Value,
     if truncated {
         picked.drain(0..total - want);
     }
-    (Value::Object(per_dir), picked, truncated)
+    let count = picked.len();
+    let (items, text) = match fmt {
+        LogFormat::Json => (picked, String::new()),
+        LogFormat::Text => {
+            let mut s = String::with_capacity(count * 32);
+            for l in &picked {
+                // 方向必须标：rx/tx 是归并在一起的，不标就分不清是谁说的
+                super::loghub::push_text_line(
+                    &mut s,
+                    l["t"].as_i64().unwrap_or(0),
+                    l["dir"].as_str().unwrap_or("none"),
+                    l["text"].as_str().unwrap_or(""),
+                );
+            }
+            (Vec::new(), s)
+        }
+    };
+    SerialOutputPage {
+        per_dir: Value::Object(per_dir),
+        items,
+        text,
+        count,
+        truncated,
+    }
 }
 
 /// 开/关监控：点按钮 → **轮询确认状态** → 返回真实状态。
@@ -2193,9 +2623,42 @@ fn err_response(id: Value, err: &RpcError) -> String {
     .to_string()
 }
 
+/// **文本载荷搬运**：`{format:"text", text:"…"}` 这种形状的结果，把 `text` 从
+/// structuredContent 里**搬**到 `content[].text`，成功返回它。
+///
+/// 为什么要有这一步（2026-09）：很多客户端只把 `content[].text` 交给模型，而通用摘要
+/// （[`summarize_for_tool`]）会把整段日志压成 600 字 —— 那正好把"省 token 的编码"变成
+/// "AI 看不到日志"，与这个功能的目的相反。搬过去之后：模型侧拿到**完整**日志（就一份），
+/// `structuredContent` 只留元信息（**不再复制一份**，否则省下的 token 又花回去了）。
+///
+/// 注意调用点在 `calllog.record` **之后**，所以 `ai-calls.jsonl` 里仍然记着全文。
+///
+/// ⚠️ 新增"text 编码"的工具时必须把工具名加进 [`TEXT_PAYLOAD_TOOLS`]
+/// （`text_format_tools_are_all_in_the_text_payload_list` 守着这条）。
+fn take_rendered_text(tool: &str, value: &mut Value) -> Option<String> {
+    if !TEXT_PAYLOAD_TOOLS.contains(&tool) {
+        return None;
+    }
+    if value.get("format").and_then(|v| v.as_str()) != Some("text") {
+        return None;
+    }
+    let text = value.get("text").and_then(|v| v.as_str())?.to_string();
+    if text.is_empty() {
+        return None;
+    }
+    value.as_object_mut()?.remove("text");
+    Some(text)
+}
+
+/// 哪些工具的 text 编码结果是"载荷本身就是文本"（见 [`take_rendered_text`]）。
+const TEXT_PAYLOAD_TOOLS: &[&str] = &["log_tail", "serial_get_output"];
+
 /// 工具执行失败必须返回**正常 result** + `isError: true`（MCP 规范要求），
 /// 只有协议级错误才用 JSON-RPC error —— 弄混会让客户端把工具错误当成连接故障。
 fn tool_result_ok(tool: &str, value: Value) -> Value {
+    let mut value = value;
+    // 先看有没有"现成的文本载荷"（text 编码）：有就直接用它当 content 文本
+    let rendered = take_rendered_text(tool, &mut value);
     // 规范要求 `structuredContent` 是**对象**。工具直接返回数组的话，严格客户端
     // （官方 Python SDK 走 pydantic）会把整条结果判为非法 —— 用户看到的是"这个工具坏了"。
     // 这里兜一层：不是对象就包成 `{"value": …}` 并上报，免得某天新加的工具再踩一次。
@@ -2215,8 +2678,12 @@ fn tool_result_ok(tool: &str, value: Value) -> Value {
         );
         json!({ "value": value })
     };
+    let text = match rendered {
+        Some(t) => t,
+        None => summarize_for_tool(tool, &structured),
+    };
     json!({
-        "content": [{ "type": "text", "text": summarize_for_tool(tool, &structured) }],
+        "content": [{ "type": "text", "text": text }],
         "structuredContent": structured,
         "isError": false
     })
@@ -2826,7 +3293,6 @@ mod tests {
                 "log_search",
                 "log_stats",
                 "log_clear",
-                "log_export",
                 // ADB（第三批）：排在后半页，正是"只看第一页会漏掉"的那批
                 "adb_list_devices",
                 "adb_open_shell",
@@ -3033,7 +3499,6 @@ mod tests {
                 "serial_list_ports",
                 "log_channels",
                 "log_stats",
-                "log_export",
                 "mcp_calls",
                 "mcp_stats",
                 "mcp_config_get",
@@ -3071,6 +3536,78 @@ mod tests {
             let st = c.status_json();
             assert_eq!(st["toolCalls"]["app_info"], 1);
             assert_eq!(st["requests"], 1);
+        });
+    }
+
+    /// BLE **从机（外设）**方向的三个工具被**故意删除**（2026-09，用户确认"实现不了了"）：
+    /// 本机适配器自报支持外设角色，但实测**广播起不来**（`ble_periph_starts_advertising`
+    /// 一直是失败的那条，`doc/BLE_PERIPHERAL.md` §5）—— 交付不了的功能不该留在工具表里
+    /// （工具表是 AI 的"我能做什么"清单，留着它等于让 AI 去点一个必然失败的功能）。
+    ///
+    /// 这条守着两件事：① 别哪天顺手又加回来（要加先把广播问题解决）；
+    /// ② 旧客户端拿着旧名字调过来时，报错必须**指路**（工具定义编译在 exe 里，
+    /// 客户端要重连才会重读 `tools/list`）。
+    #[test]
+    fn ble_peripheral_tools_are_gone_and_the_old_names_point_somewhere() {
+        let names: Vec<String> = tool_defs()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
+            .collect();
+        for gone in ["ble_periph_status", "ble_periph_start", "ble_periph_stop"] {
+            assert!(!names.iter().any(|n| n == gone), "{} 已删除（理由见本测试注释）", gone);
+            // 危险工具表里也不该再留着它们（否则只读模式的拦截表会指向不存在的工具）
+            assert!(
+                !DANGER_TOOLS.iter().any(|(n, _)| *n == gone),
+                "{} 已删除，危险工具表里也要清掉",
+                gone
+            );
+        }
+        block_on(async {
+            let c = core();
+            for gone in ["ble_periph_status", "ble_periph_start", "ble_periph_stop"] {
+                let r = call(&c, &raw_call(gone, &json!({ "confirm": true }))).await;
+                assert_eq!(r["error"]["code"], E_INVALID_PARAMS, "{}: {}", gone, r);
+                let msg = r["error"]["message"].as_str().unwrap_or("");
+                assert!(msg.contains("已删除"), "{} 要说清它没了: {}", gone, msg);
+                assert!(
+                    msg.contains("ble_start_scan") && msg.contains("ble_connect"),
+                    "{} 要给出仍可用的主机方向工具，否则 AI 只能反复试: {}",
+                    gone,
+                    msg
+                );
+            }
+        });
+    }
+
+    /// `log_export` 被**故意删除**了（2026-09，用户要求）：它是唯一能把"全量日志"
+    /// 一次塞进返回体的工具（省略 `channels` = 全部通道 × 上限 20000 行/通道），
+    /// 而**返回体没有大小上限**（`MAX_BODY_BYTES` 只管请求体）—— 一次调用就可能拼出
+    /// 几十 MB，撑爆 AI 的上下文、客户端解析也会打摆。
+    ///
+    /// 这条守着两件事：① 别哪天顺手又加回来（要加先给它响应体上限或落盘路径）；
+    /// ② 旧客户端拿着 `log_export` 调过来时，报错必须**指路**（工具定义编译在 exe 里，
+    /// 客户端要重连才会刷新 `tools/list`，光回"未知工具"会让 AI 反复试同一个名字）。
+    #[test]
+    fn log_export_is_gone_and_the_old_name_points_somewhere() {
+        let names: Vec<String> = tool_defs()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
+            .collect();
+        assert!(
+            !names.iter().any(|n| n == "log_export"),
+            "log_export 已被删除（理由见本测试注释）"
+        );
+        block_on(async {
+            let c = core();
+            let r = call(&c, &raw_call("log_export", &json!({}))).await;
+            assert_eq!(r["error"]["code"], E_INVALID_PARAMS, "{}", r);
+            let msg = r["error"]["message"].as_str().unwrap_or("");
+            assert!(msg.contains("已删除"), "要说清它没了: {}", msg);
+            assert!(
+                msg.contains("log_tail") && msg.contains("log_search"),
+                "要给替代方案，否则 AI 只能反复试同一个名字: {}",
+                msg
+            );
         });
     }
 
@@ -3115,41 +3652,76 @@ mod tests {
         let chans = json!({ "rx": "serial:t1:rx", "tx": "serial:t1:tx" });
 
         // ① 通道还不存在（一条数据都没流过）→ 空列表，不报错
-        let (per_dir, items, truncated) = collect_serial_output(&chans, "both", 50);
-        assert!(items.is_empty(), "没数据就该是空列表: {}", items.len());
-        assert!(!truncated);
-        assert_eq!(per_dir["rx"]["count"], 0);
+        let p = collect_serial_output(&chans, "both", 50, crate::mcp::loghub::LogFormat::Json);
+        assert!(p.items.is_empty(), "没数据就该是空列表: {}", p.items.len());
+        assert!(!p.truncated);
+        assert_eq!(p.per_dir["rx"]["count"], 0);
         assert!(
-            per_dir["rx"]["note"].as_str().unwrap().contains("还没有数据"),
+            p.per_dir["rx"]["note"].as_str().unwrap().contains("还没有数据"),
             "要说清是'还没数据'而不是'读不到': {}",
-            per_dir["rx"]
+            p.per_dir["rx"]
         );
 
         // ② 两个方向按时间归并（seq 各自独立，只能靠 ts 排序；push_at 是为了钉住时间戳）
         hub.push_at("serial:t1:rx", crate::mcp::loghub::LEVEL_INFO, crate::mcp::loghub::DIR_RX, 2000, "OK", 2);
         hub.push_at("serial:t1:tx", crate::mcp::loghub::LEVEL_INFO, crate::mcp::loghub::DIR_TX, 1000, "AT", 2);
         hub.push_at("serial:t1:rx", crate::mcp::loghub::LEVEL_INFO, crate::mcp::loghub::DIR_RX, 3000, "OK2", 3);
-        let (per_dir, items, _) = collect_serial_output(&chans, "both", 50);
-        let order: Vec<&str> = items.iter().map(|l| l["text"].as_str().unwrap()).collect();
+        let p = collect_serial_output(&chans, "both", 50, crate::mcp::loghub::LogFormat::Json);
+        let order: Vec<&str> = p.items.iter().map(|l| l["text"].as_str().unwrap()).collect();
         assert_eq!(order, vec!["AT", "OK", "OK2"], "必须按时间归并，不是按通道拼接");
-        let dirs: Vec<&str> = items.iter().map(|l| l["dir"].as_str().unwrap()).collect();
+        let dirs: Vec<&str> = p.items.iter().map(|l| l["dir"].as_str().unwrap()).collect();
         assert_eq!(dirs, vec!["tx", "rx", "rx"]);
-        assert_eq!(per_dir["rx"]["count"], 2);
-        assert_eq!(per_dir["tx"]["count"], 1);
+        assert_eq!(p.per_dir["rx"]["count"], 2);
+        assert_eq!(p.per_dir["tx"]["count"], 1);
 
         // ③ 只要一个方向
-        let (per_dir, items, _) = collect_serial_output(&chans, "rx", 50);
-        assert_eq!(items.len(), 2);
-        assert!(per_dir.get("tx").is_none(), "只要 rx 时不该返回 tx: {}", per_dir);
+        let p = collect_serial_output(&chans, "rx", 50, crate::mcp::loghub::LogFormat::Json);
+        assert_eq!(p.items.len(), 2);
+        assert!(p.per_dir.get("tx").is_none(), "只要 rx 时不该返回 tx: {}", p.per_dir);
 
         // ④ 截断：留最近的，并明确标记
-        let (_, items, truncated) = collect_serial_output(&chans, "both", 2);
-        assert!(truncated, "3 行只要 2 行必须标记 truncated");
-        let order: Vec<&str> = items.iter().map(|l| l["text"].as_str().unwrap()).collect();
+        let p = collect_serial_output(&chans, "both", 2, crate::mcp::loghub::LogFormat::Json);
+        assert!(p.truncated, "3 行只要 2 行必须标记 truncated");
+        let order: Vec<&str> = p.items.iter().map(|l| l["text"].as_str().unwrap()).collect();
         assert_eq!(order, vec!["OK", "OK2"], "截断要留**最近**的: {:?}", order);
+
+        // ⑤ 文本编码：同一批数据换个写法 —— 行数/方向/时刻都得在，且**方向不能丢**
+        let t = collect_serial_output(&chans, "both", 50, crate::mcp::loghub::LogFormat::Text);
+        assert_eq!(t.count, 3, "两种编码的 count 必须一致");
+        assert!(t.items.is_empty(), "text 编码不该再给逐行结构（等于计费两次）");
+        assert_eq!(t.per_dir["rx"]["count"], 2, "元信息两种编码下一致");
+        assert!(t.text.contains("AT") && t.text.contains("OK2"), "正文要在: {}", t.text);
+        assert!(t.text.contains("[tx]") && t.text.contains("[rx]"), "方向要标出来: {}", t.text);
+        assert_eq!(t.text.matches('\n').count(), 3, "一行一条: {:?}", t.text);
 
         hub.clear(Some("serial:t1:rx"));
         hub.clear(Some("serial:t1:tx"));
+    }
+
+    /// 文本页的头部是**唯一**交代"这一页多大、有没有被截、两个方向各丢过没有"的地方
+    /// （正文里只有时刻/方向/内容）。省 token 不能省掉这些 —— 少了它，
+    /// `format:"text"` 就等于让 AI 把被裁过的日志当成完整证据（AGENTS #6）。
+    #[test]
+    fn serial_text_header_carries_the_drop_accounting() {
+        let page = SerialOutputPage {
+            per_dir: json!({
+                "rx": { "channel": "serial:main:rx", "count": 3, "dropped": 7, "mayBeIncomplete": true },
+                "tx": { "channel": "serial:main:tx", "count": 0, "dropped": 0, "mayBeIncomplete": false },
+            }),
+            items: Vec::new(),
+            text: String::new(),
+            count: 3,
+            truncated: true,
+        };
+        let head = serial_text_header(&json!({ "pane": "main", "direction": "both" }), &page);
+        assert!(
+            head.starts_with("# pane=main direction=both count=3 truncated=true"),
+            "{}",
+            head
+        );
+        assert!(head.contains("rx count=3 dropped=7 mayBeIncomplete=true"), "{}", head);
+        assert!(head.contains("tx count=0 dropped=0 mayBeIncomplete=false"), "{}", head);
+        assert_eq!(head.matches('\n').count(), 1, "头部只占一行: {:?}", head);
     }
 
     /// 「MCP 不能影响主程序」这条要求，落到代码上就是**外部输入必须有界**。
@@ -3300,6 +3872,11 @@ mod tests {
         let _g = hub_lock();
         block_on(async {
             let c = core();
+            // 预建 `app` 通道：下面 `log_tail` 的契约用例要读它（json / text 两条），
+            // 而 LogHub 是**进程级共享状态** —— 不预建的话"单跑这一个用例"会因为
+            // 通道还没被别的用例建出来而报 -32602（2026-09 记录过的隐式依赖）。
+            // `ensure_channel` 不写内容、也不要求 hub 处于启用态。
+            crate::mcp::loghub::hub().ensure_channel("app");
             enum Expect {
                 /// 纯后端工具：实调成功。第一个是**必需**字段，第二个是**可能缺席**的
                 /// （例如 `urlMasked` 只在服务器跑起来、拿到端口与 token 后才出现）。
@@ -3319,6 +3896,8 @@ mod tests {
                     "logTotalCapBytes", "maxBodyBytes", "maxBleWriteChars", "maxSendChars", "maxSessions",
                     "maxUiSetItems", "maxUiSetValueChars", "protocolFallback", "protocolVersion", "rateLimitPerMin",
                     "sessionQueue", "toolsPage",
+                    // 检索类参数的上限（三个"读日志"工具共用；**被执行**）
+                    "maxSearchPatternChars", "maxSearchContextLines",
                     // ADB：写进设备 shell 的字符数 / PTY 尺寸 / 一次读多少行
                     "maxAdbWriteChars", "maxAdbCols", "maxAdbRows", "maxAdbReadLines",
                     // 快速指令外部文件的上限（加字段就要一起改这里，契约测试会拦）
@@ -3347,13 +3926,26 @@ mod tests {
                     "reclaimedBytes", "reclaims", "totalBytes", "totalCapBytes",
                 ], &[])),
                 ("log_tail", json!({ "channel": "app", "lines": 3 }), Backend(&[
-                    "channel", "dropped", "lines", "mayBeIncomplete", "returned", "seqTo", "truncated",
+                    "channel", "dropped", "format", "lines", "mayBeIncomplete", "missed",
+                    "nextSinceSeq", "returned", "seqFrom", "seqTo", "truncated",
+                ], &[])),
+                // text 编码：载荷搬到 content 文本里，structuredContent 只剩元信息
+                // （`text` 这一项此时**故意**不存在；要日志正文就看 content 文本）
+                ("log_tail", json!({ "channel": "app", "lines": 3, "format": "text" }), Backend(&[
+                    "channel", "dropped", "format", "mayBeIncomplete", "missed",
+                    "nextSinceSeq", "returned", "seqFrom", "seqTo", "truncated",
                 ], &[])),
                 ("log_search", json!({ "pattern": "mcp" }), Backend(&[
-                    "hits", "pattern", "regex", "scanned", "truncated",
+                    "hits", "mode", "pattern", "regex", "scanned", "truncated",
                 ], &[])),
-                ("log_export", json!({ "maxLinesPerChannel": 3 }), Backend(&[
-                    "channels", "lines", "text", "truncated",
+                // 三档模式各有自己的返回形状：`count` 连 hits 都不该有
+                // （有的话调用方会以为"顺手给了命中行"，那份文本就是白花的 token）
+                ("log_search", json!({ "pattern": "mcp", "mode": "count" }), Backend(&[
+                    "channels", "mode", "pattern", "regex", "scanned", "scannedChannels",
+                    "total", "totalMatches", "truncated",
+                ], &[])),
+                ("log_search", json!({ "pattern": "mcp", "mode": "matches" }), Backend(&[
+                    "hits", "mode", "pattern", "regex", "scanned", "truncated",
                 ], &[])),
                 ("mcp_calls", json!({ "limit": 2 }), Backend(&["calls", "enabled", "file", "note", "returned", "scanned", "tailOnly"], &[])),
                 ("mcp_stats", json!({}), Backend(&["callLog", "sessionToolCalls"], &[])),
@@ -3375,7 +3967,7 @@ mod tests {
                 // 工作流：无界面时同样必须是 isError + -32006；启停那条还要过危险门（表里给了 confirm）
                 ("serial_workflow", json!({}), NoGui),
                 ("serial_workflow_run", json!({ "rule": "wf_x", "on": true, "confirm": true }), NoGui),
-                // BLE 语义工具（第一批）：读的两个 + 从机启停（危险，没 GUI 时也是 -32006）
+                // BLE 语义工具（第一批）：无界面时同样必须是 isError + -32006
                 ("ble_get_state", json!({}), NoGui),
                 ("ble_list_devices", json!({}), NoGui),
                 ("ble_get_services", json!({}), NoGui),
@@ -3388,16 +3980,24 @@ mod tests {
                 ("ble_refresh_rssi", json!({}), NoGui),
                 ("ble_start_scan", json!({}), NoGui),
                 ("ble_stop_scan", json!({}), NoGui),
-                ("ble_periph_status", json!({}), NoGui),
-                ("ble_periph_start", json!({ "confirm": true }), NoGui),
-                ("ble_periph_stop", json!({ "confirm": true }), NoGui),
+                // （BLE 从机三个工具已删除 → 见 `log_export_is_gone...` 旁边那条同类守护测试）
                 // ADB 语义工具（§16.6.2 第三批）：读输出是纯后端，其余都经前端 mcpAdbOp
                 // （两个危险动作照旧要求 confirm，没带就根本走不到界面那一步）
                 ("adb_list_devices", json!({}), NoGui),
                 ("adb_open_shell", json!({ "confirm": true }), NoGui),
                 ("adb_shell_write", json!({ "data": "ls -l\n", "confirm": true }), NoGui),
                 ("adb_shell_read", json!({ "limit": 5 }), Backend(&[
-                    "serial", "channel", "count", "items", "truncated", "dropped", "mayBeIncomplete",
+                    "serial", "channel", "count", "items", "mode", "scanned", "truncated",
+                    "dropped", "mayBeIncomplete",
+                ], &["note"])),
+                // 检索档的形状（给了 pattern + mode）：count 不给条目、matches 只给片段
+                ("adb_shell_read", json!({ "pattern": "x", "mode": "count" }), Backend(&[
+                    "serial", "channel", "count", "scanned", "truncated", "dropped", "mayBeIncomplete",
+                    "mode", "pattern", "regex", "total", "totalMatches",
+                ], &["note"])),
+                ("adb_shell_read", json!({ "pattern": "x", "mode": "matches" }), Backend(&[
+                    "serial", "channel", "count", "scanned", "truncated", "dropped", "mayBeIncomplete",
+                    "mode", "pattern", "regex", "hits",
                 ], &["note"])),
                 ("adb_shell_resize", json!({ "cols": 120, "rows": 40 }), NoGui),
                 ("adb_close_shell", json!({}), NoGui),
@@ -3688,20 +4288,10 @@ mod tests {
                                 "refreshRssi" => json!({ "ok": true, "value": {
                                     "addr": "AA:BB:CC:DD:EE:FF", "rssi": -55, "raw": { "rssi": -55 },
                                 }}),
-                                "periphStatus" => json!({ "ok": true, "value": {
-                                    "advertising": false,
-                                    "serviceUuid": "0000fff0-0000-1000-8000-00805f9b34fb",
-                                    "chars": 2, "discoverable": true, "connectable": true,
-                                    "manualReply": false, "warning": null,
-                                }}),
-                                "periphStart" => json!({ "ok": true, "value": {
-                                    "pane": "ble", "started": true, "advertising": true,
-                                    "serviceUuid": "0000fff0-0000-1000-8000-00805f9b34fb", "warning": null,
-                                }}),
-                                "periphStop" => json!({ "ok": true, "value": {
-                                    "pane": "ble", "started": false, "advertising": false,
-                                    "serviceUuid": null, "warning": null,
-                                }}),
+                                "periphStatus" | "periphStart" | "periphStop" => json!({
+                                    "ok": false,
+                                    "error": "BLE 从机方向已删除：这些 action 不该再被发出".to_string(),
+                                }),
                                 _ => json!({ "ok": false, "error": format!("假前端不认识 action: {}", action) }),
                             }
                         }
@@ -3877,6 +4467,12 @@ mod tests {
                     pre_connected: None,
                     calls: vec![("serial", json!({ "action": "state" }))],
                     keys: &["pane", "direction", "isConnected", "channels", "count", "items", "truncated"] },
+                // 同一个工具换 text 编码：正文走 content 文本，structuredContent 只剩元信息
+                // （循环里有一条通用规则守着"text 编码不许再带 items"）
+                Case { tool: "serial_get_output", args: json!({ "direction": "both", "format": "text" }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "state" }))],
+                    keys: &["pane", "direction", "format", "isConnected", "channels", "count", "truncated"] },
                 Case { tool: "serial_quick_cmd", args: json!({}),
                     pre_connected: None,
                     calls: vec![("serial", json!({ "action": "quickList" }))],
@@ -3940,8 +4536,8 @@ mod tests {
                     pre_connected: None,
                     calls: vec![("serial", json!({ "action": "wfToggle", "rule": "wf_1", "on": true }))],
                     keys: &["pane", "rule", "running"] },
-                // BLE 第一批：状态 / 从机状态是读，从机启停是危险动作（要 confirm —— 危险门在 Rust 侧，
-                // 这一层只钉"发出去的 op 与返回形状"）
+                // BLE 第一批（从机的三个已在 2026-09 随方向一起删除）：
+                // 这一层只钉"发出去的 op 与返回形状"
                 Case { tool: "ble_get_state", args: json!({}),
                     pre_connected: None,
                     calls: vec![("ble", json!({ "action": "state" }))],
@@ -4006,24 +4602,15 @@ mod tests {
                     keys: &["pane", "connected", "addr", "changed"] },
                 Case { tool: "ble_get_output", args: json!({ "limit": 20 }),
                     pre_connected: None,
-                    calls: vec![("ble", json!({ "action": "getOutput" }))],
-                    keys: &["pane", "count", "total", "channels", "items"] },
+                    // ⚠️ 期望里**必须**带 limit：参数声明了却只转发 action/pane 的话，
+                    // 前端 `parseInt(payload.limit)` 永远是 NaN → 每次返回全量
+                    //（2026-09 修的真实 bug：这条 Case 原来只写 action，所以没测出来）
+                    calls: vec![("ble", json!({ "action": "getOutput", "limit": 20 }))],
+                    keys: &["pane", "count", "total", "channels", "items", "mode", "scanned"] },
                 Case { tool: "ble_refresh_rssi", args: json!({}),
                     pre_connected: None,
                     calls: vec![("ble", json!({ "action": "refreshRssi" }))],
                     keys: &["addr", "rssi", "raw"] },
-                Case { tool: "ble_periph_status", args: json!({}),
-                    pre_connected: None,
-                    calls: vec![("ble", json!({ "action": "periphStatus" }))],
-                    keys: &["advertising", "serviceUuid", "chars", "discoverable", "connectable", "manualReply"] },
-                Case { tool: "ble_periph_start", args: json!({ "confirm": true }),
-                    pre_connected: None,
-                    calls: vec![("ble", json!({ "action": "periphStart" }))],
-                    keys: &["pane", "started", "advertising", "serviceUuid"] },
-                Case { tool: "ble_periph_stop", args: json!({ "confirm": true }),
-                    pre_connected: None,
-                    calls: vec![("ble", json!({ "action": "periphStop" }))],
-                    keys: &["pane", "started", "advertising"] },
                 // ADB 第三批：每个动作都经前端 mcpAdbOp（危险门在 Rust 侧，这一层只钉
                 // "发出去的 op/参数"与"拿到回执后的返回形状"）
                 Case { tool: "adb_list_devices", args: json!({}),
@@ -4138,6 +4725,16 @@ mod tests {
                 // 这里是**每个工具都测**：摘要里必须出现 structuredContent 里至少一个真实取值。
                 let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
                 assert!(!text.is_empty(), "{} 的文本摘要不能为空", case.tool);
+                // text 编码：正文已经在 content 文本里了，structuredContent **不许**再放一份
+                // （两个渠道都会发给客户端，重复 = 把省下的 token 又花回去）
+                if case.args.get("format").and_then(|v| v.as_str()) == Some("text") {
+                    assert!(
+                        sc.get("items").is_none(),
+                        "{} 的 text 编码不该再带逐行的 items: {}",
+                        case.tool,
+                        sc
+                    );
+                }
                 let leaves = leaf_scalars(sc);
                 if !leaves.is_empty() {
                     assert!(
@@ -4162,8 +4759,8 @@ mod tests {
                 // 工作流规则（都经前端 mcpSerialOp 的 wf* 动作）
                 "serial_workflow", "serial_workflow_run",
                 "ui_click", "ui_describe", "ui_get", "ui_get_state", "ui_list", "ui_set",
-                // BLE 第一批（都经前端 mcpBleOp）
-                "ble_get_state", "ble_periph_status", "ble_periph_start", "ble_periph_stop",
+                // BLE 第一批（都经前端 mcpBleOp）；从机的三个已在 2026-09 随方向一起删除
+                "ble_get_state",
                 "ble_list_devices", "ble_start_scan", "ble_stop_scan", "ble_get_services",
                 "ble_get_output", "ble_refresh_rssi", "ble_read", "ble_subscribe",
                 "ble_write", "ble_connect", "ble_disconnect",
@@ -4311,7 +4908,11 @@ mod tests {
             let r = call(&c, &raw_call("adb_shell_read", &json!({ "limit": 10 }))).await;
             let sc = &r["result"]["structuredContent"];
             assert_eq!(sc["count"], 2);
-            assert_eq!(sc["items"][0]["seq"], 1, "seq 从 1 开始且连续: {}", sc["items"]);
+            // ⚠️ seq **不能硬编码成 1**：`hub.clear()` 只清内容、不重置 `next_seq`
+            //（别的用例可能已经往 `adb:rx` 写过东西）—— 要钉的是"**连续**"，不是"从 1 开始"。
+            // 这条以前写死 1/2，于是新增一个也用 adb:rx 的用例就会让它随执行顺序随机失败。
+            let s0 = sc["items"][0]["seq"].as_u64().expect("每条都要有 seq");
+            assert_eq!(sc["items"][1]["seq"], json!(s0 + 1), "seq 必须连续: {}", sc["items"]);
             assert_eq!(sc["items"][1]["dir"], "rx");
             let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
             assert!(
@@ -4321,10 +4922,10 @@ mod tests {
             );
 
             // sinceSeq 是**增量**：只拿比它新的
-            let r = call(&c, &raw_call("adb_shell_read", &json!({ "sinceSeq": 1 }))).await;
+            let r = call(&c, &raw_call("adb_shell_read", &json!({ "sinceSeq": s0 }))).await;
             let sc = &r["result"]["structuredContent"];
-            assert_eq!(sc["count"], 1, "sinceSeq=1 时只该回第 2 条: {}", sc);
-            assert_eq!(sc["items"][0]["seq"], 2);
+            assert_eq!(sc["count"], 1, "sinceSeq=第一条时只该回第 2 条: {}", sc);
+            assert_eq!(sc["items"][0]["seq"], json!(s0 + 1));
 
             // ③ 丢弃账要能读出来（AGENTS #6：不能让调用方以为日志是完整的）
             crate::mcp::loghub::hub().note_dropped("adb:rx", 3);
@@ -4605,7 +5206,7 @@ mod tests {
             let c = core();
             // ② 没带 confirm：**每一个**危险工具都被危险门拦下 —— 错误里点明"危险动作"、
             // 且**没有走到界面/后端那一步**（工具调用计数里不该有它 = "没执行"的证据）。
-            // 逐个查而不是只查 ble_periph_start：表里新加的危险工具（ADB 这两个）
+            // 逐个查而不是只查第一个：表里新加的危险工具（ADB 这两个）
             // 如果忘了接上确认门，只测第一个就漏过去了。
             for (name, _why) in DANGER_TOOLS {
                 let e = call_tool(&c, name, &json!({})).await.unwrap_err();
@@ -4852,16 +5453,6 @@ mod tests {
             .await;
             assert_eq!(st["result"]["isError"], false, "{}", st);
 
-            // log_export（省略 channels = 全部）
-            let ex = call(
-                &c,
-                r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"log_export","arguments":{}}}"#,
-            )
-            .await;
-            let text = ex["result"]["structuredContent"]["text"].as_str().unwrap();
-            assert!(text.contains(MARK), "导出应包含各通道内容: {}", text);
-            assert!(text.contains("[app]"), "要标出通道名: {}", text);
-
             // log_clear
             let cl = call(
                 &c,
@@ -4888,6 +5479,393 @@ mod tests {
             let msg = r["error"]["message"].as_str().unwrap_or("");
             assert!(msg.contains("log_channels"), "要告诉 AI 下一步怎么做: {}", msg);
         });
+    }
+
+    /// 文本编码的核心保证：日志正文进 `content` 文本（模型侧看得到，**而且只有一份**），
+    /// `structuredContent` 只留元信息。
+    ///
+    /// 为什么要测"只有一份"：`content` 和 `structuredContent` 都会发给客户端，
+    /// 同一段日志写两遍就等于把省下的 token 又花回去 —— 那这个编码档就白加了。
+    #[test]
+    fn log_tail_text_format_puts_the_logs_in_the_content_text() {
+        let _g = hub_lock();
+        block_on(async {
+            let c = core();
+            let hub = crate::mcp::loghub::hub();
+            hub.set_enabled(true);
+            // 夹具用唯一通道名 + 唯一串：别的用例的通道/日志不许混进来
+            const CH: &str = "serial:mcp-textfmt:rx";
+            const MARK: &str = "AT+TXT-91c2-only-this-test";
+            hub.clear(Some(CH));
+            hub.push(CH, crate::mcp::loghub::LEVEL_INFO, crate::mcp::loghub::DIR_RX, MARK, 12);
+            hub.push(CH, crate::mcp::loghub::LEVEL_WARN, crate::mcp::loghub::DIR_RX, "OK", 2);
+
+            let r = call(&c, &raw_call("log_tail", &json!({ "channel": CH, "format": "text" }))).await;
+            assert_eq!(r["result"]["isError"], false, "{}", r);
+            let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+            assert!(text.contains("# channel="), "文本页要有头部元信息: {}", text);
+            assert!(text.contains(MARK), "日志正文必须在 content 文本里: {}", text);
+            assert!(text.contains("[warn]"), "级别要看得出来: {}", text);
+
+            let sc = &r["result"]["structuredContent"];
+            assert_eq!(sc["format"], "text");
+            assert!(sc.get("text").is_none(), "正文已搬到 content，不该再复制一份: {}", sc);
+            assert!(sc.get("lines").is_none(), "text 编码不该同时给逐行结构: {}", sc);
+            assert_eq!(sc["returned"], 2);
+            assert!(sc["nextSinceSeq"].as_u64().is_some(), "增量跟进的下一步要给出: {}", sc);
+            assert!(sc["missed"].as_u64().is_some(), "{}", sc);
+
+            let wire = serde_json::to_string(&r).unwrap();
+            assert_eq!(wire.matches(MARK).count(), 1, "同一段日志被发了两次（token 白省）: {}", wire);
+
+            hub.clear(Some(CH));
+        });
+    }
+
+    /// `format` 写错**必须报错**，不能静默按 json 处理 ——
+    /// 静默会让"我要省 token"悄悄失效，而调用方以为拿到了 text。
+    #[test]
+    fn log_tail_rejects_unknown_format_instead_of_silently_using_json() {
+        block_on(async {
+            let c = core();
+            let r = call(
+                &c,
+                &raw_call("log_tail", &json!({ "channel": "app", "format": "plain" })),
+            )
+            .await;
+            assert_eq!(r["error"]["code"], E_INVALID_PARAMS, "{}", r);
+            let msg = r["error"]["message"].as_str().unwrap_or("");
+            assert!(
+                msg.contains("json") && msg.contains("text"),
+                "要把可选值说出来，AI 才知道怎么改: {}",
+                msg
+            );
+        });
+    }
+
+    /// 这个功能**存在的意义**就是省 token：同一条通道、同样的行数，
+    /// text 编码的整条响应必须显著小于 json，否则这一档就不该存在。
+    #[test]
+    fn log_tail_text_format_is_cheaper_on_the_wire() {
+        let _g = hub_lock();
+        block_on(async {
+            let c = core();
+            let hub = crate::mcp::loghub::hub();
+            hub.set_enabled(true);
+            const CH: &str = "serial:mcp-cost:rx";
+            hub.clear(Some(CH));
+            for i in 0..60 {
+                hub.push(
+                    CH,
+                    crate::mcp::loghub::LEVEL_INFO,
+                    crate::mcp::loghub::DIR_RX,
+                    &format!("OK {:04}", i),
+                    8,
+                );
+            }
+            let j = call(&c, &raw_call("log_tail", &json!({ "channel": CH, "lines": 2000 }))).await;
+            let t = call(
+                &c,
+                &raw_call("log_tail", &json!({ "channel": CH, "lines": 2000, "format": "text" })),
+            )
+            .await;
+            let jl = serde_json::to_string(&j).unwrap().len();
+            let tl = serde_json::to_string(&t).unwrap().len();
+            assert!(
+                tl * 2 < jl,
+                "text 必须明显更省（json={} 字节，text={} 字节）",
+                jl,
+                tl
+            );
+            // 省 token **不许**变成少给数据
+            let (js, ts) = (&j["result"]["structuredContent"], &t["result"]["structuredContent"]);
+            assert_eq!(js["returned"], ts["returned"], "行数不能变少");
+            assert_eq!(js["seqFrom"], ts["seqFrom"]);
+            assert_eq!(js["seqTo"], ts["seqTo"]);
+            assert_eq!(js["mayBeIncomplete"], ts["mayBeIncomplete"]);
+            assert_eq!(js["truncated"], ts["truncated"]);
+            hub.clear(Some(CH));
+        });
+    }
+
+    /// 三档 `mode` 是"用**信息量**换 token"的旋钮：同一批数据，三档的输出量
+    /// 应该差一个数量级 —— 而且 `count` 的数字必须**精确**（不能被 limit 提前打断）。
+    #[test]
+    fn log_search_modes_trade_information_for_tokens() {
+        let _g = hub_lock();
+        block_on(async {
+            let c = core();
+            let hub = crate::mcp::loghub::hub();
+            hub.set_enabled(true);
+            const CH: &str = "serial:mcp-searchmodes:rx";
+            hub.clear(Some(CH));
+            let filler = "z".repeat(200); // 长行：正是"回整行"最亏的形状
+            for i in 0..100 {
+                let err = i % 5 == 0; // 20 条命中
+                let text = format!("{} step {} {}", if err { "ERROR timeout" } else { "OK" }, i, filler);
+                hub.push(
+                    CH,
+                    if err { crate::mcp::loghub::LEVEL_ERROR } else { crate::mcp::loghub::LEVEL_INFO },
+                    crate::mcp::loghub::DIR_RX,
+                    &text,
+                    text.len() as u32,
+                );
+            }
+            let lines = call(&c, &raw_call("log_search", &json!({ "channel": CH, "pattern": "ERROR", "limit": 500 }))).await;
+            let matches = call(&c, &raw_call("log_search", &json!({ "channel": CH, "pattern": "ERROR", "limit": 500, "mode": "matches" }))).await;
+            let count = call(&c, &raw_call("log_search", &json!({ "channel": CH, "pattern": "ERROR", "mode": "count" }))).await;
+
+            // 计数必须精确，而且是"扫完才得出的"
+            let cs = &count["result"]["structuredContent"];
+            assert_eq!(cs["total"], 20, "{}", count);
+            assert_eq!(cs["scanned"], 100, "{}", count);
+            assert_eq!(cs["channels"][0]["count"], 20, "{}", count);
+            assert!(cs.get("hits").is_none(), "count 不该回命中行: {}", cs);
+            assert_eq!(cs["mode"], "count");
+
+            // matches 只回片段（没有整行文本）
+            let ms = &matches["result"]["structuredContent"];
+            let mh = ms["hits"].as_array().unwrap();
+            assert_eq!(mh.len(), 20, "{}", matches);
+            assert_eq!(mh[0]["match"], "ERROR");
+            assert!(mh[0].get("text").is_none(), "matches 只回片段: {}", mh[0]);
+            assert_eq!(ms["mode"], "matches");
+
+            // 三档的体积必须拉开（比 **structuredContent**，即数据本身；
+            // 整条响应还含一段有界摘要，短结果里它的占比会盖过数据）
+            let size = |v: &Value| serde_json::to_string(&v["result"]["structuredContent"]).unwrap().len();
+            let (l, m, k) = (size(&lines), size(&matches), size(&count));
+            assert!(k < m && m < l, "count 最省、matches 居中：lines={} matches={} count={}", l, m, k);
+            assert!(k * 10 < l, "count 要比 lines 小一个数量级：lines={} count={}", l, k);
+            // 整条响应同样必须是"越小信息越少"（含摘要那一份）
+            let wire = |v: &Value| serde_json::to_string(v).unwrap().len();
+            assert!(wire(&count) < wire(&matches) && wire(&matches) < wire(&lines), "整条响应也要拉开");
+            hub.clear(Some(CH));
+        });
+    }
+
+    /// `context`：命中行前后各带几行（省掉"再 tail 一次"的往返），
+    /// 而且在通道两端要**夹住**（返回空数组），不是报错、也不是跨通道乱取。
+    #[test]
+    fn log_search_context_brings_neighbours_and_clamps_at_edges() {
+        let _g = hub_lock();
+        block_on(async {
+            let c = core();
+            let hub = crate::mcp::loghub::hub();
+            hub.set_enabled(true);
+            const CH: &str = "serial:mcp-ctx:rx";
+            hub.clear(Some(CH));
+            for t in ["a", "b", "c", "d", "e"] {
+                hub.push(CH, crate::mcp::loghub::LEVEL_INFO, crate::mcp::loghub::DIR_RX, t, 1);
+            }
+            let mid = call(&c, &raw_call("log_search", &json!({ "channel": CH, "pattern": "c", "context": 2 }))).await;
+            let h = &mid["result"]["structuredContent"]["hits"][0];
+            assert_eq!(h["text"], "c");
+            assert_eq!(h["before"], json!(["a", "b"]), "{}", mid);
+            assert_eq!(h["after"], json!(["d", "e"]), "{}", mid);
+
+            // 第一条：before 只能是空的（不能绕回去取到别的行）
+            let first = call(&c, &raw_call("log_search", &json!({ "channel": CH, "pattern": "a", "context": 2 }))).await;
+            let h = &first["result"]["structuredContent"]["hits"][0];
+            assert_eq!(h["before"], json!([]), "{}", first);
+            assert_eq!(h["after"], json!(["b", "c"]), "{}", first);
+
+            // 不给 context 就不该冒出 before/after（默认行为不变）
+            let plain = call(&c, &raw_call("log_search", &json!({ "channel": CH, "pattern": "c" }))).await;
+            let h = &plain["result"]["structuredContent"]["hits"][0];
+            assert!(h.get("before").is_none() && h.get("after").is_none(), "{}", h);
+            hub.clear(Some(CH));
+        });
+    }
+
+    /// 参数误用要**当场说清**，不能静默降级：`mode` 写错、`context` 配错档、
+    /// `context` 超上限、`pattern` 给空串 —— 四种都必须是 -32602。
+    /// （空串由通用 `require_str` 拦；这里顺带钉住"它确实被拦住了"，因为
+    /// 空图案在子串模式下会变成"匹配每一行"的正则。）
+    #[test]
+    fn log_search_rejects_misuse_instead_of_silently_degrading() {
+        block_on(async {
+            let c = core();
+            let cases = [
+                (json!({ "pattern": "x", "mode": "grep" }), "lines"),
+                (json!({ "pattern": "x", "mode": "count", "context": 3 }), "context"),
+                (json!({ "pattern": "x", "context": 99 }), "context"),
+                (json!({ "pattern": "" }), "非空"),
+            ];
+            for (args, want) in cases {
+                let r = call(&c, &raw_call("log_search", &args)).await;
+                assert_eq!(r["error"]["code"], E_INVALID_PARAMS, "{} 应是 -32602: {}", args, r);
+                let msg = r["error"]["message"].as_str().unwrap_or("");
+                assert!(
+                    msg.contains(want) || msg.contains("mode") || msg.contains("match"),
+                    "{} 的报错要指路（含 {:?}）: {}",
+                    args,
+                    want,
+                    msg
+                );
+            }
+        });
+    }
+
+    /// `adb_shell_read` 的检索档：PTY 的条目是**输出块**，所以 `count` 报的是
+    /// "命中多少块 / 共多少处"，`matches` 只回片段，`lines` 给了 pattern 就只回命中的块
+    /// （`scanned` 交代扫过多少块）。这也顺手证明"块里多次命中"数得对。
+    #[test]
+    fn adb_shell_read_modes_search_the_pty_blocks() {
+        let _g = hub_lock();
+        block_on(async {
+            let c = core();
+            let hub = crate::mcp::loghub::hub();
+            hub.set_enabled(true);
+            hub.clear(Some("adb:rx"));
+            // 块里可以有多行、一处也可以有多次命中
+            hub.push("adb:rx", crate::mcp::loghub::LEVEL_INFO, crate::mcp::loghub::DIR_RX, "I/logcat: ERROR one\nmore text", 30);
+            hub.push("adb:rx", crate::mcp::loghub::LEVEL_INFO, crate::mcp::loghub::DIR_RX, "I/logcat: all good", 18);
+            hub.push("adb:rx", crate::mcp::loghub::LEVEL_INFO, crate::mcp::loghub::DIR_RX, "E/logcat: ERROR two ERROR three", 31);
+
+            let cnt = call(&c, &raw_call("adb_shell_read", &json!({ "pattern": "ERROR", "mode": "count" }))).await;
+            let sc = &cnt["result"]["structuredContent"];
+            assert_eq!(sc["total"], 2, "命中**块**数: {}", cnt);
+            assert_eq!(sc["totalMatches"], 3, "命中**处**数（两块里一共三次）: {}", cnt);
+            assert_eq!(sc["scanned"], 3);
+            assert!(sc.get("items").is_none(), "count 不回条目: {}", sc);
+
+            let m = call(&c, &raw_call("adb_shell_read", &json!({ "pattern": "ERROR", "mode": "matches" }))).await;
+            let hits = m["result"]["structuredContent"]["hits"].as_array().unwrap();
+            assert_eq!(hits.len(), 3, "三处各一条: {}", m);
+            assert_eq!(hits[0]["match"], "ERROR");
+            assert!(hits[0].get("text").is_none(), "只回片段: {}", hits[0]);
+            assert!(hits[0]["seq"].as_u64().is_some(), "要能回溯到哪一块: {}", hits[0]);
+
+            let l = call(&c, &raw_call("adb_shell_read", &json!({ "pattern": "all good" }))).await;
+            let sc = &l["result"]["structuredContent"];
+            assert_eq!(sc["items"].as_array().unwrap().len(), 1, "只留命中的块: {}", l);
+            assert_eq!(sc["scanned"], 3, "扫过 3 块: {}", sc);
+            assert_eq!(sc["mode"], "lines");
+            assert_eq!(sc["count"], 1, "count = 回了几条（过滤后）");
+
+            // 这两档就是"检索"：没给 pattern 无从计数
+            let bad = call(&c, &raw_call("adb_shell_read", &json!({ "mode": "count" }))).await;
+            assert_eq!(bad["error"]["code"], E_INVALID_PARAMS, "{}", bad);
+            hub.clear(Some("adb:rx"));
+        });
+    }
+
+    /// `ble_get_output`：① `limit`/`sinceSeq` 必须**真的转发**给前端
+    /// （2026-09 修的真 bug：老实现只转发 action/pane，前端 `parseInt` 永远 NaN → 每次回全量）；
+    /// ② 检索在前端那份条目上做，匹配文本 `text` 为空时取 `hex`（HEX 通知也要搜得到）。
+    #[test]
+    fn ble_get_output_forwards_paging_and_searches_the_items() {
+        block_on(async {
+            let c = core();
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, Value)>::new()));
+            {
+                let seen = seen.clone();
+                let mut slot = c.test_ui.lock().unwrap_or_else(|e| e.into_inner());
+                *slot = Some(Box::new(move |op: &str, payload: &Value| {
+                    seen.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push((op.to_string(), payload.clone()));
+                    json!({ "ok": true, "value": {
+                        "pane": "ble", "count": 3, "total": 3, "channels": { "rx": "ble:rx" },
+                        "items": [
+                            { "seq": 0, "ts": "t0", "kind": "rx", "hex": "01 02 FF", "text": "", "dim": "" },
+                            { "seq": 1, "ts": "t1", "kind": "rx", "hex": "", "text": "ERROR timeout", "dim": "" },
+                            { "seq": 2, "ts": "t2", "kind": "tx", "hex": "", "text": "AT+GMR", "dim": "" },
+                        ],
+                    }})
+                }));
+            }
+            // ① 转发
+            let r = call(&c, &raw_call("ble_get_output", &json!({ "limit": 2, "sinceSeq": 1 }))).await;
+            assert_eq!(r["result"]["isError"], false, "{}", r);
+            {
+                let got = seen.lock().unwrap_or_else(|e| e.into_inner());
+                assert_eq!(got.len(), 1, "{}", got.len());
+                assert_eq!(got[0].1["limit"], json!(2), "limit 必须转发: {}", got[0].1);
+                assert_eq!(got[0].1["sinceSeq"], json!(1), "sinceSeq 必须转发: {}", got[0].1);
+            }
+            // ② lines + pattern：文本搜得到；text 为空的那条按 hex 搜
+            let l = call(&c, &raw_call("ble_get_output", &json!({ "pattern": "AT+GMR" }))).await;
+            let sc = &l["result"]["structuredContent"];
+            assert_eq!(sc["items"].as_array().unwrap().len(), 1, "{}", l);
+            assert_eq!(sc["count"], 1);
+            assert_eq!(sc["scanned"], 3, "扫过 3 条: {}", sc);
+            let hx = call(&c, &raw_call("ble_get_output", &json!({ "pattern": "FF" }))).await;
+            assert_eq!(
+                hx["result"]["structuredContent"]["items"].as_array().unwrap().len(),
+                1,
+                "text 为空时匹配 hex: {}",
+                hx
+            );
+            // ③ count / matches（命中里要带条目自己的 kind）
+            let cnt = call(&c, &raw_call("ble_get_output", &json!({ "pattern": "ERROR", "mode": "count" }))).await;
+            let sc = &cnt["result"]["structuredContent"];
+            assert_eq!(sc["total"], 1, "{}", cnt);
+            assert_eq!(sc["totalMatches"], 1);
+            let m = call(&c, &raw_call("ble_get_output", &json!({ "pattern": "ERROR", "mode": "matches" }))).await;
+            let h = &m["result"]["structuredContent"]["hits"][0];
+            assert_eq!(h["match"], "ERROR", "{}", m);
+            assert_eq!(h["kind"], "rx", "命中要带 kind: {}", h);
+            // ④ 检索档**不**转发 limit：要扫的是整份缓冲（转发会变成"只数最后 N 条"）
+            {
+                let got = seen.lock().unwrap_or_else(|e| e.into_inner());
+                let last = &got[got.len() - 1].1;
+                assert!(last.get("limit").is_none(), "检索档不该转发 limit: {}", last);
+            }
+        });
+    }
+
+    /// `pattern` 的长度上限对**三个**工具都生效，而且要在**碰界面/设备之前**拦
+    /// （1 MiB 的请求体塞得进一条巨型正则，编译它足以把这次调用卡住）。
+    #[test]
+    fn search_pattern_length_is_capped_across_the_three_tools() {
+        block_on(async {
+            let c = core();
+            let long = "x".repeat(super::loghub::MAX_SEARCH_PATTERN_CHARS + 1);
+            for tool in ["log_search", "adb_shell_read", "ble_get_output"] {
+                let r = call(&c, &raw_call(tool, &json!({ "pattern": long }))).await;
+                assert_eq!(r["error"]["code"], E_INVALID_PARAMS, "{} 要拦超长 pattern: {}", tool, r);
+                let msg = r["error"]["message"].as_str().unwrap_or("");
+                assert!(
+                    msg.contains("pattern 太长") && msg.contains("maxSearchPatternChars"),
+                    "{} 的报错要说清上限与去哪查: {}",
+                    tool,
+                    msg
+                );
+            }
+            // 上限本身要能被客户端查到（"报出来"和"被执行"是两件事，两个都要有）
+            let lim = call(&c, &raw_call("mcp_limits", &json!({}))).await;
+            assert_eq!(
+                lim["result"]["structuredContent"]["maxSearchPatternChars"],
+                json!(super::loghub::MAX_SEARCH_PATTERN_CHARS)
+            );
+        });
+    }
+
+    /// 判据取自 `inputSchema`：`format` 的枚举里同时有 `text` 与 `json` 的工具就是"编码档"，
+    /// 必须登记进 `TEXT_PAYLOAD_TOOLS` —— 漏登记的话 `content[].text` 会退回 600 字摘要，
+    /// 只读文本的客户端等于看不到日志，而"数据确实在 structuredContent 里"让测试全绿。
+    /// （`ble_write` 的 `text`/`hex` 是**载荷**格式，枚举里没有 `json`，不在此列。）
+    #[test]
+    fn text_format_tools_are_all_in_the_text_payload_list() {
+        let mut checked = 0;
+        for t in tool_defs() {
+            let name = t["name"].as_str().unwrap_or("");
+            let enums: Vec<String> = t["inputSchema"]["properties"]["format"]["enum"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            if enums.iter().any(|e| e == "text") && enums.iter().any(|e| e == "json") {
+                checked += 1;
+                assert!(
+                    TEXT_PAYLOAD_TOOLS.contains(&name),
+                    "{} 有 text/json 编码档，但没登记进 TEXT_PAYLOAD_TOOLS（正文会被压成摘要）",
+                    name
+                );
+            }
+        }
+        assert!(checked > 0, "判据失效了：一个编码档工具都没找到");
     }
 
     #[test]
