@@ -4698,6 +4698,29 @@ mod util_tests {
         }
     }
 
+    /// `ble_short_uuid` 是"这个特征是不是 CTS / 是不是某个标准特征"的唯一判据，
+    /// 必须与前端 `shortUuid()` 同口径。三种真实写法都要归一：
+    /// 后端通知给的是 128 位、手写配置里常见 16 位、有时还带 `0x`。
+    #[test]
+    fn ble_short_uuid_normalizes_the_three_real_world_spellings() {
+        // ① 128 位（服务树/通知里就是这个形态）—— 直接 ends_with("2a2b") 会永远匹配不上
+        assert_eq!(super::ble_short_uuid("00002A2B-0000-1000-8000-00805F9B34FB"), "2a2b");
+        assert_eq!(super::ble_short_uuid("00002a0f-0000-1000-8000-00805f9b34fb"), "2a0f");
+        // ② 16 位短号（大小写都认）
+        assert_eq!(super::ble_short_uuid("2A2B"), "2a2b");
+        assert_eq!(super::ble_short_uuid("2a0f"), "2a0f");
+        // ③ 带 `0x` 前缀 + 前后空白
+        assert_eq!(super::ble_short_uuid("  0x2A2B "), "2a2b");
+        assert_eq!(super::ble_short_uuid("0X2a0f"), "2a0f");
+        // ④ 自定义 128 位 UUID：不能截成后 4 位 —— 截了就会"碰巧"撞上 CTS 的短号，
+        //    于是用户自定义特征的时间数据被当成 CTS 解读。
+        assert_eq!(super::ble_short_uuid("12345678-1234-5678-1234-567812345678"), "12345678");
+        assert_ne!(super::ble_short_uuid("12342a2b-1234-5678-1234-567812345678"), "2a2b");
+        // ⑤ 全零 / 空串不许 panic（解析路径在 BLE 回调线程上，panic 会连累整个应用）
+        assert_eq!(super::ble_short_uuid("0000"), "0");
+        assert_eq!(super::ble_short_uuid(""), "0");
+    }
+
     #[test]
     fn parse_version_handles_prefix_and_prerelease() {
         assert_eq!(super::parse_version("0.2.11"), (0, 2, 11));
@@ -5603,6 +5626,31 @@ fn bt_addr_to_u64(s: &str) -> Option<u64> {
 
 fn ble_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
+}
+
+/// 把（可能是 128 位、16 位或带 `0x` 的）UUID 归一成 **SIG 短号**（小写），
+/// 口径与前端 `shortUuid()` 一致：`00002a2b-0000-1000-8000-00805f9b34fb` → `2a2b`，
+/// `2A2B` → `2a2b`，`0x2a2b` → `2a2b`。
+///
+/// 为什么需要它：判断"这个特征是不是 CTS 的 `2A2B`"时，来自后端通知的 UUID 是 **128 位**形式，
+/// 直接用 `ends_with("2a2b")` 会永远匹配不上（那一串是以 `…-0000-1000-8000-00805f9b34fb` 结尾的）。
+/// 自定义 128 位 UUID（如 `12345678-…`）会返回 8 位，调用方按 4 位短号比对自然匹配不上。
+pub(crate) fn ble_short_uuid(u: &str) -> String {
+    let s = u
+        .trim()
+        .trim_start_matches("0x")
+        .trim_start_matches("0X")
+        .to_ascii_lowercase();
+    let first = s.split('-').next().unwrap_or("");
+    let t = first.trim_start_matches('0');
+    if t.is_empty() {
+        "0".to_string()
+    } else if t.len() <= 4 {
+        // 补足 4 位，让 `0x2a2b` / `2A2B` 这类写法归一（SIG 短号就是 4 位）
+        format!("{:0>4}", t)
+    } else {
+        t.to_string()
+    }
 }
 
 /// Adjust Reason（`0x2A2B` 第 10 字节）的位域 → 人话。

@@ -64,7 +64,7 @@
 | [`ble_read`](#ble-read) | 读 | 读一个特征的值（按 UUID 寻址）——**点的是面板上那颗读按钮**，结果随后出现在 ble_get_output 里。需要设备已连接、且该特征有 read 属性（用 ble_get_services 看）。 |
 | [`ble_write`](#ble-write) | **写** | 往一个特征写数据（按 UUID 寻址）——**打开的就是面板那个写入窗并点「发送」**，HEX/文本解析、行尾、写响应/无响应全用面板那套（写入窗会留在界面上，数据日志里也能看到这一条）。需要设备已连接、且该特征有 write 属性（见 ble_get_services）。写操作。 |
 | [`ble_subscribe`](#ble-subscribe) | **写** | 开/关某个特征的通知订阅（notify / indicate）——点的是面板上那颗订阅按钮，数据随后出现在 ble_get_output 里。**状态已经在目标值时不会重复点**（不会把用户刚打开的订阅关掉）。 |
-| [`ble_get_output`](#ble-get-output) | 读 | 读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。**要"这条 ERROR 出现几次"别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `count` 只回计数、`matches` 只回片段、`lines`（默认）回条目。匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也能搜）。只读。 |
+| [`ble_get_output`](#ble-get-output) | 读 | 读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。**要"这条 ERROR 出现几次"别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `count` 只回计数、`matches` 只回片段、`lines`（默认）回条目。匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也能搜）。⚠️ **CTS（0x1805）的时间条目会自动附上解读**：`items[].decoded`（完整字段）+ `items[].decodedSummary`（一行'设备现在几点、比本机快慢多少'）—— 不用再把这些 HEX 手动喂给 `ble_cts_time`。只读。 |
 | [`ble_refresh_rssi`](#ble-refresh-rssi) | 读 | 读当前已连接设备的信号强度（RSSI，负数，越接近 0 越强）。只问一次射频、不改状态；还没连设备时会直接说明。 |
 | [`ble_cts_time`](#ble-cts-time) | 读 | 把 **CTS（Current Time Service 0x1805）**的值翻译成人话。为什么要单独一个工具：`ble_read{char:"0x2a2b"}` 读回来的是**10 字节原始值**（年 = uint16 **小端**、星期是 1..7、Fractions256 = 1/256 秒、Adjust Reason 是位域），人肉解容易错，而错一个字段结论就全歪。给它 HEX 或字节数组，它回 `{utc, skewSecs(与本机差多少秒), dayOfWeekName, adjustReasons, notes}`，并**主动指出可疑处**：年份像 RTC 没初始化、星期几与日期对不上、时钟偏了多少分钟。**2 字节的值按 Local Time Information(0x2A0F) 解**（时区 = int8 × 15 分钟 / DST 偏移）。纯后端：不碰设备也不碰界面（读值仍走 `ble_read` → `ble_get_output`）。 |
 | [`adb_list_devices`](#adb-list-devices) | 读 | 列出 `adb devices -l` 看到的设备（序列号 / 状态 / 型号）。只读，不会开 shell。**只有 state=device 的那台才可用**；unauthorized 表示还没在设备上点「允许 USB 调试」。 |
@@ -475,9 +475,10 @@
 
 #### `ble_get_output`
 
-- **作用**：读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。**要"这条 ERROR 出现几次"别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `count` 只回计数、`matches` 只回片段、`lines`（默认）回条目。匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也能搜）。只读。
+- **作用**：读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。**要"这条 ERROR 出现几次"别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `count` 只回计数、`matches` 只回片段、`lines`（默认）回条目。匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也能搜）。⚠️ **CTS（0x1805）的时间条目会自动附上解读**：`items[].decoded`（完整字段）+ `items[].decodedSummary`（一行'设备现在几点、比本机快慢多少'）—— 不用再把这些 HEX 手动喂给 `ble_cts_time`。只读。
 - **读/写**：只读，无副作用
-- **返回**：
+- **返回**：{pane, count, scanned, mode, total, channels:{rx}, items:[{seq,ts,kind,hex,charUuid,descUuid,text,dim}]}（CTS 条目另有 `decoded` / `decodedSummary`）；`mode:"matches"` 时是 `hits:[{seq,ts,kind,match}]`，`mode:"count"` 时是 `total`/`totalMatches`（**都没有 items**），后两档另外带 `pattern`/`regex`
+- **注意**：**本次会话的蓝牙数据日志**（切设备/断开就清空）。要跨会话用 `channels.rx` 去 log_tail；`sinceSeq` 增量跟进。**要"这条 ERROR 出现几次"别拉条目**：给 `pattern` + `mode`（`count` 只回计数、`matches` 只回片段）；匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也搜得到）。⚠️ **CTS 的时间条目会自动带上解读**（`items[].decoded` + `items[].decodedSummary`），不用再把这些 HEX 喂给 `ble_cts_time`；判据是特征短号 `2a2b`/`2a0f` 且长度正好对得上 —— **描述符的值不解读**（CCCD 也是 2 字节，解出来会说一个错的时区）
 
 **入参**
 
@@ -505,8 +506,8 @@
 
 - **作用**：把 **CTS（Current Time Service 0x1805）**的值翻译成人话。为什么要单独一个工具：`ble_read{char:"0x2a2b"}` 读回来的是**10 字节原始值**（年 = uint16 **小端**、星期是 1..7、Fractions256 = 1/256 秒、Adjust Reason 是位域），人肉解容易错，而错一个字段结论就全歪。给它 HEX 或字节数组，它回 `{utc, skewSecs(与本机差多少秒), dayOfWeekName, adjustReasons, notes}`，并**主动指出可疑处**：年份像 RTC 没初始化、星期几与日期对不上、时钟偏了多少分钟。**2 字节的值按 Local Time Information(0x2A0F) 解**（时区 = int8 × 15 分钟 / DST 偏移）。纯后端：不碰设备也不碰界面（读值仍走 `ble_read` → `ble_get_output`）。
 - **读/写**：只读，无副作用
-- **返回**：{field, charUuid, bytes, hex, utc, skewSecs, year, month, day, hour, minute, second, dayOfWeek, dayOfWeekName, fractions256, fractionMillis, adjustReason, adjustReasons, notes}；ield:'读
-- **注意**：{pane, count, scanned, mode, total, channels:{rx}, items:[{seq,ts,kind,hex,text,dim}]}；`mode:"matches"` 时是 `hits:[{seq,ts,kind,match}]`，`mode:"count"` 时是 `total`/`totalMatches`（**都没有 items**），后两档另外带 `pattern`/`regex`
+- **返回**：{field, charUuid, bytes, hex, utc, skewSecs, year, month, day, hour, minute, second, dayOfWeek, dayOfWeekName, fractions256, fractionMillis, adjustReason, adjustReasons, notes}
+- **注意**：把 CTS（Current Time Service 0x1805）的原始值翻译成人话 —— **纯后端工具**：不碰设备也不碰界面（读值仍走 `ble_read` → `ble_get_output`）。`data` 给 `2A2B` 的 10 字节或 `2A0F` 的 2 字节都认；返回里 `utc`/`skewSecs` 是结论，`notes` 会主动指出可疑处（年份像 RTC 没初始化、星期与日期对不上、时钟偏了多少分钟）。
 
 **入参**
 

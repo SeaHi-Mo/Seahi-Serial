@@ -15,7 +15,7 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/busid 白名单/MCP 协议与日志中心）
 ```
 
-无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，**232 条 + 1 条 `#[ignore]`**：
+无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，**242 条 + 1 条 `#[ignore]`**：
 那条 ignore 是手工联调用的 `mcp_serve_for_manual_check`，要跑 60 秒）。
 
 > ⛔ **BLE 从机（外设）方向已于 2026-09 整条删除**（用户确认"实现不了了"）：本机适配器自报支持
@@ -24,7 +24,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/
 > 证据与结论留在 `doc/BLE_PERIPHERAL.md`（已标归档）。**别再往这个方向加功能** ——
 > 先在真机上把广播跑起来再说。本应用现在的 BLE 能力只有**主机方向**。
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1566 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1586 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，94 条）：抽取前端真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，
 也有把渲染函数丢进假 DOM 跑行为断言）。前端 2026-09 已从单文件拆成
 `src/index.html`（骨架）+ `src/css/*.css` + `src/js/*.js`，**布局与加载顺序见 `doc/FRONTEND_LAYOUT.md`**；

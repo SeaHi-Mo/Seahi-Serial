@@ -536,7 +536,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "ble_get_output",
-            "description": "读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。**要\"这条 ERROR 出现几次\"别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `count` 只回计数、`matches` 只回片段、`lines`（默认）回条目。匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也能搜）。只读。",
+            "description": "读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。**要\"这条 ERROR 出现几次\"别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `count` 只回计数、`matches` 只回片段、`lines`（默认）回条目。匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也能搜）。⚠️ **CTS（0x1805）的时间条目会自动附上解读**：`items[].decoded`（完整字段）+ `items[].decodedSummary`（一行'设备现在几点、比本机快慢多少'）—— 不用再把这些 HEX 手动喂给 `ble_cts_time`。只读。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2197,7 +2197,9 @@ async fn ble_get_output(core: &Arc<McpCore>, args: &Value) -> Result<Value, RpcE
     }
     let v = ble_call(core, "getOutput", args, extra).await?;
 
-    let all: Vec<Value> = v["items"].as_array().cloned().unwrap_or_default();
+    let mut all: Vec<Value> = v["items"].as_array().cloned().unwrap_or_default();
+    // 是 CTS 的特征值就**自动附上解读**（AI 读一次就能看到"设备现在几点"）
+    attach_cts_decodes(&mut all);
     let items: Vec<OutItem<'_>> = all
         .iter()
         .map(|l| {
@@ -2810,6 +2812,65 @@ fn cap_text_summary(s: String) -> String {
     }
 }
 
+/// 给 `ble_get_output` 的条目**自动附上 CTS 解读**（省掉一次 `ble_cts_time` 往返）。
+///
+/// 判据只有一条：`charUuid` 归一后的短号 ∈ {`2a2b`, `2a0f`}，且 `hex` 长度正好对得上。
+/// ⚠️ **只认特征值**：描述符的值（比如 CTS 特征的 CCCD `0x2902`，也是 2 字节 `0100`）
+/// 一眼看过去长度也对——但那是"通知开关"，按 Local Time Information 解会给出一个
+/// **看着确定、其实完全错的时区**。所以前端对描述符行只填 `descUuid`、不填 `charUuid`，
+/// 这里也就不会误伤（宁可少解读，也不给错的）。
+///
+/// 解读失败（长度不符 / HEX 非法）**静默跳过**：原始 `hex` 还在条目里，调用方照样能自己看。
+fn attach_cts_decodes(items: &mut [Value]) {
+    for it in items.iter_mut() {
+        let uuid = it.get("charUuid").and_then(|u| u.as_str()).unwrap_or("");
+        let want = match crate::ble_short_uuid(uuid).as_str() {
+            "2a2b" => 10, // Current Time
+            "2a0f" => 2,  // Local Time Information
+            _ => continue,
+        };
+        let hex = it.get("hex").and_then(|h| h.as_str()).unwrap_or("");
+        if hex.is_empty() {
+            continue;
+        }
+        let bytes = crate::parse_hex_bytes(hex);
+        if bytes.len() != want {
+            continue; // 长度不对不猜（与界面那条纪律一致）
+        }
+        if let Ok(decoded) = crate::ble_cts_decode(&bytes) {
+            let summary = crate::ble_cts_summary(&decoded);
+            if let Some(o) = it.as_object_mut() {
+                o.insert("decodedSummary".to_string(), json!(summary));
+                o.insert("decoded".to_string(), decoded);
+            }
+        }
+    }
+}
+
+/// `ble_get_output` 的摘要：**把解读出来的时间提到最前面**。
+///
+/// 为什么单独一条：真实载荷是"一串日志条目"，通用渲染按预算只展开前几个 ——
+/// 恰好可能把 `decodedSummary`（那一行人话时间）挤出去，于是"AI 读一次就看到设备几点"这个目的落空。
+/// 末尾仍接通用摘要（契约要求它把条目内容说出来），整体按 600 字截断。
+fn summarize_ble_output(v: &Value) -> String {
+    let first_decoded = v["items"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|it| it.get("decodedSummary").and_then(|d| d.as_str()))
+                .next()
+                .unwrap_or("")
+                .to_string()
+        })
+        .unwrap_or_default();
+    let body = summarize_for_text(v);
+    if first_decoded.is_empty() {
+        body
+    } else {
+        cap_text_summary(format!("{} · {}", first_decoded, body))
+    }
+}
+
 fn summarize_for_tool(tool: &str, v: &Value) -> String {
     // CTS（`ble_cts_time`）的载荷是"一张解读表"：通用渲染只展开**前 8 个键**（字母序），
     // 正好把 `utc` / `notes` 这些真正的结论挤出去 —— 只读文本的客户端就只看到一堆原始字段
@@ -2818,6 +2879,10 @@ fn summarize_for_tool(tool: &str, v: &Value) -> String {
         && matches!(v.get("field").and_then(|f| f.as_str()), Some("currentTime") | Some("localTimeInfo"))
     {
         return summarize_cts_time(v);
+    }
+    // `ble_get_output`：条目里可能带 CTS 解读，摘要要把**时间**提到最前面（别被通用渲染挤掉）
+    if tool == "ble_get_output" && v.get("items").and_then(|i| i.as_array()).is_some() {
+        return summarize_ble_output(v);
     }
     // 按**载荷形状**判断而不是只按工具名：`ble_list_devices` 与通用桥的
     // `ui_get_state{section:"bleDevices"}` 返回的是同一张设备表，两条路都该看到设备名/MAC。
@@ -5978,6 +6043,49 @@ mod tests {
                 assert!(last.get("limit").is_none(), "检索档不该转发 limit: {}", last);
             }
         });
+    }
+
+    /// CTS 自动解读的**判据矩阵**：只认特征（2A2B / 2A0F）且长度正好对得上。
+    ///
+    /// 表里每一条都对应一类真实误伤，最要紧的是 ④**描述符**：CTS 特征的 CCCD（0x2902）
+    /// 值也是 2 字节（`01 00`），按 Local Time Information 解会给出一个"看着确定、
+    /// 其实完全错"的时区 —— 错的数据比没有数据更糟，所以宁可不解读。
+    #[test]
+    fn attach_cts_decodes_only_for_known_characteristics_and_lengths() {
+        let cts_time = "EA 07 0C 11 0F 2D 3A 04 80 00"; // 2026-12-17 15:45:58.500 周四
+        let mut items = vec![
+            // ① 128 位大写 UUID 也要认（归一化靠 crate::ble_short_uuid）
+            json!({ "seq": 0, "hex": cts_time, "charUuid": "00002A2B-0000-1000-8000-00805F9B34FB" }),
+            // ② 短号小写 + Local Time Information（2 字节：+8 小时，标准时间）
+            json!({ "seq": 1, "hex": "20 02", "charUuid": "2a0f" }),
+            // ③ 长度不符（少 1 字节）→ 不猜
+            json!({ "seq": 2, "hex": "EA 07 0C 11 0F 2D 3A 04", "charUuid": "2a2b" }),
+            // ④ 描述符行：只有 descUuid（CCCD 的值也是 2 字节），绝不能按 2A0F 解读
+            json!({ "seq": 3, "hex": "01 00", "descUuid": "00002902-0000-1000-8000-00805F9B34FB" }),
+            // ⑤ 非 CTS 特征（2A19 电量也短）→ 不解读
+            json!({ "seq": 4, "hex": "64", "charUuid": "2a19" }),
+            // ⑥ 纯文本行没有 hex → 跳过，不许 panic
+            json!({ "seq": 5, "text": "[连接中] X", "charUuid": "2a2b" }),
+            // ⑦ 非法 HEX → 跳过（原始 hex 还在条目里，调用方自己照样能看）
+            json!({ "seq": 6, "hex": "ZZ ZZ", "charUuid": "2a2b" }),
+        ];
+        attach_cts_decodes(&mut items);
+        let decoded = |i: usize| items[i].get("decoded").is_some();
+        assert!(decoded(0), "2A2B 的 10 字节要解出来: {}", items[0]);
+        assert_eq!(items[0]["decoded"]["field"], "currentTime", "{}", items[0]);
+        assert!(
+            items[0]["decodedSummary"].as_str().unwrap_or("").contains("2026"),
+            "摘要要真的把结论说出来（不是只写「解出来了」）: {}",
+            items[0]
+        );
+        assert!(decoded(1), "2A0F 的 2 字节要解出来: {}", items[1]);
+        for i in [2, 3, 4, 5, 6] {
+            assert!(!decoded(i), "第 {i} 条不该被解读: {}", items[i]);
+        }
+        // 解读只是**附加**字段：调用方自己的数据一个字节都不许改
+        assert_eq!(items[0]["hex"], json!(cts_time), "{}", items[0]);
+        assert_eq!(items[0]["charUuid"], json!("00002A2B-0000-1000-8000-00805F9B34FB"));
+        assert_eq!(items[3]["descUuid"], json!("00002902-0000-1000-8000-00805F9B34FB"));
     }
 
     /// `pattern` 的长度上限对**三个**工具都生效，而且要在**碰界面/设备之前**拦

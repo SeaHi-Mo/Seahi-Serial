@@ -269,7 +269,8 @@ function bleDescAction(ev, charUuid, descUuid, op) {
         return;
     }
     invoke('ble_read_descriptor', { charUuid: charUuid, descUuid: descUuid }).then(function(bytes) {
-        logBle('[读取描述符] 0x' + su + ' = ' + formatDescValue(descUuid, bytes));
+        logBle('[读取描述符] 0x' + su + ' = ' + formatDescValue(descUuid, bytes),
+               { kind: 'rx', hex: bleBytesToHex(Array.from(bytes || [])), descUuid: descUuid });
     }).catch(function(e) {
         logBle('[读取描述符失败] 0x' + su + ' · ' + e);
         showToast('读取描述符失败: ' + e, 'error');
@@ -323,10 +324,12 @@ function bleCharAction(el, key) {
             var svc = bleFindSvcOfChar(_bleServices, charUuid);
             var label = '[读取] ' + (svc ? bleSvcLabel(svc) + ' · ' : '') + '0x' + shortUuid(charUuid) + ': ';
             var arr = Array.from(data || []);
+            var rawHex = bleBytesToHex(arr);
+            var meta = { kind: 'rx', hex: rawHex, charUuid: charUuid };
             if (arr.length && bleCanShowAsText(arr)) {
-                logBleDim(label + bleFmtBytes(arr) + ' · ', bleBytesToHex(arr));
+                logBleDim(label + bleFmtBytes(arr) + ' · ', rawHex, meta);
             } else {
-                logBle(label + bleBytesToHex(arr));
+                logBle(label + rawHex, meta);
             }
             // CTS（时间）这类标准特征就地补一行人话（解码在 Rust 里做，见 bleCtsLogDecoded）
             bleCtsLogDecoded(charUuid, arr);
@@ -370,17 +373,33 @@ function bleCtsLogDecoded(charUuid, arr) {
 // 定位是「当前设备本次连接会话」的记录 ——
 //   切换设备时清空、断开连接时清空（见 renderBleDeviceList 的点击与 toggleBleConnect），
 //   切页/重渲染不清空（所以缓冲放在 JS 层，不依赖 DOM）。
-// 条目形态：字符串，或 { text, dim }（dim 是 text 的结尾部分，显示为灰色，
-// 目前用于「文本 + 灰色十六进制」）。
-function logBle(text) {
-    _bleLog.push({ text: text, seq: _bleLogSeq++ });
+// 条目形态：{ text, seq, ts, dim?, kind?, hex?, charUuid?, descUuid? }
+//   · `dim` 是 text 的结尾部分（显示为灰色，用于「文本 + 灰色十六进制」）；
+//   · `kind`/`hex`/`charUuid` 是**给 MCP 的结构化字段**（`ble_get_output` 的 items 直接用它们）：
+//     以前只存了拼好的文本行，于是 AI 那边 `items[].hex` 恒为 null、`charUuid` 更没有 ——
+//     而「CTS 的时间自动解读」正需要"原始字节 + 是哪个特征"（2026-09 补）。
+//   · ⚠️ 描述符的值只填 `descUuid`、**不填 `charUuid`**：CCCD（0x2902）也是 2 字节，
+//     若按所属特征的短号去解读，就会把一个"通知开关"当成时区（错得很像真的）。
+function bleLogEntry(base, meta) {
+    var e = { text: base.text || '', seq: _bleLogSeq++, ts: Date.now() };
+    if (base.dim) e.dim = base.dim;
+    if (meta) {
+        if (meta.kind) e.kind = meta.kind;
+        if (meta.hex) e.hex = meta.hex;
+        if (meta.charUuid) e.charUuid = String(meta.charUuid).toLowerCase();
+        if (meta.descUuid) e.descUuid = String(meta.descUuid).toLowerCase();
+    }
+    return e;
+}
+function logBle(text, meta) {
+    _bleLog.push(bleLogEntry({ text: text }, meta));
     if (_bleLog.length > _bleLogMax) _bleLog.splice(0, _bleLog.length - _bleLogMax);
     renderBleLog();
 }
 // 末尾灰显的日志：dim 会**追加**在 text 之后（保证 dim 一定是整条 text 的后缀 ——
 // 渲染时靠这个不变式切分；调用方只需传"前半段"和"后半段"，不必自己拼）。
-function logBleDim(text, dim) {
-    _bleLog.push({ text: (text || '') + (dim || ''), dim: dim || '', seq: _bleLogSeq++ });
+function logBleDim(text, dim, meta) {
+    _bleLog.push(bleLogEntry({ text: (text || '') + (dim || ''), dim: dim || '' }, meta));
     if (_bleLog.length > _bleLogMax) _bleLog.splice(0, _bleLog.length - _bleLogMax);
     renderBleLog();
 }
@@ -476,11 +495,12 @@ function startBleNotifyPoll() {
                 // 标明来源：服务（短 UUID + 已知名）· 特征。后端通知里带了 service_uuid。
                 var from = bleSvcLabel(it.service_uuid) + ' · 0x' + shortUuid(it.uuid || '');
                 var label = '[通知] ' + from + ':\n';
+                var nMeta = { kind: 'rx', hex: hex, charUuid: it.uuid || '' };
                 if (bytes && bytes.length && bleCanShowAsText(bytes)) {
                     // 文本可读：来源单独一行，payload 另起一行；十六进制灰显跟在文本后面（用户要求 A）
-                    logBleDim(label + '  ' + bleFmtBytes(bytes) + ' · ', hex);
+                    logBleDim(label + '  ' + bleFmtBytes(bytes) + ' · ', hex, nMeta);
                 } else {
-                    logBle(label + '  ' + hex);
+                    logBle(label + '  ' + hex, nMeta);
                 }
                 // CTS 的通知就是"设备现在几点"—— 就地写一行人话（订阅后能直接看着它走）
                 bleCtsLogDecoded(it.uuid || '', bytes);
@@ -725,14 +745,17 @@ function sendBleWriteCore() {
         return { ok: false, error: String(e), hex: hex };
     };
     if (isDesc) {
+        // 描述符的值只标 `descUuid`（CCCD 也是 2 字节，别让它在 MCP 侧被当成时区解读）
         logBle('[发送] 描述符 0x' + shortUuid(_bleWriteTarget.uuid) + ' ← 0x' + hex +
-               '（' + (hexMode ? 'HEX' : '文本') + leLog + '）');
+               '（' + (hexMode ? 'HEX' : '文本') + leLog + '）',
+               { kind: 'tx', hex: hex, descUuid: _bleWriteTarget.uuid });
         return invoke('ble_write_descriptor', { charUuid: _bleWriteTarget.charUuid,
                                                 descUuid: _bleWriteTarget.uuid, data: bytes })
             .then(onOk).catch(onFail);
     }
     logBle('[发送] 0x' + shortUuid(_bleWriteTarget.uuid) + ' ← 0x' + hex +
-           '（' + (hexMode ? 'HEX' : '文本') + ' · ' + (writeType === 'without_response' ? '无响应' : '写响应') + leLog + '）');
+           '（' + (hexMode ? 'HEX' : '文本') + ' · ' + (writeType === 'without_response' ? '无响应' : '写响应') + leLog + '）',
+           { kind: 'tx', hex: hex, charUuid: _bleWriteTarget.uuid });
     return invoke('ble_write', { charUuid: _bleWriteTarget.uuid, data: bytes, writeType: writeType })
         .then(onOk).catch(onFail);
 }

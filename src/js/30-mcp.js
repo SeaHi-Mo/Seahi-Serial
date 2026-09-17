@@ -1176,6 +1176,10 @@ function mcpBleOp(payload) {
                     ts: l.ts || null,
                     kind: l.kind || null,     // 'rx' / 'tx' / 'info' / 'err'
                     hex: l.hex || null,
+                    // 值属于哪个特征/描述符：**CTS 的时间自动解读**就靠它认（后端按短号 2a2b/2a0f 判断）；
+                    // 描述符的值只给 descUuid —— CCCD 也是 2 字节，别让它在解读时被当成时区
+                    charUuid: l.charUuid || null,
+                    descUuid: l.descUuid || null,
                     text: l.text || '',
                     dim: l.dim || '',
                 };

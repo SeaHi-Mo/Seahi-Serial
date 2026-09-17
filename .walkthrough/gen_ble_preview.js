@@ -443,7 +443,7 @@ console.log('preview ->', out);
   const logEl = { textContent: '', innerHTML: '', scrollTop: 0, scrollHeight: 10 };
   sb3.document = { getElementById: (id) => (id === 'ble-log' ? logEl : null) };
   vm.createContext(sb3);
-  vm.runInContext(['logBle', 'logBleDim', 'bleLogToHtml', 'escapeHtml', 'renderBleLog', 'clearBleLog'].map(extractFunction).join('\n'), sb3);
+  vm.runInContext(['bleLogEntry', 'logBle', 'logBleDim', 'bleLogToHtml', 'escapeHtml', 'renderBleLog', 'clearBleLog'].map(extractFunction).join('\n'), sb3);
   sb3.logBle('[连接中] X');
   sb3.logBle('[连接成功] X · 服务 5 · 特征 8');
   check(sb3._bleLog.length === 2, 'logBle 追加日志', String(sb3._bleLog.length));
@@ -536,6 +536,34 @@ console.log('preview ->', out);
     // ⑥ 两条路（读取 / 通知）都接了：源码级确认，漏一处就等于半个功能
     check(/bleCtsLogDecoded\(charUuid, arr\)/.test(html) && /bleCtsLogDecoded\(it\.uuid \|\| '', bytes\)/.test(html),
       '读取与通知两条路都接了 CTS 解读');
+  }
+
+  // ---- 5d1) 日志条目的 MCP 元数据：值属于哪个特征/描述符（后端"自动解读"就靠它）----
+  // 后端 `attach_cts_decodes` 的判据只有两条：`charUuid` 归一后的短号 ∈ {2a2b, 2a0f}、
+  // 且 `hex` 长度正好对得上。所以这三样必须从真实日志条目一路带到 `ble_get_output`。
+  // ⚠️ 而**描述符行只给 descUuid**：CCCD（0x2902）的值也是 2 字节（`0100`），
+  // 填了 charUuid 就会被按 Local Time Information 解出一个"看着确定、其实完全错的"时区。
+  {
+    const sbMeta = {
+      console, _bleLog: [], _bleLogMax: 400, _bleLogSeq: 0,
+      renderBleLog: () => {},   // 本段只关心缓冲里的条目，不渲染
+    };
+    vm.createContext(sbMeta);
+    vm.runInContext(['bleLogEntry', 'logBle'].map(extractFunction).join('\n'), sbMeta);
+    sbMeta.logBle('[通知] 0x2A2B: 时间', { kind: 'rx', hex: 'EA 07 01 02 03 04 05 06 00 00',
+                                           charUuid: '00002A2B-0000-1000-8000-00805F9B34FB' });
+    check(sbMeta._bleLog[0].kind === 'rx' && sbMeta._bleLog[0].hex === 'EA 07 01 02 03 04 05 06 00 00'
+      && sbMeta._bleLog[0].charUuid === '00002a2b-0000-1000-8000-00805f9b34fb',
+      '日志条目记下 kind/hex/charUuid（UUID 统一小写 —— 后端按短号认）',
+      JSON.stringify(sbMeta._bleLog[0]));
+    check(sbMeta._bleLog[0].descUuid === undefined,
+      '没传 descUuid 就不添这个键（不造假数据）');
+    sbMeta.logBle('[读取描述符] 0x2902 = 0x0100（通知已启用）',
+      { kind: 'rx', hex: '01 00', descUuid: '00002902-0000-1000-8000-00805F9B34FB' });
+    check(sbMeta._bleLog[1].descUuid === '00002902-0000-1000-8000-00805f9b34fb'
+      && sbMeta._bleLog[1].charUuid === undefined,
+      '描述符行只标 descUuid、**不填 charUuid**（CCCD 的 2 字节别被当成时区）',
+      JSON.stringify(sbMeta._bleLog[1]));
   }
 
   // ---- 5e) 写入属性去重：write 与 write_without_response 只出一个「发送」图标 ----
@@ -874,7 +902,7 @@ console.log('preview ->', out);
   sb6.renderBleDeviceList = () => {};
   sb6.renderBleDetail = () => {};
   vm.createContext(sb6);
-  vm.runInContext(['logBle', 'renderBleLog', 'clearBleLog', 'onBleLinkLost'].map(extractFunction).join('\n'), sb6);
+  vm.runInContext(['bleLogEntry', 'logBle', 'renderBleLog', 'clearBleLog', 'onBleLinkLost'].map(extractFunction).join('\n'), sb6);
   sb6.onBleLinkLost();
   check(sb6._bleConnAddr === null && sb6._bleServices.length === 0 && Object.keys(sb6._bleSubs).length === 0,
     '链路断开：清空连接态/服务/订阅');
@@ -1018,12 +1046,12 @@ console.log('preview ->', out);
 
   // ---- 8) 通知/接收数据默认按文本显示（用户反馈：文本 payload 被显示成十六进制）----
   // 文本 case：文本在前、十六进制灰显跟在后面（用户选 A）：走 logBleDim + .ble-log-dim
-  check(/logBleDim\(label \+ '  ' \+ bleFmtBytes\(bytes\) \+ ' · ', hex\);/.test(html),
-    '文本可读时：文本 + 灰色十六进制（用 logBleDim 追加灰显段）');
+  check(/logBleDim\(label \+ bleFmtBytes\(arr\) \+ ' · ', rawHex, meta\);/.test(html),
+    '文本可读时：文本 + 灰色十六进制（用 logBleDim 追加灰显段；读取路径同样附 hex/charUuid 给 MCP）');
   check(/\.ble-log-dim \{ color:var\(--text-d\); \}/.test(html), '灰色段有对应样式 .ble-log-dim');
-  check(/logBle\(label \+ '  ' \+ hex\);/.test(html), '二进制/解析失败时仍直接显示十六进制');
-  check(/function logBleDim\(text, dim\)/.test(html) && /_bleLog\.push\(\{ text: \(text \|\| ''\) \+ \(dim \|\| ''\), dim: dim \|\| '', seq: _bleLogSeq\+\+ \}\)/.test(html),
-    'logBleDim 以结构化条目入缓冲，并把 dim 追加成 text 的后缀（seq 在写入时发号）');
+  check(/logBle\(label \+ '  ' \+ hex, nMeta\);/.test(html), '二进制/解析失败时仍直接显示十六进制');
+  check(/function logBleDim\(text, dim, meta\)/.test(html) && /bleLogEntry\(\{ text: \(text \|\| ''\) \+ \(dim \|\| ''\), dim: dim \|\| '' \}, meta\)/.test(html),
+    'logBleDim 仍把 dim 追加成 text 的后缀（seq/ts 在 bleLogEntry 里发号，meta 带结构化字段）');
   // 日志渲染改成 innerHTML → 必须全部转义（设备数据是注入面）
   check(/log\.innerHTML = bleLogToHtml\(_bleLog, escapeHtml\) \+ '\\n';/.test(html),
     '日志渲染经 bleLogToHtml + escapeHtml（内容全部转义后才插入）');
@@ -1101,9 +1129,9 @@ console.log('preview ->', out);
   // 通知换行：来源单独一行，payload 另起一行
   check(/var label = '\[通知\] ' \+ from \+ ':\\n';/.test(html),
     '通知日志在冒号后换行（来源单独一行）');
-  check(/logBleDim\(label \+ '  ' \+ bleFmtBytes\(bytes\) \+ ' · ', hex\);/.test(html),
-    '换行后 payload 缩进两格，十六进制仍灰显跟在文本后');
-  check(/logBle\(label \+ '  ' \+ hex\);/.test(html), '二进制 case 同样换行缩进');
+  check(/logBleDim\(label \+ '  ' \+ bleFmtBytes\(bytes\) \+ ' · ', hex, nMeta\);/.test(html),
+    '换行后 payload 缩进两格，十六进制仍灰显跟在文本后（并附 charUuid/hex 给 MCP）');
+  check(/logBle\(label \+ rawHex, meta\);/.test(html), '读取到的二进制同样附 hex/charUuid（供 MCP 自动解读）');
 
   // 状态保留：纯数据采集函数 + 恢复 + 消费
   const sbBle = { console };
@@ -1764,6 +1792,27 @@ console.log('preview ->', out);
   check(/pub\(crate\) fn ble_cts_summary\(/.test(mainRs)
     && /cap_text_summary\(crate::ble_cts_summary\(v\)\)/.test(mcpSrc),
     '界面日志与 MCP 文本摘要**共用同一份** ble_cts_summary（不许两种说法）');
+  // CTS 自动解读（B 方案）：`ble_get_output` 的条目里带 charUuid + hex 时**就地**补
+  // decoded/decodedSummary —— AI 读一次日志就看到"设备现在几点"，不用再单独调 ble_cts_time。
+  check(/attach_cts_decodes\(&mut all\)/.test(mcpSrc)
+    && /fn attach_cts_decodes\(items: &mut \[Value\]\)/.test(mcpSrc),
+    'ble_get_output 的条目会就地附上 CTS 解读（省掉一次 ble_cts_time 往返）');
+  // ⚠️ 判据必须**只看 charUuid**：描述符行给的是 descUuid（CCCD 0x2902 的值也是 2 字节 0100），
+  // 一旦按它去解就会把一个"通知开关"说成一个确定的时区 —— 错得很像真的，比不解读更糟。
+  {
+    const ctsAttachBody = (mcpSrc.match(/fn attach_cts_decodes[\s\S]*?\n\}/) || [''])[0];
+    check(/it\.get\("charUuid"\)/.test(ctsAttachBody) && !/descUuid/.test(ctsAttachBody),
+      '解读判据只看 charUuid：描述符的值（CCCD 也是 2 字节）一概不解读',
+      ctsAttachBody.slice(0, 120));
+    check(/"2a2b" => 10[\s\S]{0,80}?"2a0f" => 2/.test(ctsAttachBody)
+      && /bytes\.len\(\) != want/.test(ctsAttachBody),
+      '只有 2A2B(10B) / 2A0F(2B) 两个已知长度才对得上（长度不符不猜）');
+  }
+  // 摘要里要把解读结果**提到最前面**：通用渲染按预算只展开前几个键，正好可能把那行
+  // 人话时间挤出去（"读一次就知道设备几点"这个目的就落空了 —— 契约测试会因此失败）。
+  check(/fn summarize_ble_output\(/.test(mcpSrc) && /decodedSummary/.test(mcpSrc)
+    && /tool == "ble_get_output"[\s\S]{0,120}?summarize_ble_output\(v\)/.test(mcpSrc),
+    'ble_get_output 的文本摘要会把解读出来的时间提到最前面');
   check(/AI_CONFIG_FILE: &str = "ai-config\.json"/.test(mcpSrc), 'AI 配置写独立文件 ai-config.json');
   check(!/save_config|load_config|backup_config/.test(mcpSrc),
     'MCP 模块绝不调用用户配置的读写命令（R5 的硬约束）');
@@ -5146,6 +5195,31 @@ console.log('preview ->', out);
       check(oBoth.value.count === 2 && oBoth.value.items[0].seq === 398,
         'limit 与 sinceSeq 同时给：先按 seq 增量、再取最后 limit 条',
         JSON.stringify(oBoth.value.items.map(x => x.seq)));
+
+      // 元数据透传：后端 `attach_cts_decodes` 只看 charUuid（短号）+ hex（长度），
+      // 缺这两个字段"自动解读 CTS"这个功能就整个落空（而且两边各自的单测都会是绿的）
+      const envMeta = mkEnv({ dev: connectedDev });
+      envMeta._bleLog = [
+        { text: 't1', seq: 1, ts: 1766000000000, kind: 'rx', hex: 'EA 07 01 02 03 04 05 06 00 00',
+          charUuid: '00002a2b-0000-1000-8000-00805f9b34fb' },
+        { text: 't2', seq: 2 },   // 无元数据的老条目（比如 [连接中] 那种提示行）
+        { text: 't3', seq: 3, kind: 'rx', hex: '01 00',
+          descUuid: '00002902-0000-1000-8000-00805f9b34fb' },
+      ];
+      const oMeta = envMeta.mcpBleOp({ action: 'getOutput' });
+      check(oMeta.value.items[0].kind === 'rx' && oMeta.value.items[0].hex === 'EA 07 01 02 03 04 05 06 00 00'
+        && oMeta.value.items[0].charUuid === '00002a2b-0000-1000-8000-00805f9b34fb'
+        && oMeta.value.items[0].ts === 1766000000000,
+        'getOutput 把 kind/hex/charUuid/ts 原样带给 MCP（后端据此自动解读 CTS）',
+        JSON.stringify(oMeta.value.items[0]));
+      check(oMeta.value.items[1].hex === null && oMeta.value.items[1].charUuid === null
+        && oMeta.value.items[1].descUuid === null && oMeta.value.items[1].ts === null,
+        '没有元数据的条目给 null 而不是缺键（客户端字段稳定）',
+        JSON.stringify(oMeta.value.items[1]));
+      check(oMeta.value.items[2].descUuid === '00002902-0000-1000-8000-00805f9b34fb'
+        && oMeta.value.items[2].charUuid === null,
+        '描述符行只带 descUuid（后端不会拿 CCCD 的 2 字节去解时间）',
+        JSON.stringify(oMeta.value.items[2]));
 
       // 特征图标只在该服务"展开"时才在 DOM 里：没展开过也要能操作（先展开拥有它的服务）
       const lazyTree = { uuid: '0000FFF0-0000-1000-8000-00805F9B34FB',
