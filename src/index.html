@@ -2080,6 +2080,9 @@ html,body { font-family:var(--font-ui); background:var(--editor-bg); color:var(-
     transition:background .15s ease, color .15s ease;
 }
 .qcmd-item-delay:hover { background:var(--input-bg); color:var(--text); }
+/* 这一格还带着"只在文件里才配得到"的条件（期望 / 重试）时描一层淡边：
+   面板上没有这两项的入口，不标出来就是"用户看不见的东西在生效"（悬停 title 会说清内容） */
+.qcmd-item-delay.has-extra { border-color:var(--border-h); color:var(--text-soft); }
 .qcmd-item-delay:focus { background:var(--input-bg); border-color:var(--accent-focus); color:var(--text); }
 /* HEX 使能（每条独立，默认关）：开启 = 本条按 HEX 解析后发送，与主发送栏的文本/HEX 无关。
    它是"有状态"的开关（开着要一眼看出），所以这个框留着不删；
@@ -3048,7 +3051,7 @@ function createMonitorPane(mid, title, closable) {
     monitors[mid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, _editing: false, quickCmds: [
         // 首次启动：**一组、一条空指令**（用户 2026-09 定的默认）。组由 qcmdGroups() 现场包出来。
         // 每条只剩：顺序号(seq) / 指令(value) / 延时(delay) / HEX(hex)，名称已退出界面（label 留空）
-        {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false}
+        {label:'', value:'', seq:0, timeout:QCMD_TIMEOUT_DEFAULT, hex:false}
     ], workflows: [], _bufferStart: 0,
     // 紧凑存储：TypedArray 替代对象数组
     _textData: new Uint8Array(TEXT_BUF_INIT),  // 起步 64 KB，按需翻倍（原来固定 1 MB）
@@ -4524,7 +4527,7 @@ function addWslMonitor() {
 
     monitors[wmid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, _editing: false, quickCmds: [
         // 首次启动：**一组、一条空指令**（用户 2026-09 定的默认）。组由 qcmdGroups() 现场包出来。
-        {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false}
+        {label:'', value:'', seq:0, timeout:QCMD_TIMEOUT_DEFAULT, hex:false}
     ], isWsl: true, workflows: [], _bufferStart: 0,
     _textData: new Uint8Array(TEXT_BUF_INIT), _textDataLen: 0,
     _textDataMaxBytes: 8 * 1024 * 1024,
@@ -5250,6 +5253,24 @@ function mcpCopy(kind, btn) {
  * 路径一旦发布**只增不改**（AI 提示词与用户脚本会依赖它）。
  */
 var MCP_SELECTOR = 'button, input, select, textarea, [onclick], [role="tab"]';
+/* 危险动作在界面上的**另一个入口**：这些控件带 `data-mcp-skip`，注册表**不收**它们 ——
+   否则 AI 用 `ui_click` 点一下就能绕过确认门（危险门按**工具名**判，而 `ui_click` 不是危险工具）。
+   ⚠️ **加新的危险按钮时先问一句"它有没有专用工具"**：有 → 加 `data-mcp-skip` 并登记到下面这张表；
+   没有 → 别 skip（那等于把 AI 唯一的路也堵了），先补一个带确认门的工具。
+   这张表的 key 必须与 Rust `DANGER_TOOLS` **完全一致**（断言守着：不漏、不虚）。 */
+var MCP_DANGER_CONTROLS = {
+    ble_periph_start:    'blePfStartBtn',   // 从机「开始广播」
+    ble_periph_stop:     'blePfStopBtn',    // 从机「停止广播」
+    serial_workflow_run: 'wf-run-btn',      // 工作流每条规则那颗「运行/停止」
+};
+/* 危险动作里**界面上本来就没有可点入口**的那些（显式列出来，免得"漏了一个"和"本来就没有"分不清）：
+   - adb_open_shell：设备卡片是 `div` + addEventListener，**不在 MCP_SELECTOR 里**，通用桥本来就点不到；
+   - adb_shell_write：终端输入走 xterm 自己的 keydown/composition，往它的 textarea 写值不会执行 ——
+     真正的执行路径只有 `adb_shell_write` 这个工具。 */
+var MCP_DANGER_NO_UI = {
+    adb_open_shell: '设备卡片是 div + addEventListener，不在 MCP_SELECTOR 里',
+    adb_shell_write: '终端输入走 xterm 自己的 keydown，注册表写 textarea 不会执行',
+};
 var MCP_REGISTRY = {};        // path -> entry
 var MCP_REGISTRY_LIST = [];   // 按文档序（列表与分页都基于它）
 var _mcpRegistrySig = -1;     // 用于判断 DOM 是否变了（懒重建）
@@ -5462,6 +5483,10 @@ function mcpBuildRegistry() {
     MCP_REGISTRY_LIST = [];
     var dup = {};
     for (var i = 0; i < nodes.length; i++) {
+        // 危险动作的"另一个入口"（BLE 从机启停、工作流那颗运行按钮）：**不收进注册表** ——
+        // 否则 `ui_click` 一下就等于绕过确认门（危险门按工具名判）。这些按钮的 `data-mcp-skip`
+        // 与 `MCP_DANGER_CONTROLS` 那张表配对，断言守着"不漏也不虚"。
+        if (nodes[i].closest && nodes[i].closest('[data-mcp-skip]')) continue;
         var entry = mcpEntryFor(nodes[i], i);
         if (!entry) continue;
         if (MCP_REGISTRY[entry.path]) {
@@ -6744,6 +6769,8 @@ var MCP_SERIAL_WRITE_ACTIONS = {
     apply: true, click: true, clear: true, refreshPorts: true, send: true,
     quickLoop: true, quickAdd: true, quickUpdate: true, quickRemove: true,
     quickGroup: true, quickRun: true, setSendAs: true,
+    // 工作流：改规则是写；wfList 是只读（**故意不在这里**）
+    wfAdd: true, wfUpdate: true, wfRemove: true, wfToggle: true,
 };
 
 /// 分栏名 → 该切到哪个面板（`serial` = 串口页，`wsl` = WSL 端口映射页）。
@@ -6861,12 +6888,15 @@ function mcpSerialOp(payload) {
         // 也就是循环的行走顺序），同时把每条属于哪个组一起给出去
         var flat = qcmdAllItems(mid);
         var qs = flat.map(function (x, i) {
-            // seq/delayMs/hex 是**每条自己的发送参数**（名称已退出界面，label 可能为空）：
-            // AI 要能一眼看出"哪几条会被循环发出去、隔多久、按文本还是 HEX"
+            // seq/timeoutMs/hex 是**每条自己的发送参数**（名称已退出界面，label 可能为空）：
+            // AI 要能一眼看出"哪几条会被循环发出去、每条最多等多久、按文本还是 HEX"。
+            // expect/retry 只在文件里配得到（面板没有入口），一并给出来 —— 否则 AI 看不到这条的完整条件
             var q = x.it || {};
             return { index: i, group: x.group.name || '', groupIndex: x.gi, itemIndex: x.ii,
                      label: q.label || ('指令' + (i + 1)), value: q.value || '',
-                     seq: qcmdItemSeq(q), delayMs: qcmdItemDelay(q), hex: qcmdItemHex(q),
+                     seq: qcmdItemSeq(q), timeoutMs: qcmdItemTimeout(q), hex: qcmdItemHex(q),
+                     expect: qcmdItemExpect(q), retry: qcmdItemRetry(q),
+                     okGoto: qcmdItemOkGoto(q), errGoto: qcmdItemErrGoto(q),
                      // 想把某个格子交给 ui_set 改时不用猜 id（组变化时前缀也会变）
                      domIds: { value: qcmdItemElId(mid, x.gid, x.ii, 'val'),
                                seq: qcmdItemElId(mid, x.gid, x.ii, 'seq'),
@@ -6881,7 +6911,7 @@ function mcpSerialOp(payload) {
         var planLen = qcmdLoopPlan(mid).length;
         // 列表可能来自外部文件（文件即存储，见 qcmdSideHtml/quick_cmds_* 命令）：
         // 把来源一起给 AI —— 否则它会以为"改配置就能保住这条指令"，而面板里改的其实会写回文件
-        // ⚠️ seq/delayMs/hex 只有文件表头声明了那几列时才在文件里，否则随 config.json 走
+        // ⚠️ seq/timeoutMs/hex 只有文件表头声明了那几列时才在文件里，否则随 config.json 走
         return { ok: true, value: { pane: mid, items: qs, groups: groups, groupCount: groups.length,
                                     loop: { on: qcmdLoopRunning(mid), planLength: planLen },
                                     usable: qs.filter(function (q) { return !!q.value; }).length,
@@ -6926,7 +6956,7 @@ function mcpSerialOp(payload) {
         var tooLongUpd = qcmdValueTooLong(payload.value);
         if (tooLongUpd) return { ok: false, invalidParams: true, error: tooLongUpd };
         var appliedU = qcmdApplyItemPatch(mid, cellU.gid, cellU.ii, payload);
-        if (!appliedU.length) return { ok: false, invalidParams: true, error: '没给要改的字段（value / seq / delayMs / hex 至少一个）' };
+        if (!appliedU.length) return { ok: false, invalidParams: true, error: '没给要改的字段（value / seq / timeoutMs / expect / retry / hex 至少一个）' };
         return { ok: true, value: { pane: mid, index: parseInt(payload.index, 10), group: cellU.group.name || '',
                                     itemIndex: cellU.ii, applied: appliedU } };
     }
@@ -6968,6 +6998,90 @@ function mcpSerialOp(payload) {
         var after = qcmdGroups(mid).map(function(g) { return g.name || ''; });
         return { ok: true, value: { pane: mid, op: op, groups: after, before: before,
                                     loop: { on: qcmdLoopRunning(mid), planLength: qcmdLoopPlan(mid).length } } };
+    }
+    // ===== 工作流规则（面板「更多设置 → 工作流」那一块）=====
+    // 与面板上改的是**同一条路**：直接改 `m.workflows` 再调 renderWorkflowList + saveWorkflowConfig，
+    // 不另写一套（否则"AI 改的"和"面板改的"迟早对不上）。
+    if (action === 'wfList') {
+        var wfRules = (m.workflows || []).map(function(r) {
+            return { id: r.id, name: r.name || '', enabled: r.enabled !== false, running: !!r.running,
+                     collapsed: !!r.collapsed,
+                     conditions: (r.conditions || []).map(function(c) {
+                         return { type: c.type || 'string_contains', value: c.value || '' };
+                     }),
+                     actions: (r.actions || []).map(mcpWfActionOut),
+                     domIds: { name: mcpWfElId(mid, r.id, 'name'),
+                               enabled: mcpWfElId(mid, r.id, 'enabled'),
+                               run: mcpWfElId(mid, r.id, 'run') } };
+        });
+        return { ok: true, value: { pane: mid, count: wfRules.length,
+                                    runningCount: wfRules.filter(function(r) { return r.running; }).length,
+                                    rules: wfRules,
+                                    limits: { maxRules: WF_MAX_RULES, maxConditions: WF_MAX_CONDITIONS,
+                                              maxActions: WF_MAX_ACTIONS, maxNameChars: WF_MAX_NAME,
+                                              maxCondValueChars: WF_MAX_COND_VALUE,
+                                              maxActionDataChars: WF_MAX_ACTION_DATA } } };
+    }
+    if (action === 'wfAdd') {
+        if ((m.workflows || []).length >= WF_MAX_RULES) {
+            // 满员是**前置状态**问题（先删几条再重试）→ 不带 invalidParams（-32006 那一类）
+            return { ok: false, error: '规则已达上限 ' + WF_MAX_RULES + ' 条（先 wfRemove 删几条）' };
+        }
+        var whyAdd = mcpWfValidate(payload);
+        if (whyAdd) return { ok: false, invalidParams: true, error: whyAdd };
+        var newRule = { id: genWfId(), name: String(payload.name || '新规则').slice(0, WF_MAX_NAME),
+                        enabled: payload.enabled !== false,
+                        // ⚠️ 新规则**一律 running=false**：跑起来要另走 serial_workflow_run（带 confirm）
+                        running: false, collapsed: false,
+                        conditions: mcpWfConds(payload), actions: mcpWfActs(payload) };
+        if (!m.workflows) m.workflows = [];
+        m.workflows.push(newRule);
+        renderWorkflowList(mid);
+        saveWorkflowConfig(mid);
+        return { ok: true, value: { pane: mid, rule: newRule.id, name: newRule.name, running: false,
+                                    count: m.workflows.length, conditions: newRule.conditions.length,
+                                    actions: newRule.actions.length } };
+    }
+    if (action === 'wfUpdate' || action === 'wfRemove' || action === 'wfToggle') {
+        var wfTarget = findWfRule(mid, payload.rule);
+        if (!wfTarget) {
+            return { ok: false, invalidParams: true,
+                     error: '没有这条规则：' + (payload.rule || '(空)') + '（规则 id 见 wfList 的 rules[].id）' };
+        }
+        if (action === 'wfRemove') {
+            var wasRunning = !!wfTarget.running;
+            if (wasRunning) toggleWorkflowRun(mid, wfTarget.id);   // 先停掉，别留一条还在跑的规则
+            var goneName = wfTarget.name || '';
+            deleteWorkflowRule(mid, wfTarget.id);
+            return { ok: true, value: { pane: mid, removed: wfTarget.id, name: goneName,
+                                        wasRunning: wasRunning, count: ((m.workflows || []).length) } };
+        }
+        if (action === 'wfToggle') {
+            var wantRun = payload.on === undefined ? true : !!payload.on;
+            if (!!wfTarget.running !== wantRun) toggleWorkflowRun(mid, wfTarget.id);
+            return { ok: true, value: { pane: mid, rule: wfTarget.id, name: wfTarget.name || '',
+                                        running: !!wfTarget.running, changed: true } };
+        }
+        var whyUpd = mcpWfValidate(payload);
+        if (whyUpd) return { ok: false, invalidParams: true, error: whyUpd };
+        var appliedWf = [];
+        if (payload.name !== undefined) { wfTarget.name = String(payload.name).slice(0, WF_MAX_NAME); appliedWf.push('name'); }
+        if (payload.enabled !== undefined) { wfTarget.enabled = !!payload.enabled; appliedWf.push('enabled'); }
+        // running 只接受 false（停一条正在跑的）；启动必须走 serial_workflow_run
+        if (payload.running === false && wfTarget.running) {
+            toggleWorkflowRun(mid, wfTarget.id);
+            appliedWf.push('running');
+        }
+        if (payload.conditions !== undefined) { wfTarget.conditions = mcpWfConds(payload); appliedWf.push('conditions'); }
+        if (payload.actions !== undefined) { wfTarget.actions = mcpWfActs(payload); appliedWf.push('actions'); }
+        if (!appliedWf.length) {
+            return { ok: false, invalidParams: true,
+                     error: '没给要改的字段（name / enabled / running=false / conditions / actions 至少一个）' };
+        }
+        renderWorkflowList(mid);
+        saveWorkflowConfig(mid);
+        return { ok: true, value: { pane: mid, rule: wfTarget.id, applied: appliedWf,
+                                    running: !!wfTarget.running, enabled: wfTarget.enabled !== false } };
     }
     if (action === 'quickRun') {
         var idx = parseInt(payload.index, 10);
@@ -7601,7 +7715,7 @@ var QCMD_LOOP_TITLE_ON  = '循环发送进行中：点击停止';
 function qcmdColsInnerHtml() {
     return '<span class="qcmd-col-seq">顺序</span>' +
         '<span class="qcmd-col-val">指令</span>' +
-        '<span class="qcmd-col-delay" title="延时发送时间：本条发完到下发一条的间隔">延时' +
+        '<span class="qcmd-col-delay" title="超时（毫秒）：这条发出去最多等多久 —— 等到 OK 发下一条；等到 ERROR 重发本条（默认最多 3 次）；等满这个时间还没等到 OK 就终止整条循环。填 0 = 这条不等响应（连续 HEX 帧等）">超时' +
             '<span class="qcmd-col-unit">(ms)</span></span>' +
         '<span class="qcmd-col-hex" title="本条按 HEX 格式发送（默认关闭）">HEX</span>';
 }
@@ -7683,7 +7797,7 @@ function qcmdResolveItem(mid, index) {
     return flat[i];
 }
 
-/// 把 {value,seq,delayMs,hex} 落到某一条上。**走用户手点那条路**：交给 `mcpWriteEl`
+/// 把 {value,seq,timeoutMs,expect,retry,hex} 落到某一条上。**走用户手点那条路**：交给 `mcpWriteEl`
 /// （写真实输入框 + 派发 input/change；hex 是按钮 → 状态不一致才点它），
 /// 所以界面、模型、配置文件三者不会各说各话。控件不在时退回直接改模型 + 重建列表。
 /// 返回真正改动的字段名（空数组 = 没给任何字段）。
@@ -7709,10 +7823,33 @@ function qcmdApplyItemPatch(mid, gid, idx, patch) {
         if (!put('seq', 'text', sq)) it.seq = parseInt(sq, 10);
         applied.push('seq');
     }
-    if (patch.delayMs !== undefined) {
-        var d = String(qcmdItemDelay({ delay: parseInt(patch.delayMs, 10) }));
-        if (!put('delay', 'text', d)) it.delay = parseInt(d, 10);
-        applied.push('delayMs');
+    if (patch.timeoutMs !== undefined || patch.delayMs !== undefined) {
+        // ⚠️ `delayMs` 是历史拼写：这一项的语义已经变成「超时」，但仍然认它
+        // （直接改名会让按旧写法调用的人静默失效 —— 那比报错危险得多）
+        var rawTo = patch.timeoutMs !== undefined ? patch.timeoutMs : patch.delayMs;
+        var t = String(qcmdItemTimeout({ timeout: parseInt(rawTo, 10) }));
+        if (!put('delay', 'text', t)) it.timeout = parseInt(t, 10);
+        applied.push('timeoutMs');
+    }
+    if (patch.expect !== undefined) {
+        // 「期望」面板上没有入口（写在文件表头声明的列里）→ 直接改模型，再由写回落到文件
+        it.expect = String(patch.expect == null ? '' : patch.expect).trim().slice(0, QCMD_EXPECT_MAX);
+        applied.push('expect');
+    }
+    if (patch.retry !== undefined) {
+        var rv = parseInt(patch.retry, 10);
+        it.retry = Math.max(0, Math.min(QCMD_RETRY_MAX, isFinite(rv) ? rv : QCMD_RETRY_DEFAULT));
+        applied.push('retry');
+    }
+    // 跳转两列（面板上没有入口，写在文件里）：值按归一化后的口径落模型
+    // （'' = 下一条 / 'end' = 结束 / '数字' = 顺序号）；不认得的值一律落成"下一条"并如实回报
+    if (patch.okGoto !== undefined) {
+        it.okgoto = qcmdGotoNorm(patch.okGoto);
+        applied.push('okGoto');
+    }
+    if (patch.errGoto !== undefined) {
+        it.errgoto = qcmdGotoNorm(patch.errGoto);
+        applied.push('errGoto');
     }
     if (patch.hex !== undefined) {
         var hb = document.getElementById(qcmdItemElId(mid, gid, idx, 'hex'));
@@ -7720,6 +7857,9 @@ function qcmdApplyItemPatch(mid, gid, idx, patch) {
         applied.push('hex');
     }
     if (!applied.length) return applied;
+    // 改了 期望/重试 之后，超时那一格的描边与悬停说明要跟着变（它是这两项唯一的可见出口）
+    var tEl = document.getElementById(qcmdItemElId(mid, gid, idx, 'delay'));
+    if (tEl) { tEl.title = qcmdTimeoutTitle(it); syncQcmdTimeoutMark(tEl, it); }
     if (!document.getElementById(qcmdItemElId(mid, gid, idx, 'val'))) rebuildQcmdList(mid);
     scheduleConfigSave();
     scheduleQcmdFileSave(mid);      // 文件即存储：改了内容就写回
@@ -7968,12 +8108,21 @@ function qcmdMdCells(line) {
 }
 
 /* 表头列名 → 列的含义。别名表**刻意收窄**：像 `编号`/`no`/`num`/`index` 这种
-   很可能是用户自己的 ID 列，认成顺序号就会把 `A1` 改写成 `0` —— 宁可少认，不可乱认。 */
+   很可能是用户自己的 ID 列，认成顺序号就会把 `A1` 改写成 `0` —— 宁可少认，不可乱认。
+   ⚠️ `delay` 那一行是**旧名**：这一列以前是"延时"（发完等多久再发下一条），
+   现在按**超时**解读（发完最多等多久）—— 面板上那一格也早就改叫「超时」了。
+   两列同时存在时 `timeout` 优先；只写了旧名时仍能读，并在导入时提示一次。 */
 var QCMD_COL_ALIASES = {
     name:  ['名称', '名字', '标签', '指令名', 'name', 'label', 'title'],
     value: ['指令', '命令', '内容', '指令内容', '发送内容', 'cmd', 'command', 'value', 'data'],
     seq:   ['顺序号', '顺序', '序号', '次序', '序', 'order', 'seq', 'sequence'],
+    timeout: ['超时', '超时时间', '超时毫秒', '等待', '等待时间', 'timeout', 'wait'],
     delay: ['延时', '延迟', '延时时间', '延时毫秒', '间隔', 'delay', 'interval', 'ms', 'delayms'],
+    expect: ['期望', '期望值', '响应词', '成功词', 'expect'],
+    retry: ['重试', '重试次数', 'retry', 'retries'],
+    // 跳转（分支与循环）：取值 = 空/`下一条`（缺省）、数字（**顺序号**）、`结束`
+    okgoto: ['成功跳转', '成功后', '成功', 'ok跳转', 'okgoto', 'success', 'onsuccess'],
+    errgoto: ['失败跳转', '失败后', '失败', 'err跳转', 'errgoto', 'fail', 'onfail', 'ongoto'],
     hex:   ['hex', 'hex开关', '十六进制', '格式', 'format', 'mode']
 };
 
@@ -8005,6 +8154,13 @@ function qcmdHeaderMap(cells) {
     var first = qcmdColKey(cells[0]);
     if (first === 'name' || first === 'value') return map;
     return cells.length === 1 ? map : null;
+}
+
+/// 「超时」列在表头里的下标：新名 `超时` 优先，旧名 `延时` 兜底（两个都没声明 = undefined）。
+/// 面板上那一格只有一列，所以文件里也只认一列 —— 两列都写时以「超时」为准。
+function qcmdTimeoutColIndex(cols) {
+    if (!cols) return undefined;
+    return cols.timeout !== undefined ? cols.timeout : cols.delay;
 }
 
 /// `|---|---|` 这种 Markdown 分隔行
@@ -8053,6 +8209,10 @@ function qcmdParseText(text) {
     // 由面板给个默认名 —— 老文件因此一字不动）
     var groups = [{ key: 0, name: '', cols: null, items: [] }];
     var curGroup = 0;
+    var legacyTimeoutCol = false;    // 文件里那一列用的是旧名「延时」→ 导入时提示一次
+    var customCondCount = 0;         // 有自定义「期望 / 重试」的条数（面板不显示它们 → 也要说一声）
+    var gotoUnknown = 0;             // 跳转列里写了认不出来的值的次数（同样要提示一次）
+    var gotoCount = 0;               // 写了跳转（成功/失败任一）的条数
     // 文件头（YAML / TOML 风格的 front matter）：首行是 --- 或 +++ 时，直到配对收尾行都原样保留。
     // 不做这一步，`baud: 115200` 这种没有分隔符的行会被当成一条"指令"混进列表（2026-09 实测踩到）。
     var head = lines.length ? lines[0].trim() : '';
@@ -8120,7 +8280,9 @@ function qcmdParseText(text) {
         var cellFilled = function(i) {
             return i !== undefined && cells.length > i && String(cells[i] == null ? '' : cells[i]).trim() !== '';
         };
-        if (!label && !value && !cellFilled(cols.seq) && !cellFilled(cols.delay) && !cellFilled(cols.hex)) {
+        if (!label && !value && !cellFilled(cols.seq) && !cellFilled(qcmdTimeoutColIndex(cols))
+            && !cellFilled(cols.hex) && !cellFilled(cols.expect) && !cellFilled(cols.retry)
+            && !cellFilled(cols.okgoto) && !cellFilled(cols.errgoto)) {
             blocks.push({ kind: 'raw', text: raw }); continue;
         }
         if (items.length >= QCMD_FILE_MAX_ITEMS) {
@@ -8138,29 +8300,58 @@ function qcmdParseText(text) {
         if (!style) style = thisStyle;
         // 名称可省：只有指令时用指令本身当名称（与面板"名称/内容"两栏一致）
         var item = { label: label || value, value: value };
-        // 文件**声明了**这三列才把值读进模型（没声明就留给"按内容带回本机配置"那条路）；
+        // 文件**声明了**这些列才把值读进模型（没声明就留给"按内容带回本机配置"那条路）；
         // 单元格空着就**不设**（写回时也保持空，别把用户没写的缺省值硬写进他的表）
         var seqCell = cols.seq !== undefined ? cells[cols.seq] : undefined;
-        var delayCell = cols.delay !== undefined ? cells[cols.delay] : undefined;
+        var timeoutIdx = qcmdTimeoutColIndex(cols);
+        var timeoutCell = timeoutIdx !== undefined ? cells[timeoutIdx] : undefined;
         var hexCell = cols.hex !== undefined ? cells[cols.hex] : undefined;
+        var expectCell = cols.expect !== undefined ? cells[cols.expect] : undefined;
+        var retryCell = cols.retry !== undefined ? cells[cols.retry] : undefined;
+        var okGotoCell = cols.okgoto !== undefined ? cells[cols.okgoto] : undefined;
+        var errGotoCell = cols.errgoto !== undefined ? cells[cols.errgoto] : undefined;
         if (seqCell !== undefined && String(seqCell).trim() !== '') {
             item.seq = Math.max(0, Math.min(QCMD_SEQ_MAX, qcmdCellInt(seqCell, 0)));
         }
-        if (delayCell !== undefined && String(delayCell).trim() !== '') {
-            item.delay = Math.max(0, Math.min(QCMD_DELAY_MAX, qcmdCellInt(delayCell, QCMD_DELAY_DEFAULT)));
+        if (timeoutCell !== undefined && String(timeoutCell).trim() !== '') {
+            item.timeout = Math.max(0, Math.min(QCMD_TIMEOUT_MAX, qcmdCellInt(timeoutCell, QCMD_TIMEOUT_DEFAULT)));
+            // 命中的是旧列名「延时」→ 记一笔，导入时提示一次（语义变了，不能闷着改）
+            if (cols.timeout === undefined) legacyTimeoutCol = true;
         }
         if (hexCell !== undefined && String(hexCell).trim() !== '') {
             item.hex = qcmdCellHex(hexCell);
         }
+        if (expectCell !== undefined && String(expectCell).trim() !== '') {
+            item.expect = String(expectCell).trim().slice(0, QCMD_EXPECT_MAX);
+        }
+        if (retryCell !== undefined && String(retryCell).trim() !== '') {
+            item.retry = Math.max(0, Math.min(QCMD_RETRY_MAX, qcmdCellInt(retryCell, QCMD_RETRY_DEFAULT)));
+        }
+        // 跳转两列：**空着不设**（缺省就是"下一条"）；写了认不出来的，值按"下一条"落，
+        // 但原字保在 cells 里（写回时原样回吐），由导入提示告诉用户哪里没被理解
+        if (okGotoCell !== undefined && String(okGotoCell).trim() !== '') {
+            item.okgoto = String(okGotoCell).trim().slice(0, 32);
+            if (!qcmdGotoNorm(item.okgoto)) gotoUnknown++;
+        }
+        if (errGotoCell !== undefined && String(errGotoCell).trim() !== '') {
+            item.errgoto = String(errGotoCell).trim().slice(0, 32);
+            if (!qcmdGotoNorm(item.errgoto)) gotoUnknown++;
+        }
+        if (qcmdItemExpect(item) || item.retry !== undefined) customCondCount++;
+        if (item.okgoto !== undefined || item.errgoto !== undefined) gotoCount++;
         items.push(item);
         if (groups[curGroup]) groups[curGroup].items.push(item);
         // 原始单元格 + 读进来时的参数值：写回时"没动过的格子原样回吐"就靠这两样
         blocks.push({ kind: 'item', item: item, cols: cols, cells: cells.slice(), group: curGroup,
-                      orig: { seq: item.seq, delay: item.delay, hex: item.hex } });
+                      orig: { seq: item.seq, timeout: item.timeout, hex: item.hex,
+                              expect: item.expect, retry: item.retry,
+                              okgoto: item.okgoto, errgoto: item.errgoto } });
     }
     // 摊平的 items 仍然返回（TAB 补全 / MCP 列表 / 老断言都用它）；groups 是按文件里的表分好的组
     return { blocks: blocks, items: items, groups: groups, skipped: skipped, style: style || 'md', cols: colMap,
-             frontKeys: frontKeys, frontUnclosed: frontUnclosed };
+             frontKeys: frontKeys, frontUnclosed: frontUnclosed,
+             legacyTimeoutCol: legacyTimeoutCol, customCondCount: customCondCount,
+             gotoUnknown: gotoUnknown, gotoCount: gotoCount };
 }
 
 /// 一行单元格 → 该载体的行文本（md 转义竖线；tsv 去掉制表符；lines 只取第一格）
@@ -8198,8 +8389,16 @@ function qcmdItemCells(b) {
     if (cols.name !== undefined) cells[cols.name] = String(it.label == null ? '' : it.label);
     if (cols.value !== undefined) cells[cols.value] = String(it.value == null ? '' : it.value);
     if (cols.seq !== undefined) cells[cols.seq] = qcmdParamCell(b, 'seq', it.seq, String(qcmdItemSeq(it)), fill);
-    if (cols.delay !== undefined) cells[cols.delay] = qcmdParamCell(b, 'delay', it.delay, String(qcmdItemDelay(it)), fill);
+    // 超时那一格：新名「超时」优先、旧名「延时」兜底 —— 写回仍然落在**用户原来那一列**里
+    var timeoutIdx = qcmdTimeoutColIndex(cols);
+    if (timeoutIdx !== undefined) cells[timeoutIdx] = qcmdParamCell(b, 'timeout', it.timeout, String(qcmdItemTimeout(it)), fill);
     if (cols.hex !== undefined) cells[cols.hex] = qcmdParamCell(b, 'hex', it.hex, qcmdItemHex(it) ? 'true' : 'false', fill);
+    // 「期望 / 重试」面板上没有入口（它们写在文件里），但值要原样写回去，别在别的字段一改就被抹掉
+    if (cols.expect !== undefined) cells[cols.expect] = qcmdParamCell(b, 'expect', it.expect, qcmdItemExpect(it), fill);
+    if (cols.retry !== undefined) cells[cols.retry] = qcmdParamCell(b, 'retry', it.retry, String(qcmdItemRetry(it)), fill);
+    // 跳转两列：同样面板上没有入口，值原样写回（空着就保持空 —— 缺省是"下一条"）
+    if (cols.okgoto !== undefined) cells[cols.okgoto] = qcmdParamCell(b, 'okgoto', it.okgoto, it.okgoto || '', fill);
+    if (cols.errgoto !== undefined) cells[cols.errgoto] = qcmdParamCell(b, 'errgoto', it.errgoto, it.errgoto || '', fill);
     return cells;
 }
 
@@ -8235,8 +8434,10 @@ function qcmdBaseName(p) {
 /// 这比"整体丢失"或"按行号乱配"都好解释。
 function qcmdCarryItemPrefs(mid, items, fileCols) {
     var has = fileCols || {};
-    var needSeq = has.seq === undefined, needDelay = has.delay === undefined, needHex = has.hex === undefined;
-    if (!needSeq && !needDelay && !needHex) return;   // 文件自己带齐了，不用兜
+    var needSeq = has.seq === undefined, needTimeout = qcmdTimeoutColIndex(has) === undefined,
+        needHex = has.hex === undefined;
+    // 「期望 / 重试」不兜：它们只写在文件里，本机配置里没有它们的家 —— 兜回来用户也看不见
+    if (!needSeq && !needTimeout && !needHex) return;   // 文件自己带齐了，不用兜
     var old = [];
     qcmdGroups(mid).forEach(function(g) { old = old.concat(g.items || []); });
     var byVal = {};
@@ -8245,7 +8446,7 @@ function qcmdCarryItemPrefs(mid, items, fileCols) {
         var o = (it && it.value) ? byVal[it.value] : null;
         if (!o) return;
         if (needSeq && qcmdItemSeq(o) > 0) it.seq = qcmdItemSeq(o);
-        if (needDelay && o.delay !== undefined) it.delay = qcmdItemDelay(o);
+        if (needTimeout && (o.timeout !== undefined || o.delay !== undefined)) it.timeout = qcmdItemTimeout(o);
         if (needHex && o.hex) it.hex = true;
     });
 }
@@ -8292,13 +8493,36 @@ function qcmdApplyParsed(mid, parsed, res, quiet) {
     }
     var risky = (parsed.frontKeys || []).filter(function(k) { return QCMD_FRONT_UNSUPPORTED.indexOf(k) >= 0; });
     if (risky.length) {
-        showToast('文件头里的 ' + risky.join(' / ') + ' 暂不生效：发送沿用面板设置（延时/HEX 是每条自己的设置，写在表头声明的列里）', 'error');
+        showToast('文件头里的 ' + risky.join(' / ') + ' 暂不生效：这些是**每条自己**的设置，要写在表头声明的列里（超时 / 期望 / 重试 / HEX）', 'error');
     }
-    // 表头认出了列、但没写这三列 → 面板里设的顺序号/延时/HEX 只存在本机配置里。
+    // 旧列名「延时」被按「超时」解读 —— 语义变了，必须说一次（静默改行为是最坑的那种）
+    if (parsed.legacyTimeoutCol) {
+        showToast('这个文件的「延时」列现在按「超时」解读：那条指令发出去最多等这么久，等不到 OK 就终止循环（想自己掌控可以把它改名成「超时(ms)」）', 'info');
+    }
+    // 「期望 / 重试」面板上没有入口：文件里有它们就必须告诉用户去哪改
+    if (parsed.customCondCount) {
+        showToast('这个文件里有 ' + parsed.customCondCount + ' 条写了 期望 / 重试（面板不显示这两项，改它请直接编辑文件）', 'info');
+    }
+    // 跳转（分支与循环）：面板上同样没有入口 —— 有就提示在哪改、以及哪里没被理解
+    if (parsed.gotoCount && !quiet) {
+        showToast('这个文件里有 ' + parsed.gotoCount + ' 条写了 成功跳转 / 失败跳转（面板不显示这两项，改它请直接编辑文件）', 'info');
+    }
+    if (parsed.gotoUnknown && !quiet) {
+        showToast('跳转列里有 ' + parsed.gotoUnknown + ' 处认不出来（只认：留空/下一条、数字=顺序号、结束），已按「下一条」处理', 'error');
+    }
+    // 跳转目标指向不存在的顺序号：**导入时就说**，别等运行到那一步才发现（会把流程走成另一条路）
+    if (!quiet) {
+        var gotoBad = qcmdGotoWarnings(mid);
+        if (gotoBad.length) {
+            showToast('有 ' + gotoBad.length + ' 处跳转指向不存在的顺序号：' + gotoBad.slice(0, 3).join('、')
+                + (gotoBad.length > 3 ? ' 等' : '') + '（成功跳转会按「下一条」走、失败跳转会按「终止」走）', 'error');
+        }
+    }
+    // 表头认出了列、但没写这三列 → 面板里设的顺序号/超时/HEX 只存在本机配置里。
     // 这不是静默 no-op：用户得知道"这三项没进这个文件"，想要自包含的文件就用「导出」。
     var declared = parsed.cols;
-    if (!quiet && declared && (declared.seq === undefined || declared.delay === undefined || declared.hex === undefined)) {
-        showToast('这个文件的表头没有 顺序号 / 延时(ms) / HEX 三列：这三项只保存在本机配置里（点「导出」可得到带这三列的文件）', 'info');
+    if (!quiet && declared && (declared.seq === undefined || qcmdTimeoutColIndex(declared) === undefined || declared.hex === undefined)) {
+        showToast('这个文件的表头没有 顺序号 / 超时(ms) / HEX 三列：这三项只保存在本机配置里（点「导出」可得到带这三列的文件）', 'info');
     }
     if (!quiet && monitors[mid].quickGroups.length > 1) {
         showToast('这个文件里有 ' + src.length + ' 张表 → 读成 ' + monitors[mid].quickGroups.length + ' 个循环组', 'success');
@@ -8386,17 +8610,21 @@ function qcmdUnmountFile(mid) {
     showToast('已断开文件（列表保留在配置里）', 'success');
 }
 
-/// 导出的列：**列序照抄面板** —— 顺序号 → 指令 → 延时(ms) → HEX。
-/// 面板上每一行就是这四格从左到右，文件照着来才"一一对应"
-/// （用户 2026-09 反馈：顺序号跑到指令右边去了，看着对不上）。
+/// 导出的列：**列序照抄面板** —— 顺序号 → 指令 → 超时(ms) → HEX（面板上每一行就是这四格从左到右）。
+/// 末尾另补 `期望 / 重试`：面板上没有它们的入口，但导出是**自包含快照** —— 不写出来，
+/// 用户"另存一份"就把自定义的响应词与重试次数丢了。
 /// **不带「名称」列**：面板里没有名称入口，导出的副本就不该多一栏。
 /// 挂载文件自己的「名称」列由**写回**路径原样保留，不受影响。
 function qcmdExportCols() {
     return [
-        { key: 'seq',   label: '顺序号' },
-        { key: 'value', label: '指令' },
-        { key: 'delay', label: '延时(ms)' },
-        { key: 'hex',   label: 'HEX' }
+        { key: 'seq',     label: '顺序号' },
+        { key: 'value',   label: '指令' },
+        { key: 'timeout', label: '超时(ms)' },
+        { key: 'hex',     label: 'HEX' },
+        { key: 'expect',  label: '期望' },
+        { key: 'retry',   label: '重试' },
+        { key: 'okgoto',  label: '成功跳转' },
+        { key: 'errgoto', label: '失败跳转' }
     ];
 }
 
@@ -8423,9 +8651,23 @@ function qcmdExportPrep(groups, style) {
     return { blocks: blocks, style: style, cols: cols };
 }
 
+/// 导出的**默认文件名**：按监视器区分。
+/// 为什么不是一律 `quick-cmds.md`：WSL 分栏、额外分栏、蓝牙页内嵌监视器**各有一份快速指令列表**，
+/// 默认名相同的话，"连点两次导出、都保存到同一目录"就会第二次盖掉第一次（原生保存框会问一句，
+/// 但顺手点"是"是常事）；更麻烦的是导出是**直接写文件**、不走写回那条哈希冲突检测 ——
+/// 万一目标正是另一个监视器挂载着的那个文件，它的内容当场就被换掉了。
+/// `main` 保持 `quick-cmds.md`（老用户的习惯与文档都按它写），其余带上自己的 mid。
+function qcmdExportBaseName(mid) {
+    var base = 'quick-cmds';
+    var id = String(mid == null ? '' : mid);
+    if (id && id !== 'main') base += '-' + id.replace(/[^A-Za-z0-9_-]/g, '-');
+    return base;
+}
+
 /// 这条指令有没有"非默认的发送参数"（决定纯指令行载体要不要升级成表格）
 function qcmdItemHasParams(it) {
-    return qcmdItemSeq(it) > 0 || qcmdItemHex(it) || qcmdItemDelay(it) !== QCMD_DELAY_DEFAULT;
+    return qcmdItemSeq(it) > 0 || qcmdItemHex(it) || qcmdItemTimeout(it) !== QCMD_TIMEOUT_DEFAULT
+        || !!qcmdItemExpect(it) || qcmdItemRetry(it) !== QCMD_RETRY_DEFAULT;
 }
 
 /// 导出：只给 Markdown / TSV，**不给 CSV**（逗号会切碎 AT 指令）；导出的是副本，不改变当前目标。
@@ -8447,12 +8689,19 @@ function qcmdExportFile(mid) {
         prep = qcmdExportPrep(groups, style === 'tsv' ? 'tsv' : 'md');
     }
     var text = qcmdBuildText(prep.blocks, prep.style);
-    var defName = 'quick-cmds.' + (prep.style === 'tsv' ? 'tsv' : 'md');
+    var defName = qcmdExportBaseName(mid) + '.' + (prep.style === 'tsv' ? 'tsv' : 'md');
     invoke('quick_cmds_export_file', { text: text, encoding: m.quickCmdsFileEnc || 'utf-8', defaultName: defName })
         .then(function(res) {
             if (!res) return;
             showToast('已导出：' + res.path + '（' + groups.length + ' 组，每组一张表；点「导入」可把它设为当前目标）', 'success');
-            if (upgraded) showToast('纯指令行放不下分组与 顺序号/延时/HEX：这份导出已升级成 Markdown 表格', 'info');
+            if (upgraded) showToast('纯指令行放不下分组与 顺序号/超时/HEX：这份导出已升级成 Markdown 表格', 'info');
+            // ⚠️ 导出是**直接写文件**（它是"另存一份副本"，不走写回那条哈希冲突检测）。
+            // 万一用户把副本存到了另一个监视器正挂载的那个文件上，那边的内容已经被换掉了 ——
+            // 必须当场说清，别让他之后在那边"重载"时才一脸茫然。
+            var other = qcmdFileMountedBy(res.path, mid);
+            if (other) {
+                showToast('注意：这个文件正被「' + other + '」挂载，你这次导出已经把它的内容换掉了 —— 在那边点「重载」取新的，或者换个文件名重导一次', 'error');
+            }
         }).catch(function(e) { showToast('导出失败: ' + e, 'error'); });
 }
 
@@ -8551,8 +8800,9 @@ function qcmdGroupBlocksRange(blocks, gid) {
 
 /// 造一个组在文件里的"分节"：`## 名字` + 表头行 + 分隔行（md），数据行由调用方接着插
 function qcmdGroupSectionBlocks(name, style, cols) {
-    var map = cols || { seq: 0, value: 1, delay: 2, hex: 3 };
-    var labels = { seq: '顺序号', value: '指令', delay: '延时(ms)', hex: 'HEX', name: '名称' };
+    var map = cols || { seq: 0, value: 1, timeout: 2, hex: 3 };
+    var labels = { seq: '顺序号', value: '指令', timeout: '超时(ms)', hex: 'HEX', name: '名称',
+                   expect: '期望', retry: '重试' };
     var width = 0, header = [];
     Object.keys(map).forEach(function(k) { if (map[k] + 1 > width) width = map[k] + 1; });
     for (var i = 0; i < width; i++) header.push('');
@@ -8568,7 +8818,7 @@ function qcmdGroupSectionBlocks(name, style, cols) {
 /// 新条目插到**该组**最后一个数据行之后（保持那组的表格连续）。
 /// 该组在文件里还没有位置（面板新建的组）→ 在文件末尾补一整节（抬头 + 表头 + 分隔 + 这一行）。
 /// 列映射与行宽跟着该组已有的数据行走（原本只写一列的表，新行也只写一列；
-/// 表头声明了 顺序号/延时/HEX 的表，新行照样补齐这几格）—— 否则写回时会把表格撑歪。
+/// 表头声明了 顺序号/超时/HEX 的表，新行照样补齐这几格）—— 否则写回时会把表格撑歪。
 function qcmdInsertItemBlock(mid, gid, item) {
     var blocks = monitors[mid] && monitors[mid]._qcmdBlocks;
     if (!blocks) return false;
@@ -8582,7 +8832,7 @@ function qcmdInsertItemBlock(mid, gid, item) {
     }
     if (at < 0) {
         // 这一组在文件里还没有段落：补一节出来（放在文件末尾 —— 新建的组本来就追加在最下面）
-        cols = (g && g.cols) || monitors[mid]._qcmdCols || { seq: 0, value: 1, delay: 2, hex: 3 };
+        cols = (g && g.cols) || monitors[mid]._qcmdCols || { seq: 0, value: 1, timeout: 2, hex: 3 };
         var sec = qcmdGroupSectionBlocks(g ? g.name : '', monitors[mid].quickCmdsFileStyle || 'md', cols);
         sec.forEach(function(b) { b.group = gid; });
         blocks.push.apply(blocks, sec);
@@ -8657,8 +8907,11 @@ function qcmdRenameGroupBlock(mid, gid, name) {
    ⚠️ 这三项**不写进用户的外部文件**（那文件只有名称/指令两列，塞私有列会污染用户文件），
    只随 config.json 走；从文件重载时按"指令内容"尽量带回来（见 qcmdCarryItemPrefs）。 */
 var QCMD_SEQ_MAX = 9999;              // 顺序号上限（4 位）
-var QCMD_DELAY_DEFAULT = 1000;        // 延时缺省值（毫秒）
-var QCMD_DELAY_MAX = 600000;          // 延时上限 10 分钟（防手滑打出天文数字把循环挂死）
+var QCMD_TIMEOUT_DEFAULT = 3000;      // 超时缺省值（毫秒）：这条发出去最多等多久
+var QCMD_TIMEOUT_MAX = 600000;        // 超时上限 10 分钟（防手滑打出天文数字把循环挂死）
+var QCMD_RETRY_DEFAULT = 3;           // 收到 ERROR 后最多重发几次
+var QCMD_RETRY_MAX = 10;              // 重试次数上限（再高就是"永远重发"，用户停不下来）
+var QCMD_EXPECT_MAX = 64;             // 自定义成功词的长度上限（字符）
 
 /// 只留数字并去掉多余前导零（顺序号/延时输入框用 text 而不是 number：
 /// number 框在深色主题下带上下箭头，还接受 'e' / '-' / '.'，得再拦一道）
@@ -8675,15 +8928,89 @@ function qcmdItemSeq(it) {
     return Math.min(n, QCMD_SEQ_MAX);
 }
 
-/// 某条的延时（毫秒）：缺省 1000，越界夹到 [0, QCMD_DELAY_MAX]
-function qcmdItemDelay(it) {
-    var raw = it ? it.delay : undefined;
-    var n = (raw === undefined || raw === null || raw === '') ? QCMD_DELAY_DEFAULT : parseInt(raw, 10);
-    if (!isFinite(n) || n < 0) return QCMD_DELAY_DEFAULT;
-    return Math.min(n, QCMD_DELAY_MAX);
+/// 某条的**超时**（毫秒）：发出去之后最多等多久 —— 等到 OK 发下一条、等到 ERROR 重发本条、
+/// 等满这个时间还没等到 OK 就终止整条循环。`0` = 这条不等响应（发完就过，用于连续 HEX 帧、
+/// 或设备本来就不回 OK 的指令）。
+/// ⚠️ 兼容老配置/老文件：早期这一项叫「延时」（字段 `delay`）。语义已经变了，但**按超时读回来**
+/// —— 只改含义、不改数值，同时在导入时明确提示一次（不做静默语义变更）。
+function qcmdItemTimeout(it) {
+    var raw = it ? ((it.timeout !== undefined && it.timeout !== null && it.timeout !== '')
+                    ? it.timeout : it.delay) : undefined;
+    var n = (raw === undefined || raw === null || raw === '') ? QCMD_TIMEOUT_DEFAULT : parseInt(raw, 10);
+    if (!isFinite(n) || n < 0) return QCMD_TIMEOUT_DEFAULT;
+    return Math.min(n, QCMD_TIMEOUT_MAX);
+}
+
+/// 某条的**自定义成功词**（`|` 分隔多个）。面板不显示它 —— 它写在外部文件表头声明的「期望」列里：
+/// 通用的 AT 设备只回 `OK`（内置认得），个别设备回 `WIFI GOT IP` / `ready` 这类词时才需要它。
+function qcmdItemExpect(it) {
+    var s = (it && it.expect !== undefined && it.expect !== null) ? String(it.expect).trim() : '';
+    return s.length > QCMD_EXPECT_MAX ? s.slice(0, QCMD_EXPECT_MAX) : s;
+}
+
+/// 收到 ERROR 之后最多重发几次（`0` = 不重发，直接终止）。同样写在文件的「重试」列里。
+function qcmdItemRetry(it) {
+    var raw = it ? it.retry : undefined;
+    var n = (raw === undefined || raw === null || raw === '') ? QCMD_RETRY_DEFAULT : parseInt(raw, 10);
+    if (!isFinite(n) || n < 0) return QCMD_RETRY_DEFAULT;
+    return Math.min(n, QCMD_RETRY_MAX);
 }
 
 function qcmdItemHex(it) { return !!(it && it.hex); }
+
+/* ===== 跳转：分支与循环（「成功跳转」「失败跳转」两列，面板上没有入口，同「期望」「重试」） =====
+   取值三种：**留空/`下一条`**（缺省 = 原行为）、**数字 = 顺序号**（跳到那一条）、**`结束`**。
+   为什么按顺序号而不是"第几行"：顺序号本来就是"这条参不参与、按什么次序发"的口径，
+   跨组也能跳，用户改行序不会把跳转指错。 */
+var QCMD_GOTO_MAX = 200;              // **连续**跳转次数上限：两列都是"只会打转"的语法，没它就会无限跑
+var QCMD_GOTO_NEXT = ['下一条', '下一條', '继续', '繼續', 'next', '-'];
+var QCMD_GOTO_END = ['结束', '結束', '终止', '終止', 'end', 'stop'];
+
+/// 跳转取值归一化：'' = 下一条（缺省）/ 'end' = 结束 / '数字' = 顺序号。认不出来的按**下一条**处理
+/// （导入时会由 `qcmdGotoWarnings` 提示一次 —— 不静默改语义）
+function qcmdGotoNorm(v) {
+    var s = String(v == null ? '' : v).trim();
+    if (!s) return '';
+    var low = s.toLowerCase();
+    if (QCMD_GOTO_NEXT.indexOf(low) >= 0) return '';
+    if (QCMD_GOTO_END.indexOf(low) >= 0) return 'end';
+    if (/^\d+$/.test(s)) {
+        var n = parseInt(s, 10);
+        return (n > 0 && n <= QCMD_SEQ_MAX) ? String(n) : '';
+    }
+    return '';
+}
+
+/// 这条的「成功跳转」（收到 OK 之后去哪）
+function qcmdItemOkGoto(it) { return qcmdGotoNorm(it && it.okgoto); }
+/// 这条的「失败跳转」（ERROR 用尽**或超时**之后去哪）
+function qcmdItemErrGoto(it) { return qcmdGotoNorm(it && it.errgoto); }
+
+/// 跳转目标 → 计划里的下标（找不到返回 -1）。计划是"组序 → 组内顺序号"摊平的，按顺序号找。
+function qcmdPlanIndexOfSeq(plan, seq) {
+    for (var i = 0; i < (plan || []).length; i++) {
+        if (String(plan[i].seq) === String(seq)) return i;
+    }
+    return -1;
+}
+
+/// 解析后检查一遍跳转目标：指向不存在的顺序号时**列出来**（导入时提示一次，不静默降级）
+function qcmdGotoWarnings(mid) {
+    var plan = qcmdLoopPlan(mid);
+    var seqs = {};
+    plan.forEach(function (p) { seqs[String(p.seq)] = true; });
+    var bad = [];
+    qcmdAllItems(mid).forEach(function (x) {
+        var it = x.it || {};
+        [['成功跳转', qcmdItemOkGoto(it)], ['失败跳转', qcmdItemErrGoto(it)]].forEach(function (pair) {
+            var g = pair[1];
+            if (g && g !== 'end' && !seqs[g]) {
+                bad.push('顺序号 ' + qcmdItemSeq(it) + ' 的「' + pair[0] + '=' + g + '」');
+            }
+        });
+    });
+    return bad;
+}
 
 /// 取某组里的某条（组/条目都可能刚被删掉 → 一律判空，别让定时器或事件打到空气）
 function qcmdItemAt(mid, gid, idx) {
@@ -8841,7 +9168,7 @@ function addQcmdGroup(mid) {
         return;
     }
     var g = { id: qcmdNewGroupId(), name: '循环 ' + (list.length + 1),
-              items: [{ label: '', value: '', seq: 0, delay: QCMD_DELAY_DEFAULT, hex: false }] };
+              items: [{ label: '', value: '', seq: 0, timeout: QCMD_TIMEOUT_DEFAULT, hex: false }] };
     list.push(g);
     // 挂了文件：新组要在文件里补出自己那一节（抬头 + 表 + 这一行）
     if (monitors[mid].quickCmdsFile) qcmdInsertItemBlock(mid, g.id, g.items[0]);
@@ -9031,27 +9358,33 @@ function makeQcmdItem(mid, gid, idx, label, value) {
         if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); sendQcmdItem(mid, gid, idx); }
     });
 
-    // 延时发送时间（毫秒）：本条发完到下发下一条的间隔
-    var delayInp = document.createElement('input');
-    delayInp.className = 'qcmd-item-delay';
-    delayInp.id = qcmdItemElId(mid, gid, idx, 'delay');
-    delayInp.type = 'text';
-    delayInp.setAttribute('inputmode', 'numeric');
-    delayInp.setAttribute('autocomplete', 'off');
-    delayInp.value = String(qcmdItemDelay(model));
-    delayInp.title = '延时发送时间（毫秒）：本条发完到下发下一条的间隔';
-    delayInp.addEventListener('click', function(e) { e.stopPropagation(); });
-    delayInp.addEventListener('input', function() {
+    // 超时（毫秒）：这条发出去最多等多久 —— 等到 OK 发下一条 / 等到 ERROR 重发本条 / 等满就终止整条循环。
+    // 填 0 = 这条不等响应（连续 HEX 帧、设备本来就不回 OK 的指令）。
+    // ⚠️ 类名与 id 后缀仍然是 `delay`：CSS 的 grid 轨道、MCP 的 domIds 都按它认门，
+    // 换名字要连带改一堆断言与 AI 侧的 domIds，而这一格的含义由列标题与 title 说清楚就够了。
+    var timeoutInp = document.createElement('input');
+    timeoutInp.className = 'qcmd-item-delay';
+    timeoutInp.id = qcmdItemElId(mid, gid, idx, 'delay');
+    timeoutInp.type = 'text';
+    timeoutInp.setAttribute('inputmode', 'numeric');
+    timeoutInp.setAttribute('autocomplete', 'off');
+    timeoutInp.value = String(qcmdItemTimeout(model));
+    timeoutInp.title = qcmdTimeoutTitle(model);
+    syncQcmdTimeoutMark(timeoutInp, model);
+    timeoutInp.addEventListener('click', function(e) { e.stopPropagation(); });
+    timeoutInp.addEventListener('input', function() {
         var v = qcmdDigits(this.value, 6);
         if (this.value !== v) this.value = v;
     });
-    delayInp.addEventListener('change', function() {
+    timeoutInp.addEventListener('change', function() {
         var it = qcmdItemAt(mid, gid, idx);
-        // 留空 = 回到缺省 1000（别让"清空输入框"变成 0 毫秒的疯跑）
-        var n = this.value === '' ? QCMD_DELAY_DEFAULT : parseInt(this.value, 10);
-        n = qcmdItemDelay({ delay: n });
-        if (it) it.delay = n;
+        // 留空 = 回到缺省（别让"清空输入框"变成 0 毫秒的疯跑）
+        var n = this.value === '' ? QCMD_TIMEOUT_DEFAULT : parseInt(this.value, 10);
+        n = qcmdItemTimeout({ timeout: n });
+        if (it) it.timeout = n;
         this.value = String(n);
+        this.title = qcmdTimeoutTitle(it);
+        syncQcmdTimeoutMark(this, it);
         scheduleConfigSave();
     });
 
@@ -9086,11 +9419,32 @@ function makeQcmdItem(mid, gid, idx, label, value) {
 
     item.appendChild(seqInp);
     item.appendChild(valInp);
-    item.appendChild(delayInp);
+    item.appendChild(timeoutInp);
     item.appendChild(hexBtn);
     item.appendChild(sendBtn);
     item.appendChild(delBtn);
     return item;
+}
+
+/// 超时那一格的悬停说明：把"这条还有文件里才有的自定义条件"也说出去（面板上没有它们的入口）
+function qcmdTimeoutTitle(it) {
+    var base = '超时（毫秒）：这条发出去最多等多久。等到 OK 就发下一条；等到 ERROR 就重发本条（默认最多 '
+             + QCMD_RETRY_DEFAULT + ' 次）；等满这个时间还没等到 OK 就走「失败跳转」（没配就终止整条循环）。'
+             + '填 0 = 这条不等响应';
+    var extra = [];
+    if (qcmdItemExpect(it)) extra.push('期望 = ' + qcmdItemExpect(it));
+    if (qcmdItemRetry(it) !== QCMD_RETRY_DEFAULT) extra.push('重试 = ' + qcmdItemRetry(it));
+    var og = qcmdItemOkGoto(it), eg = qcmdItemErrGoto(it);
+    if (og) extra.push('成功跳转 = ' + (og === 'end' ? '结束' : '顺序号 ' + og));
+    if (eg) extra.push('失败跳转 = ' + (eg === 'end' ? '结束' : '顺序号 ' + eg));
+    return extra.length ? (base + '（本条另有：' + extra.join('、') + '，写在文件里）') : base;
+}
+
+/// 这一格有没有"只在文件里配得到的额外条件"→ 描一层淡边标出来，别让它静默生效
+function syncQcmdTimeoutMark(el, it) {
+    if (!el) return;
+    el.classList.toggle('has-extra', !!qcmdItemExpect(it) || qcmdItemRetry(it) !== QCMD_RETRY_DEFAULT
+        || !!qcmdItemOkGoto(it) || !!qcmdItemErrGoto(it));
 }
 
 // 返回 true = 真的加上了；false = 被条目上限挡下（调用方必须**如实报失败**，别假装成功）。
@@ -9106,7 +9460,7 @@ function addQcmdItem(mid, gid) {
     }
     var idx = (g.items || []).length;
     // 名称按用户要求退出界面：新条目不再取「指令N」这种占位名，label 留空
-    g.items.push({label: '', value: '', seq: 0, delay: QCMD_DELAY_DEFAULT, hex: false});
+    g.items.push({label: '', value: '', seq: 0, timeout: QCMD_TIMEOUT_DEFAULT, hex: false});
     var holder = document.getElementById(mid + '-qcmdGL-' + gid);
     if (holder) holder.appendChild(makeQcmdItem(mid, gid, idx, g.items[idx].label, g.items[idx].value));
     qcmdInsertItemBlock(mid, gid, g.items[idx]);   // 挂了文件：块的插入点要跟上，否则写回时漏掉这条
@@ -9168,11 +9522,29 @@ async function sendQcmdItem(mid, gid, idx) {
     return sendQcmdPayload(mid, text, qcmdItemHex(qcmdItemAt(mid, gid, idx)));
 }
 
-/* ===== 循环发送（一条链：组从上到下 → 组内顺序号从小到大，发完一条等它自己的延时） =====
+/* ===== 循环发送（一条链：组从上到下 → 组内顺序号从小到大，**一条一条来、等它回话**） =====
    参与条件：顺序号 > 0。开启前置条件：串口已连接 + 整条链上至少有一条可发 ——
    不满足就当场拒绝并说明原因，绝不"悄悄开着但什么都不发"。
+   每条的节奏由**超时**那一格说了算：
+     超时 > 0 → 发出去后等回话：busy 继续等（不重发）/ 收到 OK 发下一条 /
+                收到 ERROR 重发本条（默认最多 3 次）/ 等满超时还没等到 OK → **终止整条链**
+     超时 = 0 → 不等回话，发完就过（连续 HEX 帧、或设备本来就不回 OK 的指令）
+   判定放在 **Rust 侧**（`qcmd_hs_*` 四个命令）：普通串口由读线程直接喂数据，
+   WSL 由前端把轮询拉到的数据喂进去 —— 两边共用同一份判定，绝不在 JS 里再写一套（那必然漂移）。
    自愈：跑的过程中断开连接 / 链上再没有可发的条目 → 自动停止并说明（不留还在跑的定时器）。 */
 var _qcmdLoopTimers = {};   // mid → 待执行的 setTimeout id（按监视器各一份）
+var _qcmdLoopBusy = {};     // mid → true = 正在"发出去等回话"（挡住重入：一次只跑一条）
+var _qcmdHsPoll = {};       // mid → 等回话时的轮询 interval id
+
+var QCMD_HS_POLL_MS = 60;        // 问 Rust "这条回话了吗"的间隔
+var QCMD_HS_GRACE_MS = 400;      // 在 Rust 的超时之上再宽限一点（网络/定时器抖动，别抢答）
+var QCMD_RETRY_GAP_MS = 300;     // 收到 ERROR 后隔多久重发
+var QCMD_LOOP_MIN_GAP_MS = 20;   // 不等回话的条目之间的最小间隔（防"0 超时"连成紧凑死循环刷爆串口）
+
+/// 循环过程的每一步都写进输出区 —— 面板上没有为它新增任何控件，用户就是靠这几行看它在干什么
+function qcmdLog(mid, text, cls) {
+    try { appendOutput(mid, cls || 'sys', '[快速指令] ' + text); } catch (e) { /* 输出区没了就算了 */ }
+}
 
 function qcmdLoopRunning(mid) { return !!(monitors[mid] && monitors[mid].qcmdLoop); }
 
@@ -9203,10 +9575,14 @@ function syncQcmdLoopBtn(mid) {
 /// 停掉循环（toast 只在"自愈停止"时给，用户主动关不给）
 function stopQcmdLoop(mid, reason) {
     if (_qcmdLoopTimers[mid]) { clearTimeout(_qcmdLoopTimers[mid]); delete _qcmdLoopTimers[mid]; }
+    if (_qcmdHsPoll[mid]) { clearInterval(_qcmdHsPoll[mid]); delete _qcmdHsPoll[mid]; }
+    delete _qcmdLoopBusy[mid];
     var m = monitors[mid];
-    if (m) { m.qcmdLoop = false; m._qcmdLoopPos = 0; }
+    if (m) { m.qcmdLoop = false; m._qcmdLoopPos = 0; m._qcmdGotoRun = 0; }
+    // 让 Rust 把"正在等回话"的状态也清掉：下一次 arm 会重置，但留着就是一处悬挂状态
+    invoke('qcmd_hs_stop', { monitorId: mid }).catch(function() {});
     syncQcmdLoopBtn(mid);
-    if (reason) showToast(reason, 'error');
+    if (reason) { showToast(reason, 'error'); qcmdLog(mid, reason, 'err'); }
 }
 
 /// 跑着的时候改了组序/加了组/删了条目：把轮次位置钳进新计划的长度里
@@ -9219,23 +9595,193 @@ function qcmdLoopSyncPlan(mid) {
     if (!(m._qcmdLoopPos >= 0) || m._qcmdLoopPos >= n) m._qcmdLoopPos = 0;
 }
 
-/// 一步：发当前这条，然后按它的延时排下一步。每步都重新取一遍计划 ——
-/// 用户中途改顺序号 / 拖组 / 删条目 / 改延时会立刻生效，不用重启循环。
-function qcmdLoopStep(mid) {
+/// 日志与 toast 里那条指令的"名份"：组名 + 顺序号 + 指令内容（截断）
+function qcmdStepLabel(mid, step, it) {
+    var g = qcmdGroupById(mid, step.gid);
+    var v = (it && it.value) ? String(it.value) : '';
+    if (v.length > 24) v = v.slice(0, 24) + '…';
+    return '「' + ((g && g.name) || '未命名组') + '」顺序号 ' + step.seq + ' ' + v;
+}
+
+function qcmdSleep(ms) { return new Promise(function(r) { setTimeout(r, Math.max(0, ms || 0)); }); }
+function qcmdHsStop(mid) { return invoke('qcmd_hs_stop', { monitorId: mid }).catch(function() {}); }
+
+/// 排下一步（统一的定时器入口：停循环时只要清这一个 id）
+function qcmdLoopSchedule(mid, ms) {
+    if (_qcmdLoopTimers[mid]) { clearTimeout(_qcmdLoopTimers[mid]); delete _qcmdLoopTimers[mid]; }
+    _qcmdLoopTimers[mid] = setTimeout(function() {
+        delete _qcmdLoopTimers[mid];
+        qcmdLoopStep(mid);
+    }, Math.max(0, ms || 0));
+}
+
+/// Rust 侧状态 → 前端结论：'ok' | 'err' | 'timeout' | 'stopped'；`''` = 还没有结论（含 busy，继续等）
+function qcmdVerdictOf(state) {
+    var s = String(state == null ? '' : state);
+    if (s === 'ok' || s === 'err' || s === 'timeout') return s;
+    if (s === 'idle') return 'stopped';       // 期间被 stop 掉了
+    return '';                                // waiting / busy / 认不出来的 → 继续等
+}
+
+/// 终止时的完整原因（哪一条 / 等了多久 / 为什么）—— toast 与输出区共用这一份文案
+function qcmdStopReasonOf(kind, label, timeoutMs, retry) {
+    if (kind === 'err-exhausted') {
+        return '错误终止：' + label + ' 连续 ' + (retry + 1) + ' 次收到 ERROR（循环已停止）';
+    }
+    return '超时终止：' + label + ' 在 ' + timeoutMs + 'ms 内没有收到 OK（循环已停止）';
+}
+
+/// 等这一条的回话结论。**判定在 Rust 侧**（busy 继续等 / OK / ERROR / 超时），
+/// 这里只按节奏去问它 —— 前端轮询频率不影响判定本身，只影响"多快知道"。
+function qcmdWaitVerdict(mid, timeoutMs, label) {
+    return new Promise(function(resolve) {
+        var deadline = Date.now() + timeoutMs + QCMD_HS_GRACE_MS;
+        var busyLogged = false;
+        var done = function(v) {
+            if (_qcmdHsPoll[mid]) { clearInterval(_qcmdHsPoll[mid]); delete _qcmdHsPoll[mid]; }
+            resolve(v);
+        };
+        var tick = function() {
+            if (!monitors[mid] || !monitors[mid].qcmdLoop) { done('stopped'); return; }
+            invoke('qcmd_hs_state', { monitorId: mid }).then(function(st) {
+                if (st && st.busy && !busyLogged) {
+                    busyLogged = true;
+                    qcmdLog(mid, '第 ' + label + ' 条设备回 busy → 继续等（不重发）');
+                }
+                var v = qcmdVerdictOf(st && st.state);
+                if (v) done(v);
+                else if (Date.now() > deadline) done('timeout');   // Rust 自己也超时，这里只是兜底
+            }).catch(function() {
+                if (Date.now() > deadline) done('timeout');        // 查询失败等下一拍，别把循环卡死
+            });
+        };
+        _qcmdHsPoll[mid] = setInterval(tick, QCMD_HS_POLL_MS);
+        tick();
+    });
+}
+
+/// 送一条并等它的回话。返回 'ok' | 'skip' | 'timeout' | 'err-exhausted' | 'stopped'
+async function qcmdRunOne(mid, step, it, label) {
+    var timeoutMs = qcmdItemTimeout(it), expect = qcmdItemExpect(it), maxRetry = qcmdItemRetry(it);
+    // 超时填 0 = 这条不等回话：发完就走
+    if (!timeoutMs) {
+        var ok0 = await sendQcmdItem(mid, step.gid, step.ii);
+        if (!ok0) {
+            if (monitors[mid] && monitors[mid].isConnected) { qcmdLog(mid, '第 ' + label + ' 条没内容可发，已跳过', 'err'); return 'skip'; }
+            return 'stopped';
+        }
+        qcmdLog(mid, '第 ' + label + ' 条已发出（这条填了超时 0 = 不等回话）');
+        await qcmdSleep(QCMD_LOOP_MIN_GAP_MS);
+        return 'ok';
+    }
+    for (var attempt = 0; attempt <= maxRetry; attempt++) {
+        // ⚠️ arm 必须排在 send **之前**：反过来的话，设备的回话可能赶在 arm 之前到达，
+        // 被 Rust 当成"上一条的迟到回话"丢掉 —— 于是这一条必然白等到超时
+        try {
+            await invokeTimeout('qcmd_hs_arm', { monitorId: mid, expect: expect, timeoutMs: timeoutMs }, 5000);
+        } catch (e) {
+            qcmdLog(mid, '无法启动响应判定：' + e, 'err');
+            return 'stopped';
+        }
+        var sent = await sendQcmdItem(mid, step.gid, step.ii);
+        if (!sent) {
+            await qcmdHsStop(mid);
+            if (monitors[mid] && monitors[mid].isConnected) { qcmdLog(mid, '第 ' + label + ' 条没内容可发，已跳过', 'err'); return 'skip'; }
+            qcmdLog(mid, '第 ' + label + ' 条发送失败（连接已断），循环已停止', 'err');
+            return 'stopped';
+        }
+        qcmdLog(mid, '第 ' + label + ' 条已发出，等 OK（最多 ' + timeoutMs + 'ms'
+                    + (expect ? '，认 ' + expect : '') + '）');
+        var v = await qcmdWaitVerdict(mid, timeoutMs, label);
+        if (v === 'ok') { qcmdLog(mid, '第 ' + label + ' 条收到 OK'); return 'ok'; }
+        if (v === 'stopped') return 'stopped';
+        if (v === 'err') {
+            if (attempt < maxRetry) {
+                qcmdLog(mid, '第 ' + label + ' 条收到 ERROR → 重发（第 ' + (attempt + 1) + '/' + maxRetry + ' 次）', 'err');
+                await qcmdSleep(QCMD_RETRY_GAP_MS);
+                continue;
+            }
+            return 'err-exhausted';
+        }
+        return 'timeout';
+    }
+    return 'timeout';
+}
+
+/// 一步：发当前这条，然后按它的**超时**等回话；再按「成功跳转 / 失败跳转」决定下一步去哪。
+/// 每步都重新取一遍计划 —— 用户中途改顺序号 / 拖组 / 删条目 / 改超时/跳转会立刻生效，不用重启循环。
+/// ⚠️ 这是 async，`_qcmdLoopBusy` 是重入闸（一次只跑一条）：**每条退出路径都要放闸**。
+async function qcmdLoopStep(mid) {
     var m = monitors[mid];
-    if (!m || !m.qcmdLoop) return;
+    if (!m || !m.qcmdLoop || _qcmdLoopBusy[mid]) return;
     if (!m.isConnected) { stopQcmdLoop(mid, '监控已断开，循环发送已停止'); return; }
     var plan = qcmdLoopPlan(mid);
     if (!plan.length) { stopQcmdLoop(mid, '已经没有顺序号大于 0 的指令，循环发送已停止'); return; }
     if (!(m._qcmdLoopPos >= 0) || m._qcmdLoopPos >= plan.length) m._qcmdLoopPos = 0;
     var step = plan[m._qcmdLoopPos];
+    var it = qcmdItemAt(mid, step.gid, step.ii);
+    // 先按"下一条"推进（原行为）；下面按跳转列**改写**成目标位置
     m._qcmdLoopPos = m._qcmdLoopPos + 1;
-    var wait = qcmdItemDelay(qcmdItemAt(mid, step.gid, step.ii));
-    sendQcmdItem(mid, step.gid, step.ii);
-    _qcmdLoopTimers[mid] = setTimeout(function() {
-        delete _qcmdLoopTimers[mid];
-        qcmdLoopStep(mid);
-    }, wait);
+    if (!it) { qcmdLoopSchedule(mid, 0); return; }
+    var label = qcmdStepLabel(mid, step, it);
+    _qcmdLoopBusy[mid] = true;
+    var verdict;
+    try {
+        verdict = await qcmdRunOne(mid, step, it, label);
+    } catch (e) {
+        verdict = 'stopped';
+        qcmdLog(mid, '第 ' + label + ' 条执行异常：' + e, 'err');
+    }
+    delete _qcmdLoopBusy[mid];
+    if (!monitors[mid] || !monitors[mid].qcmdLoop) return;      // 等回话的过程里被停掉了
+    if (verdict === 'stopped') return;
+
+    // ---- 跳转：成功走「成功跳转」；**超时或 ERROR 用尽**都算失败，走「失败跳转」----
+    // （超时也走失败路径是有意的：配网失败多半是超时而不是 ERROR，只认 ERROR 的话这个功能没用）
+    var failed = (verdict === 'timeout' || verdict === 'err-exhausted');
+    var gotoSeq = failed ? qcmdItemErrGoto(it) : qcmdItemOkGoto(it);
+    var jumped = false;
+    if (gotoSeq === 'end') {
+        if (failed) {
+            stopQcmdLoop(mid, qcmdStopReasonOf(verdict, label, qcmdItemTimeout(it), qcmdItemRetry(it)));
+        } else {
+            qcmdLog(mid, '第 ' + label + ' 条收到 OK，按「成功跳转 = 结束」收尾');
+            stopQcmdLoop(mid);                       // 正常收尾：不给 toast（这不是错误）
+        }
+        return;
+    }
+    if (gotoSeq) {
+        // 计划可能在这一条等回话的期间被改过 → **重新取一遍**再定位（与"每步重取计划"同一纪律）
+        var plan2 = qcmdLoopPlan(mid);
+        var idx = qcmdPlanIndexOfSeq(plan2, gotoSeq);
+        if (idx >= 0) {
+            m._qcmdLoopPos = idx;
+            jumped = true;
+            // **连续**跳转计数：中间只要顺序推进一步就清零 —— 它抓的是"只在几条之间打转"的死循环
+            m._qcmdGotoRun = (m._qcmdGotoRun || 0) + 1;
+            qcmdLog(mid, '第 ' + label + ' 条' + (failed ? '失败' : '收到 OK') + ' → 跳转到顺序号 ' + gotoSeq);
+            if (m._qcmdGotoRun > QCMD_GOTO_MAX) {
+                stopQcmdLoop(mid, '跳转次数超过上限 ' + QCMD_GOTO_MAX + '（顺序号 ' + gotoSeq
+                    + ' 附近形成了死循环）—— 循环已停止');
+                return;
+            }
+        } else {
+            // 目标不在计划里（被删了 / 顺序号改了）：**降级**并写清原因，绝不静默乱跳
+            qcmdLog(mid, '第 ' + label + ' 条的跳转目标「顺序号 ' + gotoSeq + '」已经不在计划里 → 按'
+                        + (failed ? '终止' : '下一条') + '处理', 'err');
+            if (failed) {
+                stopQcmdLoop(mid, qcmdStopReasonOf(verdict, label, qcmdItemTimeout(it), qcmdItemRetry(it))
+                    + '（失败跳转的目标不存在，已按终止处理）');
+                return;
+            }
+        }
+    } else if (failed) {
+        // 没配「失败跳转」= 原行为：终止整条链
+        stopQcmdLoop(mid, qcmdStopReasonOf(verdict, label, qcmdItemTimeout(it), qcmdItemRetry(it)));
+        return;
+    }
+    if (!jumped) m._qcmdGotoRun = 0;      // 顺序推进 → 断掉"连续跳转"的计数
+    qcmdLoopSchedule(mid, 0);
 }
 
 /// 开/关循环发送（on=true 的三种拒绝路径都会把开关留在关闭态）
@@ -9253,6 +9799,7 @@ function setQcmdLoop(mid, on) {
     if (m.qcmdLoop) return true;                   // 已经在跑：不重开（免得把轮次位置重置）
     m.qcmdLoop = true;
     m._qcmdLoopPos = 0;
+    m._qcmdGotoRun = 0;      // 连续跳转计数：新开一轮必须从零开始
     syncQcmdLoopBtn(mid);
     qcmdLoopStep(mid);
     return true;
@@ -9271,6 +9818,91 @@ function updateQcmdSendBtns(mid, connected) {
 /* ===== 自动化工作流 UI ===== */
 
 function genWfId() { return 'wf_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4); }
+
+/* ===== 工作流规则的边界与形状（与 Rust 侧 `check_workflow_args` 同一套口径） =====
+   面板里改、MCP 改、AI 改，走的都是 `monitor.workflows` 这一份模型；上限**两边都要拦**：
+   前端拦是为了"在面板上手工填也拦得住"，Rust 拦是为了"碰界面之前就拒绝"（AGENTS #10）。 */
+var WF_MAX_RULES = 50;
+var WF_MAX_CONDITIONS = 8;
+var WF_MAX_ACTIONS = 8;
+var WF_MAX_NAME = 64;
+var WF_MAX_COND_VALUE = 512;
+var WF_MAX_ACTION_DATA = 4096;
+
+/// 工作流控件的**稳定 id**：注册表按 id 认门。没有 id 的控件只能靠"面板+标签名+文档序"兜底，
+/// 规则一增删路径就漂 —— 而 AI 看到那种路径也不知道它是哪条规则的哪个按钮
+/// （误点那颗"运行"就等于让规则开始自动往设备发数据）。
+function mcpWfElId(mid, ruleId, suffix) { return mid + '-wf-' + ruleId + '-' + suffix; }
+
+/// 动作的延时：**驼峰 `delayBefore` 是既有数据**（前端与 `config.json` 一直是它），
+/// snake_case 是 Rust 结构体的字段名 —— 两个都认，别再让"面板填了、后端读不到"重演。
+function wfDelayOf(a) {
+    if (!a) return 0;
+    var raw = (a.delayBefore !== undefined) ? a.delayBefore : a.delay_before;
+    var n = parseInt(raw, 10);
+    return (isFinite(n) && n > 0) ? n : 0;
+}
+
+function mcpWfActionOut(a) {
+    a = a || {};
+    return { type: a.type || 'send_data', data: a.data || '',
+             encoding: a.encoding === 'hex' ? 'hex' : 'text',
+             signal: a.signal || '', level: !!a.level, delayBefore: wfDelayOf(a) };
+}
+
+function mcpWfConds(payload) {
+    return (payload.conditions || []).map(function(c) {
+        c = c || {};
+        return { type: String(c.type || 'string_contains'),
+                 value: String(c.value == null ? '' : c.value).slice(0, WF_MAX_COND_VALUE) };
+    });
+}
+
+function mcpWfActs(payload) {
+    return (payload.actions || []).map(function(a) {
+        a = a || {};
+        return { type: String(a.type || 'send_data'),
+                 data: String(a.data == null ? '' : a.data).slice(0, WF_MAX_ACTION_DATA),
+                 encoding: a.encoding === 'hex' ? 'hex' : 'text',
+                 signal: String(a.signal || ''),
+                 level: !!a.level,
+                 delayBefore: wfDelayOf(a) };
+    });
+}
+
+/// 入参形状校验：返回错误文案（null = 没问题）。与 Rust `check_workflow_args` 同口径。
+function mcpWfValidate(payload) {
+    var CT = ['string_contains', 'regex', 'exact_bytes'];
+    var AT = ['send_data', 'toggle_dtr_rts', 'save_log'];
+    if (payload.name !== undefined && String(payload.name).length > WF_MAX_NAME) {
+        return '规则名太长：' + String(payload.name).length + ' 字符，上限 ' + WF_MAX_NAME;
+    }
+    if (payload.conditions !== undefined) {
+        if (!Array.isArray(payload.conditions)) return 'conditions 要是数组：[{type, value}]';
+        if (!payload.conditions.length) return 'conditions 不能是空数组：一条条件都没有的规则永远不触发';
+        if (payload.conditions.length > WF_MAX_CONDITIONS) return 'conditions 最多 ' + WF_MAX_CONDITIONS + ' 条';
+        for (var i = 0; i < payload.conditions.length; i++) {
+            var c = payload.conditions[i] || {};
+            if (CT.indexOf(String(c.type)) < 0) return '第 ' + (i + 1) + ' 条条件的 type 不认得：可用 ' + CT.join(' / ');
+            if (String(c.value == null ? '' : c.value).length > WF_MAX_COND_VALUE) {
+                return '第 ' + (i + 1) + ' 条条件的 value 最长 ' + WF_MAX_COND_VALUE + ' 字符';
+            }
+        }
+    }
+    if (payload.actions !== undefined) {
+        if (!Array.isArray(payload.actions)) return 'actions 要是数组：[{type, data, …}]';
+        if (!payload.actions.length) return 'actions 不能是空数组：这样的规则命中了也什么都不做';
+        if (payload.actions.length > WF_MAX_ACTIONS) return 'actions 最多 ' + WF_MAX_ACTIONS + ' 条';
+        for (var j = 0; j < payload.actions.length; j++) {
+            var a = payload.actions[j] || {};
+            if (AT.indexOf(String(a.type)) < 0) return '第 ' + (j + 1) + ' 个动作的 type 不认得：可用 ' + AT.join(' / ');
+            if (String(a.data == null ? '' : a.data).length > WF_MAX_ACTION_DATA) {
+                return '第 ' + (j + 1) + ' 个动作的 data 最长 ' + WF_MAX_ACTION_DATA + ' 字符';
+            }
+        }
+    }
+    return null;
+}
 
 function addWorkflowRule(mid) {
     if (!monitors[mid]) return;
@@ -9429,11 +10061,11 @@ function renderWorkflowList(mid) {
             ? '<svg width="14" height="14" viewBox="0 0 1024 1024" fill="currentColor"><path d="M256 128h170.666667v768H256zM597.333333 128H768v768H597.333333z"/></svg>'
             : '<svg width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M725.333333 512L362.666667 256v512z"/></svg>';
         header.innerHTML =
-            '<input type="checkbox" name="wf-enabled"' + (rule.enabled ? ' checked' : '') + ' onchange="toggleWorkflowEnabled(\'' + mid + '\',\'' + rule.id + '\',this.checked)">' +
-            '<input class="wf-rule-name" name="wf-rule-name" value="' + escapeHtml(rule.name) + '" onchange="renameWorkflowRule(\'' + mid + '\',\'' + rule.id + '\',this.value)">' +
-            '<button class="wf-rule-btn wf-run-btn' + (isRunning ? ' wf-running' : '') + '" onclick="toggleWorkflowRun(\'' + mid + '\',\'' + rule.id + '\')" title="' + (isRunning ? '停止' : '运行') + '" style="' + (isRunning ? 'background:var(--btn-p);color:#fff;border-color:var(--btn-p);' : '') + '">' + runIcon + '</button>' +
-            '<button class="wf-rule-btn wf-rule-arrow" onclick="toggleWfRuleCollapse(\'' + mid + '\',\'' + rule.id + '\')" title="折叠/展开" style="transition:transform .2s ease;' + (isCollapsed ? 'transform:rotate(-90deg);' : '') + '">' + ICONS.chevronDown + '</button>' +
-            '<button class="wf-rule-btn del" onclick="deleteWorkflowRule(\'' + mid + '\',\'' + rule.id + '\')" title="删除">&#xd7;</button>';
+            '<input type="checkbox" class="wf-enabled" id="' + mcpWfElId(mid, rule.id, 'enabled') + '" name="wf-enabled"' + (rule.enabled ? ' checked' : '') + ' onchange="toggleWorkflowEnabled(\'' + mid + '\',\'' + rule.id + '\',this.checked)">' +
+            '<input class="wf-rule-name" id="' + mcpWfElId(mid, rule.id, 'name') + '" name="wf-rule-name" value="' + escapeHtml(rule.name) + '" onchange="renameWorkflowRule(\'' + mid + '\',\'' + rule.id + '\',this.value)">' +
+            '<button class="wf-rule-btn wf-run-btn' + (isRunning ? ' wf-running' : '') + '" id="' + mcpWfElId(mid, rule.id, 'run') + '" data-mcp-skip="1" onclick="toggleWorkflowRun(\'' + mid + '\',\'' + rule.id + '\')" title="' + (isRunning ? '停止' : '运行') + '" style="' + (isRunning ? 'background:var(--btn-p);color:#fff;border-color:var(--btn-p);' : '') + '">' + runIcon + '</button>' +
+            '<button class="wf-rule-btn wf-rule-arrow" id="' + mcpWfElId(mid, rule.id, 'fold') + '" onclick="toggleWfRuleCollapse(\'' + mid + '\',\'' + rule.id + '\')" title="折叠/展开" style="transition:transform .2s ease;' + (isCollapsed ? 'transform:rotate(-90deg);' : '') + '">' + ICONS.chevronDown + '</button>' +
+            '<button class="wf-rule-btn del" id="' + mcpWfElId(mid, rule.id, 'del') + '" onclick="deleteWorkflowRule(\'' + mid + '\',\'' + rule.id + '\')" title="删除">&#xd7;</button>';
         card.appendChild(header);
 
         // Body
@@ -9456,7 +10088,7 @@ function renderWorkflowList(mid) {
                         '<div class="sel-opt' + (cond.type==='exact_bytes'?' active':'') + '" data-val="exact_bytes" onclick="setWfCondType(this,\'' + mid + '\',\'' + rule.id + '\',' + ci + ',\'exact_bytes\',event)">精确字节(HEX)</div>' +
                     '</div>' +
                 '</div>' +
-                '<input type="text" name="wf-cond-value" value="' + escapeHtml(cond.value) + '" placeholder="' + wfCondPlaceholder(cond.type) + '" oninput="updateWfCondition(\'' + mid + '\',\'' + rule.id + '\',' + ci + ',\'value\',this.value)">' +
+                '<input type="text" id="' + mcpWfElId(mid, rule.id, 'c' + ci) + '" name="wf-cond-value" value="' + escapeHtml(cond.value) + '" placeholder="' + wfCondPlaceholder(cond.type) + '" oninput="updateWfCondition(\'' + mid + '\',\'' + rule.id + '\',' + ci + ',\'value\',this.value)">' +
                 '<button class="wf-row-btn" onclick="addWfCondition(\'' + mid + '\',\'' + rule.id + '\')" title="添加条件">+</button>' +
                 '<button class="wf-row-btn del" onclick="removeWfCondition(\'' + mid + '\',\'' + rule.id + '\',' + ci + ')" title="删除条件">&#xd7;</button>';
             condSection.appendChild(row);
@@ -9480,7 +10112,7 @@ function renderWorkflowList(mid) {
                             '<div class="sel-opt' + (act.encoding==='hex'?' active':'') + '" onclick="setWfActEnc(this,\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'hex\',event)">HEX</div>' +
                         '</div>' +
                     '</div>' +
-                    '<input type="text" name="wf-act-data" value="' + escapeHtml(act.data) + '" placeholder="发送内容" oninput="updateWfAction(\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'data\',this.value)">';
+                    '<input type="text" id="' + mcpWfElId(mid, rule.id, 'a' + ai) + '" name="wf-act-data" value="' + escapeHtml(act.data) + '" placeholder="发送内容" oninput="updateWfAction(\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'data\',this.value)">';
             } else if (act.type === 'toggle_dtr_rts') {
                 extraInputs =
                     '<div class="sel" onclick="toggleSelDrop(this)">' +
@@ -9508,7 +10140,7 @@ function renderWorkflowList(mid) {
                     '</div>' +
                 '</div>' +
                 extraInputs +
-                '<input type="number" name="wf-act-delay" value="' + (act.delayBefore || 0) + '" min="0" step="100" title="延时(ms)" oninput="updateWfAction(\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'delayBefore\',parseInt(this.value)||0)">' +
+                '<input type="number" id="' + mcpWfElId(mid, rule.id, 'ad' + ai) + '" name="wf-act-delay" value="' + wfDelayOf(act) + '" min="0" step="100" title="延时(ms)" oninput="updateWfAction(\'' + mid + '\',\'' + rule.id + '\',' + ai + ',\'delayBefore\',parseInt(this.value)||0)">' +
                 '<span style="font-size:10px;color:var(--text-d);">ms</span>' +
                 '<button class="wf-row-btn del" onclick="removeWfAction(\'' + mid + '\',\'' + rule.id + '\',' + ai + ')" title="删除动作">&#xd7;</button>';
             actSection.appendChild(row);
@@ -9629,7 +10261,7 @@ function renderWfActRow(actSection, mid, ruleId, targetIdx) {
             '</div>' +
         '</div>' +
         extraInputs +
-        '<input type="number" name="wf-act-delay" value="' + (act.delayBefore || 0) + '" min="0" step="100" title="延时(ms)" oninput="updateWfAction(\'' + mid + '\',\'' + ruleId + '\',' + targetIdx + ',\'delayBefore\',parseInt(this.value)||0)">' +
+        '<input type="number" id="' + mcpWfElId(mid, ruleId, 'ad' + targetIdx) + '" name="wf-act-delay" value="' + wfDelayOf(act) + '" min="0" step="100" title="延时(ms)" oninput="updateWfAction(\'' + mid + '\',\'' + ruleId + '\',' + targetIdx + ',\'delayBefore\',parseInt(this.value)||0)">' +
         '<span style="font-size:10px;color:var(--text-d);">ms</span>' +
         '<button class="wf-row-btn del" onclick="removeWfAction(\'' + mid + '\',\'' + ruleId + '\',' + targetIdx + ')" title="删除动作">&#xd7;</button>';
     targetRow.replaceWith(newRow);
@@ -10538,7 +11170,7 @@ function initWslMonitor(wmid) {
     wmid = wmid || 'wsl';
     if (!monitors[wmid]) {
         monitors[wmid] = { isConnected: false, portName: '', readTimer: null, sendHistory: [], histNavIdx: -1, _editing: false, quickCmds: [
-            {label:'', value:'', seq:0, delay:QCMD_DELAY_DEFAULT, hex:false}
+            {label:'', value:'', seq:0, timeout:QCMD_TIMEOUT_DEFAULT, hex:false}
         ], isWsl: true, workflows: [], _bufferStart: 0,
         _textData: new Uint8Array(TEXT_BUF_INIT), _textDataLen: 0,
         _textDataMaxBytes: 8 * 1024 * 1024,
@@ -10753,6 +11385,10 @@ function startWslReading(mid) {
                 // 渲染异常只记录日志，避免误触发断开/重连逻辑导致界面异常（#13）
                 try {
                     checkWorkflowMatches(mid, data);
+                    // 快速指令的"等回话"：WSL 的数据只有前端拉得到（Rust 侧没有读线程），
+                    // 顺手喂给 Rust 的判定状态机 —— 判定只有那一份，JS 里不再写一套。
+                    // 不 await：喂数据不能拖慢界面渲染；失败也不影响显示。
+                    invoke('qcmd_hs_feed', { monitorId: mid, data: Array.from(data) }).catch(function() {});
                     var frag = document.createDocumentFragment();
                     var vm = document.getElementById(mid + '-viewMode');
                     var isHex = vm && vm.getAttribute('data-val') === 'hex';
@@ -12053,8 +12689,8 @@ function openBle() {
                     '</div>' +
                     '<div class="ble-pf-sec" style="border-bottom:0;">' +
                         '<div class="ble-pf-row" style="margin-top:0;">' +
-                            '<button class="ble-pf-btn primary" id="blePfStartBtn" onclick="startBlePeriph()">开始广播</button>' +
-                            '<button class="ble-pf-btn danger" id="blePfStopBtn" onclick="stopBlePeriph()" disabled>停止广播</button>' +
+                            '<button class="ble-pf-btn primary" id="blePfStartBtn" data-mcp-skip="1" onclick="startBlePeriph()">开始广播</button>' +
+                            '<button class="ble-pf-btn danger" id="blePfStopBtn" data-mcp-skip="1" onclick="stopBlePeriph()" disabled>停止广播</button>' +
                             '<span class="ble-pf-badge" id="blePfBadge">未启动</span>' +
                         '</div>' +
                         '<div id="blePfWarn"></div>' +

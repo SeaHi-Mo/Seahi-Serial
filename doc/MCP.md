@@ -122,7 +122,7 @@ token 放在 URL 里是为了兼容"只会填 url、不会填 headers"的客户�
 
 | 类别 | 工具 |
 |---|---|
-| **串口语义（推荐优先用这些）** | `serial_get_state`、`serial_select_port`、`serial_set_baud`、`serial_set_frame`、`serial_set_lines`、`serial_set_display`、`serial_open`、`serial_close`、`serial_send`、`serial_clear`、`serial_get_history`、`serial_quick_cmd` |
+| **串口语义（推荐优先用这些）** | `serial_get_state`、`serial_select_port`、`serial_set_baud`、`serial_set_frame`、`serial_set_lines`、`serial_set_display`、`serial_open`、`serial_close`、`serial_send`、`serial_clear`、`serial_get_history`、`serial_quick_cmd`、`serial_workflow`、`serial_workflow_run` |
 | **蓝牙语义** | `ble_get_state`、`ble_list_devices`、`ble_start_scan`、`ble_stop_scan`、`ble_connect`、`ble_disconnect`、`ble_get_services`、`ble_read`、`ble_write`、`ble_subscribe`、`ble_get_output`、`ble_refresh_rssi`、`ble_periph_status`、`ble_periph_start`、`ble_periph_stop` |
 | **ADB 语义** | `adb_list_devices`、`adb_open_shell`、`adb_shell_write`、`adb_shell_read`、`adb_shell_resize`、`adb_close_shell` |
 | 应用/服务器 | `app_info`、`mcp_status`、`mcp_limits`、`serial_list_ports` |
@@ -195,16 +195,31 @@ WSL 侧是 WSL 里的设备（`get_wsl_serial_devices` / `open_wsl_serial`）。
 
 | 用法 | 传参 | 说明 |
 |---|---|---|
-| **列出来** | 什么都不传 | 每条含 `index`（按"组→组内"摊平的下标）、`group`/`groupIndex`/`itemIndex`、`value`、`seq`/`delayMs`/`hex`，以及可直接交给 `ui_set` 的 `domIds`；另给 `groups[]`（组名/条数/`on` 是否参与循环/`folded`）与 `loop`{on, planLength} |
+| **列出来** | 什么都不传 | 每条含 `index`（按"组→组内"摊平的下标）、`group`/`groupIndex`/`itemIndex`、`value`、`seq`/`timeoutMs`/`expect`/`retry`/`hex`，以及可直接交给 `ui_set` 的 `domIds`；另给 `groups[]`（组名/条数/`on` 是否参与循环/`folded`）与 `loop`{on, planLength} |
 | **执行一条** | `index` | 按**该条自己的 `hex`** 决定发文本还是 HEX（与主发送栏的模式无关） |
-| **开关循环** | `action: "loop"`，`on` 可省（省=取反） | 循环顺序 = **组从上到下 → 组内顺序号**；没连串口、或整条链上没有 `seq>0` 的条目就**拒绝**并说明原因 |
-| **加一条** | `action: "add"`，`group`（组序号/组名，可省=最后那组）、`value`、`seq`、`delayMs`、`hex` | 加完报告它落在 `index`、所属组与 `applied` |
+| **开关循环** | `action: "loop"`，`on` 可省（省=取反） | 循环顺序 = **组从上到下 → 组内顺序号**；**发一条等它回话**（busy 继续等 / OK 下一条 / ERROR 重发 / 等满超时终止整链）；没连串口、或整条链上没有 `seq>0` 的条目就**拒绝**并说明原因 |
+| **加一条** | `action: "add"`，`group`（组序号/组名，可省=最后那组）、`value`、`seq`、`timeoutMs`、`expect`、`retry`、`okGoto`、`errGoto`、`hex` | 加完报告它落在 `index`、所属组与 `applied`。`delayMs` 是**旧拼写**（与 `timeoutMs` 同值）；`expect`/`retry`/`okGoto`/`errGoto` 面板上没有入口（写在文件的同名列里）；`okGoto`/`errGoto` = 跳到哪个**顺序号**（留空 = 下一条、`结束` = 收尾） |
 | **改一条** | `action: "update"`，`index` + 要改的字段 | 至少给一个字段；`applied` 列出真正改动的项 |
 | **删一条** | `action: "remove"`，`index` | 返回被删那条的组/内容/顺序号与剩余条数 |
 | **组操作** | `action: "group"`，`op: "add"｜"remove"｜"rename"｜"move"｜"on"｜"fold"` | `group` 指定哪一组（序号/组名/组 id）；`rename` 给 `name`；`move` 给 `toIndex`（**组的上下顺序就是循环顺序**）；`on`/`fold` 给 `on` |
 
 改列表会**同时写回它挂载的外部文件**（"文件即存储"）—— 文件格式（列名/别名、`## 组名` 抬头、注释、
 写回规则、上限）见 [`QUICK_CMDS.md`](./QUICK_CMDS.md)。
+
+### `serial_workflow` / `serial_workflow_run`：自动化工作流规则
+
+面板「更多设置 → 工作流」那一块（**收到匹配的数据就自动执行动作**：发数据 / 切 DTR-RTS / 存日志）。
+改规则走的就是面板改的同一条路（立刻写进配置）。
+
+| 用法 | 传参 | 说明 |
+|---|---|---|
+| **列出来** | 什么都不传（或 `action: "list"`） | 每条含 `id`/`name`/`enabled`/`running`/`conditions[]`/`actions[]`（动作里的延时是 `delayBefore`）与稳定 `domIds`；另给 `limits` |
+| **加一条** | `action: "add"`，`name`、`conditions`、`actions`、`enabled` | 最多 8 条条件 / 8 个动作；条件 `type` ∈ `string_contains｜regex｜exact_bytes`，动作 `type` ∈ `send_data｜toggle_dtr_rts｜save_log`。⚠️ **新规则一律 `running:false`** |
+| **改一条** | `action: "update"`，`rule` + 要改的字段 | `running` 这里**只接受 `false`**（停一条正在跑的）；传 `true` 会被拒（`-32602`）并告诉你该走哪条工具 |
+| **删一条** | `action: "remove"`，`rule` | 正在跑的会先被停掉，再删 |
+| **启动 / 停止** | **`serial_workflow_run`**：`rule` + `on` + `confirm: true` | ⚠️ **危险动作**（跑起来之后规则会自动往设备发数据）→ 不带 `confirm` 不执行、回 `-32006`。**别用 `ui_click` 点面板上那颗运行按钮绕开确认门** |
+
+规则触发过的痕迹会写进日志中心的 **`workflow` 通道**（`[Auto] …`），用 `log_tail{channel:"workflow"}` 就能查"这条规则到底跑没跑过"。
 
 ### BLE 语义工具（`ble_*`，第一批）
 

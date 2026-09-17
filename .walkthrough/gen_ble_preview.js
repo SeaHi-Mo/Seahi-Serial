@@ -13,7 +13,29 @@ const os = require('os');
 const vm = require('vm');
 
 const root = path.resolve(__dirname, '..');
-const html = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
+
+/**
+ * 读"整个前端"，而不是只读 index.html。
+ *
+ * 2026-09 前端拆成了 src/css/*.css + src/js/*.js（index.html 只剩骨架 + <link> + <script src>），
+ * 但下面几百条断言里有大量**跨 CSS/JS 的源码正则**（比如 `/\.qcmd-goto\{[^}]*\}/.test(html)`），
+ * 它们要的是"这段内容在不在前端里"，而不是"它一定写在内联标签里"。
+ * 所以这里按 index.html 的标签顺序把 css/js **原样内联回来**，拼成一个"逻辑单文件"——
+ * 顺序不变 ⇒ 正则行为与拆分前完全一致 ⇒ 断言一条都不用改。
+ *
+ * vendor/xterm/* 保持原样（它本来就是外部文件，也从不在断言的正则范围里）。
+ */
+function readFrontendSource() {
+  const skeleton = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
+  const read = (rel) => fs.readFileSync(path.join(root, 'src', rel), 'utf8');
+  return skeleton
+    .replace(/<link rel="stylesheet" href="(?!vendor\/)([^"]+)">/g,
+      (_, rel) => '<style>\n' + read(rel) + '\n</style>')
+    .replace(/<script src="(?!vendor\/)([^"]+)"><\/script>/g,
+      (_, rel) => '<script>\n' + read(rel) + '\n</script>');
+}
+
+const html = readFrontendSource();
 
 function sliceBlock(startMarker) {
   const i = html.indexOf(startMarker);
@@ -33,14 +55,17 @@ function extractObject(name) {
 /** 抽取顶层 function 定义（兼容单行函数与列首 `}` 收尾两种写法） */
 function extractFunction(name) {
   const src = sliceBlock('function ' + name + '(');
+  // 源码里可能是 `async function NAME(` —— 这里从 'function ' 起切，会把 `async` 前缀丢掉，
+  // 于是沙箱里那具函数体里的 await 直接变成语法错误（2026-09 循环发送状态机就踩到了）
+  const prefix = /async\s+$/.test(html.slice(Math.max(0, src.start - 8), src.start)) ? 'async ' : '';
   const nl = src.body.indexOf('\n');
   const firstLine = src.body.slice(0, nl < 0 ? src.body.length : nl);
   const opens = (firstLine.match(/\{/g) || []).length;
   const closes = (firstLine.match(/\}/g) || []).length;
-  if (opens > 0 && opens === closes) return firstLine.replace(/\r$/, '');  // 单行函数
+  if (opens > 0 && opens === closes) return prefix + firstLine.replace(/\r$/, '');  // 单行函数
   const m = /\r?\n\}\r?\n/.exec(src.body);      // 列首的收尾 `}`（兼容 CRLF）
   if (!m) throw new Error('function end not found: ' + name);
-  return src.body.slice(0, m.index + m[0].length);
+  return prefix + src.body.slice(0, m.index + m[0].length);
 }
 
 /** 抽取 main.rs 里一个顶层 fn 的完整定义体（按大括号配平；Rust 函数之间不保证有空行） */
@@ -108,9 +133,11 @@ const check = (ok, label, extra) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${extra !== undefined && !ok ? '   -> ' + extra : ''}`);
 };
 
-// ---- 先过一遍 index.html 的**整段**脚本语法 ----
+// ---- 先过一遍前端的**整段**脚本语法 ----
 // 下面绝大多数断言是"按名字抽一个函数丢进 vm"，抽不到的函数有语法错也不会有人发现 ——
-// 而那正是最容易出的事（一次手工编辑漏个括号）。这里把每个内联 <script> 整段编译一次。
+// 而那正是最容易出的事（一次手工编辑漏个括号）。这里把每个 <script> 整段编译一次。
+// 拆分后前端是 14 个 js 文件、由 readFrontendSource() 内联回来，所以这一条等价于
+// "14 个文件**各自**都能编译" —— 比拆分前那个"一整个大 <script>"更严（切错边界会当场被抓）。
 {
   const re = /<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi;
   let m, blocks = 0, bad = [];
@@ -118,13 +145,13 @@ const check = (ok, label, extra) => {
     blocks++;
     const at = html.slice(0, m.index).split('\n').length;
     try {
-      new vm.Script(m[1], { filename: `index.html <script> #${blocks} (第 ${at} 行起)` });
+      new vm.Script(m[1], { filename: `前端 <script> #${blocks} (第 ${at} 行起)` });
     } catch (e) {
       bad.push(`#${blocks}(第 ${at} 行): ${e.message}`);
     }
   }
   check(blocks > 0 && bad.length === 0,
-    `index.html 的 ${blocks} 个内联 <script> 块都能编译（按名字抽函数的断言盖不到这一层）`,
+    `前端的 ${blocks} 个 <script> 块逐个都能编译（拆分后 = 每个 js 文件各自编译；按名字抽函数的断言盖不到这一层）`,
     bad.join(' | '));
 }
 
@@ -2702,7 +2729,7 @@ console.log('preview ->', out);
     for (const m of mcpSrc.matchAll(/"action": "(quickRun|quickList|setSendAs)"/g)) sentActions.add(m[1]);
     sentActions.add('refreshPorts');   // 分派里真有这个分支（界面那颗"刷新端口"按钮走自己的 onclick）
     const writeTable = extractVarObject('MCP_SERIAL_WRITE_ACTIONS');
-    const readActions = ['state', 'history', 'quickList', 'panes'];
+    const readActions = ['state', 'history', 'quickList', 'panes', 'wfList'];
     const unclassified = [...sentActions].filter(
       (a) => !new RegExp('\\b' + a + ': true').test(writeTable) && readActions.indexOf(a) < 0);
     check(sentActions.size >= 12 && unclassified.length === 0,
@@ -2715,6 +2742,33 @@ console.log('preview ->', out);
   // 选择器必须覆盖所有"可交互载体"，否则会漏掉控件
   check(/button, input, select, textarea, \[onclick\], \[role="tab"\]/.test(html),
     'MCP_SELECTOR 覆盖 button/input/select/textarea/[onclick]/[role=tab]');
+
+  // ---- 危险动作的"另一个入口"必须被注册表挡掉 ----
+  // 危险门（confirm）是按**工具名**判的，而 `ui_click` / `ui_set` 不是危险工具 ——
+  // 界面上那颗能达成同一件事的按钮如果不挡，AI 点一下就等于绕过确认门。
+  const dangerTools = [...(/pub const DANGER_TOOLS: &\[\(&str, &str\)\] = &\[([\s\S]*?)\n\];/.exec(mcpProd) || ['', ''])[1]
+    .matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort();
+  const dangerUiSrc = (/var MCP_DANGER_CONTROLS = \{([\s\S]*?)\n\};/.exec(html) || ['', ''])[1];
+  const dangerNoUiSrc = (/var MCP_DANGER_NO_UI = \{([\s\S]*?)\n\};/.exec(html) || ['', ''])[1];
+  const dangerUi = {};
+  [...dangerUiSrc.matchAll(/^\s*([a-z_]+):\s*'([^']+)'/gm)].forEach((m) => { dangerUi[m[1]] = m[2]; });
+  const dangerNoUi = {};
+  [...dangerNoUiSrc.matchAll(/^\s*([a-z_]+):/gm)].forEach((m) => { dangerNoUi[m[1]] = true; });
+  const dangerNamed = Object.keys(dangerUi).concat(Object.keys(dangerNoUi)).sort();
+  check(dangerTools.length >= 4, '扫到了 Rust 的危险动作表（不是空扫）', dangerTools.join(','));
+  check(JSON.stringify(dangerTools) === JSON.stringify(dangerNamed),
+    '危险动作表里每个工具都交代了"界面上有没有另一个入口"（有 → skip；没有 → 写清为什么）'
+    + '—— 以后新增危险工具时漏了这条就会 fail',
+    'Rust=' + dangerTools.join(',') + ' / 前端=' + dangerNamed.join(','));
+  check(/nodes\[i\]\.closest && nodes\[i\]\.closest\('\[data-mcp-skip\]'\)/.test(html),
+    'mcpBuildRegistry 真的跳过带 data-mcp-skip 的控件（closest 带存在性判断，假 DOM 里不炸）');
+  const skipCount = (html.match(/data-mcp-skip=/g) || []).length;
+  check(skipCount === Object.keys(dangerUi).length,
+    'data-mcp-skip 的出现次数 == 登记的危险控件数（加一个忘一个会被这条逮住）',
+    '源码 ' + skipCount + ' 处 / 表里 ' + Object.keys(dangerUi).length + ' 个');
+  check(Object.keys(dangerUi).every((k) => html.indexOf(dangerUi[k]) >= 0),
+    '表里记的控件标识在源码里真的存在（名字写错 = 根本没保护）',
+    Object.keys(dangerUi).filter((k) => html.indexOf(dangerUi[k]) < 0).join(',') || '(都在)');
 
   function extractVarObject(name) {
     const marker = 'var ' + name + ' = {';
@@ -3424,7 +3478,7 @@ console.log('preview ->', out);
                        mcpSrc.indexOf('\n    ]', mcpSrc.indexOf('pub fn tool_defs()')))
         .matchAll(/"name":\s*"([a-z][a-z0-9_]*)"/g)].map((m) => m[1])
     )];
-    check(srcTools.length === 55, '源码里是 55 个内置工具（20 通用 + 13 串口语义 + 16 蓝牙语义 + 6 ADB 语义）', srcTools.length);
+    check(srcTools.length === 57, '源码里是 57 个内置工具（20 通用 + 15 串口语义 + 16 蓝牙语义 + 6 ADB 语义）', srcTools.length);
     const missing = srcTools.filter((n) => toolsDoc.indexOf('#### `' + n + '`') < 0);
     check(missing.length === 0, '工具参考文档 doc/MCP_TOOLS.md 列出了全部内置工具', '缺：' + missing.join(','));
     check((toolsDoc.match(/^#### `/gm) || []).length === srcTools.length,
@@ -3752,9 +3806,12 @@ console.log('preview ->', out);
       // collectConfigForMonitor 现在会读分栏宽度 → 沙箱也得有 qcmdSideWidth 和它的上下限常量
       /var QCMD_SIDE_DEFAULT[^\n]*/.exec(html)[0],
       extractFunction('qcmdSideWidth'),
-      // quickList 现在带出每条的发送参数（顺序号/延时/HEX）→ 三个读法与它们的上下限常量
-      /var QCMD_SEQ_MAX[\s\S]*?var QCMD_DELAY_MAX = \d+;/.exec(html)[0],
-      extractFunction('qcmdItemSeq'), extractFunction('qcmdItemDelay'), extractFunction('qcmdItemHex'),
+      // quickList 现在带出每条的发送参数（顺序号/超时/期望/重试/跳转/HEX）→ 读法与它们的上下限常量
+      /var QCMD_SEQ_MAX[\s\S]*?var QCMD_EXPECT_MAX = \d+;/.exec(html)[0],
+      /var QCMD_GOTO_MAX[\s\S]*?var QCMD_GOTO_END = \[[^\]]*\];/.exec(html)[0],
+      extractFunction('qcmdItemSeq'), extractFunction('qcmdItemTimeout'),
+      extractFunction('qcmdItemExpect'), extractFunction('qcmdItemRetry'), extractFunction('qcmdItemHex'),
+      extractFunction('qcmdGotoNorm'), extractFunction('qcmdItemOkGoto'), extractFunction('qcmdItemErrGoto'),
       // 快速指令现在是组：quickList/quickRun 靠 qcmdAllItems 摊平（组序 = 循环行走顺序）
       /var QCMD_GROUP_DEFAULT_NAME[^\n]*/.exec(html)[0],
       extractFunction('qcmdNewGroupId'), extractFunction('qcmdGroups'), extractFunction('qcmdGroupById'),
@@ -3782,12 +3839,16 @@ console.log('preview ->', out);
       'function qcmdResolveItem(mid, index) { var f = qcmdAllItems(mid); return f[index] || null; }',
       'function qcmdApplyItemPatch(mid, gid, idx, p) { var out = []; ' +
         'if (p.value !== undefined) out.push("value"); if (p.seq !== undefined) out.push("seq"); ' +
-        'if (p.delayMs !== undefined) out.push("delayMs"); if (p.hex !== undefined) out.push("hex"); ' +
+        'if (p.timeoutMs !== undefined || p.delayMs !== undefined) out.push("timeoutMs"); ' +
+        'if (p.expect !== undefined) out.push("expect"); if (p.retry !== undefined) out.push("retry"); ' +
+        'if (p.hex !== undefined) out.push("hex"); ' +
         'var it = qcmdItemAt(mid, gid, idx); if (it) { if (p.value !== undefined) it.value = String(p.value); ' +
         'if (p.seq !== undefined) it.seq = parseInt(p.seq, 10) || 0; ' +
-        'if (p.delayMs !== undefined) it.delay = parseInt(p.delayMs, 10); if (p.hex !== undefined) it.hex = !!p.hex; } ' +
+        'if (p.timeoutMs !== undefined || p.delayMs !== undefined) it.timeout = parseInt(p.timeoutMs !== undefined ? p.timeoutMs : p.delayMs, 10); ' +
+        'if (p.expect !== undefined) it.expect = String(p.expect); if (p.retry !== undefined) it.retry = parseInt(p.retry, 10); ' +
+        'if (p.hex !== undefined) it.hex = !!p.hex; } ' +
         'return out; }',
-      'function addQcmdItem(mid, gid) { var g = qcmdGroupById(mid, gid); if (g) g.items.push({ label: "", value: "", seq: 0, delay: 1000, hex: false }); }',
+      'function addQcmdItem(mid, gid) { var g = qcmdGroupById(mid, gid); if (g) g.items.push({ label: "", value: "", seq: 0, timeout: 3000, hex: false }); }',
       'function removeQcmdItem(mid, gid, idx) { var g = qcmdGroupById(mid, gid); if (g) g.items.splice(idx, 1); }',
       'function addQcmdGroup(mid) { qcmdGroups(mid).push({ id: qcmdNewGroupId(), name: "循环 " + (qcmdGroups(mid).length + 1), items: [{}] }); }',
       'function removeQcmdGroup(mid, gid) { var l = qcmdGroups(mid); var i = qcmdGroupIndex(mid, gid); if (i >= 0 && l.length > 1) l.splice(i, 1); }',
@@ -4030,11 +4091,12 @@ console.log('preview ->', out);
       /var QCMD_FILE_MAX_ITEMS[\s\S]*?var QCMD_FILE_MAX_VALUE = \d+;/.exec(html)[0],
       srcLine(/var QCMD_FRONT_UNSUPPORTED[^\n]*/),
       srcLine(/var _qcmdFileSaveTimers[^\n]*/),
-      // 每条的发送参数（顺序号/延时/HEX）与循环发送的上下限、开关文案、定时器表
-      /var QCMD_SEQ_MAX[\s\S]*?var QCMD_DELAY_MAX = \d+;/.exec(html)[0],
+      // 每条的发送参数（顺序号/超时/期望/重试/HEX）与循环发送的上下限、开关文案、定时器表
+      /var QCMD_SEQ_MAX[\s\S]*?var QCMD_EXPECT_MAX = \d+;/.exec(html)[0],
       srcLine(/var QCMD_LOOP_TITLE_OFF[^\n]*/),
       srcLine(/var QCMD_LOOP_TITLE_ON[^\n]*/),
-      srcLine(/var _qcmdLoopTimers = \{\}[^\n]*/),
+      /var _qcmdLoopTimers = \{\}[\s\S]*?var _qcmdHsPoll = \{\}[^\n]*/.exec(html)[0],
+      /var QCMD_HS_POLL_MS[\s\S]*?var QCMD_LOOP_MIN_GAP_MS = \d+;/.exec(html)[0],
       srcLine(/var QCMD_GROUP_DEFAULT_NAME[^\n]*/),
       // 表头驱动列：别名表是模块级 var，HEX 真值表是一行数组
       extractObject('QCMD_COL_ALIASES'),
@@ -4046,7 +4108,7 @@ console.log('preview ->', out);
        'qcmdMdCells', 'qcmdColKey', 'qcmdHeaderMap', 'qcmdIsSeparatorRow', 'qcmdIsStructureRow',
        'qcmdCellInt', 'qcmdCellHex', 'qcmdParamCell', 'qcmdParseText', 'qcmdJoinRow', 'qcmdItemCells', 'qcmdBuildText', 'qcmdBaseName',
        'qcmdApplyParsed', 'qcmdCarryItemPrefs', 'renderQcmdSource', 'qcmdImportFile', 'qcmdReloadFile', 'qcmdUnmountFile',
-       'qcmdExportCols', 'qcmdExportPrep', 'qcmdItemHasParams', 'qcmdExportFile',
+       'qcmdExportCols', 'qcmdExportPrep', 'qcmdItemHasParams', 'qcmdExportBaseName', 'qcmdExportFile',
        'qcmdCurrentText', 'scheduleQcmdFileSave', 'qcmdFileSaveNow',
        'qcmdFlushPendingFileSaves', 'qcmdFileMountedBy', 'collectConfigForMonitor',
        'qcmdNewGroupId', 'qcmdGroups', 'qcmdGroupById', 'qcmdGroupIndex', 'qcmdAllItems', 'qcmdItemAt',
@@ -4059,9 +4121,34 @@ console.log('preview ->', out);
        'startQcmdGroupDrag', 'onQcmdGroupDragMove', 'endQcmdGroupDrag', 'qcmdReorderBoxes',
        'qcmdBlockIndexOf', 'qcmdInsertItemBlock', 'qcmdRemoveItemBlock',
        'qcmdGroupBlocksRange', 'qcmdGroupSectionBlocks', 'qcmdRemoveGroupBlocks', 'qcmdMoveGroupBlocks', 'qcmdRenameGroupBlock',
-       'qcmdDigits', 'qcmdItemSeq', 'qcmdItemDelay', 'qcmdItemHex', 'qcmdLoopPlan', 'qcmdItemText',
+       'qcmdDigits', 'qcmdItemSeq', 'qcmdItemTimeout', 'qcmdItemExpect', 'qcmdItemRetry', 'qcmdItemHex',
+       'qcmdTimeoutColIndex', 'qcmdTimeoutTitle', 'syncQcmdTimeoutMark',
+       'qcmdLoopPlan', 'qcmdItemText',
        'qcmdLoopRunning', 'qcmdSideTabTitle', 'syncQcmdLoopBtn', 'stopQcmdLoop', 'qcmdLoopStep', 'setQcmdLoop', 'toggleQcmdLoop', 'qcmdLoopSyncPlan',
+       'qcmdLog', 'qcmdSleep', 'qcmdHsStop', 'qcmdLoopSchedule', 'qcmdStepLabel',
+       'qcmdVerdictOf', 'qcmdStopReasonOf', 'qcmdWaitVerdict', 'qcmdRunOne',
+       // 工作流规则（MCP 的 serial_workflow 走这些真函数）
+       'mcpWfElId', 'wfDelayOf', 'mcpWfActionOut', 'mcpWfConds', 'mcpWfActs', 'mcpWfValidate',
+       // 跳转（成功/失败跳转的两列 → 状态机的分支与循环）
+       'qcmdGotoNorm', 'qcmdItemOkGoto', 'qcmdItemErrGoto', 'qcmdPlanIndexOfSeq', 'qcmdGotoWarnings',
+       'genWfId', 'findWfRule', 'addWorkflowRule', 'deleteWorkflowRule', 'renameWorkflowRule',
+       'toggleWorkflowEnabled', 'updateWfCondition', 'addWfCondition', 'removeWfCondition',
+       'updateWfAction', 'addWfAction', 'removeWfAction', 'toggleWorkflowRun', 'renderWorkflowList',
+       'saveWorkflowConfig',
+       // renderWorkflowList 的渲染依赖：图标集、HTML 转义、三个标签/占位符助手
+       'escapeHtml', 'wfCondLabel', 'wfCondPlaceholder', 'wfActLabel',
        'createMonitorPane', 'getWslMonitorHtml'].map(extractFunction).join('\n'),
+       // 工作流的上限常量（模块级 var，单独注入 —— **不能放进上面那个数组**：那数组会被
+       // `.map(extractFunction)` 逐个当函数名去抽）
+       /var WF_MAX_RULES[\s\S]*?var WF_MAX_ACTION_DATA = \d+;/.exec(html)[0],
+       // 跳转（分支与循环）的常量与取值表：`qcmdGotoNorm` 读它们，少了就在沙箱里 ReferenceError
+       /var QCMD_GOTO_MAX[\s\S]*?var QCMD_GOTO_END = \[[^\]]*\];/.exec(html)[0],
+       // `mcpSerialOp` 是本节的"真函数入口"（MCP 的 serial_* 都走它）。它体内引用了十来个函数，
+       // 但**只有被执行到的分支才会去解析**，所以只补 wf 那条路要用到的几个就够。
+       extractVarObject('MCP_SERIAL_WRITE_ACTIONS'),
+       extractFunction('mcpPanelOfMid'), extractFunction('mcpSerialPanes'),
+       extractFunction('mcpSerialResolvePane'), extractFunction('mcpSerialMissingPaneHint'),
+       extractFunction('mcpSerialOp'),
     ].join('\n'), sbSide);
     // 用 try 兜住：真正的 HTML 在函数前段就赋好了，后段的命令不在验证范围
     let paneCreateErr = null;
@@ -4152,8 +4239,8 @@ console.log('preview ->', out);
     // 列标题行：值有名字才读得成一张表；轨道必须与 .qcmd-item 完全一致，否则列会错位
     {
       check(/qcmd-col-seq[^>]*>顺序</.test(html) && /qcmd-col-val[^>]*>指令</.test(html)
-        && /qcmd-col-delay[^>]*>延时/.test(html) && /qcmd-col-hex[^>]*>HEX</.test(html),
-      '每组一张表的表头：顺序 / 指令 / 延时(ms) / HEX');
+        && /qcmd-col-delay[^>]*>超时/.test(html) && /qcmd-col-hex[^>]*>HEX</.test(html),
+      '每组一张表的表头：顺序 / 指令 / 超时(ms) / HEX');
       const itemCols = /\.qcmd-item\s*\{[^}]*grid-template-columns:([^;]+);/.exec(html);
       const colsRow = /\.qcmd-cols\s*\{[^}]*grid-template-columns:([^;]+);/.exec(html);
       check(itemCols && colsRow && itemCols[1].trim() === colsRow[1].trim(),
@@ -4399,11 +4486,11 @@ console.log('preview ->', out);
       const cls = first.children.map(c => c.className);
       check(JSON.stringify(cls) === JSON.stringify([
         'qcmd-item-seq', 'qcmd-item-val', 'qcmd-item-delay', 'qcmd-item-hex', 'qcmd-item-send', 'qcmd-item-del',
-      ]), '每条的排列固定为：顺序号 · 内容 · 延时 · HEX · 发送 · 删除', JSON.stringify(cls));
+      ]), '每条的排列固定为：顺序号 · 内容 · 超时 · HEX · 发送 · 删除', JSON.stringify(cls));
       const [seqInp, valInp, delayInp, hexBtn] = first.children;
       check(seqInp.value === '0' && !seqInp.classList.contains('on'),
         '顺序号默认 0 且不高亮（0 = 不参与循环发送）', seqInp.value);
-      check(delayInp.value === '1000', '延时默认 1000ms', delayInp.value);
+      check(delayInp.value === '3000', '超时默认 3000ms（这一格的含义是"最多等多久"）', delayInp.value);
       check(hexBtn.textContent === 'HEX' && !hexBtn.classList.contains('on'), 'HEX 使能默认关闭');
       check(seqInp.id === 'main-qcmdi-' + g0id() + '-0-seq' && delayInp.id === 'main-qcmdi-' + g0id() + '-0-delay'
         && hexBtn.id === 'main-qcmdi-' + g0id() + '-0-hex',
@@ -4416,10 +4503,10 @@ console.log('preview ->', out);
         + '两边列边界都不一样，标题自然对不上格');
       // 表头现在是"每组一份"，由 qcmdColsHtml 现场拼 → 断言就跑那个函数（源码里是跨行拼接的）
       const colsHtmlOne = sbSide.qcmdColsHtml('main', 'g0');
-      check(/qcmd-col-delay[^>]*>延时\s*<span class="qcmd-col-unit">\(ms\)<\/span>/.test(colsHtmlOne)
+      check(/qcmd-col-delay[^>]*>超时\s*<span class="qcmd-col-unit">\(ms\)<\/span>/.test(colsHtmlOne)
         && /id="main-qcmdCols-g0"/.test(colsHtmlOne)
         && /\.qcmd-cols \.qcmd-col-unit\s*\{[^}]*font-size:9px/.test(html),
-        '延时列名带单位 `(ms)`，单位缩一号（次要信息，也让 48px 的列宽放得下）；表头 id 带组号',
+        '超时列名带单位 `(ms)`，单位缩一号（次要信息，也让 48px 的列宽放得下）；表头 id 带组号',
         colsHtmlOne);
       check(/\.qcmd-item-hex\s*\{[^}]*width:100%/.test(html),
         'HEX 按钮撑满 34px 轨道（列标题的 HEX 照这条轨道居中，两者才重合）');
@@ -4462,16 +4549,20 @@ console.log('preview ->', out);
       delayInp.value = '2500';
       fire(delayInp, 'input');
       fire(delayInp, 'change');
-      check(m.quickCmds[0].delay === 2500 && delayInp.value === '2500', '延时改动落到模型（毫秒）',
-        String(m.quickCmds[0].delay));
+      check(m.quickCmds[0].timeout === 2500 && delayInp.value === '2500', '超时改动落到模型（毫秒）',
+        String(m.quickCmds[0].timeout));
       delayInp.value = '';
       fire(delayInp, 'change');
-      check(m.quickCmds[0].delay === 1000 && delayInp.value === '1000',
-        '延时被清空 → 回到缺省 1000（不是 0 毫秒疯跑）', delayInp.value);
+      check(m.quickCmds[0].timeout === 3000 && delayInp.value === '3000',
+        '超时被清空 → 回到缺省 3000（不是 0 = 疯跑，也不是 1000 那种必然误报的短超时）', delayInp.value);
       delayInp.value = '99999999';
       fire(delayInp, 'change');
-      check(m.quickCmds[0].delay === 600000 && delayInp.value === '600000', '延时被夹到上限 10 分钟',
+      check(m.quickCmds[0].timeout === 600000 && delayInp.value === '600000', '超时被夹到上限 10 分钟',
         delayInp.value);
+      delayInp.value = '0';
+      fire(delayInp, 'change');
+      check(m.quickCmds[0].timeout === 0 && delayInp.value === '0',
+        '超时填 0 = 这条不等回话（连续 HEX 帧用），不被当成非法值弹回缺省', delayInp.value);
 
       fire(hexBtn, 'click');
       check(m.quickCmds[0].hex === true && hexBtn.classList.contains('on'), '点一下 HEX：本条按 HEX 发送');
@@ -4580,19 +4671,30 @@ console.log('preview ->', out);
         'qcmdResolveItem：按摊平下标取条目，越界 null');
       // 改一条：走 mcpWriteEl（写真实输入框 + 派发 input/change）→ 模型、配置文件一起更新
       sbSide.monitors.main.quickGroups = [{ id: 'gA', name: '第一组',
-        items: [{ label: '', value: 'AT', seq: 0, delay: 1000, hex: false }] }];
+        items: [{ label: '', value: 'AT', seq: 0, timeout: 3000, hex: false }] }];
       sbSide.rebuildQcmdList('main');
-      const applied = sbSide.qcmdApplyItemPatch('main', 'gA', 0, { value: 'AT+GMR', seq: 3, delayMs: 500, hex: true });
+      const applied = sbSide.qcmdApplyItemPatch('main', 'gA', 0,
+        { value: 'AT+GMR', seq: 3, timeoutMs: 500, expect: 'WIFI GOT IP|OK', retry: 2, hex: true });
       const patched = sbSide.monitors.main.quickGroups[0].items[0];
-      check(JSON.stringify(applied) === '["value","seq","delayMs","hex"]',
+      check(JSON.stringify(applied) === '["value","seq","timeoutMs","expect","retry","hex"]',
         'qcmdApplyItemPatch：返回真正改动的字段名', JSON.stringify(applied));
-      check(patched.value === 'AT+GMR' && patched.seq === 3 && patched.delay === 500 && patched.hex === true,
-        '改动落到模型（值/顺序号/延时/HEX 四项）', JSON.stringify(patched));
+      check(patched.value === 'AT+GMR' && patched.seq === 3 && patched.timeout === 500
+        && patched.expect === 'WIFI GOT IP|OK' && patched.retry === 2 && patched.hex === true,
+        '改动落到模型（值/顺序号/超时/期望/重试/HEX 六项）', JSON.stringify(patched));
       check(sideById['main-qcmdi-gA-0-val'].value === 'AT+GMR'
         && sideById['main-qcmdi-gA-0-seq'].value === '3'
         && sideById['main-qcmdi-gA-0-delay'].value === '500'
+        && sideById['main-qcmdi-gA-0-delay'].classList.contains('has-extra')
         && sideById['main-qcmdi-gA-0-hex'].classList.contains('on'),
-        '四格控件都跟着变了（走的是用户手点那条路：input/change 事件）');
+        '四格控件都跟着变了（超时格还带上"另有文件级条件"的描边标记）');
+      check(sideById['main-qcmdi-gA-0-delay'].title.indexOf('期望 = WIFI GOT IP|OK') >= 0
+        && sideById['main-qcmdi-gA-0-delay'].title.indexOf('重试 = 2') >= 0,
+        '超时格悬停说明里写清"本条另有 期望/重试"（面板没有它们的入口，不能静默）',
+        sideById['main-qcmdi-gA-0-delay'].title);
+      // 历史拼写：delayMs 仍然认（那一项的语义已变成超时，但改名会让按旧写法调用的人静默失效）
+      const appliedLegacy = sbSide.qcmdApplyItemPatch('main', 'gA', 0, { delayMs: 8000 });
+      check(JSON.stringify(appliedLegacy) === '["timeoutMs"]' && patched.timeout === 8000,
+        '旧拼写 delayMs 仍然认，值按「超时」解读', JSON.stringify(patched));
       check(sbSide.qcmdApplyItemPatch('main', 'gA', 0, {}).length === 0,
         '没给字段时什么都不动（返回空数组，MCP 据此报 invalidParams）');
       // 组开关 / 折叠 / 移动（MCP 的 quickGroup 用的就是这几个）
@@ -4627,9 +4729,70 @@ console.log('preview ->', out);
       check(sbSide.qcmdItemSeq({}) === 0 && sbSide.qcmdItemSeq({ seq: -5 }) === 0 && sbSide.qcmdItemSeq({ seq: '7' }) === 7,
         '顺序号读法：缺省/负数 = 0，字符串也认');
       check(sbSide.qcmdItemSeq({ seq: 999999 }) === 9999, '顺序号越界夹到上限');
-      check(sbSide.qcmdItemDelay({}) === 1000 && sbSide.qcmdItemDelay({ delay: 0 }) === 0
-        && sbSide.qcmdItemDelay({ delay: 99999999 }) === 600000 && sbSide.qcmdItemDelay({ delay: 'abc' }) === 1000,
-        '延时读法：缺省 1000 / 0 合法 / 超限夹住 / 非数字回缺省');
+      check(sbSide.qcmdItemTimeout({}) === 3000 && sbSide.qcmdItemTimeout({ timeout: 0 }) === 0
+        && sbSide.qcmdItemTimeout({ timeout: 99999999 }) === 600000 && sbSide.qcmdItemTimeout({ timeout: 'abc' }) === 3000,
+        '超时读法：缺省 3000 / 0 合法（= 这条不等响应）/ 超限夹住 / 非数字回缺省');
+      check(sbSide.qcmdItemTimeout({ delay: 1000 }) === 1000
+        && sbSide.qcmdItemTimeout({ timeout: 500, delay: 1000 }) === 500,
+        '旧字段 delay 仍按「超时」读回来（老配置/老文件不丢值），新字段 timeout 优先');
+      check(sbSide.qcmdItemExpect({}) === '' && sbSide.qcmdItemExpect({ expect: '  OK  ' }) === 'OK'
+        && sbSide.qcmdItemExpect({ expect: new Array(200).join('x') }).length === 64,
+        '期望读法：缺省空 / 去掉首尾空白 / 超长截到 64');
+      check(sbSide.qcmdItemRetry({}) === 3 && sbSide.qcmdItemRetry({ retry: 0 }) === 0
+        && sbSide.qcmdItemRetry({ retry: 99 }) === 10 && sbSide.qcmdItemRetry({ retry: 'x' }) === 3,
+        '重试读法：缺省 3 / 0 = 不重发 / 超限夹到 10 / 非数字回缺省');
+      // 跳转（分支与循环）：取值归一化 —— '' = 下一条 / 'end' = 结束 / '数字' = 顺序号
+      check(sbSide.qcmdGotoNorm('') === '' && sbSide.qcmdGotoNorm('下一条') === ''
+        && sbSide.qcmdGotoNorm('next') === '' && sbSide.qcmdGotoNorm('-') === '',
+        '跳转：留空 / 下一条 / next / - 都算"顺序走"（缺省）');
+      check(sbSide.qcmdGotoNorm('结束') === 'end' && sbSide.qcmdGotoNorm('end') === 'end'
+        && sbSide.qcmdGotoNorm('STOP') === 'end',
+        '跳转：结束 / end / stop 都算"收尾"');
+      check(sbSide.qcmdGotoNorm('7') === '7' && sbSide.qcmdGotoNorm(' 12 ') === '12'
+        && sbSide.qcmdGotoNorm('0') === '' && sbSide.qcmdGotoNorm('99999') === '',
+        '跳转：数字按顺序号认（0 与超界回落到"下一条"）',
+        sbSide.qcmdGotoNorm('7') + '/' + sbSide.qcmdGotoNorm('0') + '/' + sbSide.qcmdGotoNorm('99999'));
+      check(sbSide.qcmdGotoNorm('随便写的') === '' && sbSide.qcmdItemOkGoto({ okgoto: 'end' }) === 'end'
+        && sbSide.qcmdItemErrGoto({ errgoto: '3' }) === '3',
+        '跳转：认不出来的按"下一条"处理（导入时会提示一次，不静默改语义）');
+      // 两列的表头驱动读入 + 原样写回
+      const gp = sbSide.qcmdParseText([
+        '| 顺序号 | 指令 | 成功跳转 | 失败跳转 |',
+        '|---|---|---|---|',
+        '| 1 | AT | 3 | end |',
+        '| 2 | AT+X |  | 1 |',
+      ].join('\r\n'));
+      check(gp.items[0].okgoto === '3' && gp.items[0].errgoto === 'end'
+        && sbSide.qcmdItemOkGoto(gp.items[0]) === '3' && gp.items[1].errgoto === '1'
+        && gp.items[1].okgoto === undefined,
+        '跳转两列按表头声明读进模型（没写的列不塞值）', JSON.stringify(gp.items));
+      check(gp.gotoCount === 2, 'gotoCount 统计到两列都有人写（导入提示用）', String(gp.gotoCount));
+      const gpOut = sbSide.qcmdBuildText(gp.blocks, 'md');
+      check(/\| 1 \| AT \| 3 \| end \|/.test(gpOut) && /\| 2 \| AT\+X \|  \| 1 \|/.test(gpOut),
+        '跳转两列原样写回（留空的格子还是空）', gpOut);
+      const gpBad = sbSide.qcmdParseText('| 顺序号 | 指令 | 成功跳转 |\r\n|---|---|---|\r\n| 1 | AT | 乱写 |');
+      check(gpBad.gotoUnknown === 1 && sbSide.qcmdItemOkGoto(gpBad.items[0]) === '',
+        '认不出来的跳转值：计入 gotoUnknown（提示用），模型里落成"下一条"', JSON.stringify(gpBad.gotoUnknown));
+      // 目标不存在时必须能被指出来（导入时提示、运行时降级）
+      const gpWarnSetup = sbSide.monitors.main;
+      sbSide.monitors['t-goto'] = { quickGroups: [{ id: 'gA', name: 'g', items: [
+        { label: '', value: 'AT', seq: 1, okgoto: '9' }, { label: '', value: 'B', seq: 2 }] }] };
+      const w = sbSide.qcmdGotoWarnings('t-goto');
+      check(w.length === 1 && /顺序号 1/.test(w[0]) && /成功跳转=9/.test(w[0]),
+        '跳转目标指向不存在的顺序号 → 能列出来（导入时提示、运行时按降级走）', JSON.stringify(w));
+      delete sbSide.monitors['t-goto'];
+      // 终止结论与文案（Rust 侧状态 → 前端结论；两个纯函数，异步状态机也走它们）
+      check(sbSide.qcmdVerdictOf('ok') === 'ok' && sbSide.qcmdVerdictOf('err') === 'err'
+        && sbSide.qcmdVerdictOf('timeout') === 'timeout' && sbSide.qcmdVerdictOf('idle') === 'stopped',
+        '状态映射：ok / err / timeout 原样，idle（被 stop 掉）算 stopped');
+      check(sbSide.qcmdVerdictOf('waiting') === '' && sbSide.qcmdVerdictOf('busy') === ''
+        && sbSide.qcmdVerdictOf(undefined) === '',
+        'busy / waiting / 认不出来的一律返回空 = 继续等（busy 绝不当作结论）');
+      check(/超时终止/.test(sbSide.qcmdStopReasonOf('timeout', '「1. 初始化」顺序号 1 AT+RST', 3000, 3))
+        && /3000ms/.test(sbSide.qcmdStopReasonOf('timeout', '「1. 初始化」顺序号 1 AT+RST', 3000, 3)),
+        '超时终止文案里写明"哪一条 + 等了多久"', sbSide.qcmdStopReasonOf('timeout', 'X', 3000, 3));
+      check(/连续 4 次收到 ERROR/.test(sbSide.qcmdStopReasonOf('err-exhausted', 'X', 3000, 3)),
+        'ERROR 用尽的文案里写清重发次数（上限 + 1 次尝试）', sbSide.qcmdStopReasonOf('err-exhausted', 'X', 3000, 3));
       check(sbSide.qcmdItemHex({}) === false && sbSide.qcmdItemHex({ hex: 1 }) === true, 'HEX 读法：非真值一律当关');
       check(sbSide.qcmdDigits('a01b2', 4) === '12' && sbSide.qcmdDigits('000') === '0' && sbSide.qcmdDigits(null) === '',
         '输入框只留数字（并去掉多余前导零，全 0 收敛成一个 0）');
@@ -4643,10 +4806,17 @@ console.log('preview ->', out);
       const loopTimers = {};
       let loopTimerSeq = 0;
       sbSide.showToast = msg => loopToasts.push(String(msg));
+      // stopQcmdLoop 会 invoke('qcmd_hs_stop') 收尾；沙箱给个最小桩（本段不验证它，异步段会验证）
+      sbSide.invoke = () => ({ catch() {} });
+      sbSideRef = sbSide;   // 沙箱在块作用域里，文件末尾那段异步断言要隔着作用域用它
       // 组模型：发一条 = (mid, gid, 组内下标)。记 gid 是为了能证明"按组的上下顺序走"
       sbSide.sendQcmdItem = (mid, gid, idx) => { sent.push(idx); sentGroups.push(gid); return { then() {} }; };
       sbSide.setTimeout = (fn, ms) => { const id = ++loopTimerSeq; loopTimers[id] = { fn, ms }; return id; };
       sbSide.clearTimeout = id => { delete loopTimers[id]; };
+      // 等回话那一拍的轮询 interval：本段只验证"开关状态/清理"，假的就够了（真行为在末尾异步段）
+      const loopIntervals = {};
+      sbSide.setInterval = (fn, ms) => { const id = ++loopTimerSeq; loopIntervals[id] = { fn, ms }; return id; };
+      sbSide.clearInterval = id => { delete loopIntervals[id]; };
       const pendingCount = () => Object.keys(loopTimers).length;
       const runNextTimer = () => {
         const id = Object.keys(loopTimers)[0];
@@ -4662,7 +4832,7 @@ console.log('preview ->', out);
         { label: '', value: 'AT+A', seq: 3 },
         { label: '', value: 'AT+B', seq: 0 },
         { label: '', value: 'AT+C', seq: 1 },
-        { label: '', value: 'AT+D', seq: 2, delay: 500 },
+        { label: '', value: 'AT+D', seq: 2, timeout: 500 },
       ];
       check(JSON.stringify(sbSide.qcmdLoopPlan('main').map(s => s.ii)) === '[2,3,0]',
         '计划 = 顺序号 > 0 的条目，按顺序号从小到大（顺序号 0 的不进列表）',
@@ -4680,7 +4850,8 @@ console.log('preview ->', out);
         '一条顺序号 > 0 的都没有时拒绝开启（不是"开着但什么都不发"）', loopToasts.join('|'));
       check(pendingCount() === 0, '被拒绝时不留定时器');
 
-      // 正常跑：按 1 → 2 → 3 发，顺序号 0 那条永远不参与
+      // 打开/关闭的**开关状态**（发送时序是异步的：arm → send → 等回话，
+      // 所以"发了哪几条、什么时候重发"由文件末尾那段真状态机断言负责）
       m.quickCmds[2].seq = 1; m.quickCmds[3].seq = 2; m.quickCmds[0].seq = 3;
       loopToasts.length = 0;
       check(sbSide.toggleQcmdLoop('main') === true && sbSide.qcmdLoopRunning('main'), '点一下打开循环发送');
@@ -4691,69 +4862,47 @@ console.log('preview ->', out);
         && sideById['main-btnQcmdSide'].title.indexOf('循环发送进行中') >= 0,
         '折叠条也挂上运行标记与提示（分栏折起来时循环不会停，得有可见信号）',
         sideById['main-btnQcmdSide'].title);
-      check(JSON.stringify(sent) === '[2]', '开启后立刻发顺序号最小的那条', JSON.stringify(sent));
-      check(runNextTimer() === 1000, '按**本条自己的**延时排下一步（没配过 → 缺省 1000ms）');
-      check(JSON.stringify(sent) === '[2,3]', '第二发 = 顺序号 2 的那条', JSON.stringify(sent));
-      check(runNextTimer() === 500, '延时逐条读（这条配了 500ms）');
-      check(JSON.stringify(sent) === '[2,3,0]', '第三发 = 顺序号 3 的那条（顺序号 0 的始终不参与）', JSON.stringify(sent));
-      check(m.quickCmds[1].seq === 0 && sent.indexOf(1) < 0, '顺序号 0 的那条从头到尾没被发过');
-      runNextTimer();
-      check(JSON.stringify(sent) === '[2,3,0,2]', '一轮发完从头再来（是循环，不是只跑一遍）', JSON.stringify(sent));
-      check(sentGroups.every(g => g === g0id()), '发出去的每条都带着**它所属组**的 id（组模型下不能只按下标发）', JSON.stringify(sentGroups));
+      check(sbSide._qcmdLoopBusy['main'] === true,
+        '打开后立刻进入"发出去等回话"的状态（重入闸落下：一次只跑一条）');
 
-      // 用户主动关：定时器立刻清掉，不再有下一发
-      check(sbSide.toggleQcmdLoop('main') === false && !sbSide.qcmdLoopRunning('main') && pendingCount() === 0,
-        '再点一下关闭：定时器立刻清掉');
+      // 用户主动关：定时器 / 轮询 interval / 重入闸一起收干净
+      sbSide._qcmdLoopTimers['main'] = 111;
+      sbSide._qcmdHsPoll['main'] = 222;
+      check(sbSide.toggleQcmdLoop('main') === false && !sbSide.qcmdLoopRunning('main'), '再点一下关闭');
+      check(!sbSide._qcmdLoopTimers['main'] && !sbSide._qcmdHsPoll['main'] && !sbSide._qcmdLoopBusy['main'],
+        '关闭时把定时器、轮询 interval、重入闸一起收干净（不留悬挂状态）');
       check(!sideById['main-btnQcmdLoop'].classList.contains('on')
         && sideById['main-btnQcmdLoop'].title === sbSide.QCMD_LOOP_TITLE_OFF,
         '关闭后开关恢复常态，提示改回「已关闭」');
       check(!sideById['main-btnQcmdSide'].classList.contains('loop')
         && sideById['main-btnQcmdSide'].title.indexOf('循环发送进行中') < 0,
         '停止后折叠条标记与提示都清掉', sideById['main-btnQcmdSide'].title);
-      sent.length = 0;
-      check(runNextTimer() === null && sent.length === 0, '关掉之后不会再冒出下一发');
 
-      // 跑着的时候掉线：自愈停止（不留还在倒计时的定时器）
-      sbSide.setQcmdLoop('main', true);
-      sent.length = 0; loopToasts.length = 0;
-      m.isConnected = false;
-      runNextTimer();
-      check(!sbSide.qcmdLoopRunning('main') && pendingCount() === 0 && /已断开/.test(loopToasts[0] || ''),
-        '跑着的时候掉线 → 立刻自愈停止并说明（不留一个还在倒计时的定时器）', loopToasts.join('|'));
-
-      // 跑到一半，用户把顺序号全改回 0 → 下一拍自愈停止
+      // 掉线自愈 / "跑到一半列表里再没有可发条目" 都要先真的发一条才看得到，
+      // 所以放到文件末尾那段真状态机断言里（那一段用真 Promise，能 await 到结果）。
       m.isConnected = true;
-      m.quickCmds[0].seq = 1;
-      sbSide.setQcmdLoop('main', true);
-      check(sbSide.qcmdLoopRunning('main') && pendingCount() === 1, '（前置）有可发的条目就能开起来');
-      m.quickCmds.forEach(q => { q.seq = 0; });
-      loopToasts.length = 0;
-      runNextTimer();
-      check(!sbSide.qcmdLoopRunning('main') && pendingCount() === 0
-        && /已经没有顺序号大于 0/.test(loopToasts[0] || ''),
-        '跑到一半列表里再没有可发的条目 → 自愈停止并说明', loopToasts.join('|'));
 
-      // 从文件重载：三条发送参数按"指令内容"带回来（外部文件里没有这三列）
-      m.quickCmds = [{ label: '', value: 'AT+GMR', seq: 2, delay: 250, hex: true }, { label: '', value: 'AT+RST' }];
+      // 从文件重载：发送参数按"指令内容"带回来（外部文件里没有这几列）
+      m.quickCmds = [{ label: '', value: 'AT+GMR', seq: 2, timeout: 250, hex: true }, { label: '', value: 'AT+RST' }];
       const parsed = sbSide.qcmdParseText('| AT+GMR |\r\n| AT+RST |\r\n| AT+NEW |');
       sbSide.qcmdCarryItemPrefs('main', parsed.items);
-      check(parsed.items[0].seq === 2 && parsed.items[0].delay === 250 && parsed.items[0].hex === true,
-        '重载时按指令内容带回顺序号/延时/HEX（三项只存在 config.json，不污染用户文件）',
+      check(parsed.items[0].seq === 2 && parsed.items[0].timeout === 250 && parsed.items[0].hex === true,
+        '重载时按指令内容带回顺序号/超时/HEX（这几项只存在 config.json，不污染用户文件）',
         JSON.stringify(parsed.items[0]));
       check(parsed.items[1].seq === undefined && parsed.items[1].hex === undefined,
         '没配过的条目保持干净（不写脏字段进模型）');
       check(parsed.items[2].seq === undefined, '文件里新出现的指令没有历史设置，回到默认');
 
       // 反过来：这三项绝不能混进写回用户文件的内容里（文件里只有名称/指令 + 原本的额外列）
-      m.quickCmds = [{ label: '查版本', value: 'AT+GMR', seq: 2, delay: 250, hex: true }];
+      m.quickCmds = [{ label: '查版本', value: 'AT+GMR', seq: 2, timeout: 250, hex: true }];
       m._qcmdBlocks = null;
       const fileText = sbSide.qcmdCurrentText('main');
       check(fileText.indexOf('250') < 0 && fileText.indexOf('hex') < 0 && fileText.indexOf('| 2 |') < 0,
-        '顺序号/延时/HEX 不会写进用户的指令文件（改文件格式会毁掉手写的备注列）', fileText);
+        '顺序号/超时/HEX 不会写进用户的指令文件（改文件格式会毁掉手写的备注列）', fileText);
 
       // 收尾：恢复成"默认 5 条"，后面的导入/写回断言依赖它
       m.quickCmds = [];
-      for (let i = 0; i < 5; i++) m.quickCmds.push({ label: '', value: '', seq: 0, delay: 1000, hex: false });
+      for (let i = 0; i < 5; i++) m.quickCmds.push({ label: '', value: '', seq: 0, timeout: 3000, hex: false });
       m._qcmdBlocks = null;
       m.isConnected = false;
     }
@@ -4826,31 +4975,34 @@ console.log('preview ->', out);
       ].join('\r\n');
       const p = sbSide.qcmdParseText(pText);
       check(p.cols && p.cols.seq === 3 && p.cols.delay === 4 && p.cols.hex === 5,
-        '表头认出了三列（顺序号 / 延时(ms) / HEX）', JSON.stringify(p.cols));
-      check(p.items[0].seq === 2 && p.items[0].delay === 500 && p.items[0].hex === true,
-        '第一行三项都读进模型', JSON.stringify(p.items[0]));
-      check(p.items[1].seq === 1 && sbSide.qcmdItemDelay(p.items[1]) === 1000 && p.items[1].hex === false,
-        '延时格留空 → 有效值缺省 1000；HEX 写 0 → 关', JSON.stringify(p.items[1]));
-      check(p.items[1].delay === undefined,
-        '留空的格子**不往模型里塞值**（写回时那一格还是空的，不硬写 1000 进用户的表）',
-        String(p.items[1].delay));
+        '表头认出了三列（顺序号 / 延时(ms) → 按超时读 / HEX）', JSON.stringify(p.cols));
+      check(p.cols.timeout === undefined && p.legacyTimeoutCol === true,
+        '★旧列名「延时」按「超时」解读，并记下一笔（导入时要提示一次 —— 不做静默语义变更）',
+        JSON.stringify({ timeout: p.cols.timeout, legacy: p.legacyTimeoutCol }));
+      check(p.items[0].seq === 2 && p.items[0].timeout === 500 && p.items[0].hex === true,
+        '第一行三项都读进模型（500 = 这一条最多等 500ms）', JSON.stringify(p.items[0]));
+      check(p.items[1].seq === 1 && sbSide.qcmdItemTimeout(p.items[1]) === 3000 && p.items[1].hex === false,
+        '超时格留空 → 有效值缺省 3000；HEX 写 0 → 关', JSON.stringify(p.items[1]));
+      check(p.items[1].timeout === undefined,
+        '留空的格子**不往模型里塞值**（写回时那一格还是空的，不硬写 3000 进用户的表）',
+        String(p.items[1].timeout));
       check(p.items[0].value === 'AT+GMR' && p.items[1].value === 'AT+RST', '指令列照旧');
       check(sbSide.qcmdBuildText(p.blocks, 'md') === pText, '三列表格往返保真（备注列也在原位）');
       // 改参数 → 写回只动对应那几格，备注一字不动
-      p.items[0].seq = 7; p.items[0].hex = false; p.items[1].delay = 250;
+      p.items[0].seq = 7; p.items[0].hex = false; p.items[1].timeout = 250;
       const pOut = sbSide.qcmdBuildText(p.blocks, 'md');
       check(/\| 查版本 \| AT\+GMR \| 甲的备注 \| 7 \| 500 \| false \|/.test(pOut),
         '写回按列原位更新（顺序号 7、HEX→false），备注列一字不动', pOut.split('\r\n')[2]);
       check(/\| 重启 \| AT\+RST \| 乙 \| 1 \| 250 \| 0 \|/.test(pOut),
-        '延时改 250 只动那一格；没碰的 HEX 格保持用户写的 `0`（不被规范化成 text）',
+        '超时改 250 只动那一格；没碰的 HEX 格保持用户写的 `0`（不被规范化成 text）',
         pOut.split('\r\n')[3]);
       // 列名别名
       const alias = sbSide.qcmdParseText('| 指令 | 序号 | 延迟 | 十六进制 |\r\n| AT+GMR | 3 | 800 | 是 |');
       check(alias.cols && alias.cols.value === 0 && alias.cols.seq === 1 && alias.cols.delay === 2 && alias.cols.hex === 3,
         '列名别名（序号/延迟/十六进制）也认', JSON.stringify(alias.cols));
-      check(alias.items[0].seq === 3 && alias.items[0].delay === 800 && alias.items[0].hex === true
+      check(alias.items[0].seq === 3 && alias.items[0].timeout === 800 && alias.items[0].hex === true
         && alias.items[0].label === 'AT+GMR',
-        '别名表头下的值照读；没有名称列时名称取指令本身', JSON.stringify(alias.items[0]));
+        '别名表头下的值照读（旧名「延迟」同样按超时读）；没有名称列时名称取指令本身', JSON.stringify(alias.items[0]));
       // 危险列名：`编号`/`no` 这种很可能是用户自己的 ID 列 —— 认错就会把 A1 改写成 0
       const risky = sbSide.qcmdParseText('| 指令 | 编号 |\r\n| AT+GMR | A1 |');
       check(risky.items.length === 1 && risky.items[0].seq === undefined && risky.items[0].hex === undefined,
@@ -4859,7 +5011,7 @@ console.log('preview ->', out);
         '那一列（用户的 ID/备注）原样保留', sbSide.qcmdBuildText(risky.blocks, 'md'));
       // 写回**不擅自补列**：表头没写这三列，写回就一字不多
       const noParam = sbSide.qcmdParseText('| 名称 | 指令 |\r\n| 查版本 | AT+GMR |');
-      noParam.items[0].seq = 3; noParam.items[0].hex = true; noParam.items[0].delay = 50;
+      noParam.items[0].seq = 3; noParam.items[0].hex = true; noParam.items[0].timeout = 50;
       check(sbSide.qcmdBuildText(noParam.blocks, 'md') === '| 名称 | 指令 |\r\n| 查版本 | AT+GMR |',
         '挂载文件表头没这三列 → 写回绝不擅自加列（用户的表结构由用户定）',
         sbSide.qcmdBuildText(noParam.blocks, 'md'));
@@ -4868,39 +5020,59 @@ console.log('preview ->', out);
       sbSide.monitors['t-x'] = { _qcmdBlocks: parsedIns.blocks, _qcmdCols: parsedIns.cols, quickCmds: [] };
       sbSide.qcmdInsertItemBlock('t-x', 0, { label: '', value: 'AT+NEW' });   // 组键 0 = 文件里第一张表
       const insOut = sbSide.qcmdBuildText(sbSide.monitors['t-x']._qcmdBlocks, 'md');
-      check(/\| AT\+NEW \| 0 \| 1000 \| false \|/.test(insOut),
-        '新条目按表头的列补齐（0 / 1000 / false），表格不会被撑歪', insOut.split('\r\n').pop());
+      check(/\| AT\+NEW \| 0 \| 3000 \| false \|/.test(insOut),
+        '新条目按表头的列补齐（0 / 3000 / false），表格不会被撑歪', insOut.split('\r\n').pop());
       delete sbSide.monitors['t-x'];
     }
 
     // ---- 导出：**一组一张表**（自包含快照；导出→导入不丢循环配置） ----
     {
       const items = [
-        { label: '', value: 'AT+GMR', seq: 2, delay: 500, hex: true },
+        { label: '', value: 'AT+GMR', seq: 2, timeout: 500, hex: true },
         { label: '', value: 'AT+RST', seq: 1 },
       ];
       const groups = [{ name: '循环 1', items: items }];
       const prep = sbSide.qcmdExportPrep(groups, 'md');
       const txt = sbSide.qcmdBuildText(prep.blocks, prep.style);
       const txtLines = txt.split('\r\n');
-      check(/^## 循环 1$/.test(txtLines[0]) && /^\| 顺序号 \| 指令 \| 延时\(ms\) \| HEX \|$/.test(txtLines[1]),
-        '导出**一组一段**：先写 `## 组名` 抬头，再写这张表的表头（用户 2026-09 的要求）', txtLines.slice(0, 2).join(' / '));
-      check(/\| 2 \| AT\+GMR \| 500 \| true \|/.test(txt) && /\| 1 \| AT\+RST \| 1000 \| false \|/.test(txt),
-        '每一行的三列都是真值（缺省也写全 1000 / false；HEX 是布尔字面 true/false）', txt);
+      check(/^## 循环 1$/.test(txtLines[0])
+        && /^\| 顺序号 \| 指令 \| 超时\(ms\) \| HEX \| 期望 \| 重试 \| 成功跳转 \| 失败跳转 \|$/.test(txtLines[1]),
+        '导出**一组一段**：先写 `## 组名` 抬头，再写这张表的表头（自包含：超时/期望/重试/跳转都在）',
+        txtLines.slice(0, 2).join(' / '));
+      check(/\| 2 \| AT\+GMR \| 500 \| true \|/.test(txt) && /\| 1 \| AT\+RST \| 3000 \| false \|/.test(txt),
+        '每一行都是真值（超时缺省写全 3000 / HEX 缺省 false；HEX 是布尔字面 true/false）', txt);
+      // 导出的**默认文件名按监视器区分**：WSL 分栏/额外分栏/蓝牙内嵌各有自己的一份列表，
+      // 一律叫 quick-cmds.md 的话，"连点两次导出、都存到同一目录"就会第二次盖掉第一次；
+      // 而导出是**直接写文件**（不走写回的哈希冲突检测），盖到别人挂载的文件上就是当场换内容。
+      check(sbSide.qcmdExportBaseName('main') === 'quick-cmds'
+        && sbSide.qcmdExportBaseName('wsl') === 'quick-cmds-wsl'
+        && sbSide.qcmdExportBaseName('wsl-2') === 'quick-cmds-wsl-2'
+        && sbSide.qcmdExportBaseName('extra-1') === 'quick-cmds-extra-1'
+        && sbSide.qcmdExportBaseName('ble-mon') === 'quick-cmds-ble-mon',
+        '导出的默认名按监视器区分（main 保持老名字 quick-cmds）',
+        ['main', 'wsl', 'wsl-2', 'extra-1', 'ble-mon'].map(x => sbSide.qcmdExportBaseName(x)).join(','));
+      check(sbSide.qcmdExportBaseName(null) === 'quick-cmds' && sbSide.qcmdExportBaseName('') === 'quick-cmds',
+        'mid 缺失时回落到老名字（不许出现 `quick-cmds-.md` 这种怪文件名）',
+        String(sbSide.qcmdExportBaseName(null)) + '/' + String(sbSide.qcmdExportBaseName('')));
+      check(sbSide.qcmdExportBaseName('a/b:c') === 'quick-cmds-a-b-c',
+        'mid 里的非法字符换成 -（文件名安全）', sbSide.qcmdExportBaseName('a/b:c'));
+      const exSrc = extractFunction('qcmdExportFile');
+      check(/qcmdExportBaseName\(mid\) \+ '\.'/.test(exSrc) && /qcmdFileMountedBy\(res\.path, mid\)/.test(exSrc),
+        '导出走监视器专属默认名，且导出后检查"是不是盖了别人挂载的文件"（盖上就说清）');
       const back = sbSide.qcmdParseText(txt);
-      check(back.items.length === 2 && back.items[0].seq === 2 && back.items[0].delay === 500 && back.items[0].hex === true
-        && back.items[1].seq === 1 && back.items[1].delay === 1000 && back.items[1].hex === false,
+      check(back.items.length === 2 && back.items[0].seq === 2 && back.items[0].timeout === 500 && back.items[0].hex === true
+        && back.items[1].seq === 1 && back.items[1].timeout === 3000 && back.items[1].hex === false,
         '导出的文件回读 = 原样（导出→导入往返，循环配置不丢）', JSON.stringify(back.items));
       check(back.groups.length === 1 && back.groups[0].name === '循环 1',
         '回读时 `## 抬头` 认成组名（文件里的表 = 面板里的组）', JSON.stringify(back.groups.map(g => g.name)));
-      check(back.cols && back.cols.seq !== undefined && back.cols.delay !== undefined && back.cols.hex !== undefined,
+      check(back.cols && back.cols.seq !== undefined && back.cols.timeout !== undefined && back.cols.hex !== undefined,
         '回读时三列都被认出来（不用再靠"按内容带回来"兜）', JSON.stringify(back.cols));
       // 导出的副本**不带「名称」列**：面板里没有名称入口，文件就该与面板一一对应
       // （用户 2026-09 报的"指令文件的内容没有和前端对应上"：文件里冒出一列 指令4/5/6/7，
       //  面板上根本没有这一栏）。挂载文件自己的名称列由**写回**路径保留，不受影响
       const withLabel = sbSide.qcmdBuildText(
         sbSide.qcmdExportPrep([{ name: '循环 1', items: [{ label: '查版本', value: 'AT+GMR', seq: 1 }] }], 'md').blocks, 'md');
-      check(/^\| 顺序号 \| 指令 \| 延时\(ms\) \| HEX \|$/.test(withLabel.split('\r\n')[1]),
+      check(/^\| 顺序号 \| 指令 \| 超时\(ms\) \| HEX \| 期望 \| 重试 \| 成功跳转 \| 失败跳转 \|$/.test(withLabel.split('\r\n')[1]),
         '即使条目里还留着名称（从老文件读进来的），导出也不带名称列',
         withLabel.split('\r\n')[1]);
       check(!/查版本/.test(withLabel), '那个名称不会出现在导出物里');
@@ -4911,16 +5083,17 @@ console.log('preview ->', out);
       check(blankTxt.split('\r\n').length === 3 + 3,
         '导出的行数 = 抬头 + 表头 + 分隔行 + **每条一行**（空条目也占一行，不跳）',
         String(blankTxt.split('\r\n').length));
-      check(/^\| 0 \|  \| 1000 \| false \|$/m.test(blankTxt),
-        '空条目的那一行写全缺省值（0 / 1000 / false），回来还是"一条"', blankTxt);
+      check(/^\| 0 \|  \| 3000 \| false \|/m.test(blankTxt),
+        '空条目的那一行写全缺省值（0 / 3000 / false），回来还是"一条"', blankTxt);
       // 导出→导入：连空条目一起原样回来（否则又是"对不上"）
       const backBlank = sbSide.qcmdParseText(blankTxt);
       check(backBlank.items.length === 3 && backBlank.items[1].value === '' && backBlank.items[1].seq === 0,
         '导出→导入：条数不变（参数格有值的空条目行不会被丢掉）',
         JSON.stringify(backBlank.items.map(i => i.value)));
       const tsv = sbSide.qcmdBuildText(sbSide.qcmdExportPrep(groups, 'tsv').blocks, 'tsv');
-      check(/^## 循环 1$/.test(tsv.split('\r\n')[0]) && /^顺序号\t指令\t延时\(ms\)\tHEX$/.test(tsv.split('\r\n')[1]),
-        'TSV 导出同样带抬头与三列（且没有多余的 Markdown 分隔行）', tsv.split('\r\n').slice(0, 2).join(' / '));
+      check(/^## 循环 1$/.test(tsv.split('\r\n')[0])
+        && /^顺序号\t指令\t超时\(ms\)\tHEX\t期望\t重试\t成功跳转\t失败跳转$/.test(tsv.split('\r\n')[1]),
+        'TSV 导出同样带抬头与各列（且没有多余的 Markdown 分隔行）', tsv.split('\r\n').slice(0, 2).join(' / '));
       check(!/\|---/.test(tsv), 'TSV 里不掺 Markdown 分隔行');
       // 多组：两组 → 两张表，中间空一行；回读要认回两个组
       const two = sbSide.qcmdBuildText(sbSide.qcmdExportPrep(
@@ -4945,7 +5118,7 @@ console.log('preview ->', out);
       const doc = fs.existsSync(docPath) ? fs.readFileSync(docPath, 'utf8') : '';
       check(doc.length > 2000, 'doc/QUICK_CMDS.md 存在（面向使用者的文件格式说明）', String(doc.length));
       // 别名表：文档里得真的列出认得的列名（否则用户只能猜）
-      const aliases = ['顺序号', '延时', 'HEX', 'cmd', 'command', 'delay', 'interval', 'order', 'seq'];
+      const aliases = ['顺序号', '超时', 'HEX', 'cmd', 'command', 'timeout', 'delay', 'interval', 'order', 'seq'];
       check(aliases.every(a => doc.indexOf(a) >= 0), '文档列出了认得的列名/别名',
         aliases.filter(a => doc.indexOf(a) < 0).join(',') || '(全都有)');
       // 三件最容易踩的事：不认 ID 列、表头驱动、写回不擅自补列
@@ -6015,7 +6188,7 @@ console.log('preview ->', out);
     {
       sbSide.monitors.limitTest = { quickGroups: [{ id: 'lg1', name: '循环 1',
         items: new Array(sbSide.QCMD_FILE_MAX_ITEMS).fill(0)
-          .map(() => ({ label: '', value: 'x', seq: 0, delay: 1000, hex: false })) }] };
+          .map(() => ({ label: '', value: 'x', seq: 0, timeout: 3000, hex: false })) }] };
       check(sbSide.qcmdItemTotal('limitTest') === sbSide.QCMD_FILE_MAX_ITEMS,
         'qcmdItemTotal 数的是跨组条目总数', sbSide.qcmdItemTotal('limitTest'));
       check(sbSide.addQcmdItem('limitTest', 'lg1') === false,
@@ -6244,9 +6417,9 @@ console.log('preview ->', out);
       const exportPath = path.join(os.tmpdir(), 'seahi-qcmd-export-verify.md');
       try { fs.unlinkSync(exportPath); } catch (e) { /* 首次运行没有这个文件 */ }
       m.quickCmds = [
-        { label: '', value: 'AT+GMR', seq: 2, delay: 500, hex: true },
-        { label: '', value: '01 02 03 04', seq: 1, delay: 250, hex: true },
-        { label: '', value: 'AT+RST', seq: 0, delay: 1000, hex: false },
+        { label: '', value: 'AT+GMR', seq: 2, timeout: 500, hex: true },
+        { label: '', value: '01 02 03 04', seq: 1, timeout: 250, hex: true },
+        { label: '', value: 'AT+RST', seq: 0, timeout: 1000, hex: false },
       ];
       m.quickCmdsFileStyle = 'md';
       m.quickCmdsFileEnc = 'utf-8';
@@ -6263,8 +6436,10 @@ console.log('preview ->', out);
       check(fs.existsSync(exportPath), '① 导出真的写了文件', exportPath);
       const onDisk = fs.readFileSync(exportPath, 'utf8');         // ← 从磁盘读回来
       const diskLines = onDisk.split('\r\n');
-      check(/^## 循环 1$/.test(diskLines[0]) && /^\| 顺序号 \| 指令 \| 延时\(ms\) \| HEX \|$/.test(diskLines[1]),
-        '① 第 1 行是组抬头，第 2 行是这张表的表头（一组一张表）', diskLines.slice(0, 2).join(' / '));
+      check(/^## 循环 1$/.test(diskLines[0])
+        && /^\| 顺序号 \| 指令 \| 超时\(ms\) \| HEX \| 期望 \| 重试 \| 成功跳转 \| 失败跳转 \|$/.test(diskLines[1]),
+        '① 第 1 行是组抬头，第 2 行是这张表的表头（一组一张表；超时/期望/重试/跳转都写出来）',
+        diskLines.slice(0, 2).join(' / '));
       check(diskLines.length === 6 && /^\|\s*---/.test(diskLines[2]),
         '① 抬头 + 表头 + Markdown 分隔行 + 3 条数据行', diskLines.length + ' 行 / ' + diskLines[2]);
       check(/\| 2 \| AT\+GMR \| 500 \| true \|/.test(onDisk)
@@ -6296,12 +6471,12 @@ console.log('preview ->', out);
       }
       const back = sbSide.monitors['main'].quickCmds;
       check(back.length === 3, '② 导入回来的条数对得上', String(back.length));
-      check(back[0].value === 'AT+GMR' && back[0].seq === 2 && back[0].delay === 500 && back[0].hex === true,
-        '② 第 1 条：指令 + 顺序号 2 + 延时 500 + HEX 开 —— 一项不丢', JSON.stringify(back[0]));
-      check(back[1].value === '01 02 03 04' && back[1].seq === 1 && back[1].delay === 250 && back[1].hex === true,
+      check(back[0].value === 'AT+GMR' && back[0].seq === 2 && back[0].timeout === 500 && back[0].hex === true,
+        '② 第 1 条：指令 + 顺序号 2 + 超时 500 + HEX 开 —— 一项不丢', JSON.stringify(back[0]));
+      check(back[1].value === '01 02 03 04' && back[1].seq === 1 && back[1].timeout === 250 && back[1].hex === true,
         '② 第 2 条：含空格的 HEX 串原样，参数也原样', JSON.stringify(back[1]));
-      check(back[2].value === 'AT+RST' && back[2].seq === 0 && back[2].delay === 1000 && back[2].hex === false,
-        '② 第 3 条：顺序号 0（不参与循环）+ 延时 1000 + HEX 关', JSON.stringify(back[2]));
+      check(back[2].value === 'AT+RST' && back[2].seq === 0 && back[2].timeout === 1000 && back[2].hex === false,
+        '② 第 3 条：顺序号 0（不参与循环）+ 超时 1000 + HEX 关', JSON.stringify(back[2]));
       check(sbSide.monitors['main']._qcmdCols && sbSide.monitors['main']._qcmdCols.seq === 0
         && sbSide.monitors['main']._qcmdCols.value === 1,
         '② 导入后列映射还在（顺序号第 0 列、指令第 1 列 —— 导出列序与面板一致）',
@@ -6310,11 +6485,11 @@ console.log('preview ->', out);
       check(sbSide.qcmdCurrentText('main') === onDisk,
         '③ 挂载后原样写回 = 导出文件逐字节一致（往返保真，不擅自改用户的表）');
       // ④ 改一个参数再写回：只有那一格变
-      sbSide.monitors['main'].quickCmds[1].delay = 800;
+      sbSide.monitors['main'].quickCmds[1].timeout = 800;
       sbSide.monitors['main'].quickCmds[0].hex = false;
       const afterEdit = sbSide.qcmdCurrentText('main');
       check(/\| 2 \| AT\+GMR \| 500 \| false \|/.test(afterEdit) && /\| 1 \| 01 02 03 04 \| 800 \| true \|/.test(afterEdit),
-        '④ 改延时/HEX 后写回只有那两格变，其余一字不动', afterEdit);
+        '④ 改超时/HEX 后写回只有那两格变，其余一字不动', afterEdit);
       try { fs.unlinkSync(exportPath); } catch (e) { /* 清理 */ }
       invokeHandler = baseHandler;
     }
@@ -6434,6 +6609,308 @@ console.log('preview ->', out);
       'windowWidth/windowHeight 仍在采集（别删：MCP 的 ui_get_state(window) 读它，迁移兜底也读它）');
   }
 
-  console.log(`\n结果: ${pass} passed, ${fail} failed`);
-  process.exit(fail ? 1 : 0);
+  // 上面那个侧栏沙箱活在块作用域里，文件末尾的异步断言隔着作用域够不着它 → 用这个引用带出来
+  // （必须是 var 且**不在这里赋初值**：块内赋值发生在前面，末尾再赋 null 会把它盖掉）
+  var sbSideRef;
+
+  // ---------- 工作流规则（MCP 的 serial_workflow / serial_workflow_run 走这条真函数路） ----------
+  {
+    const sbWf = sbSideRef;
+    const mWf = sbWf.monitors.main;
+    // 持久化不是本节验证的对象（真落盘那条路在 Rust 的 save_workflows）→ 打桩；
+    // 切页也是纯界面动作，和"规则改没改对"无关。
+    sbWf.saveWorkflowConfig = function () {};
+    sbWf.mcpSerialRevealForPane = function () {};
+
+    mWf.workflows = [];
+    let r = sbWf.mcpSerialOp({ action: 'wfList', pane: 'main' });
+    check(r.ok && r.value.count === 0 && Array.isArray(r.value.rules),
+      'wfList：空列表也回 rules=[]', JSON.stringify(r.value));
+    check(r.value.limits && r.value.limits.maxRules > 0 && r.value.limits.maxConditions > 0,
+      'wfList 把上限一起给出来（AI 不用去猜、也不用撞墙）', JSON.stringify(r.value.limits));
+
+    // 加一条：`running:true` 必须被**强制成 false** —— 启动规则要走 serial_workflow_run（带确认门）
+    r = sbWf.mcpSerialOp({ action: 'wfAdd', pane: 'main', name: '自动回 OK', running: true,
+      conditions: [{ type: 'string_contains', value: 'PING' }],
+      actions: [{ type: 'send_data', data: 'PONG', delayBefore: 300 }] });
+    check(r.ok && r.value.running === false,
+      'wfAdd 强制 running=false（让规则跑起来必须走带确认门的那条工具）', JSON.stringify(r.value));
+    const wfId = r.value.rule;
+    const wfRule = mWf.workflows[0];
+    check(wfRule.id === wfId && wfRule.name === '自动回 OK' && wfRule.enabled === true
+      && wfRule.conditions.length === 1 && wfRule.conditions[0].value === 'PING'
+      && wfRule.actions[0].data === 'PONG' && sbWf.wfDelayOf(wfRule.actions[0]) === 300,
+      'wfAdd 落到模型（含动作延时 300）', JSON.stringify(wfRule));
+
+    r = sbWf.mcpSerialOp({ action: 'wfList', pane: 'main' });
+    check(r.ok && r.value.count === 1 && r.value.rules[0].id === wfId
+      && r.value.rules[0].actions[0].delayBefore === 300,
+      'wfList 带出规则与动作（延时要看得到 —— 它以前在前端与后端之间是断的）',
+      JSON.stringify(r.value.rules[0]));
+    check(r.value.rules[0].domIds.name === 'main-wf-' + wfId + '-name'
+      && r.value.rules[0].domIds.run === 'main-wf-' + wfId + '-run',
+      'wfList 给出稳定 domIds（注册表按 id 认门）', JSON.stringify(r.value.rules[0].domIds));
+
+    // 校验：这几种都必须 invalidParams（Rust 侧同一套口径 → -32602）
+    const wfBad = [
+      [{ conditions: [] }, '空 conditions'],
+      [{ actions: [] }, '空 actions'],
+      [{ conditions: [{ type: 'nope', value: 'x' }] }, '不认的条件 type'],
+      [{ actions: [{ type: 'nope' }] }, '不认的动作 type'],
+      [{ conditions: new Array(9).fill({ type: 'string_contains', value: 'x' }) }, '条件超条数'],
+      [{ actions: new Array(9).fill({ type: 'send_data' }) }, '动作超条数'],
+      [{ name: 'x'.repeat(65) }, '规则名超长'],
+    ];
+    for (const [extra, what] of wfBad) {
+      const rr = sbWf.mcpSerialOp(Object.assign({ action: 'wfUpdate', pane: 'main', rule: wfId }, extra));
+      check(rr.ok === false && rr.invalidParams === true,
+        'wfUpdate：' + what + ' → invalidParams（不静默截断）', JSON.stringify(rr));
+    }
+
+    r = sbWf.mcpSerialOp({ action: 'wfUpdate', pane: 'main', rule: wfId, name: '改名了', enabled: false });
+    check(r.ok && r.value.applied.join() === 'name,enabled' && wfRule.name === '改名了' && wfRule.enabled === false,
+      'wfUpdate：改名 + 关启用', JSON.stringify(r.value));
+    r = sbWf.mcpSerialOp({ action: 'wfUpdate', pane: 'main', rule: wfId, running: false });
+    check(r.ok === false && r.invalidParams === true,
+      '本来就停着的规则再传 running=false = "没给要改的字段"', JSON.stringify(r));
+
+    r = sbWf.mcpSerialOp({ action: 'wfRemove', pane: 'main', rule: wfId });
+    check(r.ok && r.value.removed === wfId && mWf.workflows.length === 0, 'wfRemove：删掉了', JSON.stringify(r.value));
+    r = sbWf.mcpSerialOp({ action: 'wfRemove', pane: 'main', rule: wfId });
+    check(r.ok === false && r.invalidParams === true,
+      'wfRemove：id 不存在 → invalidParams（绝不静默成功）', JSON.stringify(r));
+
+    // 启停：危险门在 Rust 那侧（serial_workflow_run），这里只钉"真的把 running 切了"
+    sbWf.mcpSerialOp({ action: 'wfAdd', pane: 'main', name: 'r2',
+      conditions: [{ type: 'string_contains', value: 'A' }], actions: [{ type: 'send_data', data: 'B' }] });
+    const wfId2 = mWf.workflows[0].id;
+    r = sbWf.mcpSerialOp({ action: 'wfToggle', pane: 'main', rule: wfId2, on: true });
+    check(r.ok && r.value.running === true && mWf.workflows[0].running === true,
+      'wfToggle on：规则跑起来了', JSON.stringify(r.value));
+    r = sbWf.mcpSerialOp({ action: 'wfToggle', pane: 'main', rule: wfId2, on: false });
+    check(r.ok && r.value.running === false && mWf.workflows[0].running === false,
+      'wfToggle off：停下来了', JSON.stringify(r.value));
+
+    // 控件 id：卡片里那几颗关键控件必须由 mcpWfElId 生成（否则注册表只能给"文档序"路径，
+    // AI 在 ui_list 里看到的是一串 input_12/button_7 —— 点错一颗"运行"就是自动往设备发数据）
+    const rwSrc = extractFunction('renderWorkflowList');
+    check(/mcpWfElId\(mid, rule\.id, 'name'\)/.test(rwSrc)
+      && /mcpWfElId\(mid, rule\.id, 'enabled'\)/.test(rwSrc)
+      && /mcpWfElId\(mid, rule\.id, 'run'\)/.test(rwSrc)
+      && /mcpWfElId\(mid, rule\.id, 'c' \+ ci\)/.test(rwSrc)
+      && /mcpWfElId\(mid, rule\.id, 'a' \+ ai\)/.test(rwSrc)
+      && /mcpWfElId\(mid, rule\.id, 'ad' \+ ai\)/.test(rwSrc),
+      '工作流卡片的关键控件都带稳定 id（规则名/启用/运行/条件值/动作内容/动作延时）');
+    check(sbWf.mcpWfElId('main', 'wf_1', 'run') === 'main-wf-wf_1-run'
+      && /^(main|extra-\d+|wsl|wsl-x\d+|ble-mon)-(.+)$/.test('main-wf-wf_1-run'),
+      'id 走 mcpEntryFor 认得的 `{mid}-{name}` 形状（否则注册表解析不出分栏）',
+      sbWf.mcpWfElId('main', 'wf_1', 'run'));
+    check(!/delayBefore \|\| 0/.test(html) && sbWf.wfDelayOf({ delayBefore: 250 }) === 250
+      && sbWf.wfDelayOf({ delay_before: 250 }) === 250 && sbWf.wfDelayOf({}) === 0,
+      '动作延时两种字段名都认（驼峰是既有数据，snake_case 是后端结构体的名字）');
+
+    mWf.workflows = [];
+    sbWf.renderWorkflowList('main');
+  }
+
+  // ==========================================================================================
+  // 循环发送的真状态机（异步）：arm → send → 等回话 → 下一步 / 重发 / 终止
+  // ⚠️ 这一段必须用**真 Promise**（同步 thenable 驱动不了 await），所以单独收口、跑完再接汇总
+  //    —— 不能让 process.exit 赶在断言之前。
+  // ==========================================================================================
+  async function runQcmdLoopAsyncTests() {
+    const sb = sbSideRef;
+    const m = sb.monitors.main;
+    const sent = [], toasts = [], logs = [], calls = [], diag = [];
+    let script = [], stateDefault = 'waiting', armCount = 0;
+
+    // 一个可编程的"假 Rust"：arm 记一笔、state 按脚本逐次返回（脚本空了就用 stateDefault）
+    sb.invoke = (cmd, args) => {
+      calls.push({ cmd: cmd, args: args });
+      if (cmd === 'qcmd_hs_arm') { armCount++; return Promise.resolve({ ok: true }); }
+      if (cmd === 'qcmd_hs_state') {
+        const v = script.length ? script.shift() : { state: stateDefault };
+        return Promise.resolve({ state: v.state, busy: !!v.busy });
+      }
+      if (cmd === 'qcmd_hs_stop') return Promise.resolve({ ok: true });
+      return Promise.resolve(null);
+    };
+    sb.invokeTimeout = (cmd, args) => sb.invoke(cmd, args);
+    sb.sendQcmdItem = (mid, gid, idx) => {
+      sent.push({ idx: idx, gid: gid, armBefore: armCount });
+      return Promise.resolve(true);
+    };
+    sb.appendOutput = (mid, cls, text) => logs.push(String(text));
+    sb.showToast = msg => toasts.push(String(msg));
+    // 真定时器：同步段把它们换成了假的，这一段要真的能等（轮询 interval 也得是真的，才能 clear 掉）
+    sb.setTimeout = setTimeout;
+    sb.clearTimeout = clearTimeout;
+    sb.setInterval = setInterval;
+    sb.clearInterval = clearInterval;
+
+    const waitFor = async (fn, ms) => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < (ms || 800)) {
+        if (fn()) return true;
+        await new Promise(r => setTimeout(r, 5));
+      }
+      return false;
+    };
+    const setItems = items => {
+      const mon = sb.monitors.main;
+      mon.quickCmds = [];
+      // 就地改组数组（保持引用）：直接换 `mon.quickGroups` 会被 qcmdGroups 的"空则用它重建"分支吃掉
+      const gs = sb.qcmdGroups('main');
+      gs.length = 0;
+      gs.push({ id: 'gA', name: '组', items: items });
+      mon._qcmdBlocks = null;
+      mon.isConnected = true;    // 同步段收尾时把它设成了 false（那是在模拟"还没打开监控"）
+      sb.rebuildQcmdList('main');
+      mon.qcmdLoop = false; mon._qcmdLoopPos = 0;
+      sent.length = 0; toasts.length = 0; logs.length = 0; calls.length = 0; armCount = 0;
+    };
+
+    // ① 正常：发一条 → OK → 下一条
+    setItems([{ label: '', value: 'AT+RST', seq: 1, timeout: 2000 },
+              { label: '', value: 'AT+GMR', seq: 2, timeout: 2000 }]);
+    script = [{ state: 'ok' }, { state: 'ok' }];
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => sent.length >= 2, 1500),
+      '真状态机：收到 OK 才发下一条（两条都发出去了）', JSON.stringify(sent.map(x => x.idx)));    check(JSON.stringify(sent.map(x => x.idx).slice(0, 2)) === '[0,1]',
+      '按组内顺序号走（1 → 2）', JSON.stringify(sent.map(x => x.idx)));
+    check(sent.every(x => x.armBefore >= 1),
+      '每条都在 arm 之后才 send（"回话归属"的前提：反了就会把回话当上一条的迟到数据）',
+      JSON.stringify(sent.map(x => x.armBefore)));
+    check(calls.some(c => c.cmd === 'qcmd_hs_arm' && c.args && c.args.timeoutMs === 2000),
+      'arm 带上了本条自己的超时', JSON.stringify(calls.filter(c => c.cmd === 'qcmd_hs_arm').map(c => c.args)));
+    check(logs.some(t => /收到 OK/.test(t)),
+      '输出区里写清"收到 OK"（面板上没有为它新增控件，用户就靠这几行看它在干什么）',
+      logs.join(' | '));
+    sb.stopQcmdLoop('main');
+
+    // ② ERROR → 重发本条，重试成功就继续跑
+    setItems([{ label: '', value: 'AT+CWJAP', seq: 1, timeout: 2000, retry: 2 }]);
+    script = [{ state: 'err' }, { state: 'err' }, { state: 'ok' }];
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => sent.length >= 3, 1500),
+      'ERROR 后重发本条（重试上限 2 → 一共发 3 次）', JSON.stringify(sent.map(x => x.idx)));
+    check(sent.every(x => x.idx === 0), '重发的还是同一条', JSON.stringify(sent.map(x => x.idx)));
+    check(logs.some(t => /重发（第 1\/2 次）/.test(t)) && logs.some(t => /重发（第 2\/2 次）/.test(t)),
+      '日志里写清这是第几次重发', logs.join(' | '));
+    check(sb.qcmdLoopRunning('main'), '第 3 次收到 OK → 循环继续跑（没有误终止）');
+    sb.stopQcmdLoop('main');
+
+    // ③ ERROR 用尽 → 终止整条链
+    setItems([{ label: '', value: 'AT+CWJAP', seq: 1, timeout: 2000, retry: 1 }]);
+    script = [{ state: 'err' }, { state: 'err' }];
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => !sb.qcmdLoopRunning('main'), 1500), 'ERROR 重试用尽 → 终止整条链');
+    check(sent.length === 2, '上限 1 → 一共发 2 次（首次 + 1 次重发）', String(sent.length));
+    check(/连续 2 次收到 ERROR/.test(toasts.join(' | ')), '终止原因写清"连续几次 ERROR"', toasts.join(' | '));
+
+    // ④ 等满超时（Rust 一直说"还没结论"）→ 终止整条链
+    setItems([{ label: '', value: 'AT+RST', seq: 1, timeout: 60 }]);
+    script = []; stateDefault = 'waiting';
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => !sb.qcmdLoopRunning('main'), 3000), '等满超时 → 终止整条链');
+    check(/超时终止/.test(toasts.join(' | ')) && /60ms/.test(toasts.join(' | ')),
+      '终止原因写清"哪一条 + 等多久"', toasts.join(' | '));
+
+    // ⑤ busy 只算"继续等"：不算结论、也不重发
+    setItems([{ label: '', value: 'AT+CWJAP', seq: 1, timeout: 2000 }]);
+    script = [{ state: 'waiting', busy: true }, { state: 'ok' }]; stateDefault = 'waiting';
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => logs.some(t => /设备回 busy/.test(t)), 1500),
+      'busy 记一行日志（用户能看出"它在等，不是卡死了"）', logs.join(' | '));
+    check(sent.length === 1, 'busy 期间不重发（还是那一条）', JSON.stringify(sent.map(x => x.idx)));
+    sb.stopQcmdLoop('main');
+
+    // ⑥ 超时填 0 = 这条不等回话（连续 HEX 帧）
+    setItems([{ label: '', value: '01 02', seq: 1, timeout: 0, hex: true },
+              { label: '', value: '03 04', seq: 2, timeout: 0, hex: true }]);
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => sent.length >= 2, 1500),
+      '超时填 0 的条目发完就走，不等回话', JSON.stringify(sent.map(x => x.idx)));
+    check(calls.filter(c => c.cmd === 'qcmd_hs_arm').length === 0,
+      '填 0 的条目根本不会 arm（不去问"回话了吗"）');
+    sb.stopQcmdLoop('main');
+
+    // ⑦ 跑着的时候掉线 → 自愈停止（断开路径就是这么调的：updateMonitorUI(false) → stopQcmdLoop）
+    setItems([{ label: '', value: 'AT+RST', seq: 1, timeout: 60000 }]);
+    script = []; stateDefault = 'waiting';
+    m.isConnected = true;
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => sent.length >= 1, 800), '（前置）已经发出去一条');
+    m.isConnected = false;
+    sb.stopQcmdLoop('main', '监控已断开，循环发送已停止');
+    check(await waitFor(() => !sb.qcmdLoopRunning('main') && !sb._qcmdLoopBusy['main'], 1000)
+      && /已断开/.test(toasts.join(' | ')),
+      '掉线时立刻中断"等回话"这一步（**不等它超时** —— 超时可能被用户设成 10 分钟）',
+      toasts.join(' | '));
+    check(!sb._qcmdHsPoll['main'], '中断后轮询 interval 也收掉了');
+
+    // ⑧ 反复停：幂等，不留悬挂状态
+    m.isConnected = true;
+    sb._qcmdLoopTimers['main'] = 333; sb._qcmdHsPoll['main'] = 444;
+    sb.stopQcmdLoop('main');
+    check(!sb._qcmdLoopTimers['main'] && !sb._qcmdHsPoll['main'] && !sb._qcmdLoopBusy['main'],
+      '再停一次仍然干净（定时器 / 轮询 / 重入闸都不残留）');
+    check(!sb.qcmdLoopRunning('main'), '停掉之后不会自己又跑起来');
+
+    // ⑨ 跳转（分支与循环）：成功跳 / 失败跳（超时也算失败）/ 结束 / 目标不存在降级 / 连续跳转上限
+    setItems([{ label: '', value: 'A', seq: 1, timeout: 2000, okgoto: '3' },
+              { label: '', value: 'B', seq: 2, timeout: 2000 },
+              { label: '', value: 'C', seq: 3, timeout: 2000 }]);
+    script = [{ state: 'ok' }, { state: 'ok' }];
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => sent.length >= 2, 1500),
+      '成功跳转：第 1 条收到 OK → 跳到顺序号 3', JSON.stringify(sent.map(x => x.idx)));
+    check(sent[1] && sent[1].idx === 2, '中间那条（顺序号 2）被跳过', JSON.stringify(sent.map(x => x.idx)));
+    check(logs.some(t => /跳转到顺序号 3/.test(t)), '跳转写进输出区（用户看得到它为什么跳）', logs.join(' | '));
+    sb.stopQcmdLoop('main');
+
+    setItems([{ label: '', value: 'A', seq: 1, timeout: 60, errgoto: '3' },   // 第 1 条必超时
+              { label: '', value: 'B', seq: 2, timeout: 2000 },
+              { label: '', value: 'C', seq: 3, timeout: 2000 }]);
+    script = []; stateDefault = 'waiting';
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => sent.length >= 2, 3000),
+      '失败跳转：**超时也算失败**（配网失败多半是超时而不是 ERROR，只认 ERROR 这功能就没用）',
+      JSON.stringify(sent.map(x => x.idx)));
+    check(sent[1] && sent[1].idx === 2, '超时后跳到顺序号 3', JSON.stringify(sent.map(x => x.idx)));
+    sb.stopQcmdLoop('main');
+
+    setItems([{ label: '', value: 'A', seq: 1, timeout: 2000, okgoto: 'end' }]);
+    script = [{ state: 'ok' }];
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => !sb.qcmdLoopRunning('main'), 1500),
+      '「成功跳转 = 结束」→ 正常收尾（循环停下）');
+    check(toasts.length === 0, '正常收尾不弹错误 toast（它不是失败）', toasts.join(' | '));
+    check(logs.some(t => /按「成功跳转 = 结束」收尾/.test(t)), '收尾原因写进输出区', logs.join(' | '));
+
+    setItems([{ label: '', value: 'A', seq: 1, timeout: 2000, okgoto: '9' },   // 没有顺序号 9
+              { label: '', value: 'B', seq: 2, timeout: 2000 }]);
+    script = [{ state: 'ok' }, { state: 'ok' }];
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => sent.length >= 2, 1500),
+      '跳转目标不在计划里 → 降级按「下一条」走（绝不静默乱跳）', JSON.stringify(sent.map(x => x.idx)));
+    check(sent[1] && sent[1].idx === 1, '降级后发的是下一条', JSON.stringify(sent.map(x => x.idx)));
+    check(logs.some(t => /已经不在计划里/.test(t)), '降级原因写进输出区', logs.join(' | '));
+    sb.stopQcmdLoop('main');
+
+    // 自己跳自己：**连续**跳转上限必须兜住（这是"只会打转"的语法的唯一护栏）
+    setItems([{ label: '', value: 'A', seq: 1, timeout: 0, okgoto: '1' }]);
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => !sb.qcmdLoopRunning('main'), 12000),
+      '连续跳转超过上限 → 自愈停止（防死循环）');
+    check(/跳转次数超过上限/.test(toasts.join(' | ')), '停止原因写明是跳转上限', toasts.join(' | '));
+  }
+
+  runQcmdLoopAsyncTests().then(function () {
+    console.log(`\n结果: ${pass} passed, ${fail} failed`);
+    process.exit(fail ? 1 : 0);
+  }, function (e) {
+    console.error('异步断言段（循环发送真状态机）崩了：', e);
+    process.exit(1);
+  });
 })();

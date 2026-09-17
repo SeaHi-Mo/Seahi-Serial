@@ -423,6 +423,149 @@ fn wsl_shell_exec(distro: &str, cmd: &str, timeout_ms: u64) -> Result<String, St
 /// WSL 终端进程 PID（由 launch_wsl 设置，用于检测用户关闭窗口）
 static WSL_TERMINAL_PID: Mutex<Option<u32>> = Mutex::new(None);
 
+/* ===== 快速指令：等回话的状态机 =====
+   循环发送现在是一条一条来：发一条 → 等设备的回话 → busy 继续等 / OK 发下一条 /
+   ERROR 重发本条 / 等满超时终止整条链。**判定只在这里做一份**：
+   - 普通串口：读线程收到数据顺手喂进来（本进程内，不复制不排队）；
+   - WSL：数据只有前端拉得到（Rust 侧没有它的读线程）→ 前端把拉到的块喂给 `qcmd_hs_feed`。
+   前端只负责"发、等、按结论决定下一步"，不在 JS 里另写一套匹配（两套必然漂移）。 */
+
+/// 一条指令的等待状态。`Idle` = 没在等（也用于"被停掉了"）
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HsState { Idle, Waiting, Ok, Err, Timeout }
+
+impl HsState {
+    fn as_str(self) -> &'static str {
+        match self {
+            HsState::Idle => "idle",
+            HsState::Waiting => "waiting",
+            HsState::Ok => "ok",
+            HsState::Err => "err",
+            HsState::Timeout => "timeout",
+        }
+    }
+}
+
+const HS_BUF_CAP: usize = 8192;      // 累积缓冲上限（没有换行的长数据不许把内存撑爆）
+const HS_LAST_LINES: usize = 8;      // 排障用：留最近几行回应，供 MCP/界面查看
+const HS_MAX_EXPECT: usize = 8;      // 自定义成功词最多几个
+const HS_MAX_EXPECT_LEN: usize = 64; // 单个成功词的长度上限（与前端一致）
+const HS_MAX_FEED: usize = 65536;    // 一次喂进来的数据上限（前端 WSL 路径传进来的）
+
+/// 一条指令的等待状态（arm 重置；出结论后保留给前端取一次，前端下一次 arm 自然覆盖）
+struct QcmdHs {
+    state: HsState,
+    expect: Vec<String>,
+    armed_at: Option<std::time::Instant>,
+    deadline: Option<std::time::Instant>,
+    buf: Vec<u8>,          // 跨块的行拼装：`OK` 被切成两块也认得出
+    busy: bool,            // 见到过 busy（只是展示用：它**不是**结论）
+    last_lines: Vec<String>,
+}
+
+impl Default for QcmdHs {
+    fn default() -> Self {
+        QcmdHs { state: HsState::Idle, expect: Vec::new(), armed_at: None, deadline: None,
+                 buf: Vec::new(), busy: false, last_lines: Vec::new() }
+    }
+}
+
+impl QcmdHs {
+    /// 开始等这一条：清空上一条的残留。`timeout_ms` 下限 1（0 由前端解释成"不等回话"，不会走到这里）
+    fn arm(&mut self, expect: Vec<String>, timeout_ms: u64) {
+        let now = std::time::Instant::now();
+        self.state = HsState::Waiting;
+        self.expect = expect.into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .take(HS_MAX_EXPECT)
+            .collect();
+        self.armed_at = Some(now);
+        self.deadline = Some(now + std::time::Duration::from_millis(timeout_ms.max(1)));
+        self.buf.clear();
+        self.busy = false;
+        self.last_lines.clear();
+    }
+
+    fn stop(&mut self) {
+        self.state = HsState::Idle;
+        self.armed_at = None;
+        self.deadline = None;
+        self.buf.clear();
+        self.busy = false;
+    }
+
+    /// 结算：到点了还没结论就是超时。由前端轮询 state 时顺带调用 —— 不另起定时器，
+    /// 也就没有"定时器忘了清"这种悬挂状态。
+    fn poll(&mut self) -> HsState {
+        if self.state == HsState::Waiting {
+            if let Some(dl) = self.deadline {
+                if std::time::Instant::now() >= dl {
+                    self.state = HsState::Timeout;
+                    self.deadline = None;
+                }
+            }
+        }
+        self.state
+    }
+
+    /// 喂一块新数据：按行切，逐行判定。跨块的行靠 `buf` 拼起来（这是最容易做错的一处：
+    /// 设备回 `OK\r\n` 完全可能被拆成 `O` + `K\r\n` 两次读上来）
+    fn feed(&mut self, data: &[u8]) {
+        if self.state != HsState::Waiting { return; }
+        self.buf.extend_from_slice(data);
+        if self.buf.len() > HS_BUF_CAP {
+            let drop = self.buf.len() - HS_BUF_CAP;
+            self.buf.drain(..drop);
+        }
+        loop {
+            let pos = self.buf.iter().position(|&b| b == b'\n' || b == b'\r');
+            let Some(pos) = pos else { break };
+            let line: Vec<u8> = self.buf.drain(..pos).collect();
+            // ⚠️ **每轮必须至少吃掉一个字节**：行尾那个 `\r`/`\n` 无条件拿走，再看后面还有没有 `\n`。
+            // 早先写成"只在 next 是 `\n` 时才 remove(0)"，于是遇到 buf 以孤立 `\r` 开头时
+            // `drain(..0)` 什么也没吃掉 → 原地打转、CPU 打满（跨块拆开时极常见：上一块以 `\r` 收尾、
+            // 下一块从 `\n` 开始；2026-09 写完单测当场实测到，测试进程把一整个核跑满）
+            self.buf.remove(0);
+            if self.buf.first() == Some(&b'\n') { self.buf.remove(0); }   // `\r\n` 的第二个字节
+            if self.judge(&line) { break; }                                // 有结论了，剩下的不再看
+        }
+    }
+
+    /// 单行判定。顺序是有讲究的：busy 只是"还在处理"，**绝不能**当成结论；
+    /// ERROR 要排在 OK 前面（`+CME ERROR` 这类行里同时出现别的东西时不能判成成功）。
+    fn judge(&mut self, line: &[u8]) -> bool {
+        let text = String::from_utf8_lossy(line).trim().to_string();
+        if text.is_empty() { return false; }
+        if self.last_lines.len() >= HS_LAST_LINES { self.last_lines.remove(0); }
+        self.last_lines.push(text.clone());
+        let lower = text.to_lowercase();
+        if lower.contains("busy") { self.busy = true; return false; }
+        if lower.contains("error") { self.state = HsState::Err; self.deadline = None; return true; }
+        // 内置成功词：整行 `OK`，以及 `SEND OK` / `CONNECT OK` 这类以 " OK" 收尾的行
+        if lower == "ok" || lower.ends_with(" ok") { self.state = HsState::Ok; self.deadline = None; return true; }
+        for w in &self.expect {
+            if lower == w.to_lowercase() { self.state = HsState::Ok; self.deadline = None; return true; }
+        }
+        false
+    }
+}
+
+/// 给某个监视器的等待状态喂数据（拿不到锁就丢这一块：判定是尽力而为，绝不阻塞读线程）
+fn hs_feed(arc: &std::sync::Arc<std::sync::Mutex<QcmdHs>>, data: &[u8]) {
+    if let Ok(mut hs) = arc.lock() { hs.feed(data); }
+}
+
+/// 取（或惰性创建）某个监视器的等待状态。串口与 WSL **共用这张表**：
+/// 串口由读线程喂数据，WSL 由前端 `qcmd_hs_feed` 喂 —— 判定仍然是同一份代码。
+fn hs_slot(map: &Mutex<HashMap<String, std::sync::Arc<std::sync::Mutex<QcmdHs>>>>, mid: &str)
+    -> std::sync::Arc<std::sync::Mutex<QcmdHs>> {
+    let mut m = map.lock().unwrap_or_else(|e| e.into_inner());
+    m.entry(mid.to_string())
+        .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(QcmdHs::default())))
+        .clone()
+}
+
 /// 串口读取 + 工作流监控线程：后台持续读取数据，自动检查规则并执行动作
 struct PortReader {
     buffer: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
@@ -443,7 +586,10 @@ struct PortReader {
 }
 
 impl PortReader {
-    fn new(port: Box<dyn SerialPort>, regex_cache: std::sync::Arc<RegexCache>) -> Self {
+    /// `hs` 由读线程 clone 走（收到数据时喂进去）；PortReader 自己不留字段 ——
+    /// 那份状态的生命周期归 `PortState::qcmd_hs` 那张表（WSL 也要用它，见 `hs_slot`）。
+    fn new(port: Box<dyn SerialPort>, regex_cache: std::sync::Arc<RegexCache>,
+           hs: std::sync::Arc<std::sync::Mutex<QcmdHs>>) -> Self {
         let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::with_capacity(8192)));
         let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -474,6 +620,7 @@ impl PortReader {
         // 读取线程：从串口读数据，存 buffer，发给工作流线程
         let tx_clone = tx.clone();
         let port_for_read = port_arc.clone();
+        let hs_for_read = hs.clone();
         let read_handle = std::thread::spawn(move || {
             let mut tmp = [0u8; 4096];
             loop {
@@ -500,6 +647,10 @@ impl PortReader {
                             }
                         }
                         let _ = tx_clone.try_send(tmp[..n].to_vec()).is_ok();
+                        // 快速指令的"等回话"：判定在 Rust，读线程把同一块数据顺手喂进去。
+                        // 锁只在此刻短暂持有（判定就是几行字符串比较），拿不到就丢这一块 ——
+                        // 绝不为了等回话把读取线程堵住（串口收发热路径优先）。
+                        hs_feed(&hs_for_read, &tmp[..n]);
                     }
                     _ if should_break => break,
                     // 无数据时轻微退避（1ms→2ms），减少空转，对读取延迟影响可忽略
@@ -670,6 +821,10 @@ impl Drop for PortReader {
 /// 全局状态：多个独立串口连接（key = monitor_id）
 struct PortState {
     readers: RwLock<HashMap<String, PortReader>>,
+    /// 快速指令的"等回话"状态机（key = monitor_id）。
+    /// ⚠️ 放在这里而不是 PortReader 里：**WSL 监视器在 Rust 侧根本没有 reader**，
+    /// 而它的判定同样要走这一份代码（前端 `qcmd_hs_feed` 喂数据），所以两边共用这张表。
+    qcmd_hs: Mutex<HashMap<String, std::sync::Arc<std::sync::Mutex<QcmdHs>>>>,
 }
 
 /// WSL 串口会话：通过管道与 bridge 脚本通信
@@ -711,7 +866,10 @@ struct WorkflowAction {
     signal: String,
     #[serde(default)]
     level: bool,
-    #[serde(default)]
+    // ⚠️ 前端（与 config.json 里存着的）用的名字是**驼峰 `delayBefore`**；早先这里只认
+    // snake_case，serde 于是落到 `default` = 0 —— 面板上填的「延时(ms)」**从来没生效过**
+    // （静默失效，2026-09 查工作流时发现）。两个名字都认：驼峰是既有数据，snake_case 是结构体自己的。
+    #[serde(default, alias = "delayBefore")]
     delay_before: u64,
 }
 
@@ -941,8 +1099,18 @@ fn execute_workflow_actions_bg(
         const WF_EVENTS_MAX: usize = 200;
         if let Ok(mut evts) = events_clone.lock() {
             while evts.len() >= WF_EVENTS_MAX { evts.remove(0); }
-            evts.push(msg);
+            evts.push(msg.clone());
         }
+        // 同一行也进日志中心（`workflow` 通道）—— 否则**只有界面看得到**规则触发过什么，
+        // AI 那边 `log_tail` 里一片空白，连"规则到底跑没跑"都查不出来（2026-09 补）。
+        // push 是非阻塞的（拿不到通道锁就丢一条并计数），动作线程不会被它拖住。
+        crate::mcp::loghub::hub().push(
+            "workflow",
+            crate::mcp::loghub::LEVEL_INFO,
+            crate::mcp::loghub::DIR_TX,
+            &msg,
+            msg.len() as u32,
+        );
     }
 }
 
@@ -1262,7 +1430,8 @@ fn open_port(
     port.write_request_to_send(rts).map_err(|e| format!("RTS 设置失败: {}", e))?;
 
     // 创建读取线程，同步已有的工作流规则
-    let reader = PortReader::new(port, wf_state.regex_cache.clone());
+    let hs = hs_slot(&state.qcmd_hs, &monitor_id);    // 快速指令的等待状态：读线程与前端共用这一份
+    let reader = PortReader::new(port, wf_state.regex_cache.clone(), hs);
     {
         let rules_map = wf_state.rules.lock().unwrap_or_else(|e| e.into_inner());
         let dirs_map = wf_state.log_dirs.lock().unwrap_or_else(|e| e.into_inner());
@@ -1318,7 +1487,73 @@ fn close_port(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<
     if let Some(reader) = reader {
         close_reader(reader);
     }
+    // 快速指令的"等回话"状态：断开就别留着（下一次 arm 会重建一份干净的）
+    {
+        let mut hsmap = state.qcmd_hs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(hs) = hsmap.remove(&monitor_id) {
+            if let Ok(mut g) = hs.lock() { g.stop(); }
+        }
+    }
     Ok(())
+}
+
+/* ===== 快速指令：等回话的四个命令 =====
+   前端循环发送的节奏是：arm → send → 轮询 state → 按结论走下一步。
+   ⚠️ **arm 必须排在 send 之前**：反过来的话，设备的回话可能赶在 arm 之前到达，
+   被当成"上一条的迟到数据"丢掉 —— 那这一条就必然白等到超时。 */
+
+/// 开始等一条指令的回话。`expect` 是自定义成功词（`|` 分隔，与文件里的「期望」列同一套写法）
+#[tauri::command]
+fn qcmd_hs_arm(
+    state: tauri::State<'_, PortState>,
+    monitor_id: String,
+    expect: String,
+    timeout_ms: u64,
+) -> Result<serde_json::Value, String> {
+    if expect.len() > HS_MAX_EXPECT * HS_MAX_EXPECT_LEN {
+        return Err(format!("期望词太长（上限 {} 字符）", HS_MAX_EXPECT * HS_MAX_EXPECT_LEN));
+    }
+    let timeout_ms = timeout_ms.min(600_000);        // 与面板的上限一致
+    let hs = hs_slot(&state.qcmd_hs, &monitor_id);
+    let list: Vec<String> = expect.split('|').map(|s| s.to_string()).collect();
+    let mut g = hs.lock().map_err(|_| "等待状态锁不可用".to_string())?;
+    g.arm(list, timeout_ms);
+    Ok(serde_json::json!({ "armed": true, "timeoutMs": timeout_ms }))
+}
+
+/// 问一句"这条有结论了吗"。**超时也在这里结算** —— 不另起定时器，也就没有悬挂状态。
+#[tauri::command]
+fn qcmd_hs_state(state: tauri::State<'_, PortState>, monitor_id: String) -> serde_json::Value {
+    let hs = hs_slot(&state.qcmd_hs, &monitor_id);
+    let mut g = hs.lock().unwrap_or_else(|e| e.into_inner());
+    let st = g.poll();
+    let elapsed = g.armed_at.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);
+    serde_json::json!({
+        "state": st.as_str(),
+        "busy": g.busy,
+        "elapsedMs": elapsed,
+        "lastLines": g.last_lines.clone(),
+    })
+}
+
+/// 喂一块收到的数据（**WSL 路径用**：数据只有前端拉得到，而判定要留在 Rust 这一份）。
+/// 串口路径**不走这里** —— 它的读线程直接喂，免得同一块数据被喂两遍、把一个 OK 算成两次。
+#[tauri::command]
+fn qcmd_hs_feed(state: tauri::State<'_, PortState>, monitor_id: String, data: Vec<u8>) -> Result<(), String> {
+    if data.len() > HS_MAX_FEED {
+        return Err(format!("一次喂进来的数据太多（上限 {} 字节）", HS_MAX_FEED));
+    }
+    let hs = hs_slot(&state.qcmd_hs, &monitor_id);
+    hs_feed(&hs, &data);
+    Ok(())
+}
+
+/// 停掉等待（用户关循环 / 断开连接时清干净，不留"还在等"的悬挂状态）
+#[tauri::command]
+fn qcmd_hs_stop(state: tauri::State<'_, PortState>, monitor_id: String) {
+    let hs = hs_slot(&state.qcmd_hs, &monitor_id);
+    // 尾分号不是多余的：不写它，这一句就是尾表达式，临时 guard 会比 `hs` 晚析构（E0597）
+    if let Ok(mut g) = hs.lock() { g.stop(); };
 }
 
 /// 从缓冲区读取数据（毫秒级，不阻塞）
@@ -6689,6 +6924,138 @@ mod log_maintenance_tests {
 }
 
 #[cfg(test)]
+mod qcmd_hs_tests {
+    use super::*;
+
+    fn armed(expect: &str, timeout_ms: u64) -> QcmdHs {
+        let mut hs = QcmdHs::default();
+        hs.arm(expect.split('|').map(|s| s.to_string()).collect(), timeout_ms);
+        hs
+    }
+
+    #[test]
+    fn ok_split_across_two_chunks_is_recognized() {
+        // 设备回 `OK\r\n` 完全可能被拆成两块读上来 —— 跨块的行拼装就是为它写的
+        let mut hs = armed("", 3000);
+        hs.feed(b"AT+GMR\r\nO");
+        assert_eq!(hs.poll(), HsState::Waiting, "半个 OK 不算结论");
+        hs.feed(b"K\r\n");
+        assert_eq!(hs.poll(), HsState::Ok);
+    }
+
+    #[test]
+    fn busy_keeps_waiting_and_is_flagged() {
+        let mut hs = armed("", 3000);
+        hs.feed(b"busy p...\r\n");
+        assert_eq!(hs.poll(), HsState::Waiting, "busy 只是还在处理，绝不是结论");
+        assert!(hs.busy, "busy 要记下来给界面看");
+        hs.feed(b"OK\r\n");
+        assert_eq!(hs.poll(), HsState::Ok);
+    }
+
+    #[test]
+    fn error_wins_over_other_text() {
+        let mut hs = armed("", 3000);
+        hs.feed(b"+CME ERROR: 3\r\n");
+        assert_eq!(hs.poll(), HsState::Err, "+CME ERROR 这类行也要判成失败");
+    }
+
+    #[test]
+    fn send_ok_counts_as_ok() {
+        let mut hs = armed("", 3000);
+        hs.feed(b"SEND OK\r\n");
+        assert_eq!(hs.poll(), HsState::Ok, "SEND OK / CONNECT OK 以 \" OK\" 收尾，算成功");
+    }
+
+    #[test]
+    fn custom_expect_words_are_appended() {
+        let mut hs = armed("WIFI GOT IP|ready", 3000);
+        hs.feed(b"WIFI DISCONNECT\r\n");
+        assert_eq!(hs.poll(), HsState::Waiting, "不在期望列表里的中间行不算结论");
+        hs.feed(b"WIFI GOT IP\r\n");
+        assert_eq!(hs.poll(), HsState::Ok);
+    }
+
+    #[test]
+    fn timeout_is_settled_on_poll() {
+        let mut hs = armed("", 1);
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        assert_eq!(hs.poll(), HsState::Timeout, "到点没结论 = 超时（由 poll 结算，不另起定时器）");
+        hs.feed(b"OK\r\n");
+        assert_eq!(hs.poll(), HsState::Timeout, "结算之后来的 OK 属于下一条，不能改写结论");
+    }
+
+    #[test]
+    fn arm_clears_previous_verdict_and_stop_resets() {
+        let mut hs = armed("", 3000);
+        hs.feed(b"OK\r\n");
+        assert_eq!(hs.poll(), HsState::Ok);
+        hs.arm(Vec::new(), 3000);
+        assert_eq!(hs.poll(), HsState::Waiting, "arm 必须清掉上一条的结论（否则下一条会秒过）");
+        hs.stop();
+        assert_eq!(hs.poll(), HsState::Idle);
+    }
+
+    #[test]
+    fn last_lines_are_capped() {
+        let mut hs = armed("", 3000);
+        for i in 0..20 { hs.feed(format!("line{}\r\n", i).as_bytes()); }
+        assert!(hs.last_lines.len() <= HS_LAST_LINES, "排障用的最近行不许无限增长");
+    }
+
+    #[test]
+    fn buffer_is_capped_without_newline() {
+        let mut hs = armed("", 3000);
+        let big = vec![b'x'; HS_BUF_CAP * 2];
+        hs.feed(&big);
+        assert!(hs.buf.len() <= HS_BUF_CAP, "没有换行的长数据不许把缓冲撑爆");
+    }
+
+    #[test]
+    fn bare_cr_is_also_a_line_end() {
+        let mut hs = armed("", 3000);
+        hs.feed(b"AT\rOK\n");
+        assert_eq!(hs.poll(), HsState::Ok, "\\r 单独也算行尾（有些设备就是只回 CR）");
+    }
+
+    /// 回归：**行尾字节必须被无条件吃掉**。
+    /// 跨块拆开时（上一块以 `\r` 收尾、下一块从 `\n` 开始）缓冲里会出现"开头的孤立 `\r`"，
+    /// 早先的实现 `drain(..0)` 什么都没吃掉 → 原地打转、把一个核跑满（写完这段单测当场踩到）。
+    #[test]
+    fn feed_never_spins_on_leading_line_ends() {
+        let chunks: [&[u8]; 5] = [b"\r", b"\n", b"\r\n", b"\r\r\n", b"\r\n\r\n"];
+        for chunk in chunks {
+            let mut hs = armed("", 3000);
+            hs.feed(chunk);                       // 只喂行尾：不许卡住、不许 panic
+            hs.feed(b"OK\r\n");
+            assert_eq!(hs.poll(), HsState::Ok, "前导行尾之后仍能认出 OK（chunk={:?}）", chunk);
+        }
+        // 一整条被拆成"三块 + 行尾"的极端情形
+        let mut hs = armed("", 3000);
+        hs.feed(b"OK\r");
+        hs.feed(b"\n");
+        assert_eq!(hs.poll(), HsState::Ok);
+    }
+
+    #[test]
+    fn expect_list_is_capped() {
+        let hs = armed(&vec!["w"; 20].join("|"), 3000);
+        assert!(hs.expect.len() <= HS_MAX_EXPECT, "自定义成功词的数量有上限（外部输入必须有上限）");
+    }
+
+    #[test]
+    fn slot_is_shared_by_key() {
+        let map: Mutex<HashMap<String, std::sync::Arc<std::sync::Mutex<QcmdHs>>>> =
+            Mutex::new(HashMap::new());
+        let a = hs_slot(&map, "main");
+        let b = hs_slot(&map, "main");
+        let c = hs_slot(&map, "other");
+        assert!(std::sync::Arc::ptr_eq(&a, &b), "同一个监视器必须拿到同一份状态（串口与 WSL 共用）");
+        assert!(!std::sync::Arc::ptr_eq(&a, &c), "不同监视器各一份");
+    }
+}
+
+#[cfg(test)]
 mod ble_periph_tests {
     use super::*;
 
@@ -8101,6 +8468,7 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
     tauri::Builder::default()
         .manage(PortState {
             readers: RwLock::new(HashMap::new()),
+            qcmd_hs: Mutex::new(HashMap::new()),
         })
         .manage(WslSerialState {
             sessions: std::sync::Arc::new(Mutex::new(HashMap::new())),
@@ -8155,6 +8523,10 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
             quick_cmds_pick_file,
             quick_cmds_read_file,
             quick_cmds_write_file,
+            qcmd_hs_arm,
+            qcmd_hs_state,
+            qcmd_hs_feed,
+            qcmd_hs_stop,
             quick_cmds_export_file,
             start_log_cache,
             append_log_cache,

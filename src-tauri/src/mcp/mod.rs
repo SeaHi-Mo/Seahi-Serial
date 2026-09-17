@@ -719,6 +719,10 @@ pub fn start(core: &Arc<McpCore>, app: Option<&tauri::AppHandle>) -> Result<Valu
             ));
             // 打开日志中心（停用时它是零成本的空操作；打开后各通道按上限收日志）
             loghub::hub().set_enabled(true);
+            // 预建 `workflow` 通道：**它由工作流触发时才写**，不预建的话"还没触发过"会表现成
+            // `log_tail{channel:"workflow"}` → -32602「没有这个通道」，AI 会得出"不支持读工作流日志"
+            // 这种错结论（`serial_get_output` 上踩过同一个坑：没数据 ≠ 不支持）。
+            loghub::hub().ensure_channel("workflow");
             loghub::hub().push(
                 "mcp",
                 loghub::LEVEL_INFO,

@@ -242,6 +242,14 @@ impl LogHub {
             .clone()
     }
 
+    /// 预建一个通道（不写内容）。用于**由事件驱动才写**的通道（如 `workflow`）：
+    /// 不预建的话，"还没触发过"会表现成 `log_tail` 报「没有这个通道」，
+    /// 调用方于是得出"不支持读这类日志"的错结论（`serial_get_output` 上踩过同一个坑）。
+    /// 走 `handle_capped` —— 通道数到顶时**不建**（这正是 `MAX_CHANNELS` 要防的事）。
+    pub fn ensure_channel(&self, name: &str) {
+        let _ = self.handle_capped(name);
+    }
+
     /// 取通道句柄，但**尊重通道数上限**：已有通道照常返回，新通道到顶就不再建。
     /// 返回 `None` 表示"这次写入因通道数上限被丢弃"。
     fn handle_capped(&self, name: &str) -> Option<Arc<Mutex<Channel>>> {

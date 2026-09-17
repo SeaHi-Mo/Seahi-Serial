@@ -29,7 +29,7 @@
 
 - 运行时：`tools/list`（分页，每页 50，用 `nextCursor` 翻页）——这是**权威来源**，本页只是它的可读版本。
 - `mcp_limits` / `mcp_status` 里的 `toolCount` / `builtinToolCount` 能看到数量。
-- 内置工具 **55 个**；另有可选的 `ctl_*`（见 §4）。
+- 内置工具 **57 个**；另有可选的 `ctl_*`（见 §4）。
 
 ## 3. 一页速查
 
@@ -47,7 +47,9 @@
 | [`serial_clear`](#serial-clear) | **写** | 清空该分栏的输出区内容（等价于点「清除内容」）。**只清界面显示，不动磁盘上的会话日志缓存文件。** |
 | [`serial_get_history`](#serial-get-history) | 读 | 读该分栏的发送历史（最近的在前）。用来回看刚才发过什么，或复用上一条指令。 |
 | [`serial_get_output`](#serial-get-output) | 读 | 读该分栏**实际收发的内容**（串口监视器的核心：设备刚才回了什么）。默认收+发都返回，按时间归并；每条带 dir 区分。数据取自日志中心，与 log_tail 是同一份存储；本工具额外的好处是**不需要你知道通道名**，且「还没收到数据」会返回空列表而不是报错。 |
-| [`serial_quick_cmd`](#serial-quick-cmd) | 读 | 快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、delayMs 延时、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。 |
+| [`serial_quick_cmd`](#serial-quick-cmd) | 读 | 快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、timeoutMs 超时、expect 追加的成功词、retry 重试次数、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；每发一条**等它的回应**：busy 继续等 / OK 下一条 / ERROR 重发本条 / 等满超时终止整链；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。 |
+| [`serial_workflow`](#serial-workflow) | 读 | 串口/WSL 分栏的**自动化工作流规则**（面板「更多设置 → 工作流」那一块）：收到匹配的数据就自动执行动作（发数据 / 切 DTR-RTS / 存日志）。用法：①**省略 action**=列出该分栏的全部规则（id / name / enabled / running / 条件 / 动作）；②**action=add**=加一条（可给 name / conditions / actions / enabled；**新规则一律 running=false**）；③**action=update**=按 rule 改（给哪个字段改哪个；running 只接受 false，用来停一条正在跑的）；④**action=remove**=按 rule 删（正在跑的会一起停）。⚠️ 规则一旦 running，**收到匹配数据就会自动往设备发数据** —— 要启动请用 serial_workflow_run（要 confirm），**不要**用 ui_click 点面板上那颗运行按钮绕开确认。改规则会立刻写进配置（与面板上改同一条路）。 |
+| [`serial_workflow_run`](#serial-workflow-run) | **写** ⚠️ | 开始/停止一条工作流规则的**运行**（running）。⚠️ 危险动作：开始之后，这条规则一收到匹配的数据就会**自动往设备发数据**（动作里可能还有存日志文件），必须带 confirm:true；不带时**不会执行**并返回 -32006 说明后果。停止（on=false）同样需要 confirm —— 它属于同一条工具。 |
 | [`ble_get_state`](#ble-get-state) | 读 | 蓝牙分栏的当前状态：是否在扫描、扫到几台设备、选中/已连的是哪台、GATT 服务树有几个服务、订阅了几路通知、内嵌监视器是否打开。只读，无副作用。 |
 | [`ble_list_devices`](#ble-list-devices) | 读 | 读蓝牙扫描结果（不触发扫描）：MAC、名称、信号强度 RSSI、是否已配对、是否当前选中，以及扫描是否在进行中。**支持分页**：`limit` 每页几台、`offset` 从第几台开始（返回里给 `hasMore` / `nextOffset`，拿它接着翻）。⚠️ 扫描还在进行时列表仍在增长，翻页可能重复/漏掉个别设备；要稳定完整的名单就等 `scanning=false` 再翻，或一次给个大 `limit`。**每次都会现问一次后端**（不是只读面板那个 2 秒轮询的缓存），所以刚 ble_start_scan 完立刻问也拿得到；一台都没有时会说明下一步 —— 设备不广播（被 Windows 配对过 / 被别的主机连走）时扫描永远为空，得用 ble_connect + addr 按 MAC 直连。只读。 |
 | [`ble_start_scan`](#ble-start-scan) | **写** | 开始扫描蓝牙设备（面板那颗「开始/停止扫描」按钮的同一条路径）。默认按面板上设的时长自动停止；扫完用 ble_list_devices 取结果。写操作（会占用射频）。 |
@@ -281,10 +283,10 @@
 
 #### `serial_quick_cmd`
 
-- **作用**：快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、delayMs 延时、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。
+- **作用**：快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、timeoutMs 超时、expect 追加的成功词、retry 重试次数、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；每发一条**等它的回应**：busy 继续等 / OK 下一条 / ERROR 重发本条 / 等满超时终止整链；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。
 - **读/写**：只读，无副作用
-- **返回**：{pane, items:[{index,label,value,seq,delayMs,hex}], usable, file, source}
-- **注意**：不带 index 只列；带 index 才执行（→ {pane, ran, label, value, hex}）。`seq`/`delayMs`/`hex` 是**每条自己的发送参数**（顺序号 > 0 才进面板上的「循环发送」列表，`delayMs` 默认 1000，`hex` 默认关闭）；`source=file` 表示这个列表来自外部文件（面板里增删改会写回该文件），`file` 是它的路径；`source=config` 才是纯配置里的列表
+- **返回**：{pane, items:[{index,label,value,seq,timeoutMs,expect,retry,okGoto,errGoto,hex}], usable, file, source}
+- **注意**：不带 index 只列；带 index 才执行（→ {pane, ran, label, value, hex}）。`seq`/`timeoutMs`/`expect`/`retry`/`okGoto`/`errGoto`/`hex` 是**每条自己的等待参数**（顺序号 > 0 才进面板上的「循环发送」列表；`timeoutMs` = 这条发出去最多等多久、缺省 3000、**填 0 = 这条不等响应**；`expect` = 追加的成功词（`|` 分隔）、`retry` = 收到 ERROR 后重发几次、缺省 3；**`okGoto`/`errGoto` = 跳转**：收到 OK 走前者、ERROR 用尽**或超时**走后者，取值 `留空`/`下一条`（缺省）/ 数字=顺序号 / `结束` —— 这就是"分支与循环"）；除 `timeoutMs` 外这几项**面板上都没有入口**，写在指令文件的同名列里；add/update 也收 `delayMs`（**旧拼写**，与 `timeoutMs` 同值）；`source=file` 表示这个列表来自外部文件（面板里增删改会写回该文件），`file` 是它的路径；`source=config` 才是纯配置里的列表
 
 **入参**
 
@@ -298,9 +300,48 @@
 | `toIndex` | number | 否 | action=group 且 op=move 时的目标组序号（0 起；组的上下顺序就是循环顺序） |
 | `value` | string | 否 | action=add/update 时的指令内容（原样发送，不按逗号切分） |
 | `seq` | number | 否 | action=add/update 时的顺序号：0 = 不参与循环，>0 在**组内**按数字升序发 |
-| `delayMs` | number | 否 | action=add/update 时的延时（毫秒，本条发完到下发一条的间隔，缺省 1000，上限 600000） |
+| `timeoutMs` | number | 否 | action=add/update 时的**超时**（毫秒）：这条发出去最多等多久 —— 等到 OK 发下一条、等到 ERROR 重发本条（见 retry）、等满这个时间还没等到 OK 就**终止整条循环**。缺省 3000，上限 600000。填 0 = 这条不等响应（连续 HEX 帧、设备本来就不回 OK 的指令） |
+| `delayMs` | number | 否 | ⚠️ **旧拼写**：与 timeoutMs 同一个值（这一项的语义是「超时」，不是「发送间隔」）。新调用请用 timeoutMs —— 两个都给时以 timeoutMs 为准 |
+| `expect` | string | 否 | action=add/update 时的**自定义成功词**，多个用 `|` 分隔（如 `WIFI GOT IP|OK`）。留空 = 只用内置的 OK / ERROR / busy。⚠️ 面板上没有它的入口（它写在指令文件的「期望」列里），通过这里改会同时落到模型与文件 |
+| `retry` | number | 否 | action=add/update 时：收到 ERROR 后最多重发几次（缺省 3，上限 10；0 = 不重发，直接终止） |
 | `hex` | boolean | 否 | action=add/update 时：这一条是否按 HEX 解析后发送（默认 false） |
 | `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+
+#### `serial_workflow`
+
+- **作用**：串口/WSL 分栏的**自动化工作流规则**（面板「更多设置 → 工作流」那一块）：收到匹配的数据就自动执行动作（发数据 / 切 DTR-RTS / 存日志）。用法：①**省略 action**=列出该分栏的全部规则（id / name / enabled / running / 条件 / 动作）；②**action=add**=加一条（可给 name / conditions / actions / enabled；**新规则一律 running=false**）；③**action=update**=按 rule 改（给哪个字段改哪个；running 只接受 false，用来停一条正在跑的）；④**action=remove**=按 rule 删（正在跑的会一起停）。⚠️ 规则一旦 running，**收到匹配数据就会自动往设备发数据** —— 要启动请用 serial_workflow_run（要 confirm），**不要**用 ui_click 点面板上那颗运行按钮绕开确认。改规则会立刻写进配置（与面板上改同一条路）。
+- **读/写**：只读，无副作用
+- **返回**：{pane, count, runningCount, rules:[{id,name,enabled,running,conditions,actions,domIds}], limits}
+- **注意**：串口/WSL 分栏的**自动化工作流规则**（面板「更多设置 → 工作流」）：收到匹配数据就自动执行动作。省略 action = 列出；`action=add|update|remove` 改规则（走的就是面板改的同一条路，立刻写进配置）。⚠️ 新规则**一律 running=false**；`running:true` 这里会被拒（-32602）—— 让规则跑起来必须用 `serial_workflow_run`（带确认门）。规则一旦 running，**收到匹配数据就会自动往设备发数据**
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `action` | string | 否 | 枚举：`list` / `add` / `update` / `remove` 要做的动作：list=列出（省略即 list）；add=加一条；update=改一条；remove=删一条 |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `rule` | string | 否 | update/remove 时的规则 id（见 list 里 rules[].id） |
+| `name` | string | 否 | add/update 时的规则名（最长 64 字符） |
+| `enabled` | boolean | 否 | add/update 时这条规则是否**启用**（关掉的规则不参与匹配；注意它与 running 是两回事） |
+| `running` | boolean | 否 | ⚠️ 这里**只接受 false**（用来停一条正在跑的规则）；想启动请用 serial_workflow_run。add 时给 true 会被强制成 false |
+| `conditions` | array&lt;object&gt; | 否 | 匹配条件，**全部满足**才触发：[{"type":"string_contains|regex|exact_bytes","value":"…"}]，最多 8 条，不能是空数组 |
+| `actions` | array&lt;object&gt; | 否 | 命中后**按顺序**执行：[{"type":"send_data|toggle_dtr_rts|save_log","data":"…","encoding":"text|hex","signal":"dtr|rts","level":true,"delayBefore":300}]，最多 8 条，不能是空数组 |
+
+#### `serial_workflow_run`
+
+- **作用**：开始/停止一条工作流规则的**运行**（running）。⚠️ 危险动作：开始之后，这条规则一收到匹配的数据就会**自动往设备发数据**（动作里可能还有存日志文件），必须带 confirm:true；不带时**不会执行**并返回 -32006 说明后果。停止（on=false）同样需要 confirm —— 它属于同一条工具。
+- **读/写**：只读，无副作用
+- **返回**：{pane, rule, running, changed}
+- **注意**：开始/停止一条工作流规则的运行（`running`）。**危险动作**（开始之后规则会自动往设备发数据、动作里可能还有存日志文件），必须带 `confirm:true`，否则不执行并回 `-32006`。`rule` 是规则 id（见 `serial_workflow` 的 `rules[].id`），`on` 省略 = true
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `rule` | string | **是** | 规则 id（见 serial_workflow 的 rules[].id） |
+| `on` | boolean | 否 | true = 开始跑，false = 停止（省略 = true） |
+| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `confirm` | boolean | 否 | 危险动作确认：必须为 true 才会执行（想清楚再传） |
 
 ### 蓝牙语义工具（BLE）
 
@@ -612,8 +653,8 @@
 
 - **作用**：MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。
 - **读/写**：只读，无副作用
-- **返回**：`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels, maxQuickCmdItems, maxQuickCmdLabelChars, maxQuickCmdValueChars, maxQuickCmdFileBytes, maxBleWriteChars, maxAdbWriteChars, maxAdbCols, maxAdbRows, maxAdbReadLines}`
-- **注意**：用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**
+- **返回**：`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels, maxQuickCmdItems, maxQuickCmdLabelChars, maxQuickCmdValueChars, maxQuickCmdFileBytes, maxQuickCmdTimeoutMs, maxQuickCmdRetry, maxQuickCmdExpectChars, maxBleWriteChars, maxAdbWriteChars, maxAdbCols, maxAdbRows, maxAdbReadLines}`
+- **注意**：用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**。注意"报出来"≠"被执行"：这几个数各自都有代码里真的拦一道（快速指令的 `maxQuickCmdTimeoutMs`/`maxQuickCmdRetry`/`maxQuickCmdExpectChars` 就是在碰界面之前校验的）
 
 **入参**
 

@@ -119,6 +119,8 @@ pub const WRITE_TOOLS: &[&str] = &[
     // 改 PTY 尺寸与关会话都会动界面（终端布局 / 会话消失）
     "adb_shell_resize",
     "adb_close_shell",
+    // 工作流规则的启停：写 + **危险**（规则跑起来就会自动往设备发数据，见 DANGER_TOOLS）
+    "serial_workflow_run",
 ];
 
 /// 判断**这一次调用**算不算写操作。
@@ -148,6 +150,10 @@ pub const DANGER_TOOLS: &[(&str, &str)] = &[
         "adb_shell_write",
         "把内容写进设备的 shell —— 内容里带换行就是在**设备上真的执行**它",
     ),
+    (
+        "serial_workflow_run",
+        "让一条工作流规则**跑起来**：之后它一收到匹配的数据就会自动往设备发数据（还可能写日志文件）",
+    ),
 ];
 
 /// 这个工具要不要二次确认；要的话返回它的后果说明
@@ -165,6 +171,11 @@ pub fn is_write_call(name: &str, args: &Value) -> bool {
     }
     if name == "serial_quick_cmd" {
         return args.get("index").is_some() || args.get("action").is_some();
+    }
+    // 工作流同理：`list`（或什么都不给）是只读，改规则是写；启停是**危险**的那个（单独一个工具）
+    if name == "serial_workflow" {
+        let act = args.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+        return act != "list";
     }
     WRITE_TOOLS.contains(&name)
 }
@@ -374,7 +385,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "serial_quick_cmd",
-            "description": "快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、delayMs 延时、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。",
+            "description": "快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、timeoutMs 超时、expect 追加的成功词、retry 重试次数、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；每发一条**等它的回应**：busy 继续等 / OK 下一条 / ERROR 重发本条 / 等满超时终止整链；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -389,10 +400,57 @@ pub fn tool_defs() -> Vec<Value> {
                     "toIndex": { "type": "number", "description": "action=group 且 op=move 时的目标组序号（0 起；组的上下顺序就是循环顺序）" },
                     "value": { "type": "string", "description": "action=add/update 时的指令内容（原样发送，不按逗号切分）" },
                     "seq": { "type": "number", "description": "action=add/update 时的顺序号：0 = 不参与循环，>0 在**组内**按数字升序发" },
-                    "delayMs": { "type": "number", "description": "action=add/update 时的延时（毫秒，本条发完到下发一条的间隔，缺省 1000，上限 600000）" },
+                    "timeoutMs": { "type": "number", "description": "action=add/update 时的**超时**（毫秒）：这条发出去最多等多久 —— 等到 OK 发下一条、等到 ERROR 重发本条（见 retry）、等满这个时间还没等到 OK 就**终止整条循环**。缺省 3000，上限 600000。填 0 = 这条不等响应（连续 HEX 帧、设备本来就不回 OK 的指令）" },
+                    "delayMs": { "type": "number", "description": "⚠️ **旧拼写**：与 timeoutMs 同一个值（这一项的语义是「超时」，不是「发送间隔」）。新调用请用 timeoutMs —— 两个都给时以 timeoutMs 为准" },
+                    "expect": { "type": "string", "description": "action=add/update 时的**自定义成功词**，多个用 `|` 分隔（如 `WIFI GOT IP|OK`）。留空 = 只用内置的 OK / ERROR / busy。⚠️ 面板上没有它的入口（它写在指令文件的「期望」列里），通过这里改会同时落到模型与文件" },
+                    "retry": { "type": "number", "description": "action=add/update 时：收到 ERROR 后最多重发几次（缺省 3，上限 10；0 = 不重发，直接终止）" },
                     "hex": { "type": "boolean", "description": "action=add/update 时：这一条是否按 HEX 解析后发送（默认 false）" },
                     "pane": { "type": "string", "description": PANE_DESC }
                 },
+                "additionalProperties": false
+            }
+        }),
+        // ===== 工作流规则（自动化：收到匹配的数据就自动执行动作）=====
+        // 启停**单独一个工具**，因为"危险"只发生在那一刻（规则跑起来才会自动发数据）；
+        // 若把整条工具塞进 DANGER_TOOLS，连"列出规则"都要 confirm —— 那是把确认门用歪了。
+        json!({
+            "name": "serial_workflow",
+            "description": "串口/WSL 分栏的**自动化工作流规则**（面板「更多设置 → 工作流」那一块）：收到匹配的数据就自动执行动作（发数据 / 切 DTR-RTS / 存日志）。用法：①**省略 action**=列出该分栏的全部规则（id / name / enabled / running / 条件 / 动作）；②**action=add**=加一条（可给 name / conditions / actions / enabled；**新规则一律 running=false**）；③**action=update**=按 rule 改（给哪个字段改哪个；running 只接受 false，用来停一条正在跑的）；④**action=remove**=按 rule 删（正在跑的会一起停）。⚠️ 规则一旦 running，**收到匹配数据就会自动往设备发数据** —— 要启动请用 serial_workflow_run（要 confirm），**不要**用 ui_click 点面板上那颗运行按钮绕开确认。改规则会立刻写进配置（与面板上改同一条路）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["list", "add", "update", "remove"], "description": "要做的动作：list=列出（省略即 list）；add=加一条；update=改一条；remove=删一条" },
+                    "pane": { "type": "string", "description": PANE_DESC },
+                    "rule": { "type": "string", "description": "update/remove 时的规则 id（见 list 里 rules[].id）" },
+                    "name": { "type": "string", "description": "add/update 时的规则名（最长 64 字符）" },
+                    "enabled": { "type": "boolean", "description": "add/update 时这条规则是否**启用**（关掉的规则不参与匹配；注意它与 running 是两回事）" },
+                    "running": { "type": "boolean", "description": "⚠️ 这里**只接受 false**（用来停一条正在跑的规则）；想启动请用 serial_workflow_run。add 时给 true 会被强制成 false" },
+                    "conditions": {
+                        "type": "array",
+                        "description": "匹配条件，**全部满足**才触发：[{\"type\":\"string_contains|regex|exact_bytes\",\"value\":\"…\"}]，最多 8 条，不能是空数组",
+                        "items": { "type": "object" }
+                    },
+                    "actions": {
+                        "type": "array",
+                        "description": "命中后**按顺序**执行：[{\"type\":\"send_data|toggle_dtr_rts|save_log\",\"data\":\"…\",\"encoding\":\"text|hex\",\"signal\":\"dtr|rts\",\"level\":true,\"delayBefore\":300}]，最多 8 条，不能是空数组",
+                        "items": { "type": "object" }
+                    }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "serial_workflow_run",
+            "description": "开始/停止一条工作流规则的**运行**（running）。⚠️ 危险动作：开始之后，这条规则一收到匹配的数据就会**自动往设备发数据**（动作里可能还有存日志文件），必须带 confirm:true；不带时**不会执行**并返回 -32006 说明后果。停止（on=false）同样需要 confirm —— 它属于同一条工具。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "rule": { "type": "string", "description": "规则 id（见 serial_workflow 的 rules[].id）" },
+                    "on": { "type": "boolean", "description": "true = 开始跑，false = 停止（省略 = true）" },
+                    "pane": { "type": "string", "description": PANE_DESC },
+                    "confirm": { "type": "boolean", "description": "危险动作确认：必须为 true 才会执行（想清楚再传）" }
+                },
+                "required": ["rule"],
                 "additionalProperties": false
             }
         }),
@@ -1223,14 +1281,18 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
                 }
                 Some("add") => {
                     check_text_len(args, "value", MAX_QUICK_CMD_VALUE_CHARS, "指令内容")?;
+                    check_quick_cmd_item_params(args)?;
                     // 条数上限由**前端**把关（列表归它所有）：满了会回一条明确的失败，
                     // 后端翻成 -32006「先做前置操作（删几条）」。这里不做前置探测 ——
                     // 多问一次列表既多一个来回、又挡不住并发。
-                    serial_call(core, "quickAdd", args, json!({})).await
+                    let extra = quick_cmd_item_payload(args);
+                    serial_call(core, "quickAdd", args, extra).await
                 }
                 Some("update") => {
                     check_text_len(args, "value", MAX_QUICK_CMD_VALUE_CHARS, "指令内容")?;
-                    serial_call(core, "quickUpdate", args, json!({})).await
+                    check_quick_cmd_item_params(args)?;
+                    let extra = quick_cmd_item_payload(args);
+                    serial_call(core, "quickUpdate", args, extra).await
                 }
                 Some("remove") => serial_call(core, "quickRemove", args, json!({})).await,
                 Some("group") => {
@@ -1246,6 +1308,32 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
                     None => serial_call(core, "quickList", args, json!({})).await,
                 },
             }
+        }
+        // ===== 工作流规则（前端 `mcpSerialOp` 的 wf* 动作）=====
+        "serial_workflow" => {
+            let act = args.get("action").and_then(|a| a.as_str()).unwrap_or("list");
+            match act {
+                "list" => serial_call(core, "wfList", args, json!({})).await,
+                "add" | "update" | "remove" => {
+                    // `rule` 只有 update/remove 需要（add 时前端会造一条新的）
+                    if act != "add" && args.get("rule").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+                        return Err(RpcError::new(E_INVALID_PARAMS,
+                            format!("action={act} 要带 rule：规则 id 见 serial_workflow 的 rules[].id")));
+                    }
+                    check_workflow_args(args)?;
+                    let extra = workflow_payload(args);
+                    let op = match act { "add" => "wfAdd", "update" => "wfUpdate", _ => "wfRemove" };
+                    serial_call(core, op, args, extra).await
+                }
+                other => Err(RpcError::new(E_INVALID_PARAMS, format!(
+                    "不认识的 action「{other}」：可用 list / add / update / remove\
+                     （想启停规则请用 serial_workflow_run）"
+                ))),
+            }
+        }
+        "serial_workflow_run" => {
+            let rule = require_str(args, "rule")?;
+            serial_call(core, "wfToggle", args, json!({ "rule": rule, "on": args.get("on").cloned().unwrap_or(json!(true)) })).await
         }
         // ===== BLE 语义工具（前端 mcpBleOp；与 serial_* 同构）=====
         "ble_get_state" => ble_call(core, "state", args, json!({})).await,
@@ -1584,6 +1672,153 @@ pub const MAX_QUICK_CMD_ITEMS: usize = 500;
 pub const MAX_QUICK_CMD_LABEL_CHARS: usize = 64;
 pub const MAX_QUICK_CMD_VALUE_CHARS: usize = 4096;
 pub const MAX_QUICK_CMD_FILE_BYTES: u64 = 256 * 1024;
+/// 每条指令的等待参数（与前端 `QCMD_TIMEOUT_MAX` / `QCMD_RETRY_MAX` / `QCMD_EXPECT_MAX` 一致）
+pub const MAX_QUICK_CMD_TIMEOUT_MS: u64 = 600_000;
+pub const MAX_QUICK_CMD_RETRY: u64 = 10;
+pub const MAX_QUICK_CMD_EXPECT_CHARS: usize = 64;
+
+/// 工作流规则的上限（前端 `WF_*` 常量与它对齐；`mcp_limits` 里报出去，**并且真的被执行**）
+pub const MAX_WORKFLOW_RULES: usize = 50;
+pub const MAX_WORKFLOW_CONDITIONS: usize = 8;
+pub const MAX_WORKFLOW_ACTIONS: usize = 8;
+pub const MAX_WORKFLOW_NAME_CHARS: usize = 64;
+pub const MAX_WORKFLOW_COND_VALUE_CHARS: usize = 512;
+pub const MAX_WORKFLOW_ACTION_DATA_CHARS: usize = 4096;
+
+/// 合法取值（前端下拉里给的也是这几个；这里**在碰界面之前**再拦一道）
+const WF_COND_TYPES: &[&str] = &["string_contains", "regex", "exact_bytes"];
+const WF_ACTION_TYPES: &[&str] = &["send_data", "toggle_dtr_rts", "save_log"];
+
+/// `serial_workflow` / `serial_workflow_run` 的字段转发。
+/// 与 `quick_cmd_item_payload` 同一条纪律：`serial_call` 只转发 `extra`，
+/// 光校验不转发 = 前端永远收不到。
+fn workflow_payload(args: &Value) -> Value {
+    let mut p = json!({});
+    for k in ["rule", "name", "enabled", "running", "conditions", "actions", "on"] {
+        if let Some(v) = args.get(k) { p[k] = v.clone(); }
+    }
+    p
+}
+
+/// 工作流入参的范围与取值校验（碰界面之前；超范围/取值非法 = 请求的问题 → -32602）。
+///
+/// 为什么值得单独写一段：规则**一旦跑起来就会自动往设备发数据**，所以"条数/长度/类型"这三样
+/// 都不能靠前端兜 —— 前端会截断，而截断意味着用户（或 AI）以为设好了、实际没设上。
+fn check_workflow_args(args: &Value) -> Result<(), RpcError> {
+    check_text_len(args, "name", MAX_WORKFLOW_NAME_CHARS, "规则名")?;
+    // `running=true` 要走危险门那条工具 —— 在这里挡住，让 AI 一眼看到"你走错门了"
+    if args.get("running").and_then(|v| v.as_bool()) == Some(true) {
+        return Err(RpcError::new(E_INVALID_PARAMS,
+            "这里不能把 running 设成 true：让规则跑起来要用 serial_workflow_run（它带 confirm 确认门）。\
+             本工具只接受 running=false（停一条正在跑的规则）。".to_string()));
+    }
+    if let Some(cs) = args.get("conditions") {
+        let arr = cs.as_array().ok_or_else(|| RpcError::new(
+            E_INVALID_PARAMS, "conditions 要是数组：[{type, value}]".to_string()))?;
+        if arr.is_empty() {
+            return Err(RpcError::new(E_INVALID_PARAMS,
+                "conditions 不能是空数组：一条条件都没有的规则永远不触发（要删规则请用 action=remove）".to_string()));
+        }
+        if arr.len() > MAX_WORKFLOW_CONDITIONS {
+            return Err(RpcError::new(E_INVALID_PARAMS,
+                format!("conditions 最多 {MAX_WORKFLOW_CONDITIONS} 条")));
+        }
+        for c in arr {
+            let t = c.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if !WF_COND_TYPES.contains(&t) {
+                return Err(RpcError::new(E_INVALID_PARAMS,
+                    format!("条件 type「{t}」不认得：可用 {}", WF_COND_TYPES.join(" / "))));
+            }
+            if let Some(v) = c.get("value") {
+                let s = v.as_str().unwrap_or("");
+                if s.chars().count() > MAX_WORKFLOW_COND_VALUE_CHARS {
+                    return Err(RpcError::new(E_INVALID_PARAMS,
+                        format!("条件 value 最长 {MAX_WORKFLOW_COND_VALUE_CHARS} 字符")));
+                }
+            }
+        }
+    }
+    if let Some(as_) = args.get("actions") {
+        let arr = as_.as_array().ok_or_else(|| RpcError::new(
+            E_INVALID_PARAMS, "actions 要是数组：[{type, data, …}]".to_string()))?;
+        if arr.is_empty() {
+            return Err(RpcError::new(E_INVALID_PARAMS,
+                "actions 不能是空数组：这样的规则命中了也什么都不做".to_string()));
+        }
+        if arr.len() > MAX_WORKFLOW_ACTIONS {
+            return Err(RpcError::new(E_INVALID_PARAMS,
+                format!("actions 最多 {MAX_WORKFLOW_ACTIONS} 条")));
+        }
+        for a in arr {
+            let t = a.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if !WF_ACTION_TYPES.contains(&t) {
+                return Err(RpcError::new(E_INVALID_PARAMS,
+                    format!("动作 type「{t}」不认得：可用 {}", WF_ACTION_TYPES.join(" / "))));
+            }
+            if let Some(v) = a.get("data") {
+                let s = v.as_str().unwrap_or("");
+                if s.chars().count() > MAX_WORKFLOW_ACTION_DATA_CHARS {
+                    return Err(RpcError::new(E_INVALID_PARAMS,
+                        format!("动作 data 最长 {MAX_WORKFLOW_ACTION_DATA_CHARS} 字符")));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// add/update 那几个"每条自己的参数"：**必须显式放进 payload**。
+/// `serial_call` 只转发 `extra` —— 光校验不转发，前端就永远收不到（batch 4 这么漏过一次，
+/// 表现是"工具回了 ok、参数却没生效"，比报错更坑）。
+fn quick_cmd_item_payload(args: &Value) -> Value {
+    let mut p = json!({});
+    for k in ["value", "seq", "timeoutMs", "delayMs", "expect", "retry", "okGoto", "errGoto", "hex"] {
+        if let Some(v) = args.get(k) { p[k] = v.clone(); }
+    }
+    p
+}
+
+/// 快速指令的等待参数范围校验。**发生在碰界面之前**（AGENTS #10）：
+/// 超范围是"请求本身的问题" → -32602（改参数重试），而不是含糊的 -32006。
+fn check_quick_cmd_item_params(args: &Value) -> Result<(), RpcError> {
+    if let Some(v) = args.get("timeoutMs").or_else(|| args.get("delayMs")) {
+        let n = v.as_u64().ok_or_else(|| RpcError::new(
+            E_INVALID_PARAMS, "timeoutMs 要是 0 或正整数（毫秒；0 = 这条不等响应）".to_string()))?;
+        if n > MAX_QUICK_CMD_TIMEOUT_MS {
+            return Err(RpcError::new(E_INVALID_PARAMS, format!(
+                "timeoutMs 超出上限 {MAX_QUICK_CMD_TIMEOUT_MS} 毫秒（10 分钟）")));
+        }
+    }
+    if let Some(v) = args.get("retry") {
+        let n = v.as_u64().ok_or_else(|| RpcError::new(
+            E_INVALID_PARAMS, "retry 要是 0 或正整数（0 = 不重发）".to_string()))?;
+        if n > MAX_QUICK_CMD_RETRY {
+            return Err(RpcError::new(E_INVALID_PARAMS, format!(
+                "retry 超出上限 {MAX_QUICK_CMD_RETRY}（再高就是\"设备一直报错、循环永远停不下来\"）")));
+        }
+    }
+    check_text_len(args, "expect", MAX_QUICK_CMD_EXPECT_CHARS, "期望词")?;
+    // 跳转两列：只认 留空 / `下一条` / `end`（结束）/ 顺序号（1..=9999）。
+    // 别让"随便写点什么"进去 —— 前端会把它归一成"下一条"，那等于用户以为配了跳转、实际没配（静默失效）。
+    for key in ["okGoto", "errGoto"] {
+        if let Some(v) = args.get(key) {
+            let s = v.as_str().ok_or_else(|| RpcError::new(
+                E_INVALID_PARAMS,
+                format!("{key} 要是字符串：留空/下一条 = 顺序走、数字 = 跳到的顺序号、结束 = 收尾")))?;
+            let t = s.trim();
+            if t.is_empty() { continue; }
+            let low = t.to_lowercase();
+            let is_end = matches!(low.as_str(), "end" | "stop" | "结束" | "终止");
+            let is_next = matches!(low.as_str(), "next" | "-" | "下一条" | "继续");
+            let is_seq = t.parse::<u32>().map(|n| n >= 1 && n <= 9999).unwrap_or(false);
+            if !(is_end || is_next || is_seq) {
+                return Err(RpcError::new(E_INVALID_PARAMS, format!(
+                    "{key}「{t}」认不出来：只认 留空/下一条、数字 = 顺序号、结束")));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// 某个字符串入参的长度闸门：超了报 `-32602`（**请求**的问题 → 改参数重试）。
 ///
@@ -1636,6 +1871,17 @@ pub fn limits_json() -> Value {
         "maxQuickCmdLabelChars": MAX_QUICK_CMD_LABEL_CHARS,
         "maxQuickCmdValueChars": MAX_QUICK_CMD_VALUE_CHARS,
         "maxQuickCmdFileBytes": MAX_QUICK_CMD_FILE_BYTES,
+        // 每条指令的等待参数（这三个数**是被执行的**：check_quick_cmd_item_params）
+        "maxQuickCmdTimeoutMs": MAX_QUICK_CMD_TIMEOUT_MS,
+        "maxQuickCmdRetry": MAX_QUICK_CMD_RETRY,
+        "maxQuickCmdExpectChars": MAX_QUICK_CMD_EXPECT_CHARS,
+        // 工作流规则（同样是**被执行**的：check_workflow_args）
+        "maxWorkflowRules": MAX_WORKFLOW_RULES,
+        "maxWorkflowConditions": MAX_WORKFLOW_CONDITIONS,
+        "maxWorkflowActions": MAX_WORKFLOW_ACTIONS,
+        "maxWorkflowNameChars": MAX_WORKFLOW_NAME_CHARS,
+        "maxWorkflowCondValueChars": MAX_WORKFLOW_COND_VALUE_CHARS,
+        "maxWorkflowActionDataChars": MAX_WORKFLOW_ACTION_DATA_CHARS,
         // 日志中心的内存边界（这几个数**是被执行的**，不只是报告值）
         "logMaxLineBytes": loghub::MAX_LINE_BYTES,
         "logTotalCapBytes": loghub::TOTAL_CAP_BYTES,
@@ -2723,6 +2969,17 @@ mod tests {
             assert_eq!(sc["maxQuickCmdLabelChars"], MAX_QUICK_CMD_LABEL_CHARS);
             assert_eq!(sc["maxQuickCmdValueChars"], MAX_QUICK_CMD_VALUE_CHARS);
             assert_eq!(sc["maxQuickCmdFileBytes"], MAX_QUICK_CMD_FILE_BYTES);
+            // 每条指令的等待参数上限（这三个是**被执行**的：check_quick_cmd_item_params）
+            assert_eq!(sc["maxQuickCmdTimeoutMs"], MAX_QUICK_CMD_TIMEOUT_MS);
+            assert_eq!(sc["maxQuickCmdRetry"], MAX_QUICK_CMD_RETRY);
+            assert_eq!(sc["maxQuickCmdExpectChars"], MAX_QUICK_CMD_EXPECT_CHARS);
+            // 工作流规则的上限同样是"报出来且被执行"
+            assert_eq!(sc["maxWorkflowRules"], MAX_WORKFLOW_RULES);
+            assert_eq!(sc["maxWorkflowConditions"], MAX_WORKFLOW_CONDITIONS);
+            assert_eq!(sc["maxWorkflowActions"], MAX_WORKFLOW_ACTIONS);
+            assert_eq!(sc["maxWorkflowNameChars"], MAX_WORKFLOW_NAME_CHARS);
+            assert_eq!(sc["maxWorkflowCondValueChars"], MAX_WORKFLOW_COND_VALUE_CHARS);
+            assert_eq!(sc["maxWorkflowActionDataChars"], MAX_WORKFLOW_ACTION_DATA_CHARS);
             // ble_write 的单次上限（BLE 写受 MTU 限制，没有上限就等于让 AI 灌爆 WebView）
             assert_eq!(sc["maxBleWriteChars"], MAX_BLE_WRITE_CHARS);
             // ADB 的三个上限（写进设备 shell 的字符数、PTY 尺寸、一次读多少行）
@@ -3067,6 +3324,11 @@ mod tests {
                     // 快速指令外部文件的上限（加字段就要一起改这里，契约测试会拦）
                     "maxQuickCmdItems", "maxQuickCmdLabelChars", "maxQuickCmdValueChars",
                     "maxQuickCmdFileBytes",
+                    // 每条指令的等待参数（**这三个是被执行的**：check_quick_cmd_item_params）
+                    "maxQuickCmdTimeoutMs", "maxQuickCmdRetry", "maxQuickCmdExpectChars",
+                    // 工作流规则（同样是**被执行**的：check_workflow_args）
+                    "maxWorkflowRules", "maxWorkflowConditions", "maxWorkflowActions",
+                    "maxWorkflowNameChars", "maxWorkflowCondValueChars", "maxWorkflowActionDataChars",
                 ], &[])),
                 ("mcp_status", json!({}), Backend(&[
                     "builtinToolCount", "callLog", "configFile", "dropped", "enabled", "endpointFile",
@@ -3110,6 +3372,9 @@ mod tests {
                 ("serial_get_history", json!({}), NoGui),
                 ("serial_get_output", json!({}), NoGui),
                 ("serial_quick_cmd", json!({}), NoGui),
+                // 工作流：无界面时同样必须是 isError + -32006；启停那条还要过危险门（表里给了 confirm）
+                ("serial_workflow", json!({}), NoGui),
+                ("serial_workflow_run", json!({ "rule": "wf_x", "on": true, "confirm": true }), NoGui),
                 // BLE 语义工具（第一批）：读的两个 + 从机启停（危险，没 GUI 时也是 -32006）
                 ("ble_get_state", json!({}), NoGui),
                 ("ble_list_devices", json!({}), NoGui),
@@ -3317,7 +3582,7 @@ mod tests {
                                 }}),
                                 "quickAdd" => json!({ "ok": true, "value": {
                                     "pane": "main", "index": 1, "group": "循环 1", "groupIndex": 0, "itemIndex": 1,
-                                    "applied": ["value", "seq", "delayMs", "hex"],
+                                    "applied": ["value", "seq", "timeoutMs", "expect", "retry", "hex"],
                                 }}),
                                 "quickUpdate" => json!({ "ok": true, "value": {
                                     "pane": "main", "index": 0, "group": "循环 1", "itemIndex": 0, "applied": ["value", "seq"],
@@ -3330,6 +3595,24 @@ mod tests {
                                     "loop": { "on": false, "planLength": 1 },
                                 }}),
                                 "setSendAs" => json!({ "ok": true, "value": { "pane": "main", "sendAs": "hex" } }),
+                                // 工作流（wfList / wfToggle / wfAdd…）：钉住工具层的返回形状
+                                "wfList" => json!({ "ok": true, "value": {
+                                    "pane": "main", "count": 1, "runningCount": 0,
+                                    "rules": [{ "id": "wf_1", "name": "自动回 OK", "enabled": true, "running": false }],
+                                }}),
+                                "wfAdd" => json!({ "ok": true, "value": {
+                                    "pane": "main", "rule": "wf_2", "name": "新规则", "running": false,
+                                    "count": 2, "conditions": 1, "actions": 1,
+                                }}),
+                                "wfUpdate" => json!({ "ok": true, "value": {
+                                    "pane": "main", "rule": "wf_1", "applied": ["name"], "running": false, "enabled": true,
+                                }}),
+                                "wfRemove" => json!({ "ok": true, "value": {
+                                    "pane": "main", "removed": "wf_1", "name": "自动回 OK", "wasRunning": false, "count": 0,
+                                }}),
+                                "wfToggle" => json!({ "ok": true, "value": {
+                                    "pane": "main", "rule": "wf_1", "name": "自动回 OK", "running": true, "changed": true,
+                                }}),
                                 _ => json!({ "ok": false, "error": format!("假前端不认识 action: {}", action) }),
                             }
                         }
@@ -3607,11 +3890,28 @@ mod tests {
                     pre_connected: None,
                     calls: vec![("serial", json!({ "action": "quickLoop", "on": true }))],
                     keys: &["pane", "loop", "planLength", "changed"] },
-                // 加一条：group 给组序号/组名，其余字段是这一条自己的发送参数
-                Case { tool: "serial_quick_cmd", args: json!({ "action": "add", "group": 0, "value": "AT+GMR", "seq": 1, "delayMs": 500, "hex": true }),
+                // 加一条：group 给组序号/组名，其余字段是这一条自己的等待参数。
+                // ⚠️ 期望里**必须列出这些字段** —— `serial_call` 只转发 extra，
+                // 只校验不转发就是"工具回了 ok、参数却没生效"（batch 4 这么漏过一次）
+                Case { tool: "serial_quick_cmd",
+                    args: json!({ "action": "add", "group": 0, "value": "AT+GMR", "seq": 1,
+                                  "timeoutMs": 500, "expect": "WIFI GOT IP|OK", "retry": 2, "hex": true }),
                     pre_connected: None,
-                    calls: vec![("serial", json!({ "action": "quickAdd" }))],
+                    calls: vec![("serial", json!({ "action": "quickAdd", "value": "AT+GMR", "seq": 1,
+                                                   "timeoutMs": 500, "expect": "WIFI GOT IP|OK",
+                                                   "retry": 2, "hex": true }))],
                     keys: &["pane", "index", "group", "groupIndex", "itemIndex", "applied"] },
+                // 旧拼写 delayMs：仍然转发（语义是超时），免得按旧写法调用的人静默失效
+                Case { tool: "serial_quick_cmd", args: json!({ "action": "update", "index": 0, "delayMs": 8000 }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "quickUpdate", "delayMs": 8000 }))],
+                    keys: &["pane", "index", "group", "itemIndex", "applied"] },
+                // 跳转（分支与循环）：两列面板上没有入口，但必须**转发到前端**（只校验不转发=永远收不到）
+                Case { tool: "serial_quick_cmd", args: json!({ "action": "update", "index": 0,
+                        "okGoto": "2", "errGoto": "end" }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "quickUpdate", "okGoto": "2", "errGoto": "end" }))],
+                    keys: &["pane", "index", "group", "itemIndex", "applied"] },
                 Case { tool: "serial_quick_cmd", args: json!({ "action": "update", "index": 0, "value": "AT+RST", "seq": 2 }),
                     pre_connected: None,
                     calls: vec![("serial", json!({ "action": "quickUpdate" }))],
@@ -3624,6 +3924,22 @@ mod tests {
                     pre_connected: None,
                     calls: vec![("serial", json!({ "action": "quickGroup" }))],
                     keys: &["pane", "op", "groups", "before", "loop"] },
+                // 工作流：省略 action = 列出（只读）；启停走单独那条（危险门在 Rust 侧）
+                Case { tool: "serial_workflow", args: json!({}),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "wfList" }))],
+                    keys: &["pane", "count", "rules", "runningCount"] },
+                Case { tool: "serial_workflow", args: json!({ "action": "add", "name": "自动回 OK",
+                        "conditions": [{ "type": "string_contains", "value": "PING" }],
+                        "actions": [{ "type": "send_data", "data": "PONG", "delayBefore": 300 }] }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "wfAdd", "name": "自动回 OK",
+                                                   "conditions": [{ "type": "string_contains", "value": "PING" }] }))],
+                    keys: &["pane", "rule", "name", "running", "count"] },
+                Case { tool: "serial_workflow_run", args: json!({ "rule": "wf_1", "on": true, "confirm": true }),
+                    pre_connected: None,
+                    calls: vec![("serial", json!({ "action": "wfToggle", "rule": "wf_1", "on": true }))],
+                    keys: &["pane", "rule", "running"] },
                 // BLE 第一批：状态 / 从机状态是读，从机启停是危险动作（要 confirm —— 危险门在 Rust 侧，
                 // 这一层只钉"发出去的 op 与返回形状"）
                 Case { tool: "ble_get_state", args: json!({}),
@@ -3843,6 +4159,8 @@ mod tests {
                 "serial_clear", "serial_close", "serial_get_history", "serial_get_state",
                 "serial_open", "serial_quick_cmd", "serial_select_port", "serial_send",
                 "serial_set_baud", "serial_set_display", "serial_set_frame", "serial_set_lines",
+                // 工作流规则（都经前端 mcpSerialOp 的 wf* 动作）
+                "serial_workflow", "serial_workflow_run",
                 "ui_click", "ui_describe", "ui_get", "ui_get_state", "ui_list", "ui_set",
                 // BLE 第一批（都经前端 mcpBleOp）
                 "ble_get_state", "ble_periph_status", "ble_periph_start", "ble_periph_stop",
@@ -4995,6 +5313,20 @@ mod tests {
                 "放行后应报「没有界面」：{}",
                 r
             );
+
+            // ③.5 每条指令的等待参数也要有上限（2026-09 教训：在 limits 里报出来 ≠ 被执行）
+            for (bad, what) in [
+                (json!({ "action": "update", "index": 0, "timeoutMs": MAX_QUICK_CMD_TIMEOUT_MS + 1 }), "timeoutMs 超限"),
+                (json!({ "action": "update", "index": 0, "retry": MAX_QUICK_CMD_RETRY + 1 }), "retry 超限"),
+                (json!({ "action": "update", "index": 0, "expect": "A".repeat(MAX_QUICK_CMD_EXPECT_CHARS + 1) }), "期望词超长"),
+                (json!({ "action": "update", "index": 0, "delayMs": MAX_QUICK_CMD_TIMEOUT_MS + 1 }), "旧拼写 delayMs 同样受超时上限约束"),
+            ] {
+                let r = call(&c, &raw_call("serial_quick_cmd", &bad)).await;
+                assert_eq!(
+                    r["error"]["code"], E_INVALID_PARAMS,
+                    "{what} 应先报 -32602（碰界面之前就拦下）：{r}"
+                );
+            }
 
             // ④ `ui_set` 单条 value 也要有界（只挡条数挡不住"一条巨型字符串"）
             let huge = "A".repeat(MAX_UI_SET_VALUE_CHARS + 1);
