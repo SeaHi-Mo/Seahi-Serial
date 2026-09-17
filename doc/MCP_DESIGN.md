@@ -1489,6 +1489,50 @@ BLE 面板有两套完全不同的东西：**主机**（当中央去连别人的
 
 ## 17. 实施记录
 
+### 2026-09-17 · BLE 的 **UUID 名称表改成生成**（SIG 官方数据；特征 9 条 → **512 条**）✅
+
+**起因**：用户盯着界面问"0x2A00 这个确定是 Device Name？依据是什么？"，接着问
+"这个表足够完整吗？"。答：那是 `BLE_CHAR_NAMES` / `BLE_SVC_NAMES` 两张**手写**表查出来的，
+服务表 67 条（基本齐）、描述符表 15 条（本来就齐），但**特征表只有 9 条** —— 而 SIG 公报的
+特征有 **512 条**。手写的表既不全、也没法跟进更新。用户定的方案：**B —— 从权威数据生成，
+而且 `Custom Service` 那条兜底一个字都不许动**。
+
+**做成什么**：新增生成器 `.walkthrough/gen_ble_uuids.js`，产物是新的前端文件
+`src/js/81-ble-uuids.js`（`<script>` 插在 `81-ble.js` 之前），`81-ble.js` 里那两张手写表删掉。
+- **源**：Bluetooth SIG **官方公开仓库**（`bluetooth-SIG/public`）的
+  `assigned_numbers/uuids/{service,characteristic}_uuids.yaml` —— 服务 **78** 条（76 条 SIG +
+  2 条补遗）、特征 **512** 条。生成物头部写清抓取的**提交号与日期**（这次是 `4904c3c73170`）。
+- **源文件不进仓库**：那份 YAML 抬头写明 *"This document is proprietary to Bluetooth SIG …
+  The furnishing of this document does not grant any license"* —— 不能随产品再分发。
+  所以只提交**生成物**（我们自己的 JS 表），生成是本地一条命令的事；`--from <目录>` 支持离线。
+- **对比过 Nordic 的 BSD-3 镜像**（`bluetooth-numbers-database`，可再分发）：它只是个镜像，
+  实测比 SIG **少 8 个服务、60 条特征**，还留着 **23 条已废止**的旧编号（`2A0B` Exact Time 100、
+  `2A1F/2A20` Temperature Celsius/Fahrenheit、`2A2F/2A30` Position 2D/3D …），拿它当源反而更差。
+- **名称只做机械清洗**：`CO\textsubscript{2} Concentration` → `CO2 Concentration`（规范文档里的
+  排版标记），不做逐条手改 —— 手改就等于把"生成"又变回"手写"。
+- **补遗只有 2 条**（`SVC_EXTRA`，生成器里带注释）：`FE59` Nordic DFU（成员 16 位 UUID，
+  SIG 的 `member_uuids.yaml` 给的是公司名而不是服务名）、`6E400001-…` Nordic UART（厂商 128 位）。
+
+**四条纪律（都写进了 AGENTS.md 的 BLE 约定）**：
+1. **兜底逻辑不在生成文件里**：查不到服务仍走 `renderBleServiceRow` 里的
+   `BLE_SVC_NAMES[su] || 'Custom Service'` —— **一行没动**（用户明确要求）；查不到特征仍不显示名字。
+   断言集里专门有一条盯着这行原文。
+2. **别手写回去**：生成器 `--check` 会比对产物与 SIG 当前数据；断言集直接读 `81-ble.js` 源文件，
+   发现 `var BLE_SVC_NAMES` / `var BLE_CHAR_NAMES` 就 fail，并守住"生成文件必须在 81-ble.js 之前加载"。
+3. **生成物必须提交**（前端无构建步骤），且**不能塞 `FF00`** 这类泛化号码（既有断言守着）。
+4. CTS 那条链路依赖 `2A2B`/`2A0F`/`2A14` 在表里 —— 生成器与断言集各有一道自检。
+   生成器另有锚点自检（`1800`=GAP、`180A`=Device Information、`2A00`=Device Name、
+   `2A24`=Model Number String…）+ 规模下限（服务 ≥76、特征 ≥500），源一变就直接失败，不写错表。
+
+**可见变化（要告诉用户）**：`0x1800` 由 "Generic Access" 变成 SIG 官方的 **"GAP"**、
+`0x1801` 由 "Generic Attribute" 变成 **"GATT"**（这两条本来就是缩写名）；其余服务的名字与手写表
+**逐条一致**（当初就是照 SIG 抄的）。服务名里多出 8 条（`183D`/`183F`/`1840`/`185A`/`185C`/`185D`/
+`185E`/`185F`），特征名多出 **503 条**。
+
+**验证**：`cargo test` **242 通过 + 1 ignored**（本轮没碰 Rust）；前端断言集 **1598 通过**
+（改 2 条把名字写死的旧断言 → 改成按表断言，新增 9 条：生成文件头、别手写回去、加载顺序、
+规模下限、两表锚点、CTS 三件套、排版标记拍平、兜底原文）。
+
 ### 2026-09-17 · CTS 的 **B 方案**：UUID 随日志条目带出去，`ble_get_output` 自动附上解读 ✅
 
 **为什么还要一步**：A 方案（上一节）只让**界面**多了一行人话；AI 那边仍是"`ble_read` → `ble_get_output`

@@ -126,8 +126,11 @@
 .ble-svc-caret { font-size:10px; color:var(--text-d); width:12px; flex-shrink:0; transition: transform .15s; }
 .ble-svc.expanded .ble-svc-caret { transform:rotate(90deg); }
 .ble-svc-attr { font-size:9px; font-weight:700; color:var(--text-d); border:1px solid var(--border); border-radius:4px; padding:0 4px; flex-shrink:0; line-height:14px; letter-spacing:.02em; text-align:center; min-width:18px; }
-/* UUID 固定列宽：让「服务名 / 特征名」在所有行里从同一个 x 开始。
-   服务的 UUID 有 0x1800（6 字符）也有 128 位的 38 字符，不固定列宽时名称就会参差不齐。
+/* UUID 不占**固定**列宽：短 UUID 用自然宽度、名字紧跟在后（左对齐），
+   128 位 UUID 靠 max-width + ellipsis 截断。
+   （原来用固定 38ch 列宽让"名字从同一个 x 开始"，但短 UUID 的行会空出一大截 ——
+   `0x2A05` 与「Service Changed」之间隔了三十多个字符的空白，名字看上去像被居中放在
+   中间。用户 2026-09 指出：名字不需要居中，左对齐即可。）
    38ch = "0x" + 36 个十六进制字符，正好容纳最长的 128 位 UUID；
    用 ch 单位与字体无关（等宽字体下 1ch = 字符宽度）。 */
 /* 服务类型名称统一右对齐（标准名 或 Custom Service），margin-left:auto 推到最右。
@@ -136,8 +139,10 @@
 .ble-svc-type { margin-left:auto; flex-shrink:0; font-size:11px; color:var(--text-d); white-space:nowrap; }
 .ble-charGroup { padding:4px 0 8px 22px; display:flex; flex-direction:column; gap:4px; }
 .ble-char { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:6px; background:var(--editor-bg); border:1px solid var(--border); }
-.ble-char-uuid { font-family:var(--font-mono); font-size:12px; color:var(--text); flex:0 0 auto; width:38ch; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.ble-char-name { font-size:11px; color:var(--text-d); margin-left:6px; flex-shrink:0; white-space:nowrap; }
+/* max-width 而不是 width：短 UUID 用它自己的宽度，特征名就贴在右边（左对齐）。
+   ⚠️ 别改回 width:38ch —— 那会让 `0x2A05` 与名字之间空三十多个字符（看着像居中）。 */
+.ble-char-uuid { font-family:var(--font-mono); font-size:12px; color:var(--text); flex:0 0 auto; max-width:38ch; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ble-char-name { font-size:11px; color:var(--text-d); flex-shrink:0; white-space:nowrap; }
 .ble-char-actions { display:flex; align-items:center; gap:6px; flex-shrink:0; margin-left:auto; }
 .ble-ch-action { display:inline-flex; align-items:center; justify-content:center; color:var(--text-d); cursor:not-allowed; transition: color .15s; }
 .ble-ch-action svg { width:18px; height:18px; }

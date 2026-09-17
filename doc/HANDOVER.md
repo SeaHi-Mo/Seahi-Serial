@@ -66,9 +66,9 @@ npm run build
 
 ```
 serial-debugger-tauri/
-├── src/index.html              ⭐ 前端骨架（head + body 结构 + 加载 4 个 css / 14 个 js）
+├── src/index.html              ⭐ 前端骨架（head + body 结构 + 加载 4 个 css / 15 个 js）
 ├── src/css/*.css                 前端样式（4 块：主题变量 / 全局 / 快速指令 / 杂项）
-├── src/js/*.js                   前端逻辑（14 块，普通脚本、共享全局作用域）
+├── src/js/*.js                   前端逻辑（15 块，普通脚本、共享全局作用域；其中 81-ble-uuids.js 是生成文件）
 ├── src-tauri/src/main.rs       ⭐ 后端全部代码（Rust，单文件 ~1745 行）
 ├── src-tauri/tauri.conf.json     Tauri 主配置
 ├── src-tauri/Cargo.toml           Rust 依赖

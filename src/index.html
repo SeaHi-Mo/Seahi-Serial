@@ -261,6 +261,9 @@
 <script src="js/60-workflow.js"></script>
 <script src="js/70-config.js"></script>
 <script src="js/80-wsl.js"></script>
+<!-- 81-ble-uuids.js 是**生成文件**（SIG 官方 assigned numbers，见 .walkthrough/gen_ble_uuids.js），
+     必须在 81-ble.js 之前加载：后者渲染服务树时要查这两张表。 -->
+<script src="js/81-ble-uuids.js"></script>
 <script src="js/81-ble.js"></script>
 <script src="js/82-adb.js"></script>
 <script src="js/83-wsl-mcp.js"></script>

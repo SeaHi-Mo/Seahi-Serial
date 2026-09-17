@@ -24,7 +24,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/
 > 证据与结论留在 `doc/BLE_PERIPHERAL.md`（已标归档）。**别再往这个方向加功能** ——
 > 先在真机上把广播跑起来再说。本应用现在的 BLE 能力只有**主机方向**。
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1586 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1598 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，94 条）：抽取前端真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，
 也有把渲染函数丢进假 DOM 跑行为断言）。前端 2026-09 已从单文件拆成
 `src/index.html`（骨架）+ `src/css/*.css` + `src/js/*.js`，**布局与加载顺序见 `doc/FRONTEND_LAYOUT.md`**；
@@ -47,7 +47,7 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
 才会重读 `tools/list`）。安全模式下：只读工具真调；写工具用"必填缺失 → -32602"探针；
 危险工具用"不带 confirm → -32006"探针；其余有副作用的跳过并标注（绝不关用户的串口 / 断用户的设备）。
 
-## BLE 主机方向的三个关键约定（别改回去）
+## BLE 主机方向的四条关键约定（别改回去）
 
 1. **设备不广播就搜不到**：从机一旦被 Windows 配对过、或被别的手机连走，往往就不再广播，
    于是永远进不了扫描列表。唯一出路是 `ble_connect_direct`（btleplug `add_peripheral`，
@@ -56,6 +56,12 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
    设备永远搜不到"。`ble_get_devices` / `ble_find_peripheral` / `ble_refresh_rssi` 都必须遍历全部。
 3. 后端连接有 **10 秒显式超时**（`BLE_CONNECT_TIMEOUT_MS`，比前端的 15s 略短），超时会主动
    `disconnect` —— 为的是不让"前端放弃了、后端稍后才连上"造成长期状态错位。
+4. **UUID 名称表是生成文件，别手写回去**：`src/js/81-ble-uuids.js` 由
+   `node .walkthrough/gen_ble_uuids.js` 从 SIG 官方 assigned numbers 生成（78 服务 / 512 特征；
+   手写的那版只有 9 条特征，用户 2026-09 问"这个表足够完整吗"之后改成生成）。
+   要加 SIG 表里没有的条目就加生成器的 `SVC_EXTRA`（带出处），**别改产物**（会被覆盖）；
+   生成物必须一起提交（前端无构建步骤）。**"查不到就标 `Custom Service`"那条兜底不许动**
+   （用户明确要求），所以也别往表里塞 `FF00` 这类泛化号码。
 
 ## 窗口几何记忆的三条约定（别改回去）
 
@@ -205,7 +211,7 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
 
 ## 项目结构
 
-- `src/index.html` + `src/css/*.css` + `src/js/*.js` — **整个前端**（无框架、无打包器、无构建步骤；2026-09 从单文件拆成 4 个 CSS + 14 个 JS + 269 行骨架，含 12 套主题变量；串口 / WSL / ADB / 蓝牙 四个面板）。
+- `src/index.html` + `src/css/*.css` + `src/js/*.js` — **整个前端**（无框架、无打包器、无构建步骤；2026-09 从单文件拆成 4 个 CSS + 15 个 JS + 272 行骨架，含 12 套主题变量；串口 / WSL / ADB / 蓝牙 四个面板）。其中 `src/js/81-ble-uuids.js` 是**生成文件**（SIG 官方 UUID 名称表，见下）
   **目录结构、加载顺序、"原 index.html 行号 ↔ 新文件"映射、以及拆分时逐字符校验的记录，全在 `doc/FRONTEND_LAYOUT.md`** —— 改前端前先看它（尤其"只用普通 `<script src>`、绝不用 `type="module"`"这一条）
 - `src-tauri/src/mcp/` — **MCP 服务器**（模块级，约 6300 行）：`transport.rs`（hyper 服务器 + **Streamable HTTP `/mcp`** + 遗留 SSE `/sse` + 会话/鉴权/限流/广播）、`protocol.rs`（JSON-RPC + 工具定义与分派）、`bridge.rs`（前端桥：emit + 回执 + 超时回收）、`registry.rs`（控件注册表 → `ctl_*` 工具）、`loghub.rs`（日志中心）、`calllog.rs`（`ai-calls.jsonl`）、`aiconfig.rs`（`ai-config.json`）、`report.rs`（运行期错误 → 程序既有的错误上报通道）、`mod.rs`（启停/生命周期 + 10 个命令）
 - `npm/seahi-serial-mcp/` — **MCP 客户端配置安装器**（零依赖 CLI + 94 条自测；`npx seahi-serial-mcp install`，`--transport sse|http`）
@@ -218,7 +224,7 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
 - `src-tauri/capabilities/default.json` — 窗口/Webview 的 ACL 权限（仅 `core:*`，无 shell/fs/http 插件权限）
 - `src-tauri/wsl-daemon/` — WSL bridge 脚本（base64 编码嵌入）
 - `installer.iss` — Inno Setup 安装脚本（包含 usbipd-win.msi 打包）
-- `doc/FRONTEND_LAYOUT.md` — **前端目录结构**（4 个 CSS + 14 个 JS + 骨架的加载顺序、原单文件行号映射、拆分校验记录）
+- `doc/FRONTEND_LAYOUT.md` — **前端目录结构**（4 个 CSS + 15 个 JS + 骨架的加载顺序、生成文件 `81-ble-uuids.js` 的来源与纪律、原单文件行号映射、拆分校验记录）
 - `doc/` — 架构、交接、代码评估（`CODE_REVIEW_FULL_2026-09.md`）、BLE 真机验证（`BLE_VERIFICATION.md`，主机方向）、**BLE 从机（`BLE_PERIPHERAL.md`，已归档：确认做不出来、代码已删）** 等
 - `skills/seahi-serial-dev/SKILL.md` — AI 开发技能指南
 

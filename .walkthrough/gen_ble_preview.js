@@ -586,6 +586,23 @@ console.log('preview ->', out);
   check(/data-modes="write,write_without_response"/.test(sb5.renderCharRow({ uuid: 'AAAA', name: 'X', props: ['write', 'write_without_response'] })),
     '发送图标带上 data-modes 供弹窗选择写入方式');
 
+  // ---- 5e-1b) 特征行的排布：名字**左对齐**紧跟 UUID ----
+  // 用户 2026-09 的反馈（截图里 `0x2A05  Service Changed`）：名字不需要居中。
+  // 原因是 `.ble-char-uuid` 占了固定 `width:38ch`（为了"名字从同一个 x 开始"），
+  // 短 UUID 的行于是空出三十多个字符的空白、名字看着像被放在中间。
+  // 现在只留 `max-width`（128 位 UUID 仍截断），短 UUID 用自然宽度。
+  check(/\.ble-char-uuid \{[^}]*max-width:38ch/.test(html)
+    && !/\.ble-char-uuid \{[^}]*?(?<!-)width:38ch/.test(html),
+    'UUID 列用 max-width 而不是固定 width（短 UUID 后名字立刻跟上）');
+  check(/\.ble-char-name \{ font-size:11px; color:var\(--text-d\); flex-shrink:0; white-space:nowrap; \}/.test(html),
+    '特征名不再带 margin-left 之类的偏移（间距只由 flex gap 给）');
+  const charRowSrc = (html.match(/return '<div class="ble-char">'[\s\S]{0,400}/) || [''])[0];
+  check(charRowSrc.indexOf('ble-char-uuid') >= 0
+    && charRowSrc.indexOf('ble-char-name') > charRowSrc.indexOf('ble-char-uuid')
+    && charRowSrc.indexOf('ble-char-actions') > charRowSrc.indexOf('ble-char-name'),
+    '行的顺序是 UUID → 名字 → 操作图标（名字贴左，图标靠 margin-left:auto 推到右端）',
+    charRowSrc.slice(0, 120));
+
   // ---- 5e-2) 特征描述符渲染（0x2902 CCCD / 0x2901 User Description）----
   // 真实设备回报的 128 位描述符 UUID（这里用 Bluetooth SIG 基础 UUID 形态，shortUuid 会缩成 2902）
   const chWithDesc = {
@@ -646,8 +663,8 @@ console.log('preview ->', out);
 
   check(!/ble-svc-name|ble-svc-tag/.test(html),
     '旧的「左侧名称 / 右侧标签」已移除（名称只有一个位置）');
-  check(/\.ble-char-uuid \{[^}]*flex:0 0 auto; width:38ch;/.test(html),
-    '特征 UUID 仍固定列宽（特征名内联对齐，未受影响）');
+  check(/\.ble-char-uuid \{[^}]*flex:0 0 auto; max-width:38ch;/.test(html),
+    '特征 UUID 只留 max-width（短 UUID 用自然宽度，名字紧跟其后左对齐 —— 见 5e-1b）');
   // ---- 5h) GATT 区只展示「正在查看的设备」的服务（用户反馈：未连接设备显示了已连接设备的 GATT）----
   const sb10 = { console };
   vm.createContext(sb10);
@@ -842,7 +859,9 @@ console.log('preview ->', out);
     extractObject('BLE_SVC_NAMES'), extractFunction('shortUuid'), extractFunction('renderBleServiceRow'),
   ].join('\n'), sb9);
   const rowStd = sb9.renderBleServiceRow({ uuid: '00001800-0000-1000-8000-00805f9b34fb', primary: true });
-  check(rowStd.indexOf('Generic Access') > 0, '标准服务 0x1800 显示名称 Generic Access');
+  // ⚠️ 名称本身不再写死在断言里：表是**生成的**（SIG 官方数据），照抄名字的断言迟早会过期。
+  check(rowStd.indexOf(sb9.BLE_SVC_NAMES['1800']) > 0,
+    '标准服务 0x1800 显示名称表里的名字', sb9.BLE_SVC_NAMES['1800']);
   check(rowStd.indexOf('Custom Service') < 0, '标准服务不打 Custom Service 标签');
   check(rowStd.indexOf('>Service</span>') < 0, '不再出现无信息量的固定 "Service" 标签');
   const rowCustom = sb9.renderBleServiceRow({ uuid: '00010203-0405-0607-0809-0a0b0c0d1912', primary: true });
@@ -851,13 +870,50 @@ console.log('preview ->', out);
   check(!!sb9.BLE_SVC_NAMES['1809'] && !!sb9.BLE_SVC_NAMES['1812'],
     '名称表覆盖常见标准服务（0x1809 体温计 / 0x1812 HID）');
   check(!sb9.BLE_SVC_NAMES['FF00'], '已移除泛化的 FF00=Vendor（按厂商私有处理，标 Custom Service）');
-  check(/class="ble-svc-type" title="Generic Access">Generic Access</.test(rowStd),
+  check(rowStd.indexOf('class="ble-svc-type" title="' + sb9.BLE_SVC_NAMES['1800'] + '">'
+        + sb9.BLE_SVC_NAMES['1800'] + '</span>') > 0,
     '标准服务的名称落在最右的类型位上（同一元素）');
   check(/class="ble-svc-type" title="Custom Service">Custom Service</.test(rowCustom),
     '未识别服务在最右显示 Custom Service（同一元素、同一位置）');  const rowVendor = sb9.renderBleServiceRow({ uuid: '0000ff00-0000-1000-8000-00805f9b34fb', primary: true });
   check(rowVendor.indexOf('Custom Service') > 0, '0xFF00 归为 Custom Service（不是标准 SIG 服务）');
   check(sb9.renderBleServiceRow({ uuid: '00001800-0000-1000-8000-00805f9b34fb', primary: false })
         .indexOf('>S</span>') > 0, '从服务标记为 S');
+
+  // ---- 5e-4) 名称表本身：**生成文件**（SIG 官方数据），不再是手写的 9 条 ----
+  // 背景：用户问"这个表足够完整吗"——手写表只有 9 条特征，而 SIG 公报的有 512 条，
+  // 且没法跟进更新。所以搬进 src/js/81-ble-uuids.js，由 .walkthrough/gen_ble_uuids.js 生成。
+  {
+    const svcBlock = extractObject('BLE_SVC_NAMES');
+    const chrBlock = extractObject('BLE_CHAR_NAMES');
+    const countKeys = (b) => (b.match(/^    '[0-9A-F]{4}'/gm) || []).length
+      + (b.match(/^    '[0-9A-F-]{36}'/gm) || []).length;
+    const gen = { svc: countKeys(svcBlock), chr: countKeys(chrBlock) };
+    check(/本文件由 `\.walkthrough\/gen_ble_uuids\.js` \*\*生成\*\*/.test(html),
+      '表是生成文件（文件头写明"别手改"）—— 不是手写死在 81-ble.js 里');
+    // "别再手写回去"要针对 **81-ble.js 这个文件本身**看：内联后的 html 里当然有这两张表
+    // （它们来自生成文件）。加载顺序也一样要守：表必须在 81-ble.js 之前（渲染时要查）。
+    {
+      const bleSrc = fs.readFileSync(path.join(root, 'src', 'js', '81-ble.js'), 'utf8');
+      check(!/var BLE_CHAR_NAMES/.test(bleSrc) && !/var BLE_SVC_NAMES/.test(bleSrc),
+        '81-ble.js 里不再手写这两张表（防有人又抄回去）');
+      check(html.indexOf('var BLE_SVC_NAMES = {') < html.indexOf('function renderBleServiceRow('),
+        '生成文件在 81-ble.js 之前加载（index.html 的标签顺序）');
+    }
+    check(gen.svc >= 76 && gen.chr >= 500, '表是完整的（SIG 官方：服务 ≥76 条、特征 ≥500 条）', JSON.stringify(gen));
+    check(/'1800': 'GAP'/.test(svcBlock) && /'180A': 'Device Information'/.test(svcBlock)
+      && /'FE59': 'Nordic DFU'/.test(svcBlock) && /'6E400001-B5A3-F393-E0A9-E50E24DCCA9E': 'Nordic UART'/.test(svcBlock),
+      '服务表锚点：1800=GAP / 180A=Device Information（SIG 官方名）；两条非 SIG 补遗原样保留');
+    check(/'2A00': 'Device Name'/.test(chrBlock) && /'2A24': 'Model Number String'/.test(chrBlock)
+      && /'2A26': 'Firmware Revision String'/.test(chrBlock),
+      '特征表锚点：2A00 Device Name / 2A24 Model Number String / 2A26 Firmware Revision String');
+    check(/'2A2B': 'Current Time'/.test(chrBlock) && /'2A0F': 'Local Time Information'/.test(chrBlock)
+      && /'2A14': 'Reference Time Information'/.test(chrBlock),
+      'CTS 三件套必须在表里（界面/MCP 的 CTS 那条链路靠它们认特征）');
+    check(/'2B8C': 'CO2 Concentration'/.test(chrBlock),
+      '规范文档里的排版标记已拍平（CO\\textsubscript{2} → CO2）');
+    check(/var typeName = BLE_SVC_NAMES\[su\] \|\| 'Custom Service';/.test(html),
+      '兜底那行**原样保留**（用户 2026-09 明确要求：Custom Service 不要改动）');
+  }
 
   // ---- 5f) 已连接设备不在扫描列表里时，仍要补进列表 ----
   // （复现路径：经「保留外设对象」重连的设备不在适配器表内 → ble_get_devices 不含它

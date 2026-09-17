@@ -38,40 +38,17 @@ var BLE_CONNECT_TIMEOUT_MS = 15000;
 // 配对超时（ms）：后端等用户确认配对码的上限是 60 秒，前端给它留出余量
 var BLE_PAIR_TIMEOUT_MS = 75000;
 var _bleScanStopTimer = null;  // 扫描 5 秒自动停止定时器
-// CTS（Current Time Service, 0x1805）的三个特征也列进来：服务树里能认出「Current Time」，
-// 而不是只显示裸 UUID —— AI/用户才知道该读哪个（解码交给 MCP 的 ble_cts_time）。
-var BLE_CHAR_NAMES = { '2A00':'Device Name','2A01':'Appearance','2A05':'Service Changed','2A19':'Battery Level','2A37':'Heart Rate Measurement','2A29':'Manufacturer Name',
-    '2A2B':'Current Time','2A0F':'Local Time Information','2A14':'Reference Time Information' };
-
-// GATT 服务名（Bluetooth SIG Assigned Numbers）。
-// 用途：服务行左侧显示名称；**表里查不到**的服务在右侧统一标 "Custom Service"
-// （即自定义/厂商私有的 128 位 UUID 服务）。因此这张表要尽量覆盖标准服务，
-// 否则像 0x1809 体温计、0x1812 HID 这类标准服务会被误标为 Custom Service。
-var BLE_SVC_NAMES = {
-    '1800':'Generic Access','1801':'Generic Attribute','1802':'Immediate Alert','1803':'Link Loss',
-    '1804':'Tx Power','1805':'Current Time','1806':'Reference Time Update','1807':'Next DST Change',
-    '1808':'Glucose','1809':'Health Thermometer','180A':'Device Information','180D':'Heart Rate',
-    '180E':'Phone Alert Status','180F':'Battery','1810':'Blood Pressure','1811':'Alert Notification',
-    '1812':'Human Interface Device','1813':'Scan Parameters','1814':'Running Speed and Cadence',
-    '1815':'Automation IO','1816':'Cycling Speed and Cadence','1818':'Cycling Power',
-    '1819':'Location and Navigation','181A':'Environmental Sensing','181B':'Body Composition',
-    '181C':'User Data','181D':'Weight Scale','181E':'Bond Management',
-    '181F':'Continuous Glucose Monitoring','1820':'Internet Protocol Support','1821':'Indoor Positioning',
-    '1822':'Pulse Oximeter','1823':'HTTP Proxy','1824':'Transport Discovery','1825':'Object Transfer',
-    '1826':'Fitness Machine','1827':'Mesh Provisioning','1828':'Mesh Proxy',
-    '1829':'Reconnection Configuration','183A':'Insulin Delivery','183B':'Binary Sensor',
-    '183C':'Emergency Configuration','183D':'Authorization Control','183E':'Physical Activity Monitor',
-    '183F':'Elapsed Time','1840':'Generic Health Sensor','1843':'Audio Input Control',
-    '1844':'Volume Control','1845':'Volume Offset Control','1846':'Coordinated Set Identification',
-    '1847':'Device Time','1848':'Media Control','1849':'Generic Media Control',
-    '184A':'Constant Tone Extension','184B':'Telephone Bearer','184C':'Generic Telephone Bearer',
-    '184D':'Microphone Control','184E':'Audio Stream Control','184F':'Broadcast Audio Scan',
-    '1850':'Published Audio Capabilities','1851':'Basic Audio Announcement',
-    '1852':'Broadcast Audio Announcement','1853':'Common Audio','1854':'Hearing Access',
-    '1855':'Telephony and Media Audio','1856':'Public Broadcast Announcement','1857':'Electronic Shelf Label',
-    // 常见厂商私有服务（非 SIG 标准名，但业界通用叫法，保留以便识别）
-    'FE59':'Nordic DFU','6E400001-B5A3-F393-E0A9-E50E24DCCA9E':'Nordic UART'
-};
+// CTS（Current Time Service, 0x1805）的三个特征也在名称表里：服务树里能认出「Current Time」，
+// 而不是只显示裸 UUID —— 用户/AI 才知道该读哪个（解码交给 MCP 的 ble_cts_time）。
+// 服务 / 特征的 UUID 名称表在 **js/81-ble-uuids.js** —— 由 `.walkthrough/gen_ble_uuids.js`
+// 从 Bluetooth SIG 官方 assigned numbers 生成（78 条服务 / 512 条特征，含 2 条非 SIG 补遗）。
+// 以前这两张表手写在这里，特征只有 9 条：不全，也没法跟进更新（SIG 公报的有 512 条）。
+// 表里是**事实数据**，就该由数据生成；要更新跑那条命令，出处的提交号写在生成物头部。
+//
+// 本文件只留「查不到怎么办」：
+//   · 服务查不到 → 右侧统一标 "Custom Service"（renderBleServiceRow，2026-09 用户要求保持不动）；
+//   · 特征查不到 → 不显示名字，只留裸 UUID。
+// 生成器与断言集都自检 2A2B / 2A0F / 2A14 必须在表里（CTS 那条链路依赖它们）。
 
 // GATT 描述符：名称 + 可执行的操作。
 // 权限按规范固定（btleplug 不暴露描述符属性，只能按 UUID 推断）：
