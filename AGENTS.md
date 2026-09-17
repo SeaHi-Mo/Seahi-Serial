@@ -2,7 +2,9 @@
 
 ## 项目简介
 
-基于 Tauri 2 的串口/蓝牙调试桌面工具，仅支持 Windows。前端为纯 HTML/CSS/JS（无框架，单文件）；后端为 Rust（`main.rs` 主逻辑 + `src/mcp/` 模块，见下）。
+基于 Tauri 2 的串口/蓝牙调试桌面工具，仅支持 Windows。前端为纯 HTML/CSS/JS（**无框架、无构建步骤**；
+2026-09 从单文件拆成 `src/index.html` 骨架 + `src/css/*.css` + `src/js/*.js`，见 `doc/FRONTEND_LAYOUT.md`）；
+后端为 Rust（`main.rs` 主逻辑 + `src/mcp/` 模块，见下）。
 
 ## 常用命令
 
@@ -13,7 +15,7 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/从机属性/busid 白名单/MCP 协议与日志中心）
 ```
 
-无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，216 条 + 4 条 `#[ignore]`
+无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，229 条 + 4 条 `#[ignore]`
 真机/诊断）。BLE 从机相关的三条（需蓝牙硬件）：
 
 ```bash
@@ -25,10 +27,12 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_builds -- --ignored -
 cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising -- --ignored --nocapture
 ```
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1651 条，随代码演进增补；MCP 的 npm 安装器另有
-`npm/seahi-serial-mcp/test/self-test.js`，94 条）：直接从
-`src/index.html` 抽取真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，也有把渲染函数丢进假 DOM
-跑行为断言），改前端后应先跑
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1730 条，随代码演进增补；MCP 的 npm 安装器另有
+`npm/seahi-serial-mcp/test/self-test.js`，94 条）：抽取前端真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，
+也有把渲染函数丢进假 DOM 跑行为断言）。前端 2026-09 已从单文件拆成
+`src/index.html`（骨架）+ `src/css/*.css` + `src/js/*.js`，**布局与加载顺序见 `doc/FRONTEND_LAYOUT.md`**；
+断言集里的 `readFrontendSource()` 会按标签顺序把 css/js **内联回一个"逻辑单文件"**再跑断言，
+所以"跨 CSS/JS 的源码正则"照旧有效，加新前端文件不用改断言集（只要标签写进 `index.html`）。改前端后应先跑
 `node .walkthrough/gen_ble_preview.js`。`.walkthrough/` 已纳入版本库（仅忽略 `__pycache__`）。
 改了 MCP 工具定义后，顺手重跑 `node .walkthrough/gen_mcp_tools_doc.js` 重新生成 `doc/MCP_TOOLS.md`（断言集里有一条守着"文档必须列出全部内置工具"）。
 
@@ -36,7 +40,7 @@ cargo test --manifest-path src-tauri/Cargo.toml ble_periph_starts_advertising --
 "每个工具你都需要测试工具调用结果"）：
 
 ```bash
-node .walkthrough/mcp_smoke.js          # 连上运行中的应用，把 55 个内置工具逐个真调一遍并打印结果
+node .walkthrough/mcp_smoke.js          # 连上运行中的应用，把 57 个内置工具逐个真调一遍并打印结果
 node .walkthrough/mcp_smoke.js --full   # 连有副作用的写工具也真调（会动界面/发数据，自己确认）
 node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /mcp）；默认有 /mcp 就走它
 ```
@@ -138,7 +142,7 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
     要同时出现在读入端与写入口，否则"内存里有、写回时被截断"会让用户数据不可逆丢失。
 11. **每个工具都必须有"返回值契约"和"调用情况"测试**（用户的要求："不然预期的结果怎么确定
     是否已经完成？"）。三条一起才叫测过：
-    ① **返回值契约**（`every_tool_has_a_tested_return_contract`）：55 个工具每个都要在表里交代
+    ① **返回值契约**（`every_tool_has_a_tested_return_contract`）：57 个工具每个都要在表里交代
     清楚 —— 纯后端工具断言**顶层字段**（多一个少一个都要改契约），界面工具断言无界面时
     必须是 `isError` + `-32006`，有副作用的注明谁在管它。表里漏一个工具就 fail，
     所以**新增工具时必须一起想清契约**。三条全局不变量对所有工具生效：
@@ -204,17 +208,20 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
 
 ## 项目结构
 
-- `src/index.html` — 整个前端（单文件，约 10400 行，含 12 套主题变量；串口 / WSL / ADB / 蓝牙 四个面板）
+- `src/index.html` + `src/css/*.css` + `src/js/*.js` — **整个前端**（无框架、无打包器、无构建步骤；2026-09 从单文件拆成 4 个 CSS + 14 个 JS + 269 行骨架，含 12 套主题变量；串口 / WSL / ADB / 蓝牙 四个面板）。
+  **目录结构、加载顺序、"原 index.html 行号 ↔ 新文件"映射、以及拆分时逐字符校验的记录，全在 `doc/FRONTEND_LAYOUT.md`** —— 改前端前先看它（尤其"只用普通 `<script src>`、绝不用 `type="module"`"这一条）
 - `src-tauri/src/mcp/` — **MCP 服务器**（模块级，约 6300 行）：`transport.rs`（hyper 服务器 + **Streamable HTTP `/mcp`** + 遗留 SSE `/sse` + 会话/鉴权/限流/广播）、`protocol.rs`（JSON-RPC + 工具定义与分派）、`bridge.rs`（前端桥：emit + 回执 + 超时回收）、`registry.rs`（控件注册表 → `ctl_*` 工具）、`loghub.rs`（日志中心）、`calllog.rs`（`ai-calls.jsonl`）、`aiconfig.rs`（`ai-config.json`）、`report.rs`（运行期错误 → 程序既有的错误上报通道）、`mod.rs`（启停/生命周期 + 10 个命令）
 - `npm/seahi-serial-mcp/` — **MCP 客户端配置安装器**（零依赖 CLI + 94 条自测；`npx seahi-serial-mcp install`，`--transport sse|http`）
-- `doc/MCP.md` — MCP 使用说明（面向使用者）｜`doc/MCP_TOOLS.md` — **55 个工具的参考手册**（工具名/描述/入参由 `.walkthrough/gen_mcp_tools_doc.js` 从 `protocol.rs` 生成，返回结构是实调抓的）｜`doc/MCP_DESIGN.md` — MCP 设计文档（含每步的实施记录）
+- `doc/MCP.md` — MCP 使用说明（面向使用者）｜`doc/MCP_TOOLS.md` — **57 个工具的参考手册**（工具名/描述/入参由 `.walkthrough/gen_mcp_tools_doc.js` 从 `protocol.rs` 生成，返回结构是实调抓的）｜`doc/MCP_DESIGN.md` — MCP 设计文档（含每步的实施记录）
 - `src-tauri/src/main.rs` — 整个 Rust 后端（约 7700 行，91 个 `#[tauri::command]`）：串口枚举（SetupAPI）、多串口连接/断开、DTR/RTS 切换、收发数据、WSL 端口映射、USB 设备管理、ADB 会话、**快速指令外部文件（导入/导出/写回，见 `quick_cmds_*`）**、**BLE 主机（btleplug，代码在 `fn main()` 内）与 BLE 从机（WinRT `GattServiceProvider`，代码在模块级）**
 - `src-tauri/Cargo.toml` — Rust 依赖（serialport 3.3, rfd 0.15, winapi 0.3, windows-sys 0.59, **windows 0.62 + windows-future 0.3（BLE 配对与 BLE 从机用 WinRT）**, **tokio（`time::timeout` + MCP 的 `rt/net/sync/io-util`，刻意不开 `macros`）**, reqwest 0.12, base64 0.22, btleplug 0.13, **hyper 1 + hyper-util + http-body-util + bytes（MCP 的 SSE 服务器；都已由 reqwest 带入依赖树，无新增下载）**）
 - `src-tauri/vendor/btleplug/` — **btleplug 的 vendored fork**（`[patch.crates-io]` 指向此处），共 4 处本地补丁；**升级依赖时必须按 `vendor/btleplug/VENDOR.md` 重新打**
-- `src-tauri/tauri.conf.json` — Tauri 窗口配置，CSP 设为 `null`；**不要擅自设 CSP**：Tauri 会注入 nonce，按规范 `'unsafe-inline'` 即失效，本应用的内联样式与 172 处内联 onclick 会全被拦（界面掉样式）。要设 CSP 必须先做「内联外置」重构
+- `src-tauri/tauri.conf.json` — Tauri 窗口配置，CSP 设为 `null`；**不要擅自设 CSP**：Tauri 会注入 nonce，按规范 `'unsafe-inline'` 即失效，本应用的行内 `style="…"` 属性与行内 `onclick`（拆分时 HTML 里 51 处 + JS 模板串里 151 处）会全被拦（界面掉样式、按钮点了没反应）。要设 CSP 必须先做「事件委托化 + 行内样式外置」重构。
+  ⚠️ 2026-09 拆分已把**内联 `<style>` 块与内联 `<script>` 块**外置成 `src/css/*` `src/js/*`（这一步做掉了），但**行内 `onclick` 与 `style="…"` 属性仍在**，所以"设 CSP"仍然是不能顺手做的一件事
 - `src-tauri/capabilities/default.json` — 窗口/Webview 的 ACL 权限（仅 `core:*`，无 shell/fs/http 插件权限）
 - `src-tauri/wsl-daemon/` — WSL bridge 脚本（base64 编码嵌入）
 - `installer.iss` — Inno Setup 安装脚本（包含 usbipd-win.msi 打包）
+- `doc/FRONTEND_LAYOUT.md` — **前端目录结构**（4 个 CSS + 14 个 JS + 骨架的加载顺序、原单文件行号映射、拆分校验记录）
 - `doc/` — 架构、交接、代码评估（`CODE_REVIEW_FULL_2026-09.md`）、BLE 真机验证（`BLE_VERIFICATION.md`，主机方向）、**BLE 从机（`BLE_PERIPHERAL.md`）** 等
 - `skills/seahi-serial-dev/SKILL.md` — AI 开发技能指南
 
@@ -259,25 +266,37 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
   别用"读进列表再重新生成一份"的做法；**文件头（YAML `---` / TOML `+++` front matter）原样保留但不解释**
   —— 不识别它的话 `baud: 115200` 会被当成一条指令读进来、写回时还会被转成表格行（实测踩过）；
   `baud`/`mode`/`lineEnding`/`delay`/`expect`/`timeout`/`hex` 这些 key 要提示"暂不生效"，别做静默 no-op。
-  另有两条同属"别改回去"：**每条指令的 `seq`/`delay`/`hex`（顺序号/延时/HEX 使能）只认"表头声明了列名"
-  的列** —— 表头写了 `顺序号 / 延时(ms) / HEX` 才读进来、才写回同一列；**没有这些列的文件一律按老规矩**
+  另有两条同属"别改回去"：**每条指令的 `seq`/`timeout`/`expect`/`retry`/`hex`（顺序号/超时/期望/重试/HEX）
+  只认"表头声明了列名"的列** —— 表头写了 `顺序号 / 超时(ms) / 期望 / 重试 / HEX` 才读进来、才写回同一列
+  （**旧列名「延时」按「超时」解读**、导入时提示一次；那一格的含义已从"发完隔多久再发下一条"
+  变成"最多等多久"）。「期望」「重试」**面板上没有入口**（写在文件里），可发现性靠"超时格描淡边 +
+  悬停列出内容 + 导入时提示一次"，导出（自包含副本）一定写这两列；
+  **没有这些列的文件一律按老规矩**
   （第 3 列起是用户的备注，原样保留），绝不按列号硬塞（那会把用户写在第 3 列的「备注甲」读成顺序号、
   再改写成 `0`，真丢数据）；**写回挂载文件不擅自补列**（用户的表结构由用户定），
-  需要自包含的三列文件走「导出」——导出的是副本，一律补全这三列（纯指令行载体放不下就升级成
-  Markdown 表格并提示；**导出物不带「名称」列**，面板里没有名称入口，文件就该与面板一一对应）。
+  需要自包含的快照走「导出」——导出的是副本，一律补全这几列（纯指令行载体放不下就升级成
+  Markdown 表格并提示；**导出物不带「名称」列**，面板里没有名称入口，文件就该与面板一一对应；
+  导出**默认名按监视器区分**：`main` 是 `quick-cmds.md`，WSL/额外分栏/蓝牙内嵌各带自己的 mid，
+  免得连点两次导出盖掉前一份；导出是直接写文件、**不走写回的哈希冲突检测**，所以盖到别人挂载的
+  文件上时会当场提示）。
   以及**整行都空的条目不写回文件**（写进去也活不过一次重载：解析端把空行当结构行丢掉；
-  但表头声明了 顺序号/延时/HEX 的文件里，"还没填内容、参数格有值"的行**必须留着** ——
+  但表头声明了 顺序号/超时/HEX 的文件里，"还没填内容、参数格有值"的行**必须留着** ——
   跳掉它，导出/写回的条数就跟面板对不上了）。用户没填过的参数格写回时**保持空格**
   （别把缺省值硬写进他的表）。
   另一个"别改回去"（2026-09 加的循环组）：**一组一张表、循环顺序 = 组的上下顺序 → 组内顺序号**，
   组的上下顺序**靠拖抬头调整**（拖到最上面的那组就是循环起点），组名可重命名、可折叠，
-  首次启动默认 1 组、新建组默认 1 条空指令、**最后一组删不掉**；每条指令自己的配置（顺序号/延时/HEX）不变。
+  首次启动默认 1 组、新建组默认 1 条空指令、**最后一组删不掉**；每条指令自己的配置（顺序号/超时/HEX）不变。
   文件里用 `## 组名` 抬头分隔各组（**两个及以上 `#`**；单个 `#` 仍是注释）；导出（副本）一定写抬头，
   写回挂载文件时只有一组不写（不擅自改用户结构）。面板里**每组自带一份列标题**（抬头 → 列标题 → 数据行），
   共用一份会夹在抬头与数据行之间、读起来是断的（用户 2026-09 指出的）。
   ⚠️ **改了文件格式/列名/上限/写回规则，必须同步 `doc/QUICK_CMDS.md`**（面向使用者的那份格式说明；断言里有 7 条守着它别烂掉）。
   循环发送的开关状态**不持久化**（开机自动发指令太危险），
   掉线/关监视器/列表里再无可发条目时必须**自愈停止**并提示。
+  ⚠️ 循环发送自 2026-09 起是**发一条等它回话**：`busy` 继续等（不算结论）/ OK 下一条 /
+  ERROR 重发本条（默认 3 次）/ 等满「超时」就**终止整条链**（填 `0` = 这条不等响应）。
+  判定**只在 Rust 做一份**（`QcmdHs` + `qcmd_hs_arm/state/feed/stop`：串口由读线程喂、WSL 由前端
+  `qcmd_hs_feed` 喂），而且**arm 必须早于 send**（反了就会把回话当上一条的迟到数据丢掉、白等到超时）。
+  MCP 侧对应 `serial_quick_cmd` 的 `timeoutMs`/`expect`/`retry`（`delayMs` 是旧拼写，继续认）。
 - WSL 串口转发通过 Python bridge 脚本实现，使用持久化 shell 避免 fork 延迟。⚠️ **bridge 的启动方式别改回硬写 `-e sg dialout`**：能**非交互**切组时才用 `sg`，否则直接跑 `python3` —— 没装 `sg` 的发行版会 `execvpe(sg) failed`（issue #21），不在 `dialout` 组里时 `sg` 会**卡在密码提示**上。三条细节（探测用"真试一次"而不是查 `id -nG`、拿不准时不用、提示里"没有 sg"要排在"切组失败"前面）见 `doc/ARCHITECTURE.md` §5.8
 - USB 设备映射到 WSL 依赖 `usbipd-win` 工具，需管理员权限
 

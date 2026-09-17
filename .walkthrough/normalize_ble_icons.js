@@ -10,7 +10,9 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const indexPath = path.join(root, 'src', 'index.html');
+// 前端 2026-09 拆成了 src/js/*.js —— BLE_DEV_ICONS 现在住在 81-ble.js 里，
+// 这个脚本重写的就是**那个文件**（不再是 index.html，那里已经没有内联脚本了）。
+const bleJsPath = path.join(root, 'src', 'js', '81-ble.js');
 const iconDir = path.join(root, 'src', 'icons');
 
 const ICONS = [
@@ -160,7 +162,7 @@ function pathBBox(d) {
 }
 
 // ---------- 生成 ----------
-const html = fs.readFileSync(indexPath, 'utf8');
+const html = fs.readFileSync(bleJsPath, 'utf8');
 const entries = [];
 for (const [key, file] of ICONS) {
   const raw = fs.readFileSync(path.join(iconDir, file), 'utf8');
@@ -213,6 +215,6 @@ const next = html.slice(0, blockStart) + block + html.slice(end);
 if (DRY) {
   console.log('\n[dry-run] 未写入。新 viewBox 如上。');
 } else {
-  fs.writeFileSync(indexPath, next, 'utf8');
+  fs.writeFileSync(bleJsPath, next, 'utf8');
   console.log('\nBLE_DEV_ICONS 已重写（viewBox 裁紧）');
 }

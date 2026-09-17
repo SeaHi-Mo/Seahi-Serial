@@ -303,7 +303,7 @@ npm run dev
 | 5 | 最小化后关闭再打开 | 普通几何不被 `-32000` 之类的哨兵坐标污染，仍回到最小化前的尺寸 |
 | 6 | 删除 `window.json` 后打开（模拟老版本升级） | 尺寸回退用 `config.json` 里的 `windowWidth`/`windowHeight`，**位置保持居中**（不跳到左上角） |
 | 7 | 把窗口移到副屏后拔掉该显示器，再打开 | 窗口回到可见显示器内（`rect_on_screen` 判定：至少露出 60×40），不会落在看不见的地方 |
-| 8 | 临时把 `src/index.html` 的初始化打断（如开头 `throw new Error('x')`） | 窗口**仍然显示**并给出兜底错误页（`revealMainWindow` 与 Rust 4 秒兜底各一道），不会出现"进程在跑但没有窗口" |
+| 8 | 临时把前端初始化打断（在 `src/js/90-init.js` 的 `DOMContentLoaded` 回调开头 `throw new Error('x')`；要连脚本都没跑起来就在 `src/js/00-bootstrap.js` 开头 throw） | 窗口**仍然显示**并给出兜底错误页（`revealMainWindow` 与 Rust 4 秒兜底各一道），不会出现"进程在跑但没有窗口" |
 
 ---
 

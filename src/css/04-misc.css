@@ -1,0 +1,303 @@
+/* 04-misc.css —— 前端第 4 块，拆自原单文件 src/index.html（**纯搬家**；行号映射见 doc/FRONTEND_LAYOUT.md）。
+   ⚠️ **普通样式表**：按 index.html 里的 <link rel="stylesheet"> 顺序加载 —— 后面的能覆盖前面的，
+   调换顺序会改变层叠结果（主题变量在前、各面板样式在后）。别改成 @import（顺序更难一眼看清）。 */
+/* ===== Toast 通知 ===== */
+.toast {
+    position:fixed; top:40px; right:20px; z-index:10001;
+    padding:12px 20px; border-radius:8px;
+    font-size:13px; color:#fff;
+    box-shadow:0 4px 12px rgba(0,0,0,.3);
+    transform:translateX(120%); transition:transform .3s ease;
+    max-width:400px; word-break:break-word;
+}
+.toast.show { transform:translateX(0); }
+.toast.toast-error { background:var(--accent-red); }
+.toast.toast-success { background:var(--accent-green); color:var(--bg); }
+.toast.toast-info { background:#2d8cf0; }
+
+/* WSL复选框样式 */
+.wsl-checkbox {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--text-d);
+    border-radius: 4px;
+    background: var(--surface-1);
+    cursor: pointer;
+    position: relative;
+    transition: all 0.2s ease;
+}
+.wsl-checkbox:checked {
+    background: var(--btn-p);
+    border-color: var(--btn-p);
+}
+.wsl-checkbox:checked::after {
+    content: '✓';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #fff;
+    font-size: 12px;
+    font-weight: bold;
+}
+.wsl-checkbox:hover {
+    border-color: var(--btn-p);
+}
+.wsl-checkbox:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+/* WSL 映射加载动画 */
+.wsl-loading-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #9cdcfe;
+}
+.wsl-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(156,220,254,0.25);
+    border-top-color: #9cdcfe;
+    border-radius: 50%;
+    animation: wsl-spin 0.8s linear infinite;
+}
+@keyframes wsl-spin { to { transform: rotate(360deg); } }
+/* WSL 自动映射开关 */
+.wsl-auto-toggle {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+    flex-shrink: 0;
+}
+.wsl-auto-toggle input { opacity: 0; width: 0; height: 0; }
+.wsl-auto-slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: #525a64; /* 中性灰关闭态，避免接近禁用色 */
+    border: 1px solid transparent;
+    border-radius: 20px;
+    transition: background 0.2s, border-color 0.15s;
+}
+.wsl-auto-slider:hover {
+    border-color: var(--border-h);
+}
+.wsl-auto-slider::before {
+    content: '';
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    left: 3px;
+    bottom: 3px;
+    background: var(--text-d);
+    border-radius: 50%;
+    transition: transform 0.2s, background 0.2s;
+}
+.wsl-auto-toggle input:checked + .wsl-auto-slider {
+    background: var(--btn-p);
+}
+.wsl-auto-toggle input:checked + .wsl-auto-slider::before {
+    transform: translateX(16px);
+    background: #fff;
+}
+.wsl-auto-toggle input:disabled + .wsl-auto-slider {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+.wsl-auto-toggle input:focus-visible + .wsl-auto-slider {
+    outline: 2px solid var(--accent-focus);
+    outline-offset: 2px;
+}
+
+/* WSL 串口监视器拖拽调整手柄 */
+.wsl-mon-resize {
+    height:5px; cursor:row-resize; background:var(--border);
+    flex-shrink:0; position:relative; z-index:10;
+}
+.wsl-mon-resize:hover, .wsl-mon-resize.dragging {
+    background:var(--split-line);
+}
+.wsl-mon-resize::after {
+    content:''; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:30px; height:3px; border-radius:2px; background:rgba(255,255,255,0.1);
+}
+.wsl-mon-disabled { opacity:0.4; pointer-events:none; }
+
+/* WSL 设备行 hover */
+.wsl-device-row { transition: background 0.15s, box-shadow 0.15s; cursor: pointer; }
+.wsl-device-row:hover { background: rgba(255,255,255,0.03) !important; }
+.wsl-device-row.selected {
+    background: rgba(255,255,255,0.04) !important;
+    box-shadow: inset 2px 0 0 var(--accent-focus);
+}
+/* 连接状态圆点 */
+.wsl-status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.wsl-status-dot.free { background: var(--accent-green); box-shadow: 0 0 5px rgba(90,158,110,0.5); }
+.wsl-status-dot.busy { background: var(--accent-orange); box-shadow: 0 0 5px rgba(192,128,64,0.5); }
+.wsl-status-dot.err  { background: var(--accent-red); box-shadow: 0 0 5px rgba(196,92,92,0.5); }
+/* 设备名双行 */
+.wsl-device-name {
+    display: block;
+    font-size: 13px;
+    color: var(--text-b);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 1.25;
+}
+.wsl-device-sub {
+    display: block;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 1.3;
+}
+
+/* 终端模式光标 */
+.terminal-cursor { display:inline-block; width:8px; height:1.2em; background:var(--text); animation:blink 1s step-end infinite; vertical-align:text-bottom; margin-left:1px; }
+@keyframes blink { 50% { opacity:0; } }
+/* 终端模式（真终端模拟器）：设备输出流 + 当前行（提示符 + 可见输入框，内联跟随提示符） */
+.term-current { position:relative; display:none; align-items:baseline; line-height:1.7; font-family:var(--font-mono); font-size:14px; white-space:pre-wrap; overflow-wrap:break-word; }
+.term-current.show { display:flex; }
+.term-out { color:var(--accent-focus); flex-shrink:0; white-space:pre; }
+.term-in { flex:1; min-width:0; background:transparent; border:none; outline:none; color:var(--text); font-family:var(--font-mono); font-size:14px; padding:0; margin:0; }
+/* 终端 TAB 补全弹层 */
+.term-comp {
+    display:none; position:absolute; top:calc(100% + 4px); left:0; z-index:9999;
+    min-width:220px; max-width:520px; max-height:200px; overflow-y:auto;
+    background:var(--surface-1); border:1px solid var(--border-h);
+    border-radius:6px; box-shadow:0 6px 16px rgba(0,0,0,.5);
+    font-size:12px;
+}
+.term-comp.open { display:block; }
+.term-comp-item {
+    padding:3px 8px; color:var(--text); cursor:pointer;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    font-family:var(--font-mono); border-bottom:1px solid var(--border);
+}
+.term-comp-item:last-child { border-bottom:none; }
+.term-comp-item:hover, .term-comp-item.selected { background:rgba(0,122,204,.15); }
+.term-comp-more {
+    padding:4px 8px; font-size:11px; color:var(--text-d);
+    border-top:1px solid var(--border); white-space:normal; cursor:default;
+}
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+.no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+/* ===== 首次使用引导 ===== */
+#onboarding-overlay {
+    position: fixed; inset: 0; z-index: 10000;
+    background: transparent;
+    opacity: 0; transition: opacity .3s ease;
+    pointer-events: none;
+}
+#onboarding-overlay.show { opacity: 1; pointer-events: auto; }
+.onboard-step {
+    position: absolute; z-index: 10005;
+    background: var(--surface-1, #262930);
+    border: 1px solid var(--accent-focus, #4a7ab5);
+    border-radius: 8px;
+    padding: 16px 20px;
+    min-width: 220px; max-width: 320px;
+    box-shadow: 0 4px 20px rgba(0,0,0,.4);
+    transition: transform .25s ease, opacity .25s ease;
+}
+.onboard-step.anim-in { animation: onboard-in .3s ease forwards; }
+@keyframes onboard-in { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+.onboard-title {
+    font-size: 14px; font-weight: 600; color: var(--text-b, #dce0e8);
+    margin-bottom: 6px;
+}
+.onboard-desc {
+    font-size: 12.5px; color: var(--text-soft, #8b919a);
+    line-height: 1.6;
+}
+.onboard-arrow {
+    position: absolute; width: 12px; height: 12px;
+    background: var(--surface-1, #262930);
+    border: 1px solid var(--accent-focus, #4a7ab5);
+    transform: rotate(45deg);
+    left: 24px;
+}
+.onboard-arrow.top { top: -7px; border-bottom: none; border-right: none; }
+.onboard-arrow.bottom { bottom: -7px; border-top: none; border-left: none; }
+.onboard-nav {
+    position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
+    z-index: 10006;
+    display: flex; align-items: center; gap: 16px;
+    background: var(--surface-1, #262930);
+    border: 1px solid var(--border, #2e3e48);
+    border-radius: 24px;
+    padding: 10px 24px;
+    box-shadow: 0 4px 24px rgba(0,0,0,.35);
+}
+.onboard-skip {
+    font-size: 13px; color: var(--text-d, #6b7280);
+    cursor: pointer; user-select: none;
+    transition: color .15s;
+}
+.onboard-skip:hover { color: var(--text, #b8bcc4); }
+.onboard-dots { display: flex; gap: 6px; }
+.onboard-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--border, #2e3e48);
+    transition: background .2s, transform .2s;
+}
+.onboard-dot.active { background: var(--accent-focus, #4a7ab5); transform: scale(1.25); }
+.onboard-next {
+    font-size: 13px; font-weight: 500;
+    color: #fff; background: var(--accent-focus, #4a7ab5);
+    border: none; border-radius: 16px;
+    padding: 6px 18px; cursor: pointer;
+    transition: background .15s;
+}
+.onboard-next:hover { background: var(--btn-ph, #5888c0); }
+/* ===== 启动兜底页：正常启动后由 JS 隐藏；初始化失败/超时时显示，避免纯黑/纯白界面 ===== */
+#bootError {
+    position: fixed; inset: 0; z-index: 100000;
+    background: #1c1e22; color: #dce0e8;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; text-align: center; padding: 24px;
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+#bootError .boot-error-title { font-size: 15px; font-weight: 600; }
+#bootError .boot-error-detail { font-size: 12px; color: #8b919a; max-width: 520px; word-break: break-all; white-space: pre-wrap; }
+#bootError .boot-error-btn {
+    font-size: 13px; color: #fff; background: #4a7ab5; border: none; border-radius: 14px;
+    padding: 6px 18px; cursor: pointer; margin-top: 6px;
+}
+#bootError .boot-error-btn:hover { background: #5888c0; }
+#bootError .boot-error-btn-danger { background: #c45c5c; }
+#bootError .boot-error-btn-danger:hover { background: #d06a6a; }
+/* 自定义 tooltip（无延迟） */
+.custom-tip {
+    position:fixed; z-index:99999; pointer-events:none;
+    background:var(--surface-1); color:var(--text-b); border:1px solid var(--border-h);
+    border-radius:4px; padding:3px 8px; font-size:11px; white-space:nowrap;
+    box-shadow:0 2px 8px rgba(0,0,0,.3); opacity:0; transition:opacity .1s;
+}
+.custom-tip.show { opacity:1; }
+/* 隐藏 xterm 终端滚动条 */
+.xterm .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.xterm .xterm-viewport::-webkit-scrollbar-thumb { display: none; }
+.xterm .xterm-viewport { scrollbar-width: none; -ms-overflow-style: none; }

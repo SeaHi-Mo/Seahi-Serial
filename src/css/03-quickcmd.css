@@ -1,0 +1,398 @@
+/* 03-quickcmd.css —— 前端第 3 块，拆自原单文件 src/index.html（**纯搬家**；行号映射见 doc/FRONTEND_LAYOUT.md）。
+   ⚠️ **普通样式表**：按 index.html 里的 <link rel="stylesheet"> 顺序加载 —— 后面的能覆盖前面的，
+   调换顺序会改变层叠结果（主题变量在前、各面板样式在后）。别改成 @import（顺序更难一眼看清）。 */
+/* ===== 快速指令分栏（只占监控输出区的高度，可折叠，默认折叠） =====
+   区域范围：与 .output 同一行（.mon-body），**不跨越**上方工具栏与下方发送栏。
+   折叠指示按用户要求不放图标、文字和小三角：
+     折叠态 —— 与输出区同底色，只留一条主题色分栏线 + 一根居中的细握把（悬停点亮）；
+     展开态 —— **整条填成主题蓝**（--btn-p，悬停 --btn-ph），一眼看出这一栏是开着的。
+   配色全部走主题变量（默认主题即主题蓝 --split-line/--btn-p = #4a7ab5、--link = #6a9fd8），
+   与窗格分隔线、拖拽手柄同一套语义；浅色主题下同样看得见。 */
+.mon-body { flex:1; display:flex; flex-direction:row; min-height:0; min-width:0; }
+.qcmd-side {
+    position:relative; flex-shrink:0; display:flex; flex-direction:row;
+    min-height:0; min-width:0; width:14px;
+    background:var(--editor-bg); border-left:1px solid var(--split-line);
+    transition: width .22s cubic-bezier(.4, 0, .2, 1), background .22s ease;
+    overflow:hidden;
+}
+/* 展开后整栏才算一块独立面板；宽度可由用户拖折叠条调节（--qcmd-side-w，缺省 300px）。
+   `min-width` 是**下限兜底**（= JS 的 `QCMD_SIDE_MIN`）：分栏不能被拖到比六格还窄。
+   `max-width` 是**上限兜底**：JS（setQcmdSideWidth）已经按"窗格 60% / 给输出区留 160px"钳过一遍了，
+   这里再拦一道 —— 分栏在还没显示的那一页里恢复宽度时量不到窗格宽度，靠它挡住视觉溢出。
+   ⚠️ 300px / 60% / 160px 与 JS 里的 QCMD_SIDE_MIN / QCMD_SIDE_MAX_RATIO / QCMD_SIDE_RESERVE
+   **必须一致**（改一处必须改另一处）。
+   ⚠️ 展开态还把那条 1px 分栏线收掉（`border-left-width:0`）：逐像素量过，它和 6px 色条并排 5px
+   （x=0 是 --split-line、x=6..9 是 --btn-p），两条蓝竖线贴在一起就是"看着脏"的根因。 */
+.qcmd-side.open {
+    width:var(--qcmd-side-w, 300px);
+    min-width:300px;
+    max-width:min(60%, calc(100% - 160px));
+    background:var(--toolbar-bg); border-left-width:0;
+}
+/* 展开态折叠条**脱离文档流**（绝对定位贴左缘）：面板内容因此拿到整个宽度，
+   标题行 / 来源行 / 列标题 / 每行下方的分隔线才能从面板左缘一直拉到右边 ——
+   否则它们都从折叠条右边 14px 才开始（用户："左侧没有触及到左侧折叠条"）。
+   内容让开那 14px 靠**内边距**（见下面各处的 22px = 14 + 8），线本身仍是满宽。 */
+.qcmd-side.open .qcmd-side-tab { position:absolute; left:0; top:0; height:100%; }
+/* 拖动调宽中：去掉过渡让宽度跟手，折叠条点亮（同 .ble-mon-resize.dragging 的处理） */
+.qcmd-side.dragging { transition:none; }
+/* 拖动调宽中：点亮的是**把手**，不是整条（同 .ble-mon-resize.dragging 的处理口径） */
+.qcmd-side.dragging .qcmd-side-tab::before { background:var(--btn-ph); }
+/* 折叠条：**展开态 = 一条贯穿整栏的竖色条**（用户定的方向：这个设计要，只是别那么宽）。
+   四次试错的结论（都别改回去）：
+     ① 14px 整条 × 整高刷主题蓝 → 一条蓝墙，太吵；
+     ② 只留一颗居中的小珠子 → 几百像素高的空栏里一颗孤零零的珠子，没设计感；
+     ③ 再加一条贯穿到底的虚线轨 → 像"沿虚线剪开"，更丑；
+     ④ 把手贴顶的小舌 → 还是"栏里飘着一个小块"。
+   正解是 ①的形态 + 收窄：**6px 宽的竖直色条贯穿整高**（不再是 14px 的墙，也不是小珠子），
+   条心一道 2×20 的浅色握把，延续折叠态"那是一根握把"的语言。
+   ⚠️ 折叠条自身宽度仍是 14px —— 那是**点击/拖动的热区**，只把视觉收窄，热区不缩。 */
+.qcmd-side-tab {
+    position:relative; z-index:3; width:14px; flex-shrink:0; height:100%;
+    box-sizing:border-box; border:none; background:transparent; padding:0;
+    color:var(--link); cursor:pointer; font-family:inherit; font-size:10px;
+    display:flex; align-items:center; justify-content:center;
+    transition:background-color .18s ease;
+}
+.qcmd-side-tab::before {
+    content:''; position:absolute; left:50%; top:50%;
+    width:3px; height:34px; margin:-17px 0 0 -1.5px; border-radius:2px;
+    background:var(--link); opacity:.45;
+    transition:opacity .18s ease, transform .18s ease, background .18s ease,
+               width .18s ease, height .18s ease, margin .18s ease;
+}
+/* 悬停：一层很淡的底 + 握把点亮（"这里能点、能拖"） */
+.qcmd-side-tab:hover { background-color:rgba(128,128,128,.07); }
+.qcmd-side-tab:hover::before { opacity:1; transform:scaleY(1.15); }
+/* 展开态：握把长成**贯穿整高、顶到面板左缘的 6px 竖色条**（悬停/拖动再亮一档）。
+   顶到左缘 + 收掉那条 1px 分栏线 = 全栏只有**一条**竖线（两条并排 5px 是"脏"的来源）。
+   条上不叠花纹：试过在条心画浅色握把，浅色主题下白线压在浅蓝条上像"这根条断了"。
+   展开态才可拖动调宽，光标换 col-resize。
+   注意 .on 那两条仍写在 :hover 之后：`.on::before` 与 `:hover::before` 特异性相同，靠顺序取胜。 */
+.qcmd-side-tab.on { cursor:col-resize; }
+.qcmd-side-tab.on::before {
+    top:0; bottom:0; height:auto; left:0; margin:0;
+    width:6px; border-radius:0;
+    background-color:var(--btn-p); opacity:1;
+}
+.qcmd-side-tab.on:hover::before { background-color:var(--btn-ph); }
+/* 循环发送进行中：折叠条底部点一颗会闪的小点。分栏折叠起来时循环**照样在跑**，
+   没有这个标记用户就完全看不出"它还在往设备发数据"（颜色仍走主题色，不引入新的语义色）。
+   ⚠️ 只在**折叠态**出现：展开时标题行那颗循环开关本身就亮着，再点一颗就是重复装饰。 */
+.qcmd-side-tab.loop::after {
+    content:''; position:absolute; left:50%; bottom:7px; width:5px; height:5px;
+    margin-left:-2.5px; border-radius:50%; background:var(--link);
+    animation:blink 1s step-end infinite;
+}
+.qcmd-side-tab.on.loop::after { display:none; }
+.qcmd-side-tab:focus-visible { outline:2px solid var(--link); outline-offset:-2px; }
+/* 展开态：列表区 */
+.qcmd-side-body { flex:1; display:none; flex-direction:column; min-width:0; min-height:0; }
+.qcmd-side.open .qcmd-side-body { display:flex; }
+/* 标题行：**不带自己的底色**（用户 2026-09 反馈"标题栏有割裂"）。
+   它右边那条 panel 是 14px 折叠条的地盘，所以 `--surface-3` 那条浅色带只能从 x=14 开始 ——
+   于是标题栏跟面板左缘之间出现一道竖缝。整块面板用一个面（--toolbar-bg），
+   标题行只用一条细线分隔，跟左缘就连成一片了。
+   控件分两端：**左边是状态（循环发送开关），右边是动作（＋添加 / 导入 / 导出）** ——
+   常规工具条的分法，用户 2026-09 明确要求"＋添加/导入/导出 还是摆右侧"。 */
+.qcmd-side-hd {
+    display:flex; align-items:center; justify-content:space-between; gap:6px; flex-shrink:0; flex-wrap:wrap;
+    padding:6px 8px 6px 22px;            /* 左 22 = 14（让开折叠条）+8 */
+    margin-right:8px;                     /* 8px = 让出滚动条那条槽，线才跟数据行等长 */
+    background:transparent; border-bottom:1px solid var(--border);
+    font-size:11px; color:var(--text-d); user-select:none;
+}
+.qcmd-hd-acts { display:inline-flex; align-items:center; gap:2px; flex-shrink:0; }
+/* 列标题行：与 .qcmd-item **同一套 grid 轨道**，所以永远对齐。
+   一行小字给"0 / 1000 / HEX"这些值一个名字 —— 宽栏下那一排框才读得成一张表。
+   ⚠️ 它必须待在 `.qcmd-list` **里面**（并且 position:sticky 钉在顶上）：
+   列表一旦出滚动条，滚动条会占掉 8px 宽，**列表外**的元素就比数据行宽 8px ——
+   两边的分隔线于是差一截（用户 2026-09 报的"每行下方的线不够长"）。
+   放进同一个滚动容器里，两条线永远等长（实测：溢出时行宽 278px，列标题也是 278px）。 */
+/* 列标题行：**每组一份**（每组自成一张表，跟文件里"一组一张表"完全对应）。
+   与 `.qcmd-item` **同一套 grid 轨道**，所以永远对齐。
+   它在组盒子里、跟数据行共享同一个滚动容器 —— 滚动条占掉的那 8px 两边一起让，
+   分隔线因此永远等长（用户 2026-09 报的"每行下方的线不够长"）。 */
+.qcmd-cols {
+    display:grid; grid-template-columns:24px minmax(0,1fr) 48px 34px 20px 20px;
+    grid-template-areas:'seq val delay hex send del';
+    align-items:center; gap:6px; padding:3px 8px 5px 22px;   /* 与 .qcmd-item 同款左边距 */
+    font-size:10px; color:var(--text-d); user-select:none; white-space:nowrap;
+    border-bottom:1px solid var(--border);
+}
+/* 表头单元格的盒模型**照抄对应输入框**，字才真的对着格：文字与输入框的左/右内边距不一致，
+   就算轨道一样也会差几个像素（`HEX` 那列早先用 auto：表头里是文字、行里是按钮，
+   两个 grid 各算各的自然宽度 → 列边界都不一样了。现在六列全是固定宽，两边必然重合）。 */
+.qcmd-cols .qcmd-col-seq   { grid-area:seq;   text-align:center; }
+.qcmd-cols .qcmd-col-val   { grid-area:val;   padding-left:5px; }
+.qcmd-cols .qcmd-col-delay { grid-area:delay; text-align:right; padding-right:3px; }
+.qcmd-cols .qcmd-col-hex   { grid-area:hex;   text-align:center; }
+/* 单位 `(ms)` 缩一号：它是次要信息，不跟列名抢注意力，也让 48px 的列宽放得下整个标签 */
+.qcmd-cols .qcmd-col-unit  { font-size:9px; opacity:.8; margin-left:1px; }
+/* 「＋ 添加」= 这张表表头行的最右一格：跨"发送/删除"两条轨道、右对齐 ——
+   正好落在数据行那两个图标的上方（用户 2026-09 要求"放在 顺序、指令那一栏最右侧"）。
+   它属于这一组，所以每组的表头各有一份（id 带组号）。
+   颜色用**主题强调色**（`--link`，与工具栏那三个动作按钮同一套语义）：它是个动作，
+   不该缩成灰字（用户 2026-09 要求"用使用主题颜色"）。 */
+.qcmd-cols .qcmd-col-add {
+    grid-column:send-start / del-end; grid-row:1; justify-self:end;
+    height:16px; padding:0 4px; box-sizing:border-box;
+    border:none; border-radius:3px; background:transparent; cursor:pointer;
+    color:var(--link); font-family:inherit; font-size:10px; white-space:nowrap;
+    transition:background .15s ease, color .15s ease;
+}
+.qcmd-cols .qcmd-col-add:hover { color:var(--btn-ph); background:rgba(55,148,255,.14); }
+
+/* ===== 循环组 =====
+   组抬头（可改名 / 按住握把上下拖动排序 / 折叠 / 加条 / 删组）+ 组内指令。
+   抬头底色用 --surface-3 —— 它从面板**左缘**就铺开（折叠条是绝对定位，见 .qcmd-side.open 那条），
+   所以不会出现早先那种"色带从 x=14 才开始"的割裂。 */
+.qcmd-group-hd {
+    display:flex; align-items:center; gap:6px; flex-shrink:0;
+    padding:4px 8px 4px 22px;              /* 左 22 与数据行同款（让开折叠条） */
+    background:var(--surface-3); border-bottom:1px solid var(--border);
+    font-size:11px; color:var(--text-d); user-select:none;
+}
+.qcmd-group-hd.dragging { background:var(--btn-p); color:#fff; }   /* 正在拖：整条点亮，一眼看出在搬哪一组 */
+.qcmd-group.dragging { box-shadow:0 4px 14px rgba(0,0,0,.35); position:relative; z-index:2; }  /* 搬起来的那组浮一档 */
+.qcmd-group-hd.dragging .qcmd-group-name, .qcmd-group-hd.dragging .qcmd-group-count { color:#fff; }
+/* **参与循环的滑动开关**（放在拖动握把与组名**中间**）：32×16 轨道 + 10px 白圆钮。
+   关闭态轨道用中性灰（`#525a64`，app 里「自动映射使能」用的同一个灰）——
+   ⚠️ 不能用 `--border`：浅色主题下轨道与白钮都接近白，整个开关会"消失"（用户 2026-09 反馈过）。
+   开启态轨道填主题色、钮滑到右边。圆钮比早先小一号（用户要求"中间的白色圆点小一点"）。 */
+.qcmd-group-sw {
+    position:relative; flex-shrink:0; width:32px; height:16px; padding:0; box-sizing:border-box;
+    border:none; border-radius:10px; background:#525a64; cursor:pointer;
+    transition:background .2s ease;
+}
+.qcmd-group-sw::after {
+    content:''; position:absolute; top:3px; left:3px; width:10px; height:10px; border-radius:50%;
+    background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.28);
+    transition:left .2s ease;
+}
+.qcmd-group-sw:hover { background:#616a75; }
+.qcmd-group-sw.on { background:var(--btn-p); }
+.qcmd-group-sw.on:hover { background:var(--btn-ph); }
+.qcmd-group-sw.on::after { left:19px; }
+.qcmd-group.off .qcmd-group-items,
+.qcmd-group.off .qcmd-cols { opacity:.45; }
+.qcmd-group.off .qcmd-group-name { color:var(--text-d); }
+/* 折叠箭头与拖动握把都**用 CSS 画**，不用 `▾` / `⠿` 字形：那两个字符在 10–12px 下又细又灰
+   （用户 2026-09 反馈"折叠 icon 太小了，几乎不可见"），而且字体不同渲染尺寸还不一样。
+   CSS 画的线宽/尺寸都是确定的，任意 DPI 都清晰。 */
+.qcmd-group-fold {
+    width:18px; height:18px; padding:0; flex-shrink:0; box-sizing:border-box;
+    display:inline-flex; align-items:center; justify-content:center;
+    border:none; border-radius:4px; background:transparent; cursor:pointer;
+    color:var(--text-b);                     /* 比列标题的 --text-d 亮一档：它是可点的控件，不是说明文字 */
+}
+.qcmd-group-fold::before {
+    content:''; display:block; width:5px; height:5px;
+    border-right:1.6px solid currentColor; border-bottom:1.6px solid currentColor;
+    transform:rotate(45deg); margin-top:-2px;   /* 展开态 ▾（旋转后视觉重心偏上，往回收一点） */
+}
+/* 展开态：箭头用**主题色 + 一层淡蓝底**，一眼看出"这组是展开的"（折叠态的箭头是灰的） */
+.qcmd-group-hd:not(.folded) .qcmd-group-fold { color:var(--link); background:rgba(55,148,255,.14); }
+.qcmd-group-hd:not(.folded) .qcmd-group-fold:hover { background:rgba(55,148,255,.24); }
+.qcmd-group.folded .qcmd-group-fold::before { transform:rotate(-45deg); margin-top:0; }   /* 折叠态 ▸ */
+.qcmd-group-fold:hover { background:rgba(128,128,128,.18); color:var(--text); }
+.qcmd-group-grip {
+    width:12px; height:16px; flex-shrink:0; cursor:grab; border-radius:3px;
+    color:var(--text-d); opacity:.85;
+    /* 2×3 的点阵（radial-gradient 平铺）—— 一眼看出"这里可以拖"，又不抢组名 */
+    background-image:radial-gradient(currentColor 1.1px, transparent 1.2px);
+    background-size:5px 5px; background-position:1px 2px; background-repeat:repeat;
+}
+.qcmd-group-grip:hover { opacity:1; color:var(--link); }
+.qcmd-group-hd.dragging .qcmd-group-grip { cursor:grabbing; opacity:1; color:#fff; }
+.qcmd-group-name {
+    flex:1; min-width:0; background:transparent; border:1px solid transparent; border-radius:3px;
+    color:var(--text-b); font-size:11px; font-family:inherit; padding:1px 4px; outline:none; cursor:text;
+}
+.qcmd-group-name:hover { background:var(--input-bg); }
+.qcmd-group-name:focus { background:var(--input-bg); border-color:var(--accent-focus); color:var(--text); }
+.qcmd-group-count { flex-shrink:0; font-size:10px; color:var(--text-d); }
+.qcmd-dep-del {
+    flex-shrink:0; border:none; background:transparent; color:var(--text-d); cursor:pointer;
+    font-size:14px; line-height:1; padding:0 4px; border-radius:3px;
+}
+.qcmd-dep-del:hover { color:var(--accent-orange); background:rgba(244,135,113,.12); }
+/* 折叠：**列标题与数据行一起收**，只留抬头 —— 用户 2026-09 实测发现只藏了数据行，
+   表头（顺序/指令/延时/HEX）孤零零留在那儿。收起来的抬头压暗一档，一眼看出这组是折着的。 */
+.qcmd-group.folded .qcmd-cols,
+.qcmd-group.folded .qcmd-group-items { display:none; }
+.qcmd-group.folded .qcmd-group-hd { opacity:.75; }
+/* 循环发送开关（「＋ 添加」左侧）：关闭态只有描边，开启态填主题色 + 一个会亮的小圆点。
+   开着的循环是"持续有副作用"的状态，必须一眼看出来（同 .ibtn.on 的语义）。 */
+.qcmd-dh-loop {
+    display:inline-flex; align-items:center; gap:4px; flex-shrink:0;
+    background:transparent; border:1px solid var(--border); color:var(--text-d);
+    font-size:11px; font-family:inherit; letter-spacing:0; cursor:pointer;
+    padding:1px 6px; border-radius:4px;
+}
+.qcmd-dh-loop::before {
+    content:''; width:5px; height:5px; border-radius:50%;
+    background:currentColor; opacity:.45; flex-shrink:0;
+}
+.qcmd-dh-loop:hover { border-color:var(--link); color:var(--link); }
+.qcmd-dh-loop.on { background:var(--btn-p); border-color:var(--btn-p); color:#fff; }
+.qcmd-dh-loop.on::before { opacity:1; }
+.qcmd-dh-loop.on:hover { background:var(--btn-ph); border-color:var(--btn-ph); color:#fff; }
+/* 来源行：只在挂了外部文件时出现（文件名 + 重载/断开）。
+   左右 padding 跟标题行、数据行对齐（8px）—— 右缘要连成一条竖线；
+   底色同样收掉（跟标题行一个道理：浅底从 x=14 开始就会把面板左缘切出缝） */
+.qcmd-side-src {
+    display:flex; align-items:center; gap:2px; flex-shrink:0;
+    padding:3px 8px 3px 22px;            /* 同上：左 22 让开折叠条 */
+    margin-right:8px;                     /* 同上：让出滚动条那条槽 */
+    border-bottom:1px solid var(--border);
+    background:transparent; font-size:10px; color:var(--text-d);
+}
+.qcmd-src-name {
+    flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    font-family:var(--font-mono); color:var(--link);
+}
+.qcmd-dh-add {
+    background:transparent; border:none; color:var(--link); font-size:11px;
+    cursor:pointer; padding:1px 4px; border-radius:4px; font-family:inherit; letter-spacing:0;
+}
+.qcmd-dh-add:hover { background:rgba(55,148,255,.12); }
+/* 列表内容区：撑满分栏高度、超出滚动；滚动条沿用输出区那套细样式。
+   ⚠️ `scrollbar-gutter:stable` + 下面标题行/来源行的 `margin-right:8px` 是**配套的**：
+   滚动条宽 8px（见 ::-webkit-scrollbar），列表出滚动条时内容区就窄 8px ——
+   滚动容器外面的元素若不让出这 8px，它的边线就比每行下方的线长一截
+   （实测：溢出时行线 278px、标题行的线 286px，用户截图圈的就是这条）。
+   预留槽位还能消掉"内容长到出滚动条时整列线突然跳 8px"的抖动。 */
+.qcmd-list { flex:1; overflow-y:auto; scrollbar-gutter:stable; }
+.qcmd-list::-webkit-scrollbar { width:8px; }
+.qcmd-list::-webkit-scrollbar-track { background:transparent; }
+.qcmd-list::-webkit-scrollbar-thumb {
+    background:rgba(100,106,118,.35); border-radius:4px;
+    border:2px solid transparent; background-clip:content-box;
+}
+.qcmd-list::-webkit-scrollbar-thumb:hover { background:rgba(100,106,118,.55); background-clip:content-box; }
+/* 每一条：一行排布 —— 顺序号 · 指令内容 · 延时 · HEX · 发送 · 删除。
+   名称那一行已按用户要求删掉（名称仍留在数据与外部文件里，只是不再占界面）。
+   观感上按"日本排版"那一套收：**面（背景）只留两个** —— 顺序号那个方框（用户点名要的标识）
+   与指令内容；延时退成右对齐的等宽数字，只在 hover/focus 时才浮出面来。
+   数字一律 tabular-nums（1000 / 500 / 80 的个位要能对齐成一条竖线）。 */
+.qcmd-item {
+    display:grid; grid-template-columns:24px minmax(0,1fr) 48px 34px 20px 20px;
+    grid-template-areas:'seq val delay hex send del';
+    align-items:center; gap:6px; padding:5px 8px 5px 22px;   /* 左 22 = 14（让开折叠条）+8 */
+    border-bottom:1px solid rgba(60,60,60,.3);
+    cursor:pointer;
+}
+.qcmd-item:last-child { border-bottom:none; }
+.qcmd-item:hover { background:rgba(255,255,255,.03); }
+/* 顺序号（方形小框，默认 0）：0 = 不参与循环发送；>0 参与，按数字从小到大依次发。
+   参与的那几条点亮描边 —— 否则用户只能一个个读数字才知道循环会发哪几条。
+   ⚠️ 这个"方框"是用户点名要的顺序标识，所以底色常驻（不跟着延时一起收成透明）。 */
+.qcmd-item-seq {
+    grid-area:seq; width:100%; height:22px; box-sizing:border-box;
+    background:var(--input-bg); border:1px solid transparent; border-radius:4px;
+    color:var(--text-d); font-family:var(--font-mono); font-size:11px;
+    font-variant-numeric:tabular-nums;
+    text-align:center; padding:0 2px; outline:none; cursor:text;
+}
+.qcmd-item-seq:focus { border-color:var(--accent-focus); color:var(--text); }
+.qcmd-item-seq.on { background:var(--btn-p); border-color:var(--btn-p); color:#fff; }   /* 蓝底 = 参与循环 */
+.qcmd-item-seq.on:hover { background:var(--btn-ph); border-color:var(--btn-ph); }
+.qcmd-item-seq.on:focus { background:var(--btn-p); color:#fff; border-color:var(--accent-focus); }
+.qcmd-item-val {
+    grid-area:val; width:100%; height:22px; background:var(--input-bg); border:1px solid transparent;
+    border-radius:4px; color:var(--text); font-family:var(--font-mono); font-size:12px;
+    font-variant-numeric:tabular-nums;
+    padding:0 5px; outline:none; min-width:0;
+}
+.qcmd-item-val:focus { border-color:var(--accent-focus); }
+/* 延时发送时间（毫秒）：本条发完到下发下一条的间隔。
+   平时是"右对齐的一列数字"（表格感），hover/focus 才浮出面 —— 一行里少一个框就安静一档。 */
+.qcmd-item-delay {
+    grid-area:delay; width:100%; height:22px; box-sizing:border-box;
+    background:transparent; border:1px solid transparent; border-radius:4px;
+    color:var(--text-d); font-family:var(--font-mono); font-size:11px;
+    font-variant-numeric:tabular-nums;
+    text-align:right; padding:0 3px; outline:none; cursor:text;
+    transition:background .15s ease, color .15s ease;
+}
+.qcmd-item-delay:hover { background:var(--input-bg); color:var(--text); }
+/* 这一格还带着"只在文件里才配得到"的条件（期望 / 重试）时描一层淡边：
+   面板上没有这两项的入口，不标出来就是"用户看不见的东西在生效"（悬停 title 会说清内容） */
+.qcmd-item-delay.has-extra { border-color:var(--border-h); color:var(--text-soft); }
+.qcmd-item-delay:focus { background:var(--input-bg); border-color:var(--accent-focus); color:var(--text); }
+/* HEX 使能（每条独立，默认关）：开启 = 本条按 HEX 解析后发送，与主发送栏的文本/HEX 无关。
+   它是"有状态"的开关（开着要一眼看出），所以这个框留着不删；
+   宽度撑满那 34px 的固定轨道 —— 列标题的 `HEX` 是照这条轨道居中的，两者才会重合。 */
+.qcmd-item-hex {
+    grid-area:hex; width:100%; height:22px; box-sizing:border-box; padding:0 5px;
+    background:transparent; border:1px solid var(--border); border-radius:4px;
+    color:var(--text-d); font-family:inherit; font-size:9px; letter-spacing:.5px;
+    cursor:pointer; flex-shrink:0;
+}
+.qcmd-item-hex:hover { border-color:var(--link); color:var(--link); }
+.qcmd-item-hex.on { background:var(--btn-p); border-color:var(--btn-p); color:#fff; }
+.qcmd-item-hex.on:hover { background:var(--btn-ph); border-color:var(--btn-ph); color:#fff; }
+.qcmd-item-send {
+    grid-area:send; width:20px; height:22px; border:none; border-radius:4px;
+    background:transparent; color:var(--btn-p); cursor:pointer; flex-shrink:0;
+    display:inline-flex; align-items:center; justify-content:center; padding:0;
+    opacity:.85;
+}
+.qcmd-item-send:hover { color:var(--btn-ph); background:rgba(14,99,156,.15); opacity:1; }
+.qcmd-item-send:disabled { color:var(--text-d); cursor:default; background:transparent; opacity:.6; }
+.qcmd-item-del {
+    grid-area:del; width:20px; height:22px; border:none; background:transparent; color:var(--text-d);
+    cursor:pointer; border-radius:4px; font-size:14px; line-height:1; opacity:.75;
+    display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;
+}
+.qcmd-item-del:hover { color:var(--accent-orange); background:rgba(244,135,113,.1); opacity:1; }
+
+/* ===== 更新按钮 ===== */
+.update-btn {
+    background:#2d8cf0;
+    color:#fff;
+    font-size:11px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:3px;
+    padding:2px 8px; border-radius:4px;
+    border:none; user-select:none;
+    transition:background .15s;
+}
+.update-btn:hover { background:#1a7ae8; }
+.update-btn.disabled { background:#3a5a7a; color:#aaa; cursor:default; }
+.update-btn.disabled:hover { background:#3a5a7a; }
+
+/* ===== 主题切换开关 ===== */
+.theme-switch {
+    display:inline-flex; align-items:center; gap:5px; cursor:pointer; user-select:none;
+}
+.theme-switch-icon { color:var(--text-d); display:inline-flex; align-items:center; transition:color .2s; }
+.theme-switch-track {
+    position:relative; width:32px; height:16px; border-radius:10px;
+    background:var(--border); transition:background .25s;
+}
+.theme-switch.on .theme-switch-track { background:var(--btn-p); }
+.theme-switch-thumb {
+    position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:50%;
+    background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.15);
+    transition:left .25s ease;
+}
+.theme-switch.on .theme-switch-thumb { left:18px; }
+.theme-switch.on .theme-switch-icon.sun { color:var(--text-d); }
+.theme-switch.on .theme-switch-icon.moon { color:var(--text-b); }
+.theme-switch:not(.on) .theme-switch-icon.sun { color:var(--text-b); }
+.theme-switch:not(.on) .theme-switch-icon.moon { color:var(--text-d); }
+
+/* ===== Issue 提交按钮 ===== */
+.issue-btn {
+    background:var(--surface-1);
+    color:var(--text-soft);
+    font-size:11px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:3px;
+    padding:2px 8px; border-radius:4px;
+    border:none; user-select:none;
+    transition:background .15s, color .15s;
+}
+.issue-btn:hover { background:var(--border-h); color:var(--text); }
+

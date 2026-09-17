@@ -66,7 +66,9 @@ npm run build
 ```
 serial-debugger-tauri/
 ├── src/
-│   └── index.html                # 前端（单文件，~10400 行）
+│   ├── index.html                # 前端骨架（head + body + 4 个 <link> + 14 个 <script src>）
+│   ├── css/                      # 4 块样式（无打包器，按顺序 <link> 加载）
+│   └── js/                       # 14 块逻辑（普通脚本、共享全局作用域；见 doc/FRONTEND_LAYOUT.md）
 ├── src-tauri/
 │   ├── Cargo.toml                # Rust 依赖
 │   ├── tauri.conf.json           # Tauri 应用配置

@@ -8,8 +8,8 @@
 
 SeaHi Serial 是一款基于 **Tauri 2 + Rust** 的 Windows 串口调试桌面工具。
 
-- **前端**: 纯 HTML/CSS/JS 单文件（`src/index.html`，约 4400 行），无框架、无构建工具
-- **后端**: 单个 Rust 文件（`src-tauri/src/main.rs`，约 1700 行）
+- **前端**: 纯 HTML/CSS/JS（`src/index.html` 骨架 + `src/css/*.css` + `src/js/*.js`），无框架、无构建工具
+- **后端**: 单个 Rust 文件（`src-tauri/src/main.rs`，约 1700 行）+ `src-tauri/src/mcp/` 模块
 - **平台**: 仅 Windows（依赖 Win32 SetupAPI、usbipd-win）
 - **通信**: 前端通过 `window.__TAURI__.core.invoke()` 调用 Rust 命令
 
@@ -23,7 +23,8 @@ npm run dev        # 开发模式（热重载）
 npm run build      # 发布构建
 ```
 
-项目**无** lint、类型检查、格式化工具或测试套件。
+项目**无** lint、类型检查与格式化工具；测试见下（前端无头断言集 + 后端单元测试 + 对着运行中应用的 MCP 工具自检，
+命令与纪律以仓库根目录的 `AGENTS.md` 为准）。
 
 ---
 
@@ -31,7 +32,9 @@ npm run build      # 发布构建
 
 ```
 serial-debugger-tauri/
-├── src/index.html              # 前端全部代码（单文件）
+├── src/index.html              # 前端骨架（head + body + 4 个 <link> + 14 个 <script src>）
+├── src/css/*.css               # 前端样式（4 块）
+├── src/js/*.js                 # 前端逻辑（14 块，普通脚本、共享全局作用域）
 ├── src-tauri/src/main.rs       # 后端全部代码（单文件）
 ├── src-tauri/Cargo.toml        # Rust 依赖
 ├── src-tauri/tauri.conf.json   # Tauri 配置
@@ -59,16 +62,20 @@ serial-debugger-tauri/
 
 遗漏任何一处都会导致构建产物版本不一致。
 
-### 4.2 前端是单文件应用
+### 4.2 前端是多文件、但仍然"一个全局作用域"
 
-所有 HTML、CSS、JS 都在 `src/index.html` 一个文件中。
+2026-09 之前全部 HTML/CSS/JS 都在 `src/index.html` 一个文件里；现在拆成骨架 + `src/css/*.css`（4 块）
++ `src/js/*.js`（14 块）。**加载顺序、每块管什么、原行号映射，见 `doc/FRONTEND_LAYOUT.md`**。
 
 **修改前端时必须注意**：
-- CSS 在 `<style>` 标签内（文件前半部分），JS 在 `<script>` 标签内（文件后半部分）
-- 不要引入外部 JS/CSS 文件，不要用 import/export
-- 所有 SVG 图标以内联字符串形式存在 `ICONS` 对象中
+- 只加**普通** `<link rel="stylesheet">` 与 `<script src>`；**绝不要 `type="module"`** —— 模块作用域会让
+  行内 `onclick` 全部失效（拆分时 HTML 里 51 处 + JS 模板串里 151 处）。也别加打包器/转译器
+- 所有块共享同一个全局作用域，顺序就是执行顺序（CSS 靠层叠，后面的覆盖前面的）
+- 新代码放进"语义相邻的那一块"（面板样式进对应 css、跨面板工具函数进 `40-utils.js` 等）
+- 所有 SVG 图标以内联字符串形式存在图标对象中（现位于 `src/js/81-ble.js` 的 `BLE_DEV_ICONS` 等）
 - 前后端通信使用 `invoke('command_name', { args })`，不要用 npm 桥接包
-- CSP 设为 `null`，可以使用内联脚本和样式
+- CSP 设为 `null`，可以使用行内 `onclick` 与 `style="…"`（拆分只外置了 `<style>`/`<script>` 块，
+  行内属性仍在 —— 所以"顺手设个 CSP"仍然会让界面掉样式）
 
 ### 4.3 后端是单文件 Rust
 
@@ -93,18 +100,31 @@ serial-debugger-tauri/
 
 ## 5. 前端开发指南
 
-### 5.1 index.html 文件结构
+### 5.1 前端文件结构
 
-| 区域 | 大致行号 | 内容 |
-|------|---------|------|
-| CSS 变量 | 9-45 | 主题色板（深色默认） |
-| 浅色主题 | 48-145 | `[data-theme="default-light"]` |
-| 多风格主题 | 147-1000 | 浮世绘彩、诗意东方、水墨丹青、桃之夭夭、金风玉露 |
-| 组件样式 | 1020-1540 | 工具栏、按钮、下拉框、输出区等 |
-| 引导样式 | 1540-1610 | 首次使用引导 |
-| HTML 结构 | 1611-1660 | body、全局栏、分栏容器、引导 DOM |
-| ICONS 对象 | 1674-1690 | SVG 图标常量 |
-| JS 函数 | 1692-4440 | 全部业务逻辑 |
+前端 2026-09 已按功能拆分（**不是**按"HTML / CSS / JS 三段"切）。权威表在 `doc/FRONTEND_LAYOUT.md`
+（含每块管什么、加载顺序、原单文件行号映射）。粗查：
+
+| 你想找的东西 | 去哪个文件 |
+|------|---------|
+| head / body 结构 / 行内 `onclick` | `src/index.html` |
+| 主题变量（`:root` + 12 套主题） | `src/css/01-theme.css` |
+| 标题栏 / 监视器窗格 / 工具栏 / 输出区 / 发送栏 | `src/css/02-global.css` |
+| 快速指令分栏 / 循环组 | `src/css/03-quickcmd.css` |
+| Toast / 引导 / 启动兜底页 / xterm 滚动条 | `src/css/04-misc.css` |
+| Tauri 桥接降级 / 全局错误捕获 / 图标 / ANSI | `src/js/00-bootstrap.js` |
+| 创建窗格 / 下拉 / 端口 / 终端模式 / 连接管理 | `src/js/10-monitor.js` |
+| 额外监视器 / 发送 / 日志 / 输出区 | `src/js/20-extras.js` |
+| MCP 入口 / 控件注册表 / 前端桥 / 语义层 | `src/js/30-mcp.js` |
+| 接收行缓冲 / 工具函数 | `src/js/40-utils.js` |
+| 快速指令（模型 / 外部文件 / 参数 / 跳转）+ 组 UI / 循环发送 | `src/js/50-quickcmd.js`、`51-quickcmd-ui.js` |
+| 工作流 UI | `src/js/60-workflow.js` |
+| 自动更新 / 配置 / 主题切换 | `src/js/70-config.js` |
+| WSL 映射与监视器 / ADB / BLE（含从机） | `src/js/80-wsl.js`、`82-adb.js`、`81-ble.js` |
+| 初始化 / 窗口控制 / 首次引导 | `src/js/90-init.js` |
+
+> ⚠️ 文件里的行号**别写进文档**（每次都漂）。要断言"这段代码存在"，写进
+> `.walkthrough/gen_ble_preview.js`（它会按标签顺序把 css/js 内联回"逻辑单文件"再做源码正则）。
 
 ### 5.2 添加新功能的步骤
 
@@ -132,8 +152,10 @@ serial-debugger-tauri/
 - **输出区**: `.output` 使用 `flex:1; min-height:0` 允许收缩
 - **下拉框**: 使用 `position:absolute` + `z-index` 弹出，点击外部关闭
 - **发送历史**: 每个监视器独立维护，最多 50 条
-- **快速指令**: 每个监视器独立维护，支持动态增删；每条有 `{label, value, seq, delay, hex}`
-  （`label` 只保留在数据/外部文件里，界面上没有入口）；`seq > 0` 的按序号循环发送，格式按本条自己的 HEX 开关
+- **快速指令**: 每个监视器独立维护，支持动态增删；每条有 `{label, value, seq, timeout, hex, expect, retry, okGoto, errGoto}`
+  （`label` 只保留在数据/外部文件里，界面上没有入口）；循环发送是**发一条等它回话**：
+  `busy` 继续等 / 收到 OK 走下一条（或按 `okGoto` 跳）/ 收到 ERROR 重发（`retry` 次）/ 等满 `timeout` 或重试用尽
+  就按 `errGoto` 跳或**终止整条链**。判定只在 Rust 做一份（`QcmdHs`），文件格式见 `doc/QUICK_CMDS.md`
 - **引导系统**: 9 步聚光灯引导，目标元素通过 CSS 选择器定位
 
 ---
@@ -229,7 +251,8 @@ WSL 功能通过 Python bridge 脚本实现串口转发：
 ## 9. 禁止事项
 
 - **不要**引入前端框架（React、Vue 等），保持纯 HTML/CSS/JS
-- **不要**拆分 `index.html` 为多个文件（当前架构依赖单文件）
+- **不要**把前端改成 `type="module"` 或引入打包器（模块作用域会让行内 `onclick` 全部失效；
+  拆分方式与理由见 `doc/FRONTEND_LAYOUT.md`）
 - **不要**使用 npm 桥接包调用 Tauri，使用 `window.__TAURI__.core.invoke()`
 - **不要**修改 `src-tauri/gen/` 目录（Tauri 自动生成）
 - **不要**在后端引入 async runtime（tokio 等），使用同步 Mutex

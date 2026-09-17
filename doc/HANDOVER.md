@@ -66,7 +66,9 @@ npm run build
 
 ```
 serial-debugger-tauri/
-├── src/index.html              ⭐ 前端全部代码（HTML + CSS + JS，单文件 ~4400 行）
+├── src/index.html              ⭐ 前端骨架（head + body 结构 + 加载 4 个 css / 14 个 js）
+├── src/css/*.css                 前端样式（4 块：主题变量 / 全局 / 快速指令 / 杂项）
+├── src/js/*.js                   前端逻辑（14 块，普通脚本、共享全局作用域）
 ├── src-tauri/src/main.rs       ⭐ 后端全部代码（Rust，单文件 ~1745 行）
 ├── src-tauri/tauri.conf.json     Tauri 主配置
 ├── src-tauri/Cargo.toml           Rust 依赖
@@ -78,37 +80,41 @@ serial-debugger-tauri/
 └── .github/workflows/build.yml    CI/CD 自动构建
 ```
 
-> ⚠️ **重要**: 前端是一个单文件应用，所有 CSS 和 JS 都内联在 `index.html` 中，没有模块拆分。
+> ⚠️ **重要（2026-09 变更）**: 前端**已不再是单文件**。它拆成了 `src/index.html`（骨架）+ `src/css/*.css`（4 块）
+> + `src/js/*.js`（14 块），用普通 `<link>` / `<script src>` 按顺序加载、共享同一个全局作用域
+> （**不要**改成 `type="module"`）。**目录结构、加载顺序、每块管什么、以及本文件下面那些老行号怎么对回来，
+> 全看 `doc/FRONTEND_LAYOUT.md`。**
 
 ---
 
 ## 4. 代码导航指南
 
-### 4.1 前端 (index.html)
+### 4.1 前端
 
-| 区域 | 行号范围 | 内容 |
-|------|----------|------|
-| CSS 变量 | 9-45 | 主题色板（深色默认） |
-| 浅色主题 | 48-145 | `[data-theme="default-light"]` |
-| 多风格主题 | 147-1000 | 浮世绘彩、诗意东方、水墨丹青、桃之夭夭、金风玉露 |
-| 组件样式 | 1020-1540 | 工具栏、按钮、下拉框、输出区等 |
-| 引导样式 | 1540-1610 | 首次使用引导 |
-| HTML 结构 | 1611-1660 | body、全局栏、分栏容器、引导 DOM |
-| SVG 图标常量 | 1674-1690 | ICONS 对象（12 个内联 SVG） |
-| 工具函数 | 1692-1715 | parseAnsi, escapeHtml |
-| 窗格创建 | 1735-1870 | createMonitorPane（生成完整监视器 DOM） |
-| 键盘事件 | 1880-1940 | sendInput 的 keydown 处理 |
-| 波特率下拉 | 1956-2010 | toggleBaudDropdown, setBaud |
-| 串口操作 | 2054-2400 | refreshPorts, connectPort, disconnectPort, startReading 等 |
-| 发送逻辑 | 2423-2500 | sendData, addMonitor, closeMonitor, 行尾处理 |
-| 日志保存 | 2480-2510 | chooseLogDir, saveLogToFile, copyOutput |
-| 数据解码 | 2511-2570 | decodeData, decodeRaw, hexToBytes, bytesToHex |
-| 快速指令（循环组） | 6307-7600 | qcmdSideHtml（输出区右侧可折叠分栏，默认折叠只留一枚指示；标题行 = 循环发送开关 + ＋新建循环组/导入/导出）, 组模型 qcmdGroups/addQcmdGroup/removeQcmdGroup/renameQcmdGroup/toggleQcmdGroupFold/startQcmdGroupDrag（拖抬头调组序 = 循环顺序）, 链式循环 qcmdLoopPlan（组从上到下 → 组内顺序号）, qcmdParseText/qcmdBuildText（外部文件三种载体，往返保真；**表头驱动**的 `顺序号/延时(ms)/HEX` 三列 —— 表头声明了才读、才写回，没声明就全是用户的备注）, qcmdJoinRow/qcmdItemCells/qcmdParamCell（按列原位重拼，"没动过的格子原样回吐"）, qcmdImportFile/qcmdExportFile/qcmdReloadFile/qcmdUnmountFile, qcmdExportPrep（导出=自包含快照，一律补全三列）, qcmdCarryItemPrefs（文件没声明那几列时按内容带回）, makeQcmdItem（一行六格：顺序号·内容·延时·HEX·发送·删除）, sendQcmdItem/sendQcmdPayload（手动与循环共用一条发送路径）, qcmdLoopPlan/setQcmdLoop/qcmdLoopStep/stopQcmdLoop（循环发送）, toggleQcmdSide, addQcmdItem 等 |
-| 配置管理 | 2755-2970 | collectConfig, applyMonitorConfig, scheduleConfigSave |
-| 主题系统 | 2994-3100 | toggleTheme, applyTheme, syncThemeUI |
-| WSL 面板 | 3155-3700 | getWslMappingHtml, openWslMapping, initWslMonResize |
-| WSL 串口 | 3378-3500 | initWslMonitor, WSL 数据收发 |
-| 初始化 | 4221-4260 | DOMContentLoaded 事件、设备监听 |
+老版本的这一节是一张"行号 → 内容"大表，行号早已失效（前端从 4400 行长到了 15874 行，随后又拆成 18 个文件），
+所以改成"**功能 → 文件**"（行号看编辑器，别写进文档）。权威表在 `doc/FRONTEND_LAYOUT.md`：
+
+| 功能 | 文件 |
+|------|------|
+| head / body 结构、行内 `onclick` | `src/index.html` |
+| 主题变量（12 套）、全局组件样式 | `src/css/01-theme.css`、`02-global.css` |
+| 快速指令分栏样式、Toast / 引导 / 兜底页 | `src/css/03-quickcmd.css`、`04-misc.css` |
+| Tauri 桥接降级、全局错误捕获、图标、ANSI | `src/js/00-bootstrap.js` |
+| 窗格创建、端口/波特率、终端模式、连接管理 | `src/js/10-monitor.js` |
+| 额外监视器、发送、日志保存、输出区裁剪 | `src/js/20-extras.js` |
+| MCP 注册表 / 前端桥 / BLE·ADB·串口语义层 / 日志回灌 | `src/js/30-mcp.js` |
+| 接收行缓冲、紧凑存储、工具函数 | `src/js/40-utils.js` |
+| 快速指令（模型 / 外部文件 / 参数 / 跳转 / 循环发送） | `src/js/50-quickcmd.js`、`51-quickcmd-ui.js` |
+| 自动化工作流（规则 UI 与边界） | `src/js/60-workflow.js` |
+| 配置保存恢复、自动更新、主题切换 | `src/js/70-config.js` |
+| WSL 映射与 WSL 串口监视器 | `src/js/80-wsl.js` |
+| BLE 主机面板 / 配对 / 从机 | `src/js/81-ble.js` |
+| ADB 面板与会话 | `src/js/82-adb.js` |
+| WSL 端口映射（MCP 通用桥那一份）、授权窗口 | `src/js/83-wsl-mcp.js` |
+| 窗口控制、标题栏拖动、初始化、tooltip、首次引导 | `src/js/90-init.js` |
+
+> 各功能的**行为约定与"别改回去"清单**不在这里 —— 在 `AGENTS.md`（通用/MCP/BLE/窗口几何）、
+> `doc/QUICK_CMDS.md`（快速指令文件格式）、`doc/MCP_TOOLS.md`（57 个工具）里。
 
 ### 4.2 后端 (main.rs)
 
