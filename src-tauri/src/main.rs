@@ -4623,31 +4623,52 @@ mod util_tests {
         assert_eq!(super::ble_cts_adjust_reasons(0b1111_0000).len(), 0, "保留位不该报");
     }
 
-    /// Local Time Information（`0x2A0F`，2 字节）：时区是 **int8 × 15 分钟**，DST 只有 0/2/4/255 合法
+    /// Local Time Information（`0x2A0F`，2 字节）：时区是 **int8 × 15 分钟**，
+    /// DST 是 **0/2/4/8/255** —— 依据 GATT Specification Supplement 的
+    /// `dst_offset`（值为 15 分钟单位：2=+0.5h、4=+1h、**8=+2h**）与 `time_zone`（-128=未给出）。
     #[test]
     fn cts_local_time_info_decodes_timezone_and_dst() {
-        // +08:00（32 × 15 分）+ 夏令时
+        // +08:00（32 × 15 分）+ 半小时夏令时（2 × 15 分 = +30 分）
         let v = super::ble_cts_decode(&super::parse_hex_bytes("20 02")).unwrap();
         assert_eq!(v["field"], "localTimeInfo");
         assert_eq!(v["charUuid"], "2a0f");
         assert_eq!(v["timeZoneQuarterHours"], 32);
         assert_eq!(v["utcOffsetMinutes"], 480);
         assert_eq!(v["utcOffset"], "+08:00");
-        assert_eq!(v["dstName"], "夏令时");
-        assert_eq!(v["dstOffsetMinutes"], 60);
+        assert_eq!(v["dstName"], "半小时夏令时");
+        assert_eq!(v["dstOffsetMinutes"], 30);
         assert_eq!(v["notes"].as_array().unwrap().len(), 0, "{}", v["notes"]);
 
-        // 负数时区（-12:00 = -48）+ 未知 DST
+        // 五个合法 DST 取值各钉一个锚点。回归：这一档曾经整体错了一档
+        // （2 当成 +1h、4 当成 +2h，还把合法的 8 说成"保留值"）——
+        // 时区对、时间对，只有 DST 差半小时，肉眼看不出来。
+        let dst_of = |hex: &str| {
+            super::ble_cts_decode(&super::parse_hex_bytes(hex)).unwrap()["dstOffsetMinutes"].clone()
+        };
+        assert_eq!(dst_of("20 00").as_i64(), Some(0), "0 = 标准时间");
+        assert_eq!(dst_of("20 02").as_i64(), Some(30), "2 = 半小时夏令时");
+        assert_eq!(dst_of("20 04").as_i64(), Some(60), "4 = 夏令时");
+        assert_eq!(dst_of("20 08").as_i64(), Some(120), "8 = 双倍夏令时（合法，不是保留值）");
+        assert!(dst_of("20 FF").is_null(), "255 = 未给出 DST：不能回 0（0 是「标准时间」这个结论）");
+
+        // 负数时区（-12:00 = -48）+ 未给出的 DST
         let v = super::ble_cts_decode(&super::parse_hex_bytes("D0 FF")).unwrap();
         assert_eq!(v["utcOffset"], "-12:00");
         assert_eq!(v["dstName"], "未知");
-        assert_eq!(v["dstOffsetMinutes"], 0);
 
         // +14:00（56）是规范上界，合法
         assert_eq!(super::ble_cts_decode(&super::parse_hex_bytes("38 00")).unwrap()["utcOffset"], "+14:00");
 
-        // 越界（60 × 15 分 = +15:00）与保留 DST 值都要提示
+        // -128 = 「时区未给出」：不给结论（以前会算出一个确定的 -32:00），原始值要留着
+        let v = super::ble_cts_decode(&super::parse_hex_bytes("80 00")).unwrap();
+        assert!(v["utcOffset"].is_null(), "{}", v);
+        assert!(v["utcOffsetMinutes"].is_null(), "{}", v);
+        assert_eq!(v["timeZoneQuarterHours"], -128, "原始值仍要留着: {}", v);
+        assert!(v["notes"][0].as_str().unwrap_or("").contains("时区未知"), "{}", v["notes"]);
+
+        // 越界（60 × 15 分 = +15:00）与保留 DST 值都要提示，且同样不给时区结论
         let v = super::ble_cts_decode(&super::parse_hex_bytes("3C 01")).unwrap();
+        assert!(v["utcOffset"].is_null(), "{}", v);
         let notes = v["notes"].as_array().unwrap();
         assert!(notes.iter().any(|n| n.as_str().unwrap_or("").contains("超出规范")), "{}", v["notes"]);
         assert!(notes.iter().any(|n| n.as_str().unwrap_or("").contains("保留值")), "{}", v["notes"]);
@@ -4685,8 +4706,13 @@ mod util_tests {
         let tz = super::ble_cts_decode(&super::parse_hex_bytes("20 02")).unwrap();
         assert_eq!(
             super::ble_cts_summary(&tz),
-            "时区 +08:00（32 个 1/4 小时）· DST 夏令时"
+            "时区 +08:00（32 个 1/4 小时） · DST 半小时夏令时"
         );
+        // 时区未给出时，摘要也不能编一个（只把原始值说出来）
+        let unk = super::ble_cts_decode(&super::parse_hex_bytes("80 FF")).unwrap();
+        let s3 = super::ble_cts_summary(&unk);
+        assert!(s3.contains("时区 未知（原始值 -128）"), "{}", s3);
+        assert!(s3.contains("DST 未知"), "{}", s3);
     }
 
     /// 长度不对要**说清该读多少**，而不是硬解出一堆垃圾
@@ -5711,12 +5737,16 @@ pub(crate) fn ble_cts_summary(v: &serde_json::Value) -> String {
             }
             s
         }
-        "localTimeInfo" => format!(
-            "时区 {}（{} 个 1/4 小时）· DST {}",
-            v["utcOffset"].as_str().unwrap_or("?"),
-            v["timeZoneQuarterHours"].as_i64().unwrap_or(0),
-            v["dstName"].as_str().unwrap_or("?")
-        ),
+        "localTimeInfo" => {
+            // 时区未给出（-128）或保留值时 `utcOffset` 是 null —— 摘要里也不能编一个，
+            // 只把原始值说出来（原始值比"看着确定的错时区"有用）。
+            let q = v["timeZoneQuarterHours"].as_i64().unwrap_or(0);
+            let tz = match v["utcOffset"].as_str() {
+                Some(s) => format!("{}（{} 个 1/4 小时）", s, q),
+                None => format!("未知（原始值 {}）", q),
+            };
+            format!("时区 {} · DST {}", tz, v["dstName"].as_str().unwrap_or("?"))
+        }
         _ => String::new(),
     };
     if let Some(reasons) = v["adjustReasons"].as_array().filter(|a| !a.is_empty()) {
@@ -5851,29 +5881,47 @@ fn ble_cts_decode(data: &[u8]) -> Result<serde_json::Value, String> {
             let dst = data[1];
             let mut notes: Vec<String> = Vec::new();
             let mins = (tz_raw as i32) * 15;
-            // 规范范围：-48 ~ +56（即 -12:00 ~ +14:00）
-            if !(-48..=56).contains(&(tz_raw as i32)) {
-                notes.push(format!("时区 {tz_raw}（1/4 小时单位）超出规范的 -48~+56"));
+            // 规范（GATT Specification Supplement · Time Zone）：单位 15 分钟、
+            // 有效范围 **-48~+56**（-12:00 ~ +14:00）、**-128 = 未给出时区**、其余保留。
+            // ⚠️ "未给出"与"保留值"都**不给结论**：`utcOffset` 回 null，原始值仍留在
+            // `timeZoneQuarterHours` 里。以前 -128 会被算成一个确定的 `-32:00` ——
+            // 把"不知道"说成一个具体时区，比不说更糟。
+            let tz_known = (-48..=56).contains(&(tz_raw as i32));
+            if tz_raw == -128 {
+                notes.push("时区未知（-128：设备没给出时区）".to_string());
+            } else if !tz_known {
+                notes.push(format!("时区 {tz_raw}（1/4 小时单位）超出规范的 -48~+56，属保留值，别当真实时区"));
             }
+            // 规范（GSS · DST Offset）：0 标准时间 / 2 半小时夏令时 / 4 夏令时 /
+            // **8 双倍夏令时** / 255 未给出 / 其余保留。**数值本身是 15 分钟单位**
+            // （2 × 15 = 30 分、4 × 15 = 60 分、8 × 15 = 120 分）—— 这几个数以前整体错了一档
+            // （2 当成 +1h、4 当成 +2h），还把合法的 8 当成保留值。这类错最像真的：
+            // 时区对、时间对，只有 DST 差半小时，肉眼根本看不出来。
             let (dst_name, dst_minutes) = match dst {
-                0 => ("标准时间", 0),
-                2 => ("夏令时", 60),
-                4 => ("双倍夏令时", 120),
-                255 => ("未知", 0),
-                _ => ("保留值", 0),
+                0 => ("标准时间", Some(0)),
+                2 => ("半小时夏令时", Some(30)),
+                4 => ("夏令时", Some(60)),
+                8 => ("双倍夏令时", Some(120)),
+                255 => ("未知", None),
+                _ => ("保留值", None),
             };
-            if !matches!(dst, 0 | 2 | 4 | 255) {
-                notes.push(format!("DST 偏移 {dst} 是保留值（规范只定义 0/2/4/255）"));
+            if !matches!(dst, 0 | 2 | 4 | 8 | 255) {
+                notes.push(format!("DST 偏移 {dst} 是保留值（规范只定义 0/2/4/8/255）"));
             }
-            let sign = if mins < 0 { "-" } else { "+" };
+            let utc_offset = if tz_known {
+                let sign = if mins < 0 { "-" } else { "+" };
+                Some(format!("{}{:02}:{:02}", sign, mins.abs() / 60, mins.abs() % 60))
+            } else {
+                None
+            };
             Ok(serde_json::json!({
                 "field": "localTimeInfo",
                 "charUuid": "2a0f",
                 "bytes": data.len(),
                 "hex": ble_hex(data),
                 "timeZoneQuarterHours": tz_raw as i32,
-                "utcOffsetMinutes": mins,
-                "utcOffset": format!("{}{:02}:{:02}", sign, mins.abs() / 60, mins.abs() % 60),
+                "utcOffsetMinutes": if tz_known { Some(mins) } else { None },
+                "utcOffset": utc_offset,
                 "dstOffset": dst,
                 "dstName": dst_name,
                 "dstOffsetMinutes": dst_minutes,

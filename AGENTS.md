@@ -24,7 +24,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/
 > 证据与结论留在 `doc/BLE_PERIPHERAL.md`（已标归档）。**别再往这个方向加功能** ——
 > 先在真机上把广播跑起来再说。本应用现在的 BLE 能力只有**主机方向**。
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1598 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1599 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，94 条）：抽取前端真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，
 也有把渲染函数丢进假 DOM 跑行为断言）。前端 2026-09 已从单文件拆成
 `src/index.html`（骨架）+ `src/css/*.css` + `src/js/*.js`，**布局与加载顺序见 `doc/FRONTEND_LAYOUT.md`**；
@@ -47,7 +47,7 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
 才会重读 `tools/list`）。安全模式下：只读工具真调；写工具用"必填缺失 → -32602"探针；
 危险工具用"不带 confirm → -32006"探针；其余有副作用的跳过并标注（绝不关用户的串口 / 断用户的设备）。
 
-## BLE 主机方向的四条关键约定（别改回去）
+## BLE 主机方向的五条关键约定（别改回去）
 
 1. **设备不广播就搜不到**：从机一旦被 Windows 配对过、或被别的手机连走，往往就不再广播，
    于是永远进不了扫描列表。唯一出路是 `ble_connect_direct`（btleplug `add_peripheral`，
@@ -62,6 +62,12 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
    要加 SIG 表里没有的条目就加生成器的 `SVC_EXTRA`（带出处），**别改产物**（会被覆盖）；
    生成物必须一起提交（前端无构建步骤）。**"查不到就标 `Custom Service`"那条兜底不许动**
    （用户明确要求），所以也别往表里塞 `FF00` 这类泛化号码。
+5. **CTS 的字段定义按 SIG 的 GATT Specification Supplement，别凭印象改**：`0x2A0F` 的
+   **DST 偏移是 15 分钟单位**（`2`=+0.5h / `4`=+1h / `8`=+2h，`255`=未给出），
+   Time Zone 的 **`-128` 是"未给出时区"**（不是 -32:00）。2026-09 这里整体错了一档
+   （见 `doc/MCP_DESIGN.md` §17），而且**测试是照着错的实现写的**，一起错。
+   两条纪律：**"没给出/保留值"一律回 `null`**（`0` 也是结论，不能拿它冒充"不知道"）；
+   改了这里必须同时核对 `gss/org.bluetooth.characteristic.{dst_offset,time_zone}.yaml`。
 
 ## 窗口几何记忆的三条约定（别改回去）
 

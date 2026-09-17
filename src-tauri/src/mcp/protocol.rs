@@ -562,7 +562,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "ble_cts_time",
-            "description": "把 **CTS（Current Time Service 0x1805）**的值翻译成人话。为什么要单独一个工具：`ble_read{char:\"0x2a2b\"}` 读回来的是**10 字节原始值**（年 = uint16 **小端**、星期是 1..7、Fractions256 = 1/256 秒、Adjust Reason 是位域），人肉解容易错，而错一个字段结论就全歪。给它 HEX 或字节数组，它回 `{utc, skewSecs(与本机差多少秒), dayOfWeekName, adjustReasons, notes}`，并**主动指出可疑处**：年份像 RTC 没初始化、星期几与日期对不上、时钟偏了多少分钟。**2 字节的值按 Local Time Information(0x2A0F) 解**（时区 = int8 × 15 分钟 / DST 偏移）。纯后端：不碰设备也不碰界面（读值仍走 `ble_read` → `ble_get_output`）。",
+            "description": "把 **CTS（Current Time Service 0x1805）**的值翻译成人话。为什么要单独一个工具：`ble_read{char:\"0x2a2b\"}` 读回来的是**10 字节原始值**（年 = uint16 **小端**、星期是 1..7、Fractions256 = 1/256 秒、Adjust Reason 是位域），人肉解容易错，而错一个字段结论就全歪。给它 HEX 或字节数组，它回 `{utc, skewSecs(与本机差多少秒), dayOfWeekName, adjustReasons, notes}`，并**主动指出可疑处**：年份像 RTC 没初始化、星期几与日期对不上、时钟偏了多少分钟。**2 字节的值按 Local Time Information(0x2A0F) 解**（时区 = int8 × 15 分钟；DST 偏移按规范也是 15 分钟单位：2=+0.5h / 4=+1h / 8=+2h）。**设备没给出的字段一律回 `null`，不许猜一个具体值**：时区 -128 → `utcOffset:null`、DST 0xFF → `dstOffsetMinutes:null`（`timeZoneQuarterHours`/`dstOffset` 仍保留原始字节）。纯后端：不碰设备也不碰界面（读值仍走 `ble_read` → `ble_get_output`）。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3772,12 +3772,13 @@ mod tests {
             assert_eq!(r2["result"]["structuredContent"]["utc"], sc["utc"]);
             assert_eq!(r2["result"]["structuredContent"]["hex"], sc["hex"]);
 
-            // ③ 2 字节 = Local Time Information（+08:00 / 夏令时）
+            // ③ 2 字节 = Local Time Information（+08:00 / 半小时夏令时 —— DST 值是 15 分钟单位）
             let r3 = call(&c, &raw_call("ble_cts_time", &json!({ "data": "20 02" }))).await;
             let sc3 = &r3["result"]["structuredContent"];
             assert_eq!(sc3["field"], "localTimeInfo");
             assert_eq!(sc3["utcOffset"], "+08:00");
-            assert_eq!(sc3["dstName"], "夏令时");
+            assert_eq!(sc3["dstName"], "半小时夏令时");
+            assert_eq!(sc3["dstOffsetMinutes"], 30);
 
             // ④ 非法 HEX：要说"不是合法 HEX"，**不能**变成"长度不对"
             let bad = call(&c, &raw_call("ble_cts_time", &json!({ "data": "ZZ" }))).await;

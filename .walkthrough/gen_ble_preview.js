@@ -1848,6 +1848,17 @@ console.log('preview ->', out);
   check(/pub\(crate\) fn ble_cts_summary\(/.test(mainRs)
     && /cap_text_summary\(crate::ble_cts_summary\(v\)\)/.test(mcpSrc),
     '界面日志与 MCP 文本摘要**共用同一份** ble_cts_summary（不许两种说法）');
+  // Local Time Information 的两个字段必须按 SIG 的 GATT Specification Supplement 解：
+  //   · DST Offset 的值是 **15 分钟单位**：0 标准 / 2 半小时夏令时 / 4 夏令时 / **8 双倍夏令时** / 255 未给出；
+  //   · Time Zone `-128` = **未给出时区**（不是 -32:00）。
+  // 回归：这一档曾经整体错了一档（2 当成 +1h、4 当成 +2h、合法的 8 被说成保留值），
+  // 还把 -128 算成一个确定的 -32:00 —— 时区对、时间对，只有 DST 差半小时，肉眼看不出来。
+  check(/\n\s*2 => \("半小时夏令时", Some\(30\)\)/.test(mainRs)
+    && /\n\s*4 => \("夏令时", Some\(60\)\)/.test(mainRs)
+    && /\n\s*8 => \("双倍夏令时", Some\(120\)\)/.test(mainRs)
+    && /matches!\(dst, 0 \| 2 \| 4 \| 8 \| 255\)/.test(mainRs)
+    && /tz_raw == -128/.test(mainRs),
+    'DST 偏移按 SIG 规范（15 分钟单位：2=+30 / 4=+60 / 8=+120），时区 -128 当"未给出"处理');
   // CTS 自动解读（B 方案）：`ble_get_output` 的条目里带 charUuid + hex 时**就地**补
   // decoded/decodedSummary —— AI 读一次日志就看到"设备现在几点"，不用再单独调 ble_cts_time。
   check(/attach_cts_decodes\(&mut all\)/.test(mcpSrc)
