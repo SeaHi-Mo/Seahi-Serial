@@ -2780,13 +2780,7 @@ fn tool_result_err(err: &RpcError) -> Value {
 /// 现在数组会真的展开内容（有界：最多 3 个元素 × 每个最多 4 个字段，整体限长），
 /// 让"摘要"真能替代结构化数据被读懂。
 fn summarize_for_text(v: &Value) -> String {
-    let s = render_brief(v, 0);
-    if s.chars().count() > TEXT_SUMMARY_MAX_CHARS {
-        let cut: String = s.chars().take(TEXT_SUMMARY_MAX_CHARS).collect();
-        format!("{}…（完整内容在 structuredContent）", cut)
-    } else {
-        s
-    }
+    cap_text_summary(render_brief(v, 0))
 }
 
 /// 工具感知的文本摘要：默认走通用渲染，少数"载荷就是一张表"的工具用紧凑格式。
@@ -2799,56 +2793,21 @@ fn summarize_for_text(v: &Value) -> String {
 /// `structuredContent` 里。
 /// CTS 解码结果的一句话摘要（给只读 `content[].text` 的客户端）。
 ///
-/// 形状：`2026-12-17T15:45:58.500Z（周四）· 与本机差 2 分 3 秒 · 设备自报：手动更新时间 · 注意：…`
-/// 长度仍按 `TEXT_SUMMARY_MAX_CHARS` 截断（它是**重复**信息，全量在 structuredContent 里）。
+/// 正文在 `crate::ble_cts_summary` —— **与界面日志共用同一份**（界面那条日志走
+/// `ble_cts_decode_value` 命令）。这里只负责按 `TEXT_SUMMARY_MAX_CHARS` 截断：
+/// 摘要是**重复**信息，全量在 structuredContent 里。
 fn summarize_cts_time(v: &Value) -> String {
-    let mut out = match v.get("field").and_then(|f| f.as_str()).unwrap_or("") {
-        "currentTime" => {
-            let utc = v["utc"].as_str().unwrap_or("(时间字段不合法)");
-            let dow = v["dayOfWeekName"].as_str().unwrap_or("");
-            let mut s = if dow.is_empty() {
-                format!("{}（星期未知）", utc)
-            } else {
-                format!("{}（{}）", utc, dow)
-            };
-            if let Some(sk) = v["skewSecs"].as_i64() {
-                // 与 note 里同一套人话（"差 131374 分"等于没给信息）
-                s.push_str(&format!(
-                    " · 设备时钟比本机{} {}",
-                    if sk >= 0 { "快" } else { "慢" },
-                    crate::ble_cts_skew_text(sk)
-                ));
-            }
-            s
-        }
-        "localTimeInfo" => format!(
-            "时区 {}（{} 个 1/4 小时）· DST {}",
-            v["utcOffset"].as_str().unwrap_or("?"),
-            v["timeZoneQuarterHours"].as_i64().unwrap_or(0),
-            v["dstName"].as_str().unwrap_or("?")
-        ),
-        _ => String::new(),
-    };
-    if let Some(reasons) = v["adjustReasons"].as_array().filter(|a| !a.is_empty()) {
-        let list: Vec<&str> = reasons.iter().filter_map(|x| x.as_str()).collect();
-        out.push_str(&format!(" · 设备自报：{}", list.join("、")));
+    cap_text_summary(crate::ble_cts_summary(v))
+}
+
+/// 摘要总长上限的截断（通用渲染与 CTS 摘要共用）。
+fn cap_text_summary(s: String) -> String {
+    if s.chars().count() > TEXT_SUMMARY_MAX_CHARS {
+        let cut: String = s.chars().take(TEXT_SUMMARY_MAX_CHARS).collect();
+        format!("{}…（完整内容在 structuredContent）", cut)
+    } else {
+        s
     }
-    if let Some(notes) = v["notes"].as_array().filter(|a| !a.is_empty()) {
-        // 前缀已经报了偏差，别把同一条又抄一遍（摘要只有 600 字预算）
-        let list: Vec<&str> = notes
-            .iter()
-            .filter_map(|x| x.as_str())
-            .filter(|s| !s.starts_with("设备时钟比本机"))
-            .collect();
-        if !list.is_empty() {
-            out.push_str(&format!(" · 注意：{}", list.join("；")));
-        }
-    }
-    if out.chars().count() > TEXT_SUMMARY_MAX_CHARS {
-        let cut: String = out.chars().take(TEXT_SUMMARY_MAX_CHARS).collect();
-        return format!("{}…（完整内容在 structuredContent）", cut);
-    }
-    out
 }
 
 fn summarize_for_tool(tool: &str, v: &Value) -> String {

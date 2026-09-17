@@ -328,6 +328,8 @@ function bleCharAction(el, key) {
             } else {
                 logBle(label + bleBytesToHex(arr));
             }
+            // CTS（时间）这类标准特征就地补一行人话（解码在 Rust 里做，见 bleCtsLogDecoded）
+            bleCtsLogDecoded(charUuid, arr);
         }).catch(function(e) { console.warn('[BLE] 读取失败:', e); showToast('读取失败: ' + e, 'error'); });
     } else if (prop === 'write') {
         // 点写入图标 → 弹出写入窗口（不再写死演示值 0x01）
@@ -335,6 +337,33 @@ function bleCharAction(el, key) {
         var modes = ((el && el.getAttribute('data-modes')) || 'write').split(',');
         openBleWriteModal(charUuid, BLE_CHAR_NAMES[shortUuid(charUuid)] || '', modes);
     }
+}
+
+// CTS（Current Time Service, 0x1805）的就地解读。
+//
+// 为什么要有它：CTS 的值是**二进制**（10 字节 Current Time / 2 字节 Local Time Information），
+// 面板上原来只有一行 `EA 07 0C …`，用户得自己按规范解（小端年、星期 1..7、Fractions256、Adjust Reason 位）。
+//
+// ⚠️ **解码不在 JS 里做**：调后端 `ble_cts_decode_value`，它与 MCP 的 `ble_cts_time`
+// 共用同一份 Rust 实现（`ble_cts_decode` + `ble_cts_summary`）—— 在 JS 里再写一份必然漂移，
+// 那正是 AGENTS #3 说的"两套逻辑必然不一致"。
+//
+// 只对**长度正好对得上**的 CTS 特征动手：不是 CTS、或长度不符（比如值被截断）就**不猜**，
+// 免得给出一句看着确定、其实错的解读。
+var BLE_CTS_CHARS = {
+    '2A2B': 10,   // Current Time（10 字节）
+    '2A0F': 2,    // Local Time Information（2 字节：时区 + DST）
+};
+function bleCtsLogDecoded(charUuid, arr) {
+    var want = BLE_CTS_CHARS[shortUuid(charUuid || '')];
+    if (!want || !arr || arr.length !== want) return;
+    return invoke('ble_cts_decode_value', { data: arr }).then(function(res) {
+        var line = (res && res.summary) ? res.summary : '';
+        if (line) logBle('  → ' + line);
+    }).catch(function(e) {
+        // 解读失败**不影响主流程**（原始 HEX 已经记过一行了），但要说一声，别静默
+        console.warn('[BLE] CTS 解读失败:', e);
+    });
 }
 
 // 数据日志：内容存在 _bleLog 缓冲里，DOM 只负责显示。
@@ -453,6 +482,8 @@ function startBleNotifyPoll() {
                 } else {
                     logBle(label + '  ' + hex);
                 }
+                // CTS 的通知就是"设备现在几点"—— 就地写一行人话（订阅后能直接看着它走）
+                bleCtsLogDecoded(it.uuid || '', bytes);
             });
             // 后端缓冲溢出丢弃的条数：必须让用户看到，否则"数据少了"会被误判成设备没发
             if (res && res.dropped > 0) {

@@ -4665,6 +4665,30 @@ mod util_tests {
         assert!(super::ble_cts_skew_text(8_2000_0000).contains("天"));
     }
 
+    /// 摘要（**界面日志与 MCP 文本摘要共用这一份**）：正常值给"时间（星期） · 偏差"，
+    /// 可疑值追加"注意：…"，而且**不把偏差抄两遍**。
+    #[test]
+    fn cts_summary_reads_like_a_sentence() {
+        let v = super::ble_cts_decode(&super::parse_hex_bytes("EA 07 0C 11 0F 2D 3A 04 80 00")).unwrap();
+        let s = super::ble_cts_summary(&v);
+        assert!(s.starts_with("2026-12-17T15:45:58.500Z（周四）"), "{}", s);
+        assert!(s.contains("设备时钟比本机"), "{}", s);
+        assert_eq!(s.matches("设备时钟比本机").count(), 1, "偏差不许抄两遍: {}", s);
+
+        // 可疑值：`注意：…` 要出来（偏差仍然只出现一次）
+        let bad = super::ble_cts_decode(&super::parse_hex_bytes("D0 07 01 01 00 00 00 06 00 00")).unwrap();
+        let s2 = super::ble_cts_summary(&bad);
+        assert!(s2.contains("注意：年份 2000"), "{}", s2);
+        assert_eq!(s2.matches("设备时钟比本机").count(), 1, "{}", s2);
+
+        // 2 字节那档：时区 + DST，一行说完
+        let tz = super::ble_cts_decode(&super::parse_hex_bytes("20 02")).unwrap();
+        assert_eq!(
+            super::ble_cts_summary(&tz),
+            "时区 +08:00（32 个 1/4 小时）· DST 夏令时"
+        );
+    }
+
     /// 长度不对要**说清该读多少**，而不是硬解出一堆垃圾
     #[test]
     fn cts_rejects_unexpected_lengths_with_guidance() {
@@ -5613,6 +5637,71 @@ fn ble_cts_skew_text(secs: i64) -> String {
     } else {
         format!("{} 分 {} 秒", a / 60, a % 60)
     }
+}
+
+/// CTS 解码结果的**一句话摘要**（没有长度上限，由调用方截）。
+///
+/// ⚠️ 放在 crate 根是**故意的**：它有两个消费者 —— 界面日志（`ble_cts_decode_value` 命令）
+/// 与 MCP 的文本摘要（`summarize_cts_time`）。放在任一侧都会让另一侧拿不到、只能抄一份，
+/// 而"同一份值两种说法"是迟早会漂移的那种 bug（AGENTS #11 的跨边界教训）。
+pub(crate) fn ble_cts_summary(v: &serde_json::Value) -> String {
+    let mut out = match v.get("field").and_then(|f| f.as_str()).unwrap_or("") {
+        "currentTime" => {
+            let utc = v["utc"].as_str().unwrap_or("(时间字段不合法)");
+            let dow = v["dayOfWeekName"].as_str().unwrap_or("");
+            let mut s = if dow.is_empty() {
+                format!("{}（星期未知）", utc)
+            } else {
+                format!("{}（{}）", utc, dow)
+            };
+            if let Some(sk) = v["skewSecs"].as_i64() {
+                s.push_str(&format!(
+                    " · 设备时钟比本机{} {}",
+                    if sk >= 0 { "快" } else { "慢" },
+                    ble_cts_skew_text(sk)
+                ));
+            }
+            s
+        }
+        "localTimeInfo" => format!(
+            "时区 {}（{} 个 1/4 小时）· DST {}",
+            v["utcOffset"].as_str().unwrap_or("?"),
+            v["timeZoneQuarterHours"].as_i64().unwrap_or(0),
+            v["dstName"].as_str().unwrap_or("?")
+        ),
+        _ => String::new(),
+    };
+    if let Some(reasons) = v["adjustReasons"].as_array().filter(|a| !a.is_empty()) {
+        let list: Vec<&str> = reasons.iter().filter_map(|x| x.as_str()).collect();
+        out.push_str(&format!(" · 设备自报：{}", list.join("、")));
+    }
+    if let Some(notes) = v["notes"].as_array().filter(|a| !a.is_empty()) {
+        // 前缀已经报了偏差，别把同一条又抄一遍
+        let list: Vec<&str> = notes
+            .iter()
+            .filter_map(|x| x.as_str())
+            .filter(|s| !s.starts_with("设备时钟比本机"))
+            .collect();
+        if !list.is_empty() {
+            out.push_str(&format!(" · 注意：{}", list.join("；")));
+        }
+    }
+    out
+}
+
+/// 把 CTS 的值翻成人话 —— 给**界面日志**用（MCP 侧是 `ble_cts_time` 工具）。
+///
+/// 与 MCP 的 `ble_cts_time` **共用** `ble_cts_decode` + `ble_cts_summary`：
+/// 解码只有一份实现，所以"界面上看到的"和"AI 拿到的"不可能不一致。
+/// 前端只在读到 `2A2B`（Current Time）/ `2A0F`（Local Time Information）时调它。
+///
+/// 返回 `{summary, decoded}`：`summary` 是给日志的那一行，`decoded` 是完整字段
+/// （前端现在只用 summary，留着是为了将来要做悬浮详情时不必再改 Rust）。
+#[tauri::command]
+fn ble_cts_decode_value(data: Vec<u8>) -> Result<serde_json::Value, String> {
+    let decoded = ble_cts_decode(&data)?;
+    let summary = ble_cts_summary(&decoded);
+    Ok(serde_json::json!({ "summary": summary, "decoded": decoded }))
 }
 
 /// BLE **CTS（Current Time Service, 0x1805）**的值解码 —— 纯函数，便于单测。
@@ -7134,6 +7223,7 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
         ble_subscribe,
             ble_unsubscribe,
             ble_poll_notifications,
+            ble_cts_decode_value,
             mcp::mcp_status,
             mcp::mcp_set_enabled,
             mcp::mcp_set_read_only,

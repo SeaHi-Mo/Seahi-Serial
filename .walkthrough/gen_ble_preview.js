@@ -480,6 +480,64 @@ console.log('preview ->', out);
   check(/var _bleConnecting = false/.test(html) && /invokeTimeout\('ble_connect'/.test(html),
     'BLE 连接有门闩（防连点双连）与显式超时');
 
+  // ---- 5d0) CTS（0x1805）的界面呈现：读到/收到时补一行人话，且**只在长度正好对得上时** ----
+  // 背景：CTS 的值是二进制（10 字节 Current Time / 2 字节 Local Time Information），
+  // 面板上原来只有一行 `EA 07 0C …`。现在读/通知都会调后端 `ble_cts_decode_value` 补一行
+  // `  → 2026-12-17T15:45:58.500Z（周四） · 设备时钟比本机快 …`。
+  // **解码不许在 JS 里重写一份**（AGENTS #3），所以这条同时钉住"走的是后端命令"。
+  {
+    const ctsCalls = [];
+    const ctsLines = [];
+    const sbCts = {
+      console: { warn: () => {}, log: () => {} },   // ⑤ 那条失败路径会 warn，别污染断言输出
+      logBle: (t) => ctsLines.push(t),
+      invoke: (cmd, args) => {
+        ctsCalls.push({ cmd: cmd, args: args });
+        // 同步 thenable：真 Promise 的微任务会让断言跑在回调之前（与 11 节同一套替身）
+        const v = { summary: '2026-12-17T15:45:58.500Z（周四） · 设备时钟比本机快 9490 天 22 小时' };
+        return { then: (f) => { f(v); return { catch: () => {} }; } };
+      },
+    };
+    vm.createContext(sbCts);
+    vm.runInContext([
+      extractObject('BLE_CTS_CHARS'), extractFunction('shortUuid'), extractFunction('bleCtsLogDecoded'),
+    ].join('\n'), sbCts);
+
+    // ① 10 字节的 2A2B → 调一次后端，日志多一行以 "  → " 开头的人话
+    sbCts.bleCtsLogDecoded('00002a2b-0000-1000-8000-00805f9b34fb', [234, 7, 12, 17, 15, 45, 58, 4, 128, 0]);
+    check(ctsCalls.length === 1 && ctsCalls[0].cmd === 'ble_cts_decode_value',
+      'CTS 解读走**后端命令**（解码只有 Rust 一份，JS 不重写）', JSON.stringify(ctsCalls));
+    check(ctsCalls[0].args.data.length === 10, '整条值都传下去（不截断）');
+    check(ctsLines.length === 1 && ctsLines[0].indexOf('  → 2026-12-17') === 0,
+      '日志补一行人话（以 "  → " 开头）', JSON.stringify(ctsLines));
+
+    // ② 长度不符（比如被截断）→ 不猜、不调后端
+    ctsCalls.length = 0; ctsLines.length = 0;
+    sbCts.bleCtsLogDecoded('2a2b', [1, 2, 3, 4]);
+    check(ctsCalls.length === 0 && ctsLines.length === 0, '长度不符就不解读（宁可不说，不给错的）');
+
+    // ③ 不是 CTS 的特征 → 不解读
+    sbCts.bleCtsLogDecoded('2a19', [1, 2]);
+    check(ctsCalls.length === 0 && ctsLines.length === 0, '非 CTS 特征不解读');
+
+    // ④ 2 字节的 2A0F（Local Time Information）也认
+    sbCts.bleCtsLogDecoded('2a0f', [32, 2]);
+    check(ctsCalls.length === 1 && ctsCalls[0].args.data.length === 2, '2A0F（2 字节时区）也认');
+
+    // ⑤ 后端报错 → 不抛异常、不写日志（原始 HEX 那一行已经记过了，解读失败不该影响主流程）
+    ctsCalls.length = 0; ctsLines.length = 0;
+    let ctsThrew = false;
+    sbCts.invoke = () => ({ then: () => ({ catch: (f) => f(new Error('boom')) }) });
+    try {
+      sbCts.bleCtsLogDecoded('2a2b', [234, 7, 12, 17, 15, 45, 58, 4, 128, 0]);
+    } catch (e) { ctsThrew = true; }
+    check(!ctsThrew && ctsLines.length === 0, '解读失败不抛异常、不写日志');
+
+    // ⑥ 两条路（读取 / 通知）都接了：源码级确认，漏一处就等于半个功能
+    check(/bleCtsLogDecoded\(charUuid, arr\)/.test(html) && /bleCtsLogDecoded\(it\.uuid \|\| '', bytes\)/.test(html),
+      '读取与通知两条路都接了 CTS 解读');
+  }
+
   // ---- 5e) 写入属性去重：write 与 write_without_response 只出一个「发送」图标 ----
   const sb5 = { console, _bleSubs: {}, _bleSelected: '', getSelectedBleDev: () => ({ connected: true }) };
   vm.createContext(sb5);
@@ -1693,12 +1751,19 @@ console.log('preview ->', out);
     .join('\n');
 
   // ---- 前后端契约 ----
-  const mcpCmds = ['mcp_status', 'mcp_set_enabled', 'mcp_reset_token', 'mcp_client_config'];
-  mcpCmds.forEach((c) => {
+  const mcpCmds = ['mcp_status', 'mcp_set_enabled', 'mcp_reset_token', 'mcp_client_config'];  mcpCmds.forEach((c) => {
     check(new RegExp("invoke\\('" + c + "'").test(html), '前端调用 ' + c);
     check(new RegExp('fn ' + c + '\\(').test(mcpSrc), '后端实现 ' + c);
     check(new RegExp('^\\s*mcp::' + c + ',\\s*$', 'm').test(mainRs), '后端已注册 ' + c);
   });
+  // CTS 的界面呈现（A 方案）：读到/收到 2A2B·2A0F 时调后端解读 ——
+  // **解码只有 Rust 一份**（与 MCP 的 ble_cts_time 共用 ble_cts_decode + ble_cts_summary）。
+  // 放在这里而不是 BLE 段前面：`mainRs`/`mcpSrc` 要到这一节才定义（引用在前会直接崩）。
+  check(/fn ble_cts_decode_value\(/.test(mainRs) && /^\s*ble_cts_decode_value,\s*$/m.test(mainRs),
+    'Rust 侧有 ble_cts_decode_value 且已注册（漏注册 = 解读失败: command not found）');
+  check(/pub\(crate\) fn ble_cts_summary\(/.test(mainRs)
+    && /cap_text_summary\(crate::ble_cts_summary\(v\)\)/.test(mcpSrc),
+    '界面日志与 MCP 文本摘要**共用同一份** ble_cts_summary（不许两种说法）');
   check(/AI_CONFIG_FILE: &str = "ai-config\.json"/.test(mcpSrc), 'AI 配置写独立文件 ai-config.json');
   check(!/save_config|load_config|backup_config/.test(mcpSrc),
     'MCP 模块绝不调用用户配置的读写命令（R5 的硬约束）');
@@ -5033,10 +5098,13 @@ console.log('preview ->', out);
                        'openBleWriteModal', 'setBleWriteAs', 'setBleWriteMode', 'setSel',
                        'sendBleWrite', 'sendBleWriteCore', 'bleSendBytes', 'bleReadWriteModalInput',
                        'leEscOf', 'bleBytesToHex', 'hexToBytes', 'parseEscapes', 'shortUuid',
-                       'bleConnectTo', 'bleDisconnect', 'connectBleDirect', 'bleMacLooksValid'];
+                       'bleConnectTo', 'bleDisconnect', 'connectBleDirect', 'bleMacLooksValid',
+                       // 读取分支会顺手调它做 CTS 解读（本段读的是非 CTS 特征 'aaaa'，所以不会真发起）
+                       'bleCtsLogDecoded'];
         vm.createContext(sb);
         vm.runInContext([
           extractObject('BLE_PROP_META'), extractObject('BLE_ICONS'), extractObject('BLE_CHAR_NAMES'),
+          extractObject('BLE_CTS_CHARS'),
         ].join('\n'), sb);
         vm.runInContext(names.map(extractFunction).join('\n'), sb);
         icons.forEach((b) => { b.onclick = () => sb.bleCharAction(b, b.key); });
