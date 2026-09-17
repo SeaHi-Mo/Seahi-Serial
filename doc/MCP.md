@@ -260,8 +260,14 @@ ble_cts_time { "data": "EA 07 0C 11 0F 2D 3A 04 80 00" }   # 4) 只有手上是"
 
 返回里最有用的是三样：`utc`（时间本身）、**`skewSecs`**（与本机的差值 —— 正负和大小一眼看出时钟偏了多少）、
 **`notes`**（主动指出可疑处：年份像 RTC 没初始化 / 星期几与日期对不上 / 时钟偏了 N 分钟 / 设备自报的调整原因）。
-2 字节的值按 `Local Time Information`（`0x2A0F`）解，回时区（`utcOffset`）与 DST（`dstName` / `dstOffsetMinutes`）。
-`data` 收 HEX 字符串或字节数组；长度不是 10/2 字节会直接说清该读多少 —— 别截断特征值。
+**按长度认字段**（对不上就不猜）：`2A2B` 10 字节、`2A0F` 2 字节、`2A14` 4 字节。
+`data` 收 HEX 字符串或字节数组；长度不是这三种会直接说清该读多少 —— 别截断特征值。
+
+| 长度 | 特征 | 返回的结论字段 |
+|---|---|---|
+| 10 字节 | `Current Time`（`0x2A2B`） | `utc` / `skewSecs` / `dayOfWeekName` / `fractions256` / `adjustReasons` |
+| 2 字节 | `Local Time Information`（`0x2A0F`） | `utcOffset` / `utcOffsetMinutes` / `dstName` / `dstOffsetMinutes` |
+| 4 字节 | `Reference Time Information`（`0x2A14`） | `timeSourceName`（NTP / GPS / **未同步** …）/ `accuracyName` / `sinceUpdateText` |
 
 ⚠️ **设备"没给出"的字段一律回 `null`，不会猜一个具体值**（`0` 也是结论，不能拿它冒充"不知道"）：
 
@@ -270,9 +276,16 @@ ble_cts_time { "data": "EA 07 0C 11 0F 2D 3A 04 80 00" }   # 4) 只有手上是"
 | 时区 `-128` | `utcOffset: null` + `utcOffsetMinutes: null`（`timeZoneQuarterHours` 仍是 -128），`notes` 里说明 |
 | DST `0xFF` | `dstName: "未知"` + `dstOffsetMinutes: null` |
 | 时区超出 `-48~+56` / DST 是保留值 | 同上（不给结论）+ `notes` 里点名"保留值" |
+| 时间精度 `254` / `255` | `accuracyMillis: null`（`254` = 比量程还差、`255` = 未知）+ `notes` |
+| 距上次对时 `0xFF` | `sinceUpdateText: "≥255 天"` + `sinceUpdateHours: null` |
 
-DST 的值按规范是 **15 分钟为单位**：`2` = 半小时夏令时（+30 分）、`4` = 夏令时（+60 分）、
-`8` = 双倍夏令时（+120 分）。
+单位都按 SIG 规范（GATT Specification Supplement）：DST 的值是 **15 分钟为单位**
+（`2` = 半小时夏令时 +30 分、`4` = 夏令时 +60 分、`8` = 双倍夏令时 +120 分）；
+时间精度是 **1/8 秒（125 ms）步长**（`8` = ±1 秒、`253` = ±31.625 秒）；
+距上次对时的天/小时字段用 `255` 表示"超出量程（≥255 天）"。
+
+💡 `2A14` 最能说明"设备时间可不可信"：`timeSourceName` 是 **未同步**、`accuracyName` 是
+"差于 31.625 秒"、`sinceUpdateText` 是"≥255 天"，这三条任意一条出现，都该怀疑 `2A2B` 报出来的时间。
 
 **界面上也会显示这一行**：面板在**读到 / 收到** `2A2B`·`2A0F` 时就地调后端解读，数据日志里紧跟原始 HEX
 多一行 `  → 2026-12-17T15:45:58.500Z（周四） · 设备时钟比本机快 …`（订阅后能直接看着设备时钟走）。

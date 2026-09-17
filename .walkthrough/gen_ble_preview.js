@@ -521,8 +521,22 @@ console.log('preview ->', out);
     check(ctsCalls.length === 0 && ctsLines.length === 0, '非 CTS 特征不解读');
 
     // ④ 2 字节的 2A0F（Local Time Information）也认
+    ctsCalls.length = 0; ctsLines.length = 0;
     sbCts.bleCtsLogDecoded('2a0f', [32, 2]);
     check(ctsCalls.length === 1 && ctsCalls[0].args.data.length === 2, '2A0F（2 字节时区）也认');
+
+    // ④b 4 字节的 2A14（Reference Time Information）也认 —— 长度表里三条都要在，
+    // 少一条就等于那个特征永远不解读（"设备几点"能看到、"它对没对上时"看不到）
+    ctsCalls.length = 0; ctsLines.length = 0;
+    sbCts.bleCtsLogDecoded('2a14', [1, 8, 3, 12]);
+    check(ctsCalls.length === 1 && ctsCalls[0].args.data.length === 4, '2A14（4 字节）也认');
+    check(sbCts.BLE_CTS_CHARS['2A14'] === 4 && sbCts.BLE_CTS_CHARS['2A2B'] === 10
+      && sbCts.BLE_CTS_CHARS['2A0F'] === 2,
+      '长度表三条齐全（2A2B=10 / 2A0F=2 / 2A14=4）', JSON.stringify(sbCts.BLE_CTS_CHARS));
+    // 长度不符（4 字节的值喂给 2A2B）照样不猜
+    ctsCalls.length = 0; ctsLines.length = 0;
+    sbCts.bleCtsLogDecoded('2a2b', [1, 8, 3, 12]);
+    check(ctsCalls.length === 0, '长度与特征对不上就不解读');
 
     // ⑤ 后端报错 → 不抛异常、不写日志（原始 HEX 那一行已经记过了，解读失败不该影响主流程）
     ctsCalls.length = 0; ctsLines.length = 0;
@@ -1871,9 +1885,9 @@ console.log('preview ->', out);
     check(/it\.get\("charUuid"\)/.test(ctsAttachBody) && !/descUuid/.test(ctsAttachBody),
       '解读判据只看 charUuid：描述符的值（CCCD 也是 2 字节）一概不解读',
       ctsAttachBody.slice(0, 120));
-    check(/"2a2b" => 10[\s\S]{0,80}?"2a0f" => 2/.test(ctsAttachBody)
+    check(/"2a2b" => 10[\s\S]{0,120}?"2a0f" => 2[\s\S]{0,80}?"2a14" => 4/.test(ctsAttachBody)
       && /bytes\.len\(\) != want/.test(ctsAttachBody),
-      '只有 2A2B(10B) / 2A0F(2B) 两个已知长度才对得上（长度不符不猜）');
+      '三个短号（2a2b=10 / 2a0f=2 / 2a14=4）都要认，长度不符不猜');
   }
   // 摘要里要把解读结果**提到最前面**：通用渲染按预算只展开前几个键，正好可能把那行
   // 人话时间挤出去（"读一次就知道设备几点"这个目的就落空了 —— 契约测试会因此失败）。

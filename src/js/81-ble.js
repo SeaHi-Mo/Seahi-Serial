@@ -330,9 +330,12 @@ function bleCharAction(el, key) {
 //
 // 只对**长度正好对得上**的 CTS 特征动手：不是 CTS、或长度不符（比如值被截断）就**不猜**，
 // 免得给出一句看着确定、其实错的解读。
+// CTS 里"按长度认字段"的三条：值长度正好对上才解读（对不上就不猜）。
+//   2A2B Current Time = 10 字节 / 2A0F Local Time Information = 2 字节 / 2A14 Reference Time Information = 4 字节
 var BLE_CTS_CHARS = {
-    '2A2B': 10,   // Current Time（10 字节）
-    '2A0F': 2,    // Local Time Information（2 字节：时区 + DST）
+    '2A2B': 10,   // Current Time（10 字节：年月日时分秒星期 + Fractions256 + AdjustReason）
+    '2A0F': 2,    // Local Time Information（2 字节：时区 + DST 偏移）
+    '2A14': 4,    // Reference Time Information（4 字节：时间源 + 精度 + 距上次对时天/小时）
 };
 function bleCtsLogDecoded(charUuid, arr) {
     var want = BLE_CTS_CHARS[shortUuid(charUuid || '')];

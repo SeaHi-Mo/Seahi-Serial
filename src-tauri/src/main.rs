@@ -4715,12 +4715,84 @@ mod util_tests {
         assert!(s3.contains("DST 未知"), "{}", s3);
     }
 
+    /// Reference Time Information（`0x2A14`，4 字节）：时间源 / 精度（**1/8 秒**步长）/
+    /// 距上次对时。依据 GATT Specification Supplement 的 `reference_time_information` +
+    /// `time_source` + `time_accuracy` 三条定义。
+    #[test]
+    fn cts_reference_time_info_decodes_source_accuracy_and_age() {
+        // ① 正常值：NTP（1）· 精度 8 × 125ms = 1 秒 · 距上次对时 3 天 12 小时
+        let v = super::ble_cts_decode(&super::parse_hex_bytes("01 08 03 0C")).unwrap();
+        assert_eq!(v["field"], "referenceTimeInfo");
+        assert_eq!(v["charUuid"], "2a14");
+        assert_eq!(v["timeSource"], 1);
+        assert_eq!(v["timeSourceName"], "网络时间协议（NTP）");
+        assert_eq!(v["accuracyMillis"], 1000);
+        assert_eq!(v["accuracyName"], "±1 秒");
+        assert_eq!(v["sinceUpdateHours"], 84);
+        assert_eq!(v["sinceUpdateText"], "3 天 12 小时");
+        assert_eq!(v["notes"].as_array().unwrap().len(), 0, "{}", v["notes"]);
+
+        // ② 精度的单位是 **1/8 秒**（不是 1/4、也不是整秒）：1 → 125ms、4 → 500ms、253 → 31.625s
+        let acc_of = |hex: &str| super::ble_cts_decode(&super::parse_hex_bytes(hex)).unwrap();
+        assert_eq!(acc_of("01 01 00 00")["accuracyMillis"], 125);
+        assert_eq!(acc_of("01 04 00 00")["accuracyMillis"], 500);
+        assert_eq!(acc_of("01 04 00 00")["accuracyName"], "±500 毫秒");
+        assert_eq!(acc_of("01 FD 00 00")["accuracyMillis"], 31625);
+        // 0 是"完全准"，那是个**很强的结论**；它合法，照说
+        assert_eq!(acc_of("01 00 00 00")["accuracyName"], "精确（0）");
+
+        // ③ 254 = 比量程还差、255 = 未知：都不给具体数（null），并在 notes 里说清
+        let far = acc_of("01 FE 00 00");
+        assert!(far["accuracyMillis"].is_null(), "{}", far);
+        assert_eq!(far["accuracyName"], "差于 31.625 秒");
+        let unk = acc_of("01 FF 00 00");
+        assert!(unk["accuracyMillis"].is_null(), "{}", unk);
+        assert_eq!(unk["accuracyName"], "未知");
+
+        // ④ 距上次对时：天/小时 255 都表示"≥255 天"（不给一个假的 255 天 255 小时）
+        let old = acc_of("01 08 FF 0C");
+        assert_eq!(old["sinceUpdateText"], "≥255 天");
+        assert!(old["sinceUpdateHours"].is_null(), "{}", old);
+        // 天数没超量程、小时却是 255：自相矛盾 → 指出来，但**不猜**哪个对
+        let weird = acc_of("01 08 03 FF");
+        assert!(weird["sinceUpdateHours"].is_null(), "{}", weird);
+        assert!(
+            weird["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap_or("").contains("自相矛盾")),
+            "{}",
+            weird["notes"]
+        );
+        // 0 天 0 小时 = 刚刚对过（不是"没有信息"）
+        assert_eq!(acc_of("01 08 00 00")["sinceUpdateText"], "刚刚（0 天 0 小时）");
+
+        // ⑤ 时间源：7 = 未同步（诊断价值最高的一条）、8+ = 保留值
+        let bad = acc_of("07 08 00 00");
+        assert_eq!(bad["timeSourceName"], "未同步");
+        assert!(
+            bad["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap_or("").contains("未同步")),
+            "{}",
+            bad["notes"]
+        );
+        let rsv = acc_of("63 08 00 00");
+        assert_eq!(rsv["timeSourceName"], "保留值");
+        assert_eq!(rsv["timeSource"], 0x63, "原始值仍要留着: {}", rsv);
+
+        // ⑥ 摘要（界面日志与 MCP 共用那一份）
+        assert_eq!(
+            super::ble_cts_summary(&acc_of("01 08 03 0C")),
+            "参考时间：网络时间协议（NTP） · 精度 ±1 秒 · 距上次对时 3 天 12 小时"
+        );
+    }
+
     /// 长度不对要**说清该读多少**，而不是硬解出一堆垃圾
     #[test]
     fn cts_rejects_unexpected_lengths_with_guidance() {
-        for bad in [vec![], vec![0u8; 1], vec![0u8; 4], vec![0u8; 10 + 1]] {
+        for bad in [vec![], vec![0u8; 1], vec![0u8; 3], vec![0u8; 4 + 1], vec![0u8; 10 + 1]] {
             let e = super::ble_cts_decode(&bad).unwrap_err();
-            assert!(e.contains("10 字节") && e.contains("2 字节"), "{}", e);
+            assert!(
+                e.contains("10 字节") && e.contains("2 字节") && e.contains("4 字节"),
+                "{}",
+                e
+            );
         }
     }
 
@@ -5747,6 +5819,12 @@ pub(crate) fn ble_cts_summary(v: &serde_json::Value) -> String {
             };
             format!("时区 {} · DST {}", tz, v["dstName"].as_str().unwrap_or("?"))
         }
+        "referenceTimeInfo" => format!(
+            "参考时间：{} · 精度 {} · 距上次对时 {}",
+            v["timeSourceName"].as_str().unwrap_or("?"),
+            v["accuracyName"].as_str().unwrap_or("?"),
+            v["sinceUpdateText"].as_str().unwrap_or("?")
+        ),
         _ => String::new(),
     };
     if let Some(reasons) = v["adjustReasons"].as_array().filter(|a| !a.is_empty()) {
@@ -5771,7 +5849,8 @@ pub(crate) fn ble_cts_summary(v: &serde_json::Value) -> String {
 ///
 /// 与 MCP 的 `ble_cts_time` **共用** `ble_cts_decode` + `ble_cts_summary`：
 /// 解码只有一份实现，所以"界面上看到的"和"AI 拿到的"不可能不一致。
-/// 前端只在读到 `2A2B`（Current Time）/ `2A0F`（Local Time Information）时调它。
+/// 前端只在读到 `2A2B`（Current Time）/ `2A0F`（Local Time Information）/
+/// `2A14`（Reference Time Information）时调它。
 ///
 /// 返回 `{summary, decoded}`：`summary` 是给日志的那一行，`decoded` 是完整字段
 /// （前端现在只用 summary，留着是为了将来要做悬浮详情时不必再改 Rust）。
@@ -5790,12 +5869,16 @@ fn ble_cts_decode_value(data: Vec<u8>) -> Result<serde_json::Value, String> {
 /// 恰恰靠这几个字段看出来）。所以把"读"和"解"分开：读仍走面板那条路
 /// （`ble_read` → 结果进 `ble_get_output`），解由 `ble_cts_time` 做。
 ///
-/// 认两种长度（**按长度区分字段**，并把它写在返回的 `field` 里，不做静默猜测）：
+/// 认三种长度（**按长度区分字段**，并把它写在返回的 `field` 里，不做静默猜测）：
 /// - **10 字节** = Current Time（`0x2A2B`）：年(u16 LE) 月 日 时 分 秒 星期 Fractions256 AdjustReason；
-/// - **2 字节** = Local Time Information（`0x2A0F`）：时区(int8, 1/4 小时) DST 偏移(u8)。
+/// - **2 字节** = Local Time Information（`0x2A0F`）：时区(int8, 1/4 小时) DST 偏移(u8)；
+/// - **4 字节** = Reference Time Information（`0x2A14`）：时间源(u8) 精度(u8, 1/8 秒)
+///   距上次对时-天(u8) 距上次对时-小时(u8)。
 ///
 /// ⚠️ 字段顺序与位定义**以 SIG 规范为准**（实现时对着规范核过；本函数把每个字段的范围都检查了，
 /// 越界**不 panic**、而是进 `notes` —— 那些"越界/年份像没初始化/星期几对不上"正是要报给调用方的结论）。
+/// 三条"没给出"的纪律（2026-09 定的）：**`0` 也是结论，不能拿它冒充"不知道"** ——
+/// 未知/超量程/保留值一律回 `null`，原始字节仍留在各自的原始字段里。
 fn ble_cts_decode(data: &[u8]) -> Result<serde_json::Value, String> {
     match data.len() {
         10 => {
@@ -5928,8 +6011,97 @@ fn ble_cts_decode(data: &[u8]) -> Result<serde_json::Value, String> {
                 "notes": notes,
             }))
         }
+        4 => {
+            // Reference Time Information（`0x2A14`）：时间源 / 精度 / 距上次对时。
+            // 依据 GATT Specification Supplement 的三条定义
+            // （reference_time_information + time_source + time_accuracy）：
+            //   · Time Source：0 未知 / 1 NTP / 2 GPS / 3 无线电时间信号 / 4 手动设置 /
+            //     5 原子钟 / 6 蜂窝网络 / **7 未同步** / 8~255 保留；
+            //   · Time Accuracy：**步长 1/8 秒（125 ms）**，0~253 有效（0 ~ 31.625 秒）、
+            //     **254 = 比 31.625 秒还差**、255 = 未知；
+            //   · Days/Hours Since Update：天 0~254、小时 0~23，**255 = 距上次对时 ≥255 天**。
+            // 与 2A0F 同一条纪律：精度未知/超量程回 `null`，**不给一个具体数冒充结论**
+            // （`0` 也是结论 —— "精度 0" 的意思是"完全准"，那是个很强的说法）。
+            let src = data[0];
+            let acc = data[1];
+            let days = data[2];
+            let hours = data[3];
+            let mut notes: Vec<String> = Vec::new();
+
+            let src_name = match src {
+                0 => "未知",
+                1 => "网络时间协议（NTP）",
+                2 => "GPS",
+                3 => "无线电时间信号",
+                4 => "手动设置",
+                5 => "原子钟",
+                6 => "蜂窝网络",
+                7 => "未同步",
+                _ => "保留值",
+            };
+            if src > 7 {
+                notes.push(format!("时间源 {src} 是保留值（规范只定义 0~7）"));
+            }
+            if src == 7 {
+                notes.push("设备自报未同步（Time Source=7）：这个参考时间可能不可信".to_string());
+            }
+
+            // 精度：0~253 × 125 ms；254/255 都不是一个具体数值
+            let accuracy_millis = if acc <= 253 { Some(acc as u32 * 125) } else { None };
+            let accuracy_name = match (acc, accuracy_millis) {
+                (0, _) => "精确（0）".to_string(),
+                (_, Some(ms)) if ms % 1000 == 0 => format!("±{} 秒", ms / 1000),
+                (_, Some(ms)) => format!("±{ms} 毫秒"),
+                (254, _) => "差于 31.625 秒".to_string(),
+                _ => "未知".to_string(),
+            };
+            if acc == 254 {
+                notes.push("参考时间精度差于 31.625 秒（规范用 254 表示超出量程）".to_string());
+            } else if acc == 255 {
+                notes.push("参考时间精度未知（255）".to_string());
+            }
+
+            // 距上次对时：255 = ≥255 天（规范对"天"和"小时"两个字段都这么定义）
+            let too_old = days == 255;
+            let hours_wild = !too_old && hours == 255;
+            let since_text = if too_old {
+                "≥255 天".to_string()
+            } else if hours_wild {
+                format!("{days} 天（小时字段无效）")
+            } else if days == 0 && hours == 0 {
+                "刚刚（0 天 0 小时）".to_string()
+            } else if days == 0 {
+                format!("{hours} 小时")
+            } else {
+                format!("{days} 天 {hours} 小时")
+            };
+            if too_old {
+                notes.push("距上次对时 ≥255 天（规范用 255 表示超出量程）".to_string());
+            } else if hours_wild {
+                // 天数还在量程内、小时却写着"超量程"：自相矛盾的值，指出来但**不猜**是哪个对
+                notes.push("天数字段没超量程，小时字段却是 255（≥255 天）—— 两个字段自相矛盾".to_string());
+            }
+
+            Ok(serde_json::json!({
+                "field": "referenceTimeInfo",
+                "charUuid": "2a14",
+                "bytes": data.len(),
+                "hex": ble_hex(data),
+                "timeSource": src,
+                "timeSourceName": src_name,
+                "timeAccuracy": acc,
+                "accuracyMillis": accuracy_millis,
+                "accuracyName": accuracy_name,
+                "daysSinceUpdate": days,
+                "hoursSinceUpdate": hours,
+                "sinceUpdateHours": if too_old || hours_wild { None } else { Some(days as u32 * 24 + hours as u32) },
+                "sinceUpdateText": since_text,
+                "notes": notes,
+            }))
+        }
         n => Err(format!(
-            "只认 10 字节的 Current Time（0x2A2B）或 2 字节的 Local Time Information（0x2A0F），\
+            "只认 10 字节的 Current Time（0x2A2B）、2 字节的 Local Time Information（0x2A0F）\
+             或 4 字节的 Reference Time Information（0x2A14），\
              收到 {n} 字节 —— 先把整条特征值读出来（别截断），或确认读的是不是 CTS 的特征"
         )),
     }

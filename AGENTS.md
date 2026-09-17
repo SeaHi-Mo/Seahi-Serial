@@ -15,7 +15,7 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/busid 白名单/MCP 协议与日志中心）
 ```
 
-无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，**242 条 + 1 条 `#[ignore]`**：
+无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，**243 条 + 1 条 `#[ignore]`**：
 那条 ignore 是手工联调用的 `mcp_serve_for_manual_check`，要跑 60 秒）。
 
 > ⛔ **BLE 从机（外设）方向已于 2026-09 整条删除**（用户确认"实现不了了"）：本机适配器自报支持
@@ -24,7 +24,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/
 > 证据与结论留在 `doc/BLE_PERIPHERAL.md`（已标归档）。**别再往这个方向加功能** ——
 > 先在真机上把广播跑起来再说。本应用现在的 BLE 能力只有**主机方向**。
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1599 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1602 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，94 条）：抽取前端真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，
 也有把渲染函数丢进假 DOM 跑行为断言）。前端 2026-09 已从单文件拆成
 `src/index.html`（骨架）+ `src/css/*.css` + `src/js/*.js`，**布局与加载顺序见 `doc/FRONTEND_LAYOUT.md`**；
@@ -63,11 +63,14 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
    生成物必须一起提交（前端无构建步骤）。**"查不到就标 `Custom Service`"那条兜底不许动**
    （用户明确要求），所以也别往表里塞 `FF00` 这类泛化号码。
 5. **CTS 的字段定义按 SIG 的 GATT Specification Supplement，别凭印象改**：`0x2A0F` 的
-   **DST 偏移是 15 分钟单位**（`2`=+0.5h / `4`=+1h / `8`=+2h，`255`=未给出），
-   Time Zone 的 **`-128` 是"未给出时区"**（不是 -32:00）。2026-09 这里整体错了一档
+   **DST 偏移是 15 分钟单位**（`2`=+0.5h / `4`=+1h / `8`=+2h，`255`=未给出）、
+   Time Zone 的 **`-128` 是"未给出时区"**（不是 -32:00）；`0x2A14` 的 **Time Accuracy 是
+   1/8 秒（125ms）步长**（`254`=比量程还差、`255`=未知）。2026-09 这里整体错了一档
    （见 `doc/MCP_DESIGN.md` §17），而且**测试是照着错的实现写的**，一起错。
-   两条纪律：**"没给出/保留值"一律回 `null`**（`0` 也是结论，不能拿它冒充"不知道"）；
-   改了这里必须同时核对 `gss/org.bluetooth.characteristic.{dst_offset,time_zone}.yaml`。
+   三条纪律：**"没给出/超量程/保留值"一律回 `null`**（`0` 也是结论，不能拿它冒充"不知道"）；
+   **按长度认字段**（`2A2B`=10 / `2A0F`=2 / `2A14`=4，对不上就不猜）；三处一起改
+   （`ble_cts_decode` / 前端 `BLE_CTS_CHARS` / `attach_cts_decodes`），
+   改了必须同时核对 `gss/org.bluetooth.characteristic.{dst_offset,time_zone,time_source,time_accuracy,reference_time_information}.yaml`。
 
 ## 窗口几何记忆的三条约定（别改回去）
 

@@ -562,7 +562,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "ble_cts_time",
-            "description": "把 **CTS（Current Time Service 0x1805）**的值翻译成人话。为什么要单独一个工具：`ble_read{char:\"0x2a2b\"}` 读回来的是**10 字节原始值**（年 = uint16 **小端**、星期是 1..7、Fractions256 = 1/256 秒、Adjust Reason 是位域），人肉解容易错，而错一个字段结论就全歪。给它 HEX 或字节数组，它回 `{utc, skewSecs(与本机差多少秒), dayOfWeekName, adjustReasons, notes}`，并**主动指出可疑处**：年份像 RTC 没初始化、星期几与日期对不上、时钟偏了多少分钟。**2 字节的值按 Local Time Information(0x2A0F) 解**（时区 = int8 × 15 分钟；DST 偏移按规范也是 15 分钟单位：2=+0.5h / 4=+1h / 8=+2h）。**设备没给出的字段一律回 `null`，不许猜一个具体值**：时区 -128 → `utcOffset:null`、DST 0xFF → `dstOffsetMinutes:null`（`timeZoneQuarterHours`/`dstOffset` 仍保留原始字节）。纯后端：不碰设备也不碰界面（读值仍走 `ble_read` → `ble_get_output`）。",
+            "description": "把 **CTS（Current Time Service 0x1805）**的值翻译成人话。为什么要单独一个工具：`ble_read{char:\"0x2a2b\"}` 读回来的是**10 字节原始值**（年 = uint16 **小端**、星期是 1..7、Fractions256 = 1/256 秒、Adjust Reason 是位域），人肉解容易错，而错一个字段结论就全歪。给它 HEX 或字节数组，它回 `{utc, skewSecs(与本机差多少秒), dayOfWeekName, adjustReasons, notes}`，并**主动指出可疑处**：年份像 RTC 没初始化、星期几与日期对不上、时钟偏了多少分钟。**按长度认字段**：**2 字节**按 Local Time Information(0x2A0F) 解（时区 = int8 × 15 分钟；DST 偏移按规范也是 15 分钟单位：2=+0.5h / 4=+1h / 8=+2h）；**4 字节**按 Reference Time Information(0x2A14) 解（时间源 / 精度，**精度步长 1/8 秒** / 距上次对时）。**设备没给出的字段一律回 `null`，不许猜一个具体值**：时区 -128 → `utcOffset:null`、DST 0xFF → `dstOffsetMinutes:null`、精度 254/255 → `accuracyMillis:null`（原始字节仍留在各自字段里）。纯后端：不碰设备也不碰界面（读值仍走 `ble_read` → `ble_get_output`）。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2827,6 +2827,7 @@ fn attach_cts_decodes(items: &mut [Value]) {
         let want = match crate::ble_short_uuid(uuid).as_str() {
             "2a2b" => 10, // Current Time
             "2a0f" => 2,  // Local Time Information
+            "2a14" => 4,  // Reference Time Information
             _ => continue,
         };
         let hex = it.get("hex").and_then(|h| h.as_str()).unwrap_or("");
@@ -2876,7 +2877,10 @@ fn summarize_for_tool(tool: &str, v: &Value) -> String {
     // 正好把 `utc` / `notes` 这些真正的结论挤出去 —— 只读文本的客户端就只看到一堆原始字段
     //（契约测试会因此失败，2026-09 就是这么发现的）。所以给它一条自己的紧凑摘要。
     if v.get("charUuid").is_some()
-        && matches!(v.get("field").and_then(|f| f.as_str()), Some("currentTime") | Some("localTimeInfo"))
+        && matches!(
+            v.get("field").and_then(|f| f.as_str()),
+            Some("currentTime") | Some("localTimeInfo") | Some("referenceTimeInfo")
+        )
     {
         return summarize_cts_time(v);
     }
@@ -3780,22 +3784,27 @@ mod tests {
             assert_eq!(sc3["dstName"], "半小时夏令时");
             assert_eq!(sc3["dstOffsetMinutes"], 30);
 
-            // ④ 非法 HEX：要说"不是合法 HEX"，**不能**变成"长度不对"
+            // ④ 4 字节 = Reference Time Information（NTP / 精度 1 秒 / 距上次对时 3 天 12 小时）
+            let r4 = call(&c, &raw_call("ble_cts_time", &json!({ "data": "01 08 03 0C" }))).await;
+            let sc4 = &r4["result"]["structuredContent"];
+            assert_eq!(sc4["field"], "referenceTimeInfo");
+            assert_eq!(sc4["timeSourceName"], "网络时间协议（NTP）");
+            assert_eq!(sc4["accuracyMillis"], 1000, "精度是 1/8 秒步长: {}", sc4);
+            assert_eq!(sc4["sinceUpdateText"], "3 天 12 小时");
+
+            // ⑤ 非法 HEX：要说"不是合法 HEX"，**不能**变成"长度不对"
             let bad = call(&c, &raw_call("ble_cts_time", &json!({ "data": "ZZ" }))).await;
             assert_eq!(bad["error"]["code"], E_INVALID_PARAMS, "{}", bad);
             let msg = bad["error"]["message"].as_str().unwrap_or("");
             assert!(msg.contains("不是合法 HEX"), "{}", msg);
 
-            // ⑤ 长度不对：说清该读几字节
-            let bad2 = call(&c, &raw_call("ble_cts_time", &json!({ "data": "01 02 03 04" }))).await;
+            // ⑥ 长度不对（3 字节）：说清三种合法长度各是几字节
+            let bad2 = call(&c, &raw_call("ble_cts_time", &json!({ "data": "01 02 03" }))).await;
             assert_eq!(bad2["error"]["code"], E_INVALID_PARAMS, "{}", bad2);
-            assert!(
-                bad2["error"]["message"].as_str().unwrap_or("").contains("10 字节"),
-                "{}",
-                bad2
-            );
+            let m2 = bad2["error"]["message"].as_str().unwrap_or("");
+            assert!(m2.contains("10 字节") && m2.contains("2 字节") && m2.contains("4 字节"), "{}", m2);
 
-            // ⑥ 缺 data / 空数组 / 越界元素
+            // ⑦ 缺 data / 空数组 / 越界元素
             for a in [json!({}), json!({ "data": [] }), json!({ "data": [256] })] {
                 let e = call(&c, &raw_call("ble_cts_time", &a)).await;
                 assert_eq!(e["error"]["code"], E_INVALID_PARAMS, "{} 应是 -32602: {}", a, e);

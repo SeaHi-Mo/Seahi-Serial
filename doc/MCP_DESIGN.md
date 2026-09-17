@@ -1489,6 +1489,47 @@ BLE 面板有两套完全不同的东西：**主机**（当中央去连别人的
 
 ## 17. 实施记录
 
+### 2026-09-17 · 补上 CTS 的第三件套：**`0x2A14` Reference Time Information 的解码** ✅
+
+**为什么现在才做**：第一版 CTS（见下面两条记录）只解了 `2A2B`（时间本身）与 `2A0F`（时区/DST），
+`2A14` 只在服务树里显示了个名字 —— 当时的原话是"字段少用且我对 Time Accuracy 的单位没把握，
+宁可不解也不编"。用户 2026-09 明确点了这条，于是**先把规范核清楚再写**。
+
+**规范怎么说**（SIG 官方公开仓库的 GATT Specification Supplement，三条定义互相引用）：
+- `reference_time_information.yaml`：4 字节 = Time Source(1) + Time Accuracy(1) +
+  Days Since Update(1) + Hours Since Update(1)；天 0~254、小时 0~23，
+  **255 表示"距上次对时 ≥255 天"**（天与小时两个字段都这么定义）。
+- `time_source.yaml`：`0` 未知 / `1` NTP / `2` GPS / `3` 无线电时间信号 / `4` 手动 /
+  `5` 原子钟 / `6` 蜂窝网络 / **`7` 未同步** / `8~255` 保留。
+- `time_accuracy.yaml`：Base unit second、**M=1 d=0 b=-3** → **步长 1/8 秒（125 ms）**；
+  0~253 有效（0 ~ 31.625 秒）、**254 = 比 31.625 秒还差**、**255 = 未知**。
+
+**做成什么**：`ble_cts_decode` 加 `4 =>` 分支（`field: "referenceTimeInfo"`），
+`charUuid: "2a14"`；前端 `BLE_CTS_CHARS` 加 `'2A14': 4`；`attach_cts_decodes` 加 `"2a14" => 4`
+（`ble_get_output` 里同样的自动解读）；`summarize_cts_time` 的字段分派加 `referenceTimeInfo`。
+
+**结论字段**（数据 + 人话成对，与 `dstName`/`dstOffsetMinutes` 同一套写法）：
+`timeSource`/`timeSourceName`、`timeAccuracy`/`accuracyMillis`/`accuracyName`、
+`daysSinceUpdate`/`hoursSinceUpdate`/`sinceUpdateHours`/`sinceUpdateText`。
+摘要一行：`参考时间：网络时间协议（NTP） · 精度 ±1 秒 · 距上次对时 3 天 12 小时`。
+
+**纪律照旧（"没给出/超量程"一律不给具体数）**：
+- 精度 `254`/`255` → `accuracyMillis: null`（`254` 只说"差于 31.625 秒"）；
+- 距上次对时 `255` → `sinceUpdateText: "≥255 天"` + `sinceUpdateHours: null`；
+- 时间源 `> 7` → 名字写"保留值"+ notes 里点名原始值；
+- **时间源 `7`（未同步）主动进 notes** —— 这是本特征最有诊断价值的一条：设备自己说没同步，
+  那 `2A2B` 报出来的时间就不该信；
+- **自相矛盾也报**：天数字段在量程内、小时字段却是 `255`（规范说 255 是"≥255 天"）→
+  notes 里指出两个字段矛盾，**但不猜**哪个对；
+- `0 天 0 小时` 说成"刚刚（0 天 0 小时）"——"0"在这里是**有效结论**（刚对过时），不是"没有信息"。
+
+**验证**：`cargo test` **243 通过 + 1 ignored**（+1 条 `cts_reference_time_info_decodes_source_accuracy_and_age`，
+里面钉住 1/8 秒这个单位（`1`→125ms、`4`→500ms、`253`→31.625s）、254/255 的 null、
+`255` 天的"≥255 天"、字段矛盾、"刚刚"、保留时间源与未同步）；MCP 层加一条 4 字节用例
+（顺带把"长度不对"的探针从 `01 02 03 04` 改成 3 字节 —— 那个 4 字节现在**是合法的**，
+不改就会变成"测的是错的"）；前端断言集 **1602 通过**（+3：2A14 也认、长度表三条齐全、
+长度与特征对不上不解读）。
+
 ### 2026-09-17 · 真机演示时抓到 CTS 的 **DST / 时区映射错了一档**（+ 时区"-128 未给出"被编成一个值） ✅
 
 **怎么发现的**：用户问"CTS 体现在哪里"，我顺手对**正在跑的应用**真调了一遍 `ble_cts_time`
