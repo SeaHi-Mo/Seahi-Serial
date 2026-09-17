@@ -99,7 +99,6 @@ serial-debugger-tauri/
 │       └── SKILL.md              # AI 开发技能指南
 ├── .walkthrough/                 # 无头断言集（gen_ble_preview.js）+ MCP 工具自检 + 两个生成器
 ├── doc/                          # 项目文档（MCP.md / MCP_TOOLS.md / MCP_DESIGN.md / QUICK_CMDS.md / FRONTEND_LAYOUT.md …）
-├── TODO.md                       # 计划与待办（⚠️ 里面的「实测快照」停在 0.5.0，看现状请用 mcp_status / mcp_limits）
 ├── RELEASE_NOTES.md              # 每个版本的发布说明（CI 按 tag 取对应段落作为 Release 正文）
 ├── installer.iss                 # Inno Setup 安装脚本
 └── TEST_CASES.md                 # 测试用例
@@ -169,11 +168,13 @@ npx seahi-serial-mcp uninstall
 
 > 详细使用说明见 [`doc/MCP.md`](./doc/MCP.md)；**54 个工具的完整参考（入参 + 返回结构）见 [`doc/MCP_TOOLS.md`](./doc/MCP_TOOLS.md)**；架构与设计取舍见 [`doc/MCP_DESIGN.md`](./doc/MCP_DESIGN.md)。
 
-## 开发进度与待办
+## 当前规模与测试
 
-计划、阻塞与待拍板事项记在 **[`TODO.md`](./TODO.md)**（已纳入版本库）。
-⚠️ 它开头的「当前状态实测快照」是 **0.5.0** 时的记录（33 个工具 / 只有 SSE / 语义工具只落地了第一批），
-**已经落后**，别拿它当现状 —— 要看现状直接问程序：
+**这一版（v0.5.11）的实际规模**：**54 个内置工具**（19 通用 + 16 串口 + 13 蓝牙 + 6 ADB）、
+传输为 **Streamable HTTP + 遗留 SSE 两种并存**、四批语义工具**全部落地**、
+BLE **从机（外设）方向已整条删除**（实测本机广播起不来，证据留在 `doc/BLE_PERIPHERAL.md`）。
+
+想知道**跑起来的这个实例**的实时状态，直接问程序（不用翻文档）：
 
 ```
 mcp_status     # 工具数、会话、限流、日志中心、错误上报
@@ -181,15 +182,12 @@ mcp_limits     # 各项上限（请求体 / 每条指令长度 / 写入上限…
 ui_list        # 界面控件注册表（含面板 / 分组 / 是否禁用）
 ```
 
-当前（v0.5.11）的实际规模：**54 个内置工具**（19 通用 + 16 串口 + 13 蓝牙 + 6 ADB）、
-传输为 **Streamable HTTP + 遗留 SSE 两种并存**、四批语义工具**全部落地**、
-BLE **从机（外设）方向已整条删除**（实测本机广播起不来，证据留在 `doc/BLE_PERIPHERAL.md`）。
-
 三套自动化测试都可以本地跑：`cargo test`（243 条 + 1 ignored）、`node .walkthrough/gen_ble_preview.js`（1612 条）、
 `node npm/seahi-serial-mcp/test/self-test.js`（94 条）；对**正在运行的程序**跑工具自检用
 `node .walkthrough/mcp_smoke.js`（54 个工具逐个真调）。
 
-> 逐次的技术细节（改了什么、为什么、怎么验证的）记在 [`doc/MCP_DESIGN.md`](./doc/MCP_DESIGN.md) §17「实施记录」。
+> 逐次的技术细节（改了什么、为什么、怎么验证的）记在 [`doc/MCP_DESIGN.md`](./doc/MCP_DESIGN.md) §17「实施记录」；
+> 每个版本面向用户的说明在 [`RELEASE_NOTES.md`](./RELEASE_NOTES.md)。
 
 ## 技术栈
 

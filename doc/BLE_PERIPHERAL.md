@@ -288,7 +288,7 @@ node .walkthrough/gen_ble_preview.js
    `broadcast` 目前**只在后端支持**：WinRT 本地特征不支持无连接广播，界面不提供以免勾了不生效。
 3. `BLE_PERIPH_CHAR_MAX`（前端）与后端的同名常量必须一致（都是 16），有断言守着。
 4. 界面上的从机特征行操作按钮走的是 `data-act` + 事件委托，**不要**改成把 UUID 拼进内联
-   `onclick`（`TODO.md` M13/L13 的同类隐患）。
+   `onclick`（同类隐患，见代码评估里的 M13/L13）。
 5. 判断"本机有没有蓝牙 / 蓝牙开没开"请用 WinRT 或 btleplug，**不要**用 `Get-PnpDevice`
    （受限环境会拒绝访问，导致误判成"没有蓝牙硬件"）。
 6. 单次通知上限来自 `GattSubscribedClient::MaxNotificationSize()`（= 协商 MTU − 3），
