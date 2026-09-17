@@ -469,7 +469,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "ble_start_scan",
-            "description": "开始扫描蓝牙设备（面板那颗「开始/停止扫描」按钮的同一条路径）。默认按面板上设的时长自动停止；扫完用 ble_list_devices 取结果。写操作（会占用射频）。",
+            "description": "开始扫描蓝牙设备（面板那颗「开始/停止扫描」按钮的同一条路径）。默认按面板上设的时长自动停止；扫完用 ble_list_devices 取结果。⚠️ **连上设备后会自动停止扫描**（不需要再调 ble_stop_scan）—— 所以连接成功后 `ble_get_state.scanning` 会是 false，要再找别的设备就重新调它。写操作（会占用射频）。",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
         json!({
@@ -520,7 +520,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "ble_connect",
-            "description": "连接一台 BLE 设备。给 addr 时：**扫描列表里有它**就点它的卡片再走「连接设备」（同一条路）；**列表里没有**就走「按 MAC 直连」（不依赖广播 —— 被 Windows 配对过、或被别的主机连走因而不广播的设备，只有这条路连得上）。不给 addr 就用面板当前选中的那台。**等连接真的成功才返回**（会带上服务数）。写操作。",
+            "description": "连接一台 BLE 设备。给 addr 时：**扫描列表里有它**就点它的卡片再走「连接设备」（同一条路）；**列表里没有**就走「按 MAC 直连」（不依赖广播 —— 被 Windows 配对过、或被别的主机连走因而不广播的设备，只有这条路连得上）。不给 addr 就用面板当前选中的那台。**等连接真的成功才返回**（会带上服务数）。⚠️ **连上的一刻会自动停止正在进行的扫描**（面板与 AI 同一条路径），所以返回后 `ble_get_state.scanning` 是 false —— 这是有意的（扫描列表每 2 秒刷新一次会跟连接后的状态抢），要再找别的设备就重新 `ble_start_scan`。写操作。",
             "inputSchema": {
                 "type": "object",
                 "properties": {

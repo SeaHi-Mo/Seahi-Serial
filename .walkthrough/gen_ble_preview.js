@@ -1196,6 +1196,84 @@ console.log('preview ->', out);
     '停止扫描（含 5 秒自动停止）时刷新占位');
   check(/\.ble-empty\.scanning b \{ color:var\(--accent-focus\); \}/.test(html), '扫描中提示有高亮样式');
 
+  // ---- 11b) 扫描过程中连上设备 → **同步停扫描**（用户 2026-09 提的修复）----
+  // 三条要一起成立才算修好：
+  //   ① 连上的那一刻就把扫描停掉并摘掉轮询/自动停止定时器（不能等下一次轮询才发现）；
+  //   ② 没在扫时不要去惊动后端（连接经常发生在没扫描的时候，白发一条还会打没意义的警告）；
+  //   ③ 迟到的 `ble_start_scan` 回执**不能**把扫描又挑起来（连得快时真会撞上：
+  //      点击开始 → 后端还没回执就联上了 → 回执回来又把轮询装上，按钮却写着「开始扫描」）。
+  {
+    const calls = [];
+    const logs = [];
+    let intervals = 0, timeouts = 0;
+    const btnText = { textContent: '停止扫描' };
+    // 同步 thenable 的假 invoke：除了 `ble_start_scan`（要"慢回执"）以外全部当场回，
+    // 这样 bleOnConnected 的整条链在测试里是同步跑完的（真 Promise 的微任务会跑到断言后面）。
+    // `mkP` 支持任意长的 `.then().then()` 链（bleOnConnected 就是两段链）。
+    const mkP = (v) => ({ then: (f) => mkP(f(v)), catch: () => mkP(v) });
+    const mkScanEnv = (scanning) => {
+      const pend = {};
+      const sb = {
+        console: { warn: () => {}, log: () => {} },
+        _bleScanning: scanning, _bleConnecting: false, _bleDevices: [],
+        _bleDevTimer: scanning ? 111 : null, _bleScanStopTimer: scanning ? 222 : null,
+        _bleScanSecs: 15, _bleConnAddr: null, _bleConnInfo: null, _bleSubs: {}, _bleServices: [],
+        document: { getElementById: (id) => (id === 'bleScanBtn' ? btnText : null) },
+        setInterval: () => { intervals++; return 333; },
+        clearInterval: () => {},
+        setTimeout: () => { timeouts++; return 444; },
+        clearTimeout: () => {},
+        invoke: (cmd, args) => {
+          calls.push({ cmd, args });
+          if (cmd === 'ble_start_scan') return { then(f) { pend[cmd] = f; return { catch: () => {} }; }, catch: () => {} };
+          return mkP(cmd === 'ble_get_services' ? [] : 0);
+        },
+        logBle: (t) => logs.push(t),
+        renderBleDeviceList: () => {}, renderBleDetail: () => {}, refreshBleDevices: () => {},
+        refreshBleMtu: () => mkP(0),
+        startBleNotifyPoll: () => {}, startBleRssiPoll: () => {}, showToast: () => {},
+      };
+      vm.createContext(sb);
+      vm.runInContext(['stopBleScan', 'stopBleScanOnConnect', 'bleOnConnected'].map(extractFunction).join('\n'), sb);
+      return { sb, pend };
+    };
+
+    // ① 扫描中连上 → 停掉 + 摘定时器 + 告诉后端 + 按钮复位 + 日志留一行
+    btnText.textContent = '停止扫描';
+    const a = mkScanEnv(true);
+    a.sb.bleOnConnected('AA:BB:CC:DD:EE:01', 'demo');
+    check(a.sb._bleScanning === false, '连上设备后 _bleScanning 立刻变 false（同步，不等下一次轮询）');
+    check(a.sb._bleDevTimer === null && a.sb._bleScanStopTimer === null,
+      '连上设备后扫描轮询与自动停止定时器都被摘掉');
+    check(calls.filter((c) => c.cmd === 'ble_stop_scan').length === 1,
+      '连上设备后通知后端真的停扫描', JSON.stringify(calls.map((c) => c.cmd)));
+    check(btnText.textContent === '开始扫描', '按钮文案回到「开始扫描」（与实际状态一致）');
+    check(logs.some((t) => t.indexOf('[扫描] 已停止') === 0), '数据日志留一行说明扫描为什么停了', JSON.stringify(logs));
+
+    // ② 没在扫时连接：不惊动后端
+    calls.length = 0;
+    mkScanEnv(false).sb.bleOnConnected('AA:BB:CC:DD:EE:02', 'demo2');
+    check(calls.filter((c) => c.cmd === 'ble_stop_scan').length === 0,
+      '没在扫描时连接不去调 ble_stop_scan（连接经常发生在没扫的时候）');
+
+    // ③ 迟到的启动回执：不能再把扫描挑起来，而且要补一条停止给后端
+    calls.length = 0; intervals = 0; timeouts = 0;
+    const c = mkScanEnv(false);
+    vm.runInContext(extractFunction('toggleBleScan'), c.sb);
+    c.sb.toggleBleScan();                                   // 按下「开始扫描」→ invoke 挂着不回
+    check(c.sb._bleScanning === true && typeof c.pend['ble_start_scan'] === 'function',
+      '（前置）扫描已开始、后端回执被挂起（模拟慢回执）');
+    c.sb.stopBleScanOnConnect();                            // 这时设备连上了
+    calls.length = 0;                                       // 只看"迟到回执"这一跳干了什么
+    c.pend['ble_start_scan'](2);                            // 回执姗姗来迟
+    check(intervals === 0 && c.sb._bleDevTimer === null,
+      '迟到的启动回执不会再装扫描轮询（否则按钮写着「开始扫描」、后台却每 2 秒刷）', String(intervals));
+    check(timeouts === 0, '迟到的启动回执也不会再排自动停止定时器', String(timeouts));
+    check(calls.length === 1 && calls[0].cmd === 'ble_stop_scan',
+      '迟到的启动回执补一条 ble_stop_scan 给后端（不然适配器还在扫）',
+      JSON.stringify(calls.map((x) => x.cmd)));
+  }
+
   // 通知换行：来源单独一行，payload 另起一行
   check(/var label = '\[通知\] ' \+ from \+ ':\\n';/.test(html),
     '通知日志在冒号后换行（来源单独一行）');

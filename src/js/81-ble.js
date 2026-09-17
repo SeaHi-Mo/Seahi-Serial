@@ -1072,6 +1072,13 @@ function toggleBleScan() {
         if (btn) btn.textContent = '停止扫描';
         if (!_bleDevices.length) renderBleDeviceList();   // 空列表时立刻显示「正在扫描…」
         invoke('ble_start_scan').then(function(n) {
+            // ⚠️ 等后端回执这段时间里，可能已经**连上设备并停掉了扫描**（连接成功会同步停扫描）。
+            // 那种情况下不能再把轮询与自动停止定时器挑起来 —— 否则"扫描"又活了，
+            // 而按钮上写着「开始扫描」，两边对不上（实测：连得快时会这样）。
+            if (!_bleScanning) {
+                invoke('ble_stop_scan').catch(function() {});
+                return;
+            }
             // 多适配器：后端会把扫描开到每一个适配器上，返回值是成功的个数
             if (typeof n === 'number' && n > 0) _bleAdapterCount = Math.max(_bleAdapterCount, n);
             refreshBleDevices();
@@ -1090,15 +1097,32 @@ function toggleBleScan() {
         stopBleScan();  // 手动停止
     }
 }
-// 停止扫描（手动或自动共用）
+// 停止扫描（**手动 / 自动到点 / 连接成功**三处共用 —— 一定要走同一个出口，
+// 否则有一条路径漏了清定时器，就会出现"按钮写着开始扫描、后台每 2 秒还在刷列表"）。
+//
+// 为什么"连上设备就要停"：
+//   · 列表每 2 秒 refreshBleDevices 一次，会跟连接后的状态写入抢（把「已连接」重渲染回去）；
+//   · 适配器继续扫是白耗电，还会让"这台设备已经不再广播"这种正常现象被误当成问题；
+//   · AI 那边也一样：`ble_connect` 成功后 `ble_get_state.scanning` 必须是 false，
+//     否则"连上了但报告还在扫描"，调用方只能猜哪个是真的。
 function stopBleScan() {
+    var wasScanning = _bleScanning;
     _bleScanning = false;
     var btn = document.getElementById('bleScanBtn');
     if (btn) btn.textContent = '开始扫描';
     if (_bleScanStopTimer) { clearTimeout(_bleScanStopTimer); _bleScanStopTimer = null; }
-    invoke('ble_stop_scan').catch(function(e) { console.warn('[BLE] 停止扫描失败:', e); });
     if (_bleDevTimer) { clearInterval(_bleDevTimer); _bleDevTimer = null; }
+    // 只在"确实在扫"时才惊动后端：连接成功那条路径经常是没在扫的，
+    // 无条件 invoke 会白发一条（而且失败时还会往控制台打一条没意义的警告）
+    if (wasScanning) invoke('ble_stop_scan').catch(function(e) { console.warn('[BLE] 停止扫描失败:', e); });
     if (!_bleDevices.length) renderBleDeviceList();   // 空列表时把「正在扫描…」换回未发现提示
+    return wasScanning;
+}
+// 连接成功时同步停扫描（返回是否真的停了一次，便于日志/断言）
+function stopBleScanOnConnect() {
+    var stopped = stopBleScan();
+    if (stopped) logBle('[扫描] 已停止（已连上设备，不需要继续搜索）');
+    return stopped;
 }
 // 扫描时长（秒）。0 = 一直扫到用户手动停。
 // 以前硬编码 5 秒：低功耗从机广播间隔常在 1~2 秒、甚至 5~10 秒，
@@ -1116,8 +1140,9 @@ function bleScanSecsLabel() {
     var v = bleScanSecs();
     return v > 0 ? (v + ' 秒') : '持续';
 }
-// 扫描开始后按所选时长自动停止（除非期间已手动停止）
+// 扫描开始后按所选时长自动停止（除非期间已手动停止 / 已连上设备而停止）
 function enableBleScanAutoStop() {
+    if (!_bleScanning) return;   // 已经不在扫了（比如刚连上设备），别留一个会乱停的定时器
     if (_bleScanStopTimer) { clearTimeout(_bleScanStopTimer); _bleScanStopTimer = null; }
     var secs = bleScanSecs();
     if (secs <= 0) return;   // 选「持续」就不自动停
@@ -1518,6 +1543,10 @@ function toggleBleService(el) {
 // 从 toggleBleConnect 的内联代码里抽出来，好让「配对成功后自动重连」复用同一条成功路径。
 function bleOnConnected(address, label) {
     _bleConnecting = false;
+    // **连上就同步停扫描**：这是所有连接路径的唯一出口（列表里点卡片 / 按 MAC 直连 /
+    // MCP 的 ble_connect / 配对后重连），放在最前面是为了在写连接状态、拉服务树之前
+    // 就把扫描轮询摘掉 —— 晚一步它就可能插进来刷一次列表。
+    stopBleScanOnConnect();
     // 连接期间列表可能整体刷新过 → 按地址在当前列表里重新定位，
     // 否则会写到一个已不在列表中的孤儿对象上
     var cur = null;
