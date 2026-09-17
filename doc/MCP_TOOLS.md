@@ -33,7 +33,7 @@
 
 - 运行时：`tools/list`（分页，每页 50，用 `nextCursor` 翻页）——这是**权威来源**，本页只是它的可读版本。
 - `mcp_limits` / `mcp_status` 里的 `toolCount` / `builtinToolCount` 能看到数量。
-- 内置工具 **53 个**；另有可选的 `ctl_*`（见 §4）。
+- 内置工具 **54 个**；另有可选的 `ctl_*`（见 §4）。
 
 ## 3. 一页速查
 
@@ -66,6 +66,7 @@
 | [`ble_subscribe`](#ble-subscribe) | **写** | 开/关某个特征的通知订阅（notify / indicate）——点的是面板上那颗订阅按钮，数据随后出现在 ble_get_output 里。**状态已经在目标值时不会重复点**（不会把用户刚打开的订阅关掉）。 |
 | [`ble_get_output`](#ble-get-output) | 读 | 读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。**要"这条 ERROR 出现几次"别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `count` 只回计数、`matches` 只回片段、`lines`（默认）回条目。匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也能搜）。只读。 |
 | [`ble_refresh_rssi`](#ble-refresh-rssi) | 读 | 读当前已连接设备的信号强度（RSSI，负数，越接近 0 越强）。只问一次射频、不改状态；还没连设备时会直接说明。 |
+| [`ble_cts_time`](#ble-cts-time) | 读 | 把 **CTS（Current Time Service 0x1805）**的值翻译成人话。为什么要单独一个工具：`ble_read{char:"0x2a2b"}` 读回来的是**10 字节原始值**（年 = uint16 **小端**、星期是 1..7、Fractions256 = 1/256 秒、Adjust Reason 是位域），人肉解容易错，而错一个字段结论就全歪。给它 HEX 或字节数组，它回 `{utc, skewSecs(与本机差多少秒), dayOfWeekName, adjustReasons, notes}`，并**主动指出可疑处**：年份像 RTC 没初始化、星期几与日期对不上、时钟偏了多少分钟。**2 字节的值按 Local Time Information(0x2A0F) 解**（时区 = int8 × 15 分钟 / DST 偏移）。纯后端：不碰设备也不碰界面（读值仍走 `ble_read` → `ble_get_output`）。 |
 | [`adb_list_devices`](#adb-list-devices) | 读 | 列出 `adb devices -l` 看到的设备（序列号 / 状态 / 型号）。只读，不会开 shell。**只有 state=device 的那台才可用**；unauthorized 表示还没在设备上点「允许 USB 调试」。 |
 | [`adb_open_shell`](#adb-open-shell) | **写** ⚠️ | 在设备上开一个交互式 shell 会话（等价于点面板上那台设备的卡片：建 xterm + PTY）。开之前先确认设备在且 state=device；**等 PTY 真的建出来才返回**（最长 10 秒）。⚠️ 危险动作（之后能在设备上执行任意命令），必须带 confirm:true；不带时不会执行并返回 -32006。开完用 adb_shell_write 发命令、adb_shell_read 读输出。 |
 | [`adb_shell_write`](#adb-shell-write) | **写** ⚠️ | 往已打开的 ADB shell 写入内容（与在面板终端里敲键盘同一条路：字节会进设备 shell 的 stdin）。**命令要自己带上 \n**，不带就只是填在命令行上不会执行。⚠️ 危险动作（写进去的内容会被设备真的执行），必须带 confirm:true。单次最多 4096 字符（mcp_limits.maxAdbWriteChars），超了报 -32602。 |
@@ -476,8 +477,7 @@
 
 - **作用**：读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。**要"这条 ERROR 出现几次"别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `count` 只回计数、`matches` 只回片段、`lines`（默认）回条目。匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也能搜）。只读。
 - **读/写**：只读，无副作用
-- **返回**：{pane, count, scanned, mode, total, channels:{rx}, items:[{seq,ts,kind,hex,text,dim}]}；`mode:"matches"` 时是 `hits:[{seq,ts,kind,match}]`，`mode:"count"` 时是 `total`/`totalMatches`（**都没有 items**），后两档另外带 `pattern`/`regex`
-- **注意**：**本次会话的蓝牙数据日志**（切设备/断开就清空）。要跨会话用 `channels.rx` 去 log_tail；`sinceSeq` 增量跟进。**要"这条 ERROR 出现几次"别拉条目**：给 `pattern` + `mode`（`count` 只回计数、`matches` 只回片段）；匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也搜得到）
+- **返回**：
 
 **入参**
 
@@ -500,6 +500,19 @@
 **入参**
 
 无（不需要参数）
+
+#### `ble_cts_time`
+
+- **作用**：把 **CTS（Current Time Service 0x1805）**的值翻译成人话。为什么要单独一个工具：`ble_read{char:"0x2a2b"}` 读回来的是**10 字节原始值**（年 = uint16 **小端**、星期是 1..7、Fractions256 = 1/256 秒、Adjust Reason 是位域），人肉解容易错，而错一个字段结论就全歪。给它 HEX 或字节数组，它回 `{utc, skewSecs(与本机差多少秒), dayOfWeekName, adjustReasons, notes}`，并**主动指出可疑处**：年份像 RTC 没初始化、星期几与日期对不上、时钟偏了多少分钟。**2 字节的值按 Local Time Information(0x2A0F) 解**（时区 = int8 × 15 分钟 / DST 偏移）。纯后端：不碰设备也不碰界面（读值仍走 `ble_read` → `ble_get_output`）。
+- **读/写**：只读，无副作用
+- **返回**：{field, charUuid, bytes, hex, utc, skewSecs, year, month, day, hour, minute, second, dayOfWeek, dayOfWeekName, fractions256, fractionMillis, adjustReason, adjustReasons, notes}；ield:'读
+- **注意**：{pane, count, scanned, mode, total, channels:{rx}, items:[{seq,ts,kind,hex,text,dim}]}；`mode:"matches"` 时是 `hits:[{seq,ts,kind,match}]`，`mode:"count"` 时是 `total`/`totalMatches`（**都没有 items**），后两档另外带 `pattern`/`regex`
+
+**入参**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `data` | any | **是** | 要解码的**整条**特征值（别截断） |
 
 ### ADB 语义工具（ADB shell）
 

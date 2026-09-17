@@ -560,6 +560,24 @@ pub fn tool_defs() -> Vec<Value> {
             "description": "当前已连接设备的 GATT 服务树（服务 UUID / 名称，每个服务下的特征 UUID、属性 props、描述符个数）。只读，取的是面板已经拉到的那份，不会重新去问设备。",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
+        json!({
+            "name": "ble_cts_time",
+            "description": "把 **CTS（Current Time Service 0x1805）**的值翻译成人话。为什么要单独一个工具：`ble_read{char:\"0x2a2b\"}` 读回来的是**10 字节原始值**（年 = uint16 **小端**、星期是 1..7、Fractions256 = 1/256 秒、Adjust Reason 是位域），人肉解容易错，而错一个字段结论就全歪。给它 HEX 或字节数组，它回 `{utc, skewSecs(与本机差多少秒), dayOfWeekName, adjustReasons, notes}`，并**主动指出可疑处**：年份像 RTC 没初始化、星期几与日期对不上、时钟偏了多少分钟。**2 字节的值按 Local Time Information(0x2A0F) 解**（时区 = int8 × 15 分钟 / DST 偏移）。纯后端：不碰设备也不碰界面（读值仍走 `ble_read` → `ble_get_output`）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "data": {
+                        "description": "要解码的**整条**特征值（别截断）",
+                        "anyOf": [
+                            { "type": "string", "description": "HEX 字符串，如 \"EA 07 0C 11 0F 2D 3A 04 80 00\" 或 \"EA070C110F2D3A048000\"" },
+                            { "type": "array", "items": { "type": "number" }, "description": "字节数组，如 [234,7,12,17,15,45,58,4,128,0]" }
+                        ]
+                    }
+                },
+                "required": ["data"],
+                "additionalProperties": false
+            }
+        }),
         // ⚠️ 这里原来还有三个 BLE **从机**工具（`ble_periph_status` / `ble_periph_start` /
         // `ble_periph_stop`：把本机当外设对外广播）。2026-09 **整条方向删除**：
         // 本机适配器自报支持外设角色，但实测广播起不来（`ble_periph_starts_advertising`
@@ -1404,6 +1422,11 @@ pub async fn call_tool(core: &Arc<McpCore>, name: &str, args: &Value) -> Result<
         "ble_get_output" => ble_get_output(core, args).await,
         "ble_refresh_rssi" => ble_call(core, "refreshRssi", args, json!({})).await,
         "ble_get_services" => ble_call(core, "getServices", args, json!({})).await,
+        // CTS 值解码：**纯后端**（不碰设备/界面）—— 读值仍走 ble_read → ble_get_output
+        "ble_cts_time" => {
+            let data = cts_input_bytes(args)?;
+            crate::ble_cts_decode(&data).map_err(|e| RpcError::new(E_INVALID_PARAMS, e))
+        }
         // BLE 从机三个工具已删除（理由见 `tool_defs()` 那段注释）。这里同样专门留一条分支
         // 指路，而不是掉进"未知工具"：工具定义编译在 exe 里，客户端要重连才会重读 tools/list。
         "ble_periph_status" | "ble_periph_start" | "ble_periph_stop" => Err(RpcError::new(
@@ -2094,6 +2117,59 @@ struct OutItem<'a> {
     raw: &'a Value,
 }
 
+/// 取 `ble_cts_time` 的输入字节。
+///
+/// 两种写法都认（调用方从 `ble_get_output` 拿到的就是 HEX 字符串）：
+/// - HEX 字符串：`"EA 07 0C…"` 或 `"EA070C…"`（复用界面上那套 `parse_hex_bytes`，空格可有可无）；
+/// - 字节数组：`[234, 7, 12, …]`。
+///
+/// ⚠️ 非法输入**必须报 -32602 并说清期望的形状**：`parse_hex_bytes` 对非法输入返回空数组，
+/// 而"空数组"如果直接喂给解码器，会得到一句"只认 10/2 字节"，把"你 HEX 写错了"说成"长度不对"。
+fn cts_input_bytes(args: &Value) -> Result<Vec<u8>, RpcError> {
+    match args.get("data") {
+        Some(Value::Array(a)) => {
+            let mut out: Vec<u8> = Vec::with_capacity(a.len());
+            for (i, v) in a.iter().enumerate() {
+                let n = v.as_u64().ok_or_else(|| {
+                    RpcError::new(
+                        E_INVALID_PARAMS,
+                        format!("data[{}] 不是整数（每个元素要在 0~255）", i),
+                    )
+                })?;
+                if n > 255 {
+                    return Err(RpcError::new(
+                        E_INVALID_PARAMS,
+                        format!("data[{}] = {} 超出字节范围 0~255", i, n),
+                    ));
+                }
+                out.push(n as u8);
+            }
+            if out.is_empty() {
+                return Err(RpcError::new(E_INVALID_PARAMS, "data 不能是空数组"));
+            }
+            Ok(out)
+        }
+        Some(Value::String(s)) => {
+            let b = crate::parse_hex_bytes(s);
+            if b.is_empty() {
+                return Err(RpcError::new(
+                    E_INVALID_PARAMS,
+                    format!(
+                        "data 不是合法 HEX 字节串（要 \"EA 07 0C…\" 或 \"EA070C…\" 这种，\
+                         每个字节两位十六进制；收到 {:?}）",
+                        s
+                    ),
+                ));
+            }
+            Ok(b)
+        }
+        _ => Err(RpcError::new(
+            E_INVALID_PARAMS,
+            "data 必须是 HEX 字符串（\"EA 07 0C…\"）或字节数组（[234,7,12,…]）",
+        )),
+    }
+}
+
 /// 读蓝牙面板**本次会话**的数据日志（面板自己那份缓冲，不是 LogHub 通道）。
 ///
 /// ⚠️ 修了一个**从来没生效过**的参数（2026-09）：`limit` / `sinceSeq` 声明在 schema 里，
@@ -2721,7 +2797,69 @@ fn summarize_for_text(v: &Value) -> String {
 /// "只有设备数量吗？没有设备名称列表？包含 MAC 地址的"）。设备列表改成一行一台，
 /// 同样的 600 字预算里能放下十几台（MAC + 名称 + RSSI），结构化数据照旧全量在
 /// `structuredContent` 里。
+/// CTS 解码结果的一句话摘要（给只读 `content[].text` 的客户端）。
+///
+/// 形状：`2026-12-17T15:45:58.500Z（周四）· 与本机差 2 分 3 秒 · 设备自报：手动更新时间 · 注意：…`
+/// 长度仍按 `TEXT_SUMMARY_MAX_CHARS` 截断（它是**重复**信息，全量在 structuredContent 里）。
+fn summarize_cts_time(v: &Value) -> String {
+    let mut out = match v.get("field").and_then(|f| f.as_str()).unwrap_or("") {
+        "currentTime" => {
+            let utc = v["utc"].as_str().unwrap_or("(时间字段不合法)");
+            let dow = v["dayOfWeekName"].as_str().unwrap_or("");
+            let mut s = if dow.is_empty() {
+                format!("{}（星期未知）", utc)
+            } else {
+                format!("{}（{}）", utc, dow)
+            };
+            if let Some(sk) = v["skewSecs"].as_i64() {
+                // 与 note 里同一套人话（"差 131374 分"等于没给信息）
+                s.push_str(&format!(
+                    " · 设备时钟比本机{} {}",
+                    if sk >= 0 { "快" } else { "慢" },
+                    crate::ble_cts_skew_text(sk)
+                ));
+            }
+            s
+        }
+        "localTimeInfo" => format!(
+            "时区 {}（{} 个 1/4 小时）· DST {}",
+            v["utcOffset"].as_str().unwrap_or("?"),
+            v["timeZoneQuarterHours"].as_i64().unwrap_or(0),
+            v["dstName"].as_str().unwrap_or("?")
+        ),
+        _ => String::new(),
+    };
+    if let Some(reasons) = v["adjustReasons"].as_array().filter(|a| !a.is_empty()) {
+        let list: Vec<&str> = reasons.iter().filter_map(|x| x.as_str()).collect();
+        out.push_str(&format!(" · 设备自报：{}", list.join("、")));
+    }
+    if let Some(notes) = v["notes"].as_array().filter(|a| !a.is_empty()) {
+        // 前缀已经报了偏差，别把同一条又抄一遍（摘要只有 600 字预算）
+        let list: Vec<&str> = notes
+            .iter()
+            .filter_map(|x| x.as_str())
+            .filter(|s| !s.starts_with("设备时钟比本机"))
+            .collect();
+        if !list.is_empty() {
+            out.push_str(&format!(" · 注意：{}", list.join("；")));
+        }
+    }
+    if out.chars().count() > TEXT_SUMMARY_MAX_CHARS {
+        let cut: String = out.chars().take(TEXT_SUMMARY_MAX_CHARS).collect();
+        return format!("{}…（完整内容在 structuredContent）", cut);
+    }
+    out
+}
+
 fn summarize_for_tool(tool: &str, v: &Value) -> String {
+    // CTS（`ble_cts_time`）的载荷是"一张解读表"：通用渲染只展开**前 8 个键**（字母序），
+    // 正好把 `utc` / `notes` 这些真正的结论挤出去 —— 只读文本的客户端就只看到一堆原始字段
+    //（契约测试会因此失败，2026-09 就是这么发现的）。所以给它一条自己的紧凑摘要。
+    if v.get("charUuid").is_some()
+        && matches!(v.get("field").and_then(|f| f.as_str()), Some("currentTime") | Some("localTimeInfo"))
+    {
+        return summarize_cts_time(v);
+    }
     // 按**载荷形状**判断而不是只按工具名：`ble_list_devices` 与通用桥的
     // `ui_get_state{section:"bleDevices"}` 返回的是同一张设备表，两条路都该看到设备名/MAC。
     let devices = v["devices"].as_array();
@@ -3579,6 +3717,67 @@ mod tests {
         });
     }
 
+    /// `ble_cts_time`：把 CTS 的原始值翻成人话，**并把可疑处说出来**。
+    /// 这条同时钉住两件事：① 工具真的能解（含把 HEX 字符串 / 字节数组都收下）；
+    /// ② 输入不合法时是 **-32602 且说清期望形状**（别让"HEX 写错了"变成"长度不对"）。
+    #[test]
+    fn ble_cts_time_decodes_values_and_rejects_bad_input() {
+        block_on(async {
+            let c = core();
+            // ① HEX 字符串（2026-12-17 周四 15:45:58.5）
+            let r = call(
+                &c,
+                &raw_call("ble_cts_time", &json!({ "data": "EA 07 0C 11 0F 2D 3A 04 80 00" })),
+            )
+            .await;
+            assert_eq!(r["result"]["isError"], false, "{}", r);
+            let sc = &r["result"]["structuredContent"];
+            assert_eq!(sc["field"], "currentTime");
+            assert_eq!(sc["year"], 2026);
+            assert_eq!(sc["dayOfWeekName"], "周四");
+            assert_eq!(sc["charUuid"], "2a2b");
+            let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+            assert!(text.contains("2026") || text.contains("周四"), "摘要要把解出来的东西说出来: {}", text);
+
+            // ② 字节数组（同一份值）—— 两种写法必须给出同样的结果
+            let r2 = call(
+                &c,
+                &raw_call("ble_cts_time", &json!({ "data": [234, 7, 12, 17, 15, 45, 58, 4, 128, 0] })),
+            )
+            .await;
+            assert_eq!(r2["result"]["structuredContent"]["utc"], sc["utc"]);
+            assert_eq!(r2["result"]["structuredContent"]["hex"], sc["hex"]);
+
+            // ③ 2 字节 = Local Time Information（+08:00 / 夏令时）
+            let r3 = call(&c, &raw_call("ble_cts_time", &json!({ "data": "20 02" }))).await;
+            let sc3 = &r3["result"]["structuredContent"];
+            assert_eq!(sc3["field"], "localTimeInfo");
+            assert_eq!(sc3["utcOffset"], "+08:00");
+            assert_eq!(sc3["dstName"], "夏令时");
+
+            // ④ 非法 HEX：要说"不是合法 HEX"，**不能**变成"长度不对"
+            let bad = call(&c, &raw_call("ble_cts_time", &json!({ "data": "ZZ" }))).await;
+            assert_eq!(bad["error"]["code"], E_INVALID_PARAMS, "{}", bad);
+            let msg = bad["error"]["message"].as_str().unwrap_or("");
+            assert!(msg.contains("不是合法 HEX"), "{}", msg);
+
+            // ⑤ 长度不对：说清该读几字节
+            let bad2 = call(&c, &raw_call("ble_cts_time", &json!({ "data": "01 02 03 04" }))).await;
+            assert_eq!(bad2["error"]["code"], E_INVALID_PARAMS, "{}", bad2);
+            assert!(
+                bad2["error"]["message"].as_str().unwrap_or("").contains("10 字节"),
+                "{}",
+                bad2
+            );
+
+            // ⑥ 缺 data / 空数组 / 越界元素
+            for a in [json!({}), json!({ "data": [] }), json!({ "data": [256] })] {
+                let e = call(&c, &raw_call("ble_cts_time", &a)).await;
+                assert_eq!(e["error"]["code"], E_INVALID_PARAMS, "{} 应是 -32602: {}", a, e);
+            }
+        });
+    }
+
     /// `log_export` 被**故意删除**了（2026-09，用户要求）：它是唯一能把"全量日志"
     /// 一次塞进返回体的工具（省略 `channels` = 全部通道 × 上限 20000 行/通道），
     /// 而**返回体没有大小上限**（`MAX_BODY_BYTES` 只管请求体）—— 一次调用就可能拼出
@@ -3946,6 +4145,12 @@ mod tests {
                 ], &[])),
                 ("log_search", json!({ "pattern": "mcp", "mode": "matches" }), Backend(&[
                     "hits", "mode", "pattern", "regex", "scanned", "truncated",
+                ], &[])),
+                // CTS（0x1805）值解码：纯后端，不依赖设备/界面
+                ("ble_cts_time", json!({ "data": "EA 07 0C 11 0F 2D 3A 04 80 00" }), Backend(&[
+                    "field", "charUuid", "bytes", "hex", "utc", "skewSecs", "year", "month", "day",
+                    "hour", "minute", "second", "dayOfWeek", "dayOfWeekName", "fractions256",
+                    "fractionMillis", "adjustReason", "adjustReasons", "notes",
                 ], &[])),
                 ("mcp_calls", json!({ "limit": 2 }), Backend(&["calls", "enabled", "file", "note", "returned", "scanned", "tailOnly"], &[])),
                 ("mcp_stats", json!({}), Backend(&["callLog", "sessionToolCalls"], &[])),

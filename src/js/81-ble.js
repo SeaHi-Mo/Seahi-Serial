@@ -38,7 +38,10 @@ var BLE_CONNECT_TIMEOUT_MS = 15000;
 // 配对超时（ms）：后端等用户确认配对码的上限是 60 秒，前端给它留出余量
 var BLE_PAIR_TIMEOUT_MS = 75000;
 var _bleScanStopTimer = null;  // 扫描 5 秒自动停止定时器
-var BLE_CHAR_NAMES = { '2A00':'Device Name','2A01':'Appearance','2A05':'Service Changed','2A19':'Battery Level','2A37':'Heart Rate Measurement','2A29':'Manufacturer Name' };
+// CTS（Current Time Service, 0x1805）的三个特征也列进来：服务树里能认出「Current Time」，
+// 而不是只显示裸 UUID —— AI/用户才知道该读哪个（解码交给 MCP 的 ble_cts_time）。
+var BLE_CHAR_NAMES = { '2A00':'Device Name','2A01':'Appearance','2A05':'Service Changed','2A19':'Battery Level','2A37':'Heart Rate Measurement','2A29':'Manufacturer Name',
+    '2A2B':'Current Time','2A0F':'Local Time Information','2A14':'Reference Time Information' };
 
 // GATT 服务名（Bluetooth SIG Assigned Numbers）。
 // 用途：服务行左侧显示名称；**表里查不到**的服务在右侧统一标 "Custom Service"

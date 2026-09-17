@@ -4540,6 +4540,140 @@ mod util_tests {
         assert_eq!(super::parse_hex_bytes("zz"), Vec::<u8>::new());
     }
 
+    /// CTS（`0x2A2B`，10 字节）解码：**正常值**要把每个字段都翻对，且不许乱报可疑。
+    /// 样本：2026-12-17（周四）15:45:58 + 128/256 秒，AdjustReason=0。
+    #[test]
+    fn cts_current_time_decodes_a_well_formed_value() {
+        let raw = super::parse_hex_bytes("EA 07 0C 11 0F 2D 3A 04 80 00");
+        let v = super::ble_cts_decode(&raw).expect("10 字节应能解");
+        assert_eq!(v["field"], "currentTime");
+        assert_eq!(v["charUuid"], "2a2b");
+        assert_eq!(v["year"], 2026);
+        assert_eq!(v["month"], 12);
+        assert_eq!(v["day"], 17);
+        assert_eq!(v["hour"], 15);
+        assert_eq!(v["minute"], 45);
+        assert_eq!(v["second"], 58);
+        assert_eq!(v["dayOfWeek"], 4);
+        assert_eq!(v["dayOfWeekName"], "周四");
+        assert_eq!(v["fractions256"], 128);
+        assert_eq!(v["fractionMillis"], 500, "128/256 秒 = 500ms");
+        assert_eq!(v["adjustReason"], 0);
+        assert_eq!(v["adjustReasons"].as_array().unwrap().len(), 0);
+        assert!(v["utc"].as_str().unwrap().starts_with("2026-12-17T15:45:58.500Z"), "{}", v["utc"]);
+        assert!(v["skewSecs"].is_i64(), "总要给出与本机的差值: {}", v);
+        // 这份值**本身**没有任何毛病 —— 只允许出现"与本机时间差…"那一条
+        //（差值随运行时钟变化，没法断言它的存在与否，所以只排除"字段可疑"那几类提示）
+        let suspicious = v["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| {
+                let s = n.as_str().unwrap_or("");
+                s.contains("星期几") || s.contains("月份") || s.contains("日期")
+                    || s.contains("时间 ") || s.contains("RTC") || s.contains("越界")
+            })
+            .count();
+        assert_eq!(suspicious, 0, "字段本身没毛病，不许乱报: {}", v["notes"]);
+    }
+
+    /// 可疑值要**进 notes 而不是 panic** —— 这正是这个工具的价值：
+    /// "年份像没初始化""星期几对不上""时钟偏了"都是能直接下结论的线索。
+    #[test]
+    fn cts_current_time_reports_suspicious_values() {
+        // 星期几写错（实际是周四，字段说周一）
+        let v = super::ble_cts_decode(&super::parse_hex_bytes("EA 07 0C 11 0F 2D 3A 01 00 00")).unwrap();
+        let notes = v["notes"].as_array().unwrap();
+        assert!(
+            notes.iter().any(|n| n.as_str().unwrap_or("").contains("星期几与日期对不上")),
+            "星期几不一致要说出来: {}",
+            v["notes"]
+        );
+
+        // 年份 2000（RTC 没初始化的典型样子）
+        let v = super::ble_cts_decode(&super::parse_hex_bytes("D0 07 01 01 00 00 00 06 00 00")).unwrap();
+        assert!(
+            v["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap_or("").contains("RTC")),
+            "2000 年要提示像没初始化: {}",
+            v["notes"]
+        );
+
+        // 月份越界 → 字段照回，但**不猜一个时间出来**
+        let v = super::ble_cts_decode(&super::parse_hex_bytes("EA 07 0D 11 0F 2D 3A 04 00 00")).unwrap();
+        assert!(v["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap_or("").contains("月份")));
+        assert!(v["utc"].is_null(), "日期不合法时不许给出一个时间: {}", v);
+        assert!(v["skewSecs"].is_null());
+    }
+
+    /// Adjust Reason 的位域（bit0 手动 / bit1 外部参考 / bit2 时区 / bit3 夏令时）
+    #[test]
+    fn cts_adjust_reason_bits_are_named() {
+        assert_eq!(super::ble_cts_adjust_reasons(0).len(), 0);
+        assert_eq!(super::ble_cts_adjust_reasons(0b0000_0001), vec!["手动更新时间"]);
+        assert_eq!(super::ble_cts_adjust_reasons(0b0000_0010), vec!["外部参考时间"]);
+        assert_eq!(
+            super::ble_cts_adjust_reasons(0b0000_0101),
+            vec!["手动更新时间", "时区变化"]
+        );
+        assert_eq!(
+            super::ble_cts_adjust_reasons(0b0000_1111),
+            vec!["手动更新时间", "外部参考时间", "时区变化", "夏令时变化"]
+        );
+        // 高 4 位是保留位，不该被当成人话报出来
+        assert_eq!(super::ble_cts_adjust_reasons(0b1111_0000).len(), 0, "保留位不该报");
+    }
+
+    /// Local Time Information（`0x2A0F`，2 字节）：时区是 **int8 × 15 分钟**，DST 只有 0/2/4/255 合法
+    #[test]
+    fn cts_local_time_info_decodes_timezone_and_dst() {
+        // +08:00（32 × 15 分）+ 夏令时
+        let v = super::ble_cts_decode(&super::parse_hex_bytes("20 02")).unwrap();
+        assert_eq!(v["field"], "localTimeInfo");
+        assert_eq!(v["charUuid"], "2a0f");
+        assert_eq!(v["timeZoneQuarterHours"], 32);
+        assert_eq!(v["utcOffsetMinutes"], 480);
+        assert_eq!(v["utcOffset"], "+08:00");
+        assert_eq!(v["dstName"], "夏令时");
+        assert_eq!(v["dstOffsetMinutes"], 60);
+        assert_eq!(v["notes"].as_array().unwrap().len(), 0, "{}", v["notes"]);
+
+        // 负数时区（-12:00 = -48）+ 未知 DST
+        let v = super::ble_cts_decode(&super::parse_hex_bytes("D0 FF")).unwrap();
+        assert_eq!(v["utcOffset"], "-12:00");
+        assert_eq!(v["dstName"], "未知");
+        assert_eq!(v["dstOffsetMinutes"], 0);
+
+        // +14:00（56）是规范上界，合法
+        assert_eq!(super::ble_cts_decode(&super::parse_hex_bytes("38 00")).unwrap()["utcOffset"], "+14:00");
+
+        // 越界（60 × 15 分 = +15:00）与保留 DST 值都要提示
+        let v = super::ble_cts_decode(&super::parse_hex_bytes("3C 01")).unwrap();
+        let notes = v["notes"].as_array().unwrap();
+        assert!(notes.iter().any(|n| n.as_str().unwrap_or("").contains("超出规范")), "{}", v["notes"]);
+        assert!(notes.iter().any(|n| n.as_str().unwrap_or("").contains("保留值")), "{}", v["notes"]);
+    }
+
+    /// 偏差要写成人话：RTC 没初始化的设备差的是**几年**，写成"131374 分"等于没给信息。
+    /// 单位分档（分/小时/天），**幅度**给人话、方向由调用方加"快/慢"。
+    #[test]
+    fn cts_skew_text_picks_a_readable_unit() {
+        assert_eq!(super::ble_cts_skew_text(90), "1 分 30 秒");
+        assert_eq!(super::ble_cts_skew_text(-90), "1 分 30 秒", "幅度不带符号");
+        assert_eq!(super::ble_cts_skew_text(3725), "1 小时 2 分");
+        assert_eq!(super::ble_cts_skew_text(90000), "1 天 1 小时");
+        // 26 年的偏差（RTC 没初始化）也要是可读的
+        assert!(super::ble_cts_skew_text(8_2000_0000).contains("天"));
+    }
+
+    /// 长度不对要**说清该读多少**，而不是硬解出一堆垃圾
+    #[test]
+    fn cts_rejects_unexpected_lengths_with_guidance() {
+        for bad in [vec![], vec![0u8; 1], vec![0u8; 4], vec![0u8; 10 + 1]] {
+            let e = super::ble_cts_decode(&bad).unwrap_err();
+            assert!(e.contains("10 字节") && e.contains("2 字节"), "{}", e);
+        }
+    }
+
     #[test]
     fn parse_version_handles_prefix_and_prerelease() {
         assert_eq!(super::parse_version("0.2.11"), (0, 2, 11));
@@ -5445,6 +5579,175 @@ fn bt_addr_to_u64(s: &str) -> Option<u64> {
 
 fn ble_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
+}
+
+/// Adjust Reason（`0x2A2B` 第 10 字节）的位域 → 人话。
+///
+/// 位序按 Bluetooth SIG Current Time Service（`0x1805`）规范：
+/// bit0 手动更新 / bit1 外部参考 / bit2 时区变化 / bit3 夏令时变化（4~7 保留）。
+fn ble_cts_adjust_reasons(bits: u8) -> Vec<&'static str> {
+    let mut v = Vec::new();
+    if bits & 0x01 != 0 { v.push("手动更新时间"); }
+    if bits & 0x02 != 0 { v.push("外部参考时间"); }
+    if bits & 0x04 != 0 { v.push("时区变化"); }
+    if bits & 0x08 != 0 { v.push("夏令时变化"); }
+    v
+}
+
+/// 星期几（规范 1=周一 … 7=周日）→ 中文；越界给空串
+fn ble_cts_dow_name(dow: u8) -> &'static str {
+    match dow {
+        1 => "周一", 2 => "周二", 3 => "周三", 4 => "周四",
+        5 => "周五", 6 => "周六", 7 => "周日", _ => "",
+    }
+}
+
+/// 秒差 → 人话。**别写成"131374 分"**：RTC 没初始化的设备差的是几年，
+/// 那种数字写成分钟等于没给信息（分/小时/天各取一档）。
+fn ble_cts_skew_text(secs: i64) -> String {
+    let a = secs.abs();
+    if a >= 86400 {
+        format!("{} 天 {} 小时", a / 86400, (a % 86400) / 3600)
+    } else if a >= 3600 {
+        format!("{} 小时 {} 分", a / 3600, (a % 3600) / 60)
+    } else {
+        format!("{} 分 {} 秒", a / 60, a % 60)
+    }
+}
+
+/// BLE **CTS（Current Time Service, 0x1805）**的值解码 —— 纯函数，便于单测。
+///
+/// 为什么需要它：`ble_read{char:"0x2a2b"}` 读回来的是**10 字节原始值**，调用方得自己按规范解
+/// （年 = uint16 **小端**、星期是 1..7、Fractions256 是 1/256 秒、Adjust Reason 是位域）——
+/// 模型在这上面很容易出错，而错一个字段结论就全歪（"设备时间是 2000 年"这种真实 bug
+/// 恰恰靠这几个字段看出来）。所以把"读"和"解"分开：读仍走面板那条路
+/// （`ble_read` → 结果进 `ble_get_output`），解由 `ble_cts_time` 做。
+///
+/// 认两种长度（**按长度区分字段**，并把它写在返回的 `field` 里，不做静默猜测）：
+/// - **10 字节** = Current Time（`0x2A2B`）：年(u16 LE) 月 日 时 分 秒 星期 Fractions256 AdjustReason；
+/// - **2 字节** = Local Time Information（`0x2A0F`）：时区(int8, 1/4 小时) DST 偏移(u8)。
+///
+/// ⚠️ 字段顺序与位定义**以 SIG 规范为准**（实现时对着规范核过；本函数把每个字段的范围都检查了，
+/// 越界**不 panic**、而是进 `notes` —— 那些"越界/年份像没初始化/星期几对不上"正是要报给调用方的结论）。
+fn ble_cts_decode(data: &[u8]) -> Result<serde_json::Value, String> {
+    match data.len() {
+        10 => {
+            let year = u16::from_le_bytes([data[0], data[1]]) as i32;
+            let month = data[2] as u32;
+            let day = data[3] as u32;
+            let hour = data[4] as u32;
+            let minute = data[5] as u32;
+            let second = data[6] as u32;
+            let dow = data[7];
+            let frac = data[8];
+            let reason = data[9];
+
+            let mut notes: Vec<String> = Vec::new();
+            let month_ok = (1..=12).contains(&month);
+            let day_ok = (1..=31).contains(&day);
+            let time_ok = hour < 24 && minute < 60 && second < 60;
+            // `<= 2000`：**2000-01-01 正是"RTC 没初始化"的经典签名** —— 写成 `< 2000` 会正好漏掉它
+            if year <= 2000 {
+                notes.push(format!("年份 {year} 不像真实时间（RTC 很可能没初始化）"));
+            }
+            if !month_ok { notes.push(format!("月份 {month} 越界（1~12）")); }
+            if !day_ok { notes.push(format!("日期 {day} 越界（1~31）")); }
+            if !time_ok { notes.push(format!("时间 {hour:02}:{minute:02}:{second:02} 越界")); }
+            let dow_name = ble_cts_dow_name(dow);
+            if dow_name.is_empty() {
+                notes.push(format!("星期几 {dow} 越界（规范是 1=周一 … 7=周日）"));
+            }
+
+            // 字段本身就是 **UTC**；拼不出来就只回字段、不猜一个时间出来
+            let mut utc: Option<String> = None;
+            let mut skew_secs: Option<i64> = None;
+            if month_ok && day_ok && time_ok {
+                use chrono::{Datelike, TimeZone, Utc};
+                match Utc.with_ymd_and_hms(year, month, day, hour, minute, second).single() {
+                    Some(dt) => {
+                        let dt = dt + chrono::Duration::milliseconds((frac as i64) * 1000 / 256);
+                        utc = Some(dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+                        skew_secs = Some((dt - Utc::now()).num_seconds());
+                        let expect = dt.weekday().number_from_monday() as u8;
+                        if !dow_name.is_empty() && expect != dow {
+                            notes.push(format!(
+                                "星期几与日期对不上：字段说 {}，按日期算应是 {}",
+                                dow_name, ble_cts_dow_name(expect)
+                            ));
+                        }
+                    }
+                    None => notes.push(format!("{year}-{month:02}-{day:02} 不是合法日期")),
+                }
+            }
+            if let Some(s) = skew_secs {
+                // 差 5 分钟以上才值得说（秒级抖动是正常的）
+                if s.abs() >= 300 {
+                    notes.push(format!(
+                        "设备时钟比本机{} {}",
+                        if s >= 0 { "快" } else { "慢" },
+                        ble_cts_skew_text(s)
+                    ));
+                }
+            }
+            let reasons = ble_cts_adjust_reasons(reason);
+            if !reasons.is_empty() {
+                notes.push(format!("设备自报的调整原因：{}", reasons.join("、")));
+            }
+
+            Ok(serde_json::json!({
+                "field": "currentTime",
+                "charUuid": "2a2b",
+                "bytes": data.len(),
+                "hex": ble_hex(data),
+                "utc": utc,
+                "skewSecs": skew_secs,
+                "year": year, "month": month, "day": day,
+                "hour": hour, "minute": minute, "second": second,
+                "dayOfWeek": dow, "dayOfWeekName": dow_name,
+                "fractions256": frac, "fractionMillis": (frac as u32) * 1000 / 256,
+                "adjustReason": reason, "adjustReasons": reasons,
+                "notes": notes,
+            }))
+        }
+        2 => {
+            let tz_raw = data[0] as i8;
+            let dst = data[1];
+            let mut notes: Vec<String> = Vec::new();
+            let mins = (tz_raw as i32) * 15;
+            // 规范范围：-48 ~ +56（即 -12:00 ~ +14:00）
+            if !(-48..=56).contains(&(tz_raw as i32)) {
+                notes.push(format!("时区 {tz_raw}（1/4 小时单位）超出规范的 -48~+56"));
+            }
+            let (dst_name, dst_minutes) = match dst {
+                0 => ("标准时间", 0),
+                2 => ("夏令时", 60),
+                4 => ("双倍夏令时", 120),
+                255 => ("未知", 0),
+                _ => ("保留值", 0),
+            };
+            if !matches!(dst, 0 | 2 | 4 | 255) {
+                notes.push(format!("DST 偏移 {dst} 是保留值（规范只定义 0/2/4/255）"));
+            }
+            let sign = if mins < 0 { "-" } else { "+" };
+            Ok(serde_json::json!({
+                "field": "localTimeInfo",
+                "charUuid": "2a0f",
+                "bytes": data.len(),
+                "hex": ble_hex(data),
+                "timeZoneQuarterHours": tz_raw as i32,
+                "utcOffsetMinutes": mins,
+                "utcOffset": format!("{}{:02}:{:02}", sign, mins.abs() / 60, mins.abs() % 60),
+                "dstOffset": dst,
+                "dstName": dst_name,
+                "dstOffsetMinutes": dst_minutes,
+                "notes": notes,
+            }))
+        }
+        n => Err(format!(
+            "只认 10 字节的 Current Time（0x2A2B）或 2 字节的 Local Time Information（0x2A0F），\
+             收到 {n} 字节 —— 先把整条特征值读出来（别截断），或确认读的是不是 CTS 的特征"
+        )),
+    }
 }
 
 #[cfg(test)]

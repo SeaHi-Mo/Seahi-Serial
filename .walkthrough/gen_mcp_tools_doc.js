@@ -117,7 +117,7 @@ const META = {
   ble_write: ['写', '{pane, uuid, hex, bytes, writeType, format, lineEnding}', '**打开面板那个写入窗并点「发送」**：HEX/文本解析、行尾、写响应/无响应全用面板那套（写入窗会留在界面上）。单次最多 `maxBleWriteChars` 个字符；特征的写入方式不支持时要的错误里会把可选值列出来'],
   ble_connect: ['写', '{pane, connected, addr, name, via, serviceCount, paired?}', '`via=list`（扫描列表里点卡片连）/ `direct`（列表里没有 → 按 MAC 直连，**不依赖广播**）/ `selected`（用面板已选中的那台）。**等连接真的成功才返回**；需要配对时会弹出配对窗等用户确认'],
   ble_disconnect: ['写', '{pane, connected:false, addr, changed}', '断开后面板的服务树、订阅状态、本次会话数据日志一并清空（与点那颗「断开设备」按钮完全一样）'],
-  ble_get_output: ['读', '{pane, count, scanned, mode, total, channels:{rx}, items:[{seq,ts,kind,hex,text,dim}]}；`mode:"matches"` 时是 `hits:[{seq,ts,kind,match}]`，`mode:"count"` 时是 `total`/`totalMatches`（**都没有 items**），后两档另外带 `pattern`/`regex`', '**本次会话的蓝牙数据日志**（切设备/断开就清空）。要跨会话用 `channels.rx` 去 log_tail；`sinceSeq` 增量跟进。**要"这条 ERROR 出现几次"别拉条目**：给 `pattern` + `mode`（`count` 只回计数、`matches` 只回片段）；匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也搜得到）'],
+  ble_cts_time: ['读', '{field, charUuid, bytes, hex, utc, skewSecs, year, month, day, hour, minute, second, dayOfWeek, dayOfWeekName, fractions256, fractionMillis, adjustReason, adjustReasons, notes}；ield:\'读', '{pane, count, scanned, mode, total, channels:{rx}, items:[{seq,ts,kind,hex,text,dim}]}；`mode:"matches"` 时是 `hits:[{seq,ts,kind,match}]`，`mode:"count"` 时是 `total`/`totalMatches`（**都没有 items**），后两档另外带 `pattern`/`regex`', '**本次会话的蓝牙数据日志**（切设备/断开就清空）。要跨会话用 `channels.rx` 去 log_tail；`sinceSeq` 增量跟进。**要"这条 ERROR 出现几次"别拉条目**：给 `pattern` + `mode`（`count` 只回计数、`matches` 只回片段）；匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也搜得到）'],
   ble_refresh_rssi: ['读', '{addr, rssi, raw}', '只问一次射频、不改状态；没连设备时直接报"先连上"'],
   ble_get_services: ['读', '{connected, addr, serviceCount, services:[{uuid,name,chars:[{uuid,props,descs}]}]}', '**取的是面板已经拉到的那份服务树**（不会重新去问设备）；还没连设备时 `note` 会说明'],
   // ⚠️ BLE **从机**（外设）的三个工具已于 2026-09 删除：本机适配器自报支持外设角色，
@@ -161,7 +161,7 @@ const META = {
 
 const GROUPS = [
   ['串口语义工具（**优先用这些**，比 ui_* 通用桥更准）', ['serial_get_state', 'serial_select_port', 'serial_set_baud', 'serial_set_frame', 'serial_set_lines', 'serial_set_display', 'serial_open', 'serial_close', 'serial_send', 'serial_clear', 'serial_get_history', 'serial_get_output', 'serial_quick_cmd', 'serial_workflow', 'serial_workflow_run']],
-  ['蓝牙语义工具（BLE，**主机方向**）', ['ble_get_state', 'ble_list_devices', 'ble_start_scan', 'ble_stop_scan', 'ble_connect', 'ble_disconnect', 'ble_get_services', 'ble_read', 'ble_write', 'ble_subscribe', 'ble_get_output', 'ble_refresh_rssi']],
+  ['蓝牙语义工具（BLE，**主机方向**）', ['ble_get_state', 'ble_list_devices', 'ble_start_scan', 'ble_stop_scan', 'ble_connect', 'ble_disconnect', 'ble_get_services', 'ble_read', 'ble_write', 'ble_subscribe', 'ble_get_output', 'ble_refresh_rssi', 'ble_cts_time']],
   ['ADB 语义工具（ADB shell）', ['adb_list_devices', 'adb_open_shell', 'adb_shell_write', 'adb_shell_read', 'adb_shell_resize', 'adb_close_shell']],
   ['安全与策略', ['mcp_danger']],
   ['应用与服务器', ['app_info', 'mcp_status', 'mcp_limits', 'serial_list_ports']],

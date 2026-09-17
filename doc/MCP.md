@@ -123,7 +123,7 @@ token 放在 URL 里是为了兼容"只会填 url、不会填 headers"的客户�
 | 类别 | 工具 |
 |---|---|
 | **串口语义（推荐优先用这些）** | `serial_get_state`、`serial_select_port`、`serial_set_baud`、`serial_set_frame`、`serial_set_lines`、`serial_set_display`、`serial_open`、`serial_close`、`serial_send`、`serial_clear`、`serial_get_history`、`serial_quick_cmd`、`serial_workflow`、`serial_workflow_run` |
-| **蓝牙语义** | `ble_get_state`、`ble_list_devices`、`ble_start_scan`、`ble_stop_scan`、`ble_connect`、`ble_disconnect`、`ble_get_services`、`ble_read`、`ble_write`、`ble_subscribe`、`ble_get_output`、`ble_refresh_rssi` |
+| **蓝牙语义** | `ble_get_state`、`ble_list_devices`、`ble_start_scan`、`ble_stop_scan`、`ble_connect`、`ble_disconnect`、`ble_get_services`、`ble_read`、`ble_write`、`ble_subscribe`、`ble_get_output`、`ble_refresh_rssi`、`ble_cts_time` |
 | **ADB 语义** | `adb_list_devices`、`adb_open_shell`、`adb_shell_write`、`adb_shell_read`、`adb_shell_resize`、`adb_close_shell` |
 | 应用/服务器 | `app_info`、`mcp_status`、`mcp_limits`、`serial_list_ports` |
 | 界面操作 | `ui_list`、`ui_describe`、`ui_get`、`ui_set`、`ui_click`、`ui_get_state` |
@@ -238,6 +238,24 @@ WSL 侧是 WSL 里的设备（`get_wsl_serial_devices` / `open_wsl_serial`）。
 | `ble_disconnect` | 断开当前设备（服务树/订阅/本次会话日志一并清空，与那颗按钮完全一样） | 写 |
 | `ble_get_output` | **本次会话**的蓝牙数据日志（收到的通知/读回的内容、发出的写）；要跨会话历史用 `channels.rx` 去 `log_tail` | 读 |
 | `ble_refresh_rssi` | 已连设备的信号强度（只问一次射频，不改状态） | 读 |
+| `ble_cts_time` | 把 **CTS（0x1805）** 的值翻成人话（UTC 时间 / 与本机差多少 / 星期几 / 调整原因 + 可疑处提示）。**纯后端**，只解字节 | 读 |
+
+#### 读设备时间（CTS，`0x1805`）怎么用
+
+从机的**时间**是最常见的调试点（RTC 没初始化 → 年份 2000；时区差 8 小时；星期几算错…），
+而 CTS 的特征值本身是 **10 字节二进制**，人肉解很容易错。三步：
+
+```
+ble_get_services                                  # 1) 服务树里认「Current Time」(0x1805) 与「Current Time」(2A2B)
+ble_read   { "char": "0x2a2b" }                   # 2) 点面板那颗读按钮 → 值进日志
+ble_get_output                                    # 3) 拿到 { kind:"rx", hex:"EA 07 0C …" } 的 hex
+ble_cts_time { "data": "EA 07 0C 11 0F 2D 3A 04 80 00" }   # 4) 翻成人话
+```
+
+返回里最有用的是三样：`utc`（时间本身）、**`skewSecs`**（与本机的差值 —— 正负和大小一眼看出时钟偏了多少）、
+**`notes`**（主动指出可疑处：年份像 RTC 没初始化 / 星期几与日期对不上 / 时钟偏了 N 分钟 / 设备自报的调整原因）。
+2 字节的值按 `Local Time Information`（`0x2A0F`）解，回时区（`utcOffset`）与 DST 名称。
+`data` 收 HEX 字符串或字节数组；长度不是 10/2 字节会直接说清该读多少 —— 别截断特征值。
 
 #### 扫描结果怎么读（三条路，读的是同一份数据）
 

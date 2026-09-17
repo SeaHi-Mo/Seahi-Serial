@@ -3099,7 +3099,7 @@ console.log('preview ->', out);
                        mcpSrc.indexOf('\n    ]', mcpSrc.indexOf('pub fn tool_defs()')))
         .matchAll(/"name":\s*"([a-z][a-z0-9_]*)"/g)].map((m) => m[1])
     )];
-    check(srcTools.length === 53, '源码里是 53 个内置工具（19 通用 + 16 串口语义 + 12 蓝牙语义 + 6 ADB 语义）', srcTools.length);
+    check(srcTools.length === 54, '源码里是 54 个内置工具（19 通用 + 16 串口语义 + 13 蓝牙语义 + 6 ADB 语义）', srcTools.length);
     const missing = srcTools.filter((n) => toolsDoc.indexOf('#### `' + n + '`') < 0);
     check(missing.length === 0, '工具参考文档 doc/MCP_TOOLS.md 列出了全部内置工具', '缺：' + missing.join(','));
     check((toolsDoc.match(/^#### `/gm) || []).length === srcTools.length,
