@@ -267,6 +267,7 @@
 .qcmd-list { flex:1; overflow-y:auto; scrollbar-gutter:stable; }
 .qcmd-list::-webkit-scrollbar { width:8px; }
 .qcmd-list::-webkit-scrollbar-track { background:transparent; }
+.qcmd-list::-webkit-scrollbar-corner { background:transparent; }
 .qcmd-list::-webkit-scrollbar-thumb {
     background:rgba(100,106,118,.35); border-radius:4px;
     border:2px solid transparent; background-clip:content-box;

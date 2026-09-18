@@ -253,6 +253,14 @@ function bufferPush(mid, type, ts, text) {
     // MCP 日志中心回灌（S7）：串口/WSL 收发 → serial:/wsl: 通道；系统提示 → ui: 通道。
     // 后端拿不到这些（它们在界面这边才成型），所以必须从这里回灌。
     var mcpCh, mcpLevel, mcpDir;
+    // 来源：这条发送是不是 **AI 触发的**。`mcpSerialOp` 的 send 分支在点按钮**之前**挂标记，
+    // 而 `sendData` 跑到 `appendOutput` 这一段是同步的（第一个 `await` 在它后面），
+    // 所以这里一定能认领到；认领后由调用方跳过"补记"，同一次发送不会记两条。
+    var mcpSrc = 'none';
+    if (type === 'send' && _mcpAiSend && _mcpAiSend.mid === mid) {
+        mcpSrc = 'ai';
+        _mcpAiSend.claimed = true;
+    }
     if (type === 'recv' || type === 'send') {
         // 通道名规则只在 mcpSerialLogChannels 里定义一处（与 serial_get_output 读的是同一套名字）
         var chans = mcpSerialLogChannels(mid);
@@ -264,7 +272,7 @@ function bufferPush(mid, type, ts, text) {
         mcpLevel = (type === 'err' ? 'error' : 'info');
         mcpDir = 'none';
     }
-    mcpLogPush(mcpCh, mcpLevel, mcpDir, ts + text, textBytes.length);
+    mcpLogPush(mcpCh, mcpLevel, mcpDir, ts + text, textBytes.length, mcpSrc);
 }
 
 // 移除最旧的 N 行

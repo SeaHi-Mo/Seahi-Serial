@@ -1169,7 +1169,7 @@ function mcpBleOp(payload) {
             pane: 'ble',
             count: slice.length,
             total: logs.length,
-            channels: { rx: 'ble:rx' },      // 给 log_tail 用（跨会话/更多条）
+            channels: { rx: 'ble:rx', tx: 'ble:tx' },   // 给 log_tail 用（跨会话/更多条）
             items: slice.map(function (l) {
                 return {
                     seq: (typeof l.seq === 'number') ? l.seq : 0,
@@ -1921,7 +1921,25 @@ function mcpSerialOp(payload) {
             inp.dispatchEvent(new Event('input', { bubbles: true }));
             inp.dispatchEvent(new Event('change', { bubbles: true }));
         } catch (e) { /* ignore */ }
+        // **先挂标记、再点按钮**（click 是同步派发，`sendData` 会在这行里一直跑到记录那一步），
+        // 让日志能把"这次发送"标成 AI 的 —— 否则它与用户手点发送在日志里一模一样。
+        _mcpAiSend = { mid: mid, claimed: false };
         sbtn.click();   // → sendData(mid)
+        var claimedOnce = _mcpAiSend && _mcpAiSend.claimed;
+        _mcpAiSend = null;
+        if (!claimedOnce) {
+            // 没被认领 = 这条"发送"根本没进日志中心。两种情况：
+            // ① 用户把**消息回显（echo）关掉了** —— `sendData` 只在 echo 开时才记一条 `send`；
+            // ② 输出区还没渲染出来（`appendOutput` 第一行就 return 了）。
+            // 但"AI 发了什么"是**事实**，不该由两个显示开关决定记不记 —— 补一条。
+            // 否则 echo 一关，AI 的操作在日志里就是一片空白，用户复盘时看不到它动过手。
+            var txChans = mcpSerialLogChannels(mid);
+            var approxBytes = 0;
+            try { approxBytes = new TextEncoder().encode(data).length; } catch (e) { approxBytes = data.length; }
+            // 注：这里是**近似**字节数（没展开 `\n` 转义、也没补行尾）。`bytes` 只是展示字段；
+            // 正常路径（echo 开着）记的是 `appendOutput` 算好的精确值，只有补记这一跳用它。
+            mcpLogPush(txChans.tx, 'info', 'tx', outputTs(mid) + data, approxBytes, 'ai');
+        }
         return { ok: true, value: { pane: mid, sent: true, mode: mcpSerialState(mid).sendAs,
                                     bytes: data.length, data: data.slice(0, 200) } };
     }
@@ -2193,6 +2211,9 @@ var _mcpLogQueueMax = 2000;
 // 待发队列满时丢掉的条数（**按通道**）：丢弃必须记账，否则 log_tail 的
 // `dropped`/`mayBeIncomplete` 会撒谎（说"日志完整"，实际丢了九成）—— 2026-09 审计发现。
 var _mcpLogDropByCh = {};
+// AI 发送的"待认领"标记：`mcpSerialOp` 的 send 分支挂上它，`bufferPush` 认领它
+// （认领到就把那条日志的来源标成 `ai`）。见 `mcpLogPush` 关于"这一跳不许丢字段"的说明。
+var _mcpAiSend = null;
 
 function mcpLogSchedule() {
     if (_mcpLogTimer) return;
@@ -2221,7 +2242,13 @@ function mcpLogFlush() {
     }
 }
 
-function mcpLogPush(channel, level, dir, text, bytes) {
+/// 推一条到日志中心（前端侧）。
+///
+/// `src` 是**来源**：`'ai'` = 这次动作是 AI 通过 MCP 工具触发的，`'ui'` = 用户手动，
+/// 省略 = 不标。它要一路穿到 Rust 的 `LogHub`（`log_push_batch` → `push_src`）——
+/// **中间任何一跳漏掉这个字段，功能就静默失效**（前端标了、后端存成"未标记"，
+/// 而两边的单测各自都是绿的，见 AGENTS #9）。
+function mcpLogPush(channel, level, dir, text, bytes, src) {
     if (!text) return;
     // 队列也有硬上限：万一定时器被浏览器节流，不能无界堆积。
     // ⚠️ 丢最旧的那条时要**按通道记账**（少了这一步，"丢弃"就变成静默的数据丢失）。
@@ -2237,6 +2264,7 @@ function mcpLogPush(channel, level, dir, text, bytes) {
         dir: dir,
         text: String(text).slice(0, 8192),
         bytes: bytes || 0,
+        src: src || 'none',
     });
     mcpLogSchedule();
 }

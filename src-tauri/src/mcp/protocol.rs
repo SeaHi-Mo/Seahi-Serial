@@ -72,17 +72,38 @@ impl RpcError {
 /// **一次性**告诉它（只在握手时传一次，代价几乎为零）。
 ///
 /// 内容只写"能直接省掉一次失败"的东西，不写自我介绍。
+///
+/// 2026-09 补：原来只给了串口与 ADB 两条任务链。而**"用在哪些场景"正是 `instructions`
+/// 最该回答的问题** —— 模型在 54 个工具里**挑错工具**的代价，比顺序写错大得多
+/// （挑错轻则拿到一句前言不搭后语的报错，重则去动用户根本没想动的那一栏）。
+/// 现在按"任务链"补齐了四个面板（Windows 串口 / WSL 串口 / 蓝牙 / ADB）与三条最容易
+/// 选错的场景（"读内容该用哪个"、快速指令与工作流、通用界面桥）。
+///
+/// 两条纪律：
+/// ① **只写场景骨架，不重复工具自己的说明** —— 参数细节与坑点都在各自的 `description` 里，
+///    这里再抄一份必然漂移（AGENTS #11）；
+/// ② **这里点到的工具名必须真实存在** —— 由 `descriptions_only_reference_real_tools` 守着。
 pub const SERVER_INSTRUCTIONS: &str = "\
-SeaHi Serial 的串口/蓝牙调试接口。按下面的顺序工作能省掉大部分来回：
-1) 先看状态再动手：mcp_status 看有没有界面（hasUi）与工具数；串口操作前先 serial_get_state 看端口、波特率、是否正在监控。
-2) 串口主流程：serial_get_state → serial_select_port → serial_set_baud → serial_open → serial_send → serial_get_output（读设备回了什么）→ serial_close。多分栏用 pane 参数（如 extra-1）。
-3) 出错就照错误信息做：它通常已经给出可选值（例如「可选值只有: COM1」）或下一个该调的工具，不要盲试。
-4) 错误码语义：-32602 表示参数或取值不对（改参数重试）；isError 且文本含 -32006 表示前置条件没满足（先做前置操作，例如 serial_open），或者本机没有界面/没有设备。
-5) 写操作只给一个目标时，失败即整次调用失败（不会假装成功）；给多个目标才会逐条回报。
-6) 上限先查 mcp_limits：例如 ui_set 一次最多 200 条、serial_send 单次最多 64K 字符；请求限流 60 次/分。
-7) 日志不要重复拉全量：log_tail 用 sinceSeq 增量跟进。
-8) 若 mcp_status 的 readOnly 为 true，说明用户开了**只读（沙箱）模式**：所有写操作会被拒（错误码 -32007，且**没有执行**）。这不是参数问题，别重试、也别绕路，直接告诉用户「请到 MCP 弹窗里关掉只读模式」即可。
-9) ADB 语义：adb_list_devices 看设备（只有 state=device 那台能用）→ adb_open_shell（**危险，要 confirm:true**；会等 PTY 真的建出来才返回）→ adb_shell_write（**危险，要 confirm:true**；命令要自带换行才会执行）→ adb_shell_read（用 sinceSeq 增量跟进，**不需要界面**）→ adb_close_shell。";
+SeaHi Serial 的串口/蓝牙调试接口（本机的一个桌面调试工具，串口 / WSL / ADB / 蓝牙 四个面板）。
+按下面的顺序工作能省掉大部分来回。
+
+【通用纪律】
+1) 先看状态再动手：mcp_status 看有没有界面（hasUi）、是否只读（readOnly）、工具数。
+2) 出错就照错误信息做：它通常已经给出可选值（例如「可选值只有: COM1」）或下一个该调的工具，不要盲试。
+3) 错误码语义：-32602 表示参数或取值不对（改参数重试）；isError 且文本含 -32006 表示前置条件没满足（先做前置操作，例如 serial_open），或者本机没有界面/没有设备；-32007 表示用户开了只读模式（见第 14 条）。拿不准哪些操作需要二次确认，就先调 mcp_danger 看清单。
+4) 写操作只给一个目标时，失败即整次调用失败（不会假装成功）；给多个目标才会逐条回报。
+5) 上限先查 mcp_limits：例如 ui_set 一次最多 200 条、serial_send 单次最多 64K 字符；请求限流 60 次/分。
+6) 读内容一律**增量拉**（给 sinceSeq，用返回的 nextSinceSeq 接着跟），别反复拉全量。
+
+【按场景挑一条任务链走】
+7) Windows 串口：serial_get_state（**动手前先调它**，看端口/波特率/是否正在监控）→ serial_select_port → serial_set_baud → serial_open → serial_send → serial_get_output（读设备回了什么）→ serial_close。多分栏用 pane 参数（main / extra-N）。
+8) WSL 串口：用的还是同一套工具，但 pane 传 wsl / wsl-xN，端口是该 WSL 内的 /dev/*（**不是** COM 口，serial_list_ports 看不到它们）—— 选端口前先 serial_get_state 读该分栏的 portOptions。
+9) 蓝牙（只有**主机**方向）：ble_start_scan → ble_list_devices → ble_connect → ble_get_services → ble_subscribe（订阅通知）/ ble_read（读一次）→ ble_get_output（读收到的通知）。**设备不广播就搜不到**（被 Windows 配对过、或被别的主机连走）—— 这时 ble_list_devices 是空的，只能 ble_connect 带上 addr 按 MAC 直连。连上会自动停扫描（scanning 变 false），属正常现象。
+10) ADB：adb_list_devices（只有 state=device 那台能用）→ adb_open_shell（**危险，要 confirm:true**；会等 PTY 真的建出来才返回）→ adb_shell_write（**危险，要 confirm:true**；命令要自带换行才会执行）→ adb_shell_read（**不需要界面**）→ adb_close_shell。
+11) 「读内容」该选哪个（选错很费 token）：串口收发用 serial_get_output；BLE 通知用 ble_get_output；ADB 输出用 adb_shell_read；**跨通道 / 找历史 / 按关键字检索**用 log_channels（不确定去哪找就先调它）→ log_tail / log_search。只想知道「出现过几次」用 log_search 的 mode:count，别把条目全拉回来。
+12) 快速指令与工作流：serial_quick_cmd（不带参数=列出、给 index=发那一条、action=loop=开关循环、action=add|update|remove|group=改列表）；serial_workflow 同理（省略 action=列出、add|update|remove=改规则），但**让规则真的跑起来必须用 serial_workflow_run 且带 confirm:true** —— 规则一跑，收到匹配数据就会自动往设备发数据。
+13) 没有语义工具可用时，才用通用界面桥：ui_list（枚举控件）→ ui_describe（看输入格式与可选值）→ ui_get（读值）→ ui_set / ui_click（改值，走的就是用户点击的同一条路）。ui_get_state 读的是持久化的界面配置快照。
+14) 若 mcp_status 的 readOnly 为 true，说明用户开了**只读（沙箱）模式**：所有写操作会被拒（错误码 -32007，且**没有执行**）。这不是参数问题，别重试、也别绕路，直接告诉用户「请到 MCP 弹窗里关掉只读模式」即可。";
 
 /// 会被**只读（沙箱）模式**拦下的写工具。
 ///
@@ -154,6 +175,95 @@ pub fn danger_note(name: &str) -> Option<&'static str> {
     DANGER_TOOLS.iter().find(|(n, _)| *n == name).map(|(_, why)| *why)
 }
 
+/// **性质随调用而变**的工具：同一个工具既能只读列举、又能改状态。
+///
+/// 为什么必须单独列出来：`annotations` 是**按工具**给的，而这两个是**按调用**判的
+/// （见 `is_write_call`）。给它们标 `readOnlyHint: true` 就等于告诉客户端
+/// "带 index 真把指令发出去也算只读" —— 那比不标更坏。所以宁可保守，一律不标只读。
+pub const SOMETIMES_WRITE_TOOLS: &[&str] = &["serial_quick_cmd", "serial_workflow"];
+
+/// 明确登记为**只读**（任何调用都不改状态）的工具。
+///
+/// 为什么要单独有一张表、而不是"不在 `WRITE_TOOLS` 里就当只读"：
+/// **名字本身判断不出读写**，所以"不在写表里"推导不出"只读" —— 它只能推导出"**没分类**"。
+/// 2026-09 写 `annotations` 时先用了后者（`!WRITE_TOOLS.contains(name) → readOnlyHint:true`），
+/// 被自己的断言当场抓出来：新增一个写工具却忘了加进 `WRITE_TOOLS`，
+/// `annotations` 会**主动告诉客户端"这是只读的"**，而只读模式也不会拦它 —— 两边一起错。
+///
+/// 所以纪律是**显式分类**：每个工具要么是写（`WRITE_TOOLS`）、要么是"按调用变性质"
+/// （`SOMETIMES_WRITE_TOOLS`）、要么在这张表里，三选一，由
+/// `every_tool_is_explicitly_classified` 守着。**没分类 → 测试 fail**，而不是静默当只读。
+///
+/// ⚠️ 往这里加条目 = 声明"这个工具永远不改状态"。`annotations_for` 直接读它，
+/// 编错了就是给客户端一个错的承诺 —— 加之前先看它有没有写分支（`is_write_call` 也要一起对）。
+pub const READ_ONLY_TOOLS: &[&str] = &[
+    "app_info",
+    "mcp_status",
+    "mcp_limits",
+    "mcp_config_get",
+    "mcp_danger",
+    "mcp_calls",
+    "mcp_stats",
+    "serial_list_ports",
+    "serial_get_state",
+    "serial_get_history",
+    "serial_get_output",
+    "ble_get_state",
+    "ble_list_devices",
+    "ble_get_services",
+    "ble_read",
+    "ble_get_output",
+    "ble_refresh_rssi",
+    "ble_cts_time",
+    "adb_list_devices",
+    "adb_shell_read",
+    "ui_list",
+    "ui_describe",
+    "ui_get",
+    "ui_get_state",
+    "log_channels",
+    "log_tail",
+    "log_search",
+    "log_stats",
+];
+
+/// 给一个工具算它的 MCP `annotations`（规范里的**安全提示**字段）。
+///
+/// 为什么值得给：规范给这几个字段的**默认值是反的** —— 不写 `readOnlyHint` 就当"非只读"，
+/// 不写 `destructiveHint` 就当 **`true`（破坏性）**。也就是说**什么都不写时，
+/// `mcp_status` 这种纯读工具在规范意义上也是"破坏性操作"**，带审批 UI 的客户端会照此处理。
+///
+/// 三条纪律：
+/// ① **只读靠 `READ_ONLY_TOOLS` 显式登记，破坏性靠 `DANGER_TOOLS`** —— 绝不"没登记就当只读"
+///    （那是漏登记时**主动说错话**，见 `READ_ONLY_TOOLS` 的注释）；
+/// ② **宁可保守**：认不出来的名字一律回非只读；
+/// ③ **这是提示，不是约束** —— 它不能替代只读模式的 -32007 硬拦，也不能替代
+///    `confirm: true` 那道门（安全判定必须留在服务端，客户端可能整个忽略 annotations）。
+pub fn annotations_for(name: &str) -> Value {
+    json!({
+        "readOnlyHint": READ_ONLY_TOOLS.contains(&name),
+        // 只在非只读时有意义；显式给是为了把默认值 true 改成 false ——
+        // 否则 `serial_set_baud` 这类"改个设置"会被客户端当成破坏性操作。
+        "destructiveHint": danger_note(name).is_some(),
+    })
+}
+
+/// 给整份工具表补上 `annotations`（`tool_defs()` 与 `exposed_tools()` 共用一处）。
+///
+/// 放在**返回前统一注入**、而不是逐个 `json!` 手写：内置工具与最多 400 个 `ctl_*`
+/// 全都由 `WRITE_TOOLS` / `DANGER_TOOLS` 派生，改那两张表时这里自动跟着变。
+pub fn annotate_tools(tools: &mut [Value]) {
+    for t in tools.iter_mut() {
+        let name = match t.get("name").and_then(|n| n.as_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if let Some(obj) = t.as_object_mut() {
+            obj.insert("annotations".to_string(), annotations_for(&name));
+        }
+    }
+}
+
 /// 为什么不能只看工具名：`serial_quick_cmd` 不带 `index`/`action` 是"列出快速指令"（只读），
 /// 带 `index` 就是"真的把那条指令发出去"、带 `action` 就是"改列表/开关循环"（都是写）。
 /// **只读模式必须按调用判，不能按工具判** —— 否则要么漏放一个真写操作进来，
@@ -191,7 +301,7 @@ fn no_serial_port_hint(port_count: usize) -> Option<String> {
 
 /// 本轮已实现的工具（后续按 §16 的 S6/S7 增补语义工具与 `ctl_*` 全量工具）
 pub fn tool_defs() -> Vec<Value> {
-    vec![
+    let mut v = vec![
         json!({
             "name": "app_info",
             "description": "本机 SeaHi Serial 应用的基本信息（版本、平台、进程、运行时长）。只读，无副作用。",
@@ -219,7 +329,7 @@ pub fn tool_defs() -> Vec<Value> {
         // 所以界面必然跟着变。分栏用 pane（main / extra-1 / …）指定，省略即 main。
         json!({
             "name": "serial_get_state",
-            "description": "读某个串口分栏的完整状态：端口、波特率、帧格式(数据位/停止位/校验)、行尾、DTR/RTS、查看模式、行号/时间戳/回显/自动滚动/自动重连/终端模式、**是否正在监控**、输出行数与字节数、发送历史条数、以及全部分栏名（`panes`）。还给出 `portOptions` —— **这个分栏**当前能选哪些端口（Windows 分栏是 COM 名，WSL 分栏是 `/dev/...` 路径；`inUse` 表示被别的分栏占着）。省略 pane 默认 main。**操作串口前先调它**。",
+            "description": "**动手操作串口前先调它**：读某个串口分栏的完整状态 —— 端口、波特率、帧格式(数据位/停止位/校验)、行尾、DTR/RTS、查看模式、行号/时间戳/回显/自动滚动/自动重连/终端模式、**是否正在监控**、输出行数与字节数、发送历史条数、以及全部分栏名（`panes`）。还给出 `portOptions` —— **这个分栏**当前能选哪些端口（Windows 分栏是 COM 名，WSL 分栏是 `/dev/...` 路径；`inUse` 表示被别的分栏占着）。省略 pane 默认 main。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -365,7 +475,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "serial_get_output",
-            "description": "读该分栏**实际收发的内容**（串口监视器的核心：设备刚才回了什么）。默认收+发都返回，按时间归并；每条带 dir 区分。数据取自日志中心，与 log_tail 是同一份存储；本工具额外的好处是**不需要你知道通道名**，且「还没收到数据」会返回空列表而不是报错。**读内容优先用 `format:\"text\"`**（一行一条 `[时刻] [rx|tx] 正文`，比默认 json 省一半以上 token）；要逐行结构化字段时才用 json。text 格式的正文在 content 文本里，structuredContent 只给元信息。",
+            "description": "读该分栏**实际收发的内容**（串口监视器的核心：设备刚才回了什么）。默认收+发都返回，按时间归并；每条带 `dir` 区分收发。**还带 `src`（来源）**：`ai` = 这一条是 AI 自己发出去的、`ui` = 用户手动发的、`none` = 未标记 —— 因为 MCP 发送与用户点按钮走的是**同一条路**（工具就是\"填进输入框 + 点发送按钮\"），光看内容分不出是谁发的，要追溯 AI 动过什么就认这个字段。数据取自日志中心，与 log_tail 是同一份存储；本工具额外的好处是**不需要你知道通道名**，且「还没收到数据」会返回空列表而不是报错。**读内容优先用 `format:\"text\"`**（一行一条 `[时刻] [rx|tx] 正文`，AI 发的会多一截 `[ai]`，比默认 json 省一半以上 token）；要逐行结构化字段时才用 json。text 格式的正文在 content 文本里，structuredContent 只给元信息。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -536,7 +646,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "ble_get_output",
-            "description": "读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。要跨会话的完整历史就用返回里的 `channels.rx` 去 log_tail。**要\"这条 ERROR 出现几次\"别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `count` 只回计数、`matches` 只回片段、`lines`（默认）回条目。匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也能搜）。⚠️ **CTS（0x1805）的时间条目会自动附上解读**：`items[].decoded`（完整字段）+ `items[].decodedSummary`（一行'设备现在几点、比本机快慢多少'）—— 不用再把这些 HEX 手动喂给 `ble_cts_time`。只读。",
+            "description": "读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。`items[].kind` 区分方向（`rx`/`tx`/`info`/`err`）。要跨会话的完整历史就用返回里的 `channels.rx`（通知/读值）或 `channels.tx`（写出去的内容，2026-09 起也回灌进日志中心了）去 `log_tail`。**要\"这条 ERROR 出现几次\"别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `count` 只回计数、`matches` 只回片段、`lines`（默认）回条目。匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也能搜）。⚠️ **CTS（0x1805）的时间条目会自动附上解读**：`items[].decoded`（完整字段）+ `items[].decodedSummary`（一行'设备现在几点、比本机快慢多少'）—— 不用再把这些 HEX 手动喂给 `ble_cts_time`。只读。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -741,12 +851,12 @@ pub fn tool_defs() -> Vec<Value> {
         // ===== 日志中心（S7）=====
         json!({
             "name": "log_channels",
-            "description": "列出所有日志通道（条数 / 字节 / seq 区间 / 被丢弃条数 / 最后一条时间）。不确定去哪找日志时先调它。",
+            "description": "**不确定日志在哪时先调它**：列出所有日志通道（条数 / 字节 / seq 区间 / 被丢弃条数 / 最后一条时间）。",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
         json!({
             "name": "log_tail",
-            "description": "取某个通道的尾部若干行。**读日志优先用 `format:\"text\"`** —— 一行一条纯文本，同样内容比默认的 json 省一半以上 token（实测短行日志 3.5 倍：101 字节/行 → 29 字节/行，短行的开销几乎全在每行的 JSON 包装上）；要逐行的结构化字段（seq/时间戳/字节数/方向）时才用 json。给了 `sinceSeq` 就是增量拉取：返回里的 `nextSinceSeq` 是**下次该带的值**（推进到它就不会漏也不会重复；直接跳到 `seqTo` 会把没拿到的行永远跳过），`missed>0` 表示这一段还有行没给你，`mayBeIncomplete=true` 表示该通道丢过最旧的行（别把日志当完整证据）。text 格式的日志正文在 content 文本里，structuredContent 只给元信息。",
+            "description": "取某个通道的尾部若干行。**读日志优先用 `format:\"text\"`** —— 一行一条纯文本，同样内容比默认的 json 省一半以上 token（实测短行日志 3.5 倍：101 字节/行 → 29 字节/行，短行的开销几乎全在每行的 JSON 包装上）；要逐行的结构化字段（seq/时间戳/字节数/方向/**来源 src**）时才用 json —— `src: \"ai\"` 表示这条是 AI 通过 MCP 发出去的（用户手发的同样内容在串口 tx 通道里是 `ui`/`none`），**要复盘\"AI 到底动过什么\"就按它过滤**。给了 `sinceSeq` 就是增量拉取：返回里的 `nextSinceSeq` 是**下次该带的值**（推进到它就不会漏也不会重复；直接跳到 `seqTo` 会把没拿到的行永远跳过），`missed>0` 表示这一段还有行没给你，`mayBeIncomplete=true` 表示该通道丢过最旧的行（别把日志当完整证据）。text 格式的日志正文在 content 文本里，structuredContent 只给元信息。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -784,7 +894,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "log_clear",
-            "description": "清空某个通道，或省略 channel 清空全部。",
+            "description": "清空某个通道，或省略 channel 清空全部。⚠️ **这是销毁证据的动作**：清掉的行回不来了（用户想复盘设备行为就只能让他复现）—— 只在确认这份记录不再需要时用，别为「看起来干净」随手清。",
             "inputSchema": {
                 "type": "object",
                 "properties": { "channel": { "type": "string" } },
@@ -840,7 +950,11 @@ pub fn tool_defs() -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
-    ]
+    ];
+    // 统一注入 annotations：每个工具的只读/破坏性由 WRITE_TOOLS / DANGER_TOOLS 派生，
+    // 不在这里逐个手写（否则改那两张表时会漏改工具定义）。
+    annotate_tools(&mut v);
+    v
 }
 
 /// 串口语义工具里那个 `pane` 参数的说明 —— **只写这一处**。
@@ -973,6 +1087,9 @@ pub fn exposed_tools(core: &McpCore) -> Vec<Value> {
             }
         }
     }
+    // 统一跑一遍：`tool_defs()` 已经给内置工具注过，这里是幂等的重跑 ——
+    // 图的是"以后再加别的来源也不会漏标"（`ctl_*` 全算写，见 annotations_for）。
+    annotate_tools(&mut v);
     v
 }
 
@@ -2373,6 +2490,9 @@ fn adb_shell_read(core: &Arc<McpCore>, args: &Value) -> Result<Value, RpcError> 
             extra: json!({
                 "level": l["level"].as_str().unwrap_or("info"),
                 "dir": l["dir"].as_str().unwrap_or("none"),
+                // ADB 这一路全是 `rx` 且由 Rust 侧生产（一定是 `none`），加它是为了
+                // **各工具条目形状一致** —— 形状不一致时调用方得为每个工具记一套字段。
+                "src": l["src"].as_str().unwrap_or("none"),
             }),
             raw: l,
         })
@@ -2611,12 +2731,16 @@ fn collect_serial_output(
         LogFormat::Text => {
             let mut s = String::with_capacity(count * 32);
             for l in &picked {
-                // 方向必须标：rx/tx 是归并在一起的，不标就分不清是谁说的
+                // 方向必须标：rx/tx 是归并在一起的，不标就分不清是谁说的。
+                // **来源同理**（2026-09）：AI 发送与用户手点发送走同一条路，不标就分不出
+                // 「这条 tx 是 AI 发的还是我点的」—— 而 text 编码是读内容的首选格式，
+                // 在这里丢掉 src 等于"省 token 省掉了关键信息"。
                 super::loghub::push_text_line(
                     &mut s,
                     l["t"].as_i64().unwrap_or(0),
                     l["dir"].as_str().unwrap_or("none"),
                     l["text"].as_str().unwrap_or(""),
+                    super::loghub::src_of(l["src"].as_str().unwrap_or("")),
                 );
             }
             (Vec::new(), s)
@@ -3502,6 +3626,328 @@ mod tests {
                 bad
             );
         }
+    }
+
+    /// `annotations` 必须与**真正的拦截逻辑**一致，而不是自说自话。
+    ///
+    /// 为什么值得单独一条：`annotations` 是给客户端的"这个工具安全吗"提示，客户端据此决定
+    /// 要不要弹审批框、能不能自动放行。一旦它和 `is_write_call` / `danger_note` 说的不一样，
+    /// 后果不是"少个字段"，而是**客户端拿到一个与事实相反的判断** —— 声称只读的工具其实会改
+    /// 状态（被放行着去写），或者声称安全的工具其实要二次确认。这类漂移在两端各自的单测里
+    /// 都看不见，必须由这条跨表的断言钉住。
+    ///
+    /// 四条纪律与 `annotations_for` 的注释一一对应：**只看表**（不另立一张）、
+    /// **宁可保守**（随调用变性质的不标只读）、**报出来的必须被执行**（表里指向的工具得真实存在）、
+    /// **只读与破坏性不能同时成立**。
+    #[test]
+    fn annotations_agree_with_write_and_danger_tables() {
+        let defs = tool_defs();
+        assert!(!defs.is_empty());
+        let find = |n: &str| defs.iter().find(|t| t["name"].as_str() == Some(n));
+        let flag = |t: &Value, k: &str| t["annotations"][k].clone();
+
+        // ⓪ 每个工具都得有这两个布尔字段 —— 规范给它们的默认值对我们**全是反的**
+        //    （不写 readOnlyHint 当非只读、不写 destructiveHint 当**破坏性**），
+        //    所以"不写"不是"不表态"，而是"表错了态"。
+        for t in &defs {
+            let name = t["name"].as_str().unwrap_or("");
+            assert!(t["annotations"].is_object(), "{} 缺 annotations", name);
+            for k in ["readOnlyHint", "destructiveHint"] {
+                assert_eq!(flag(t, k).is_boolean(), true, "{} 的 {} 必须是布尔", name, k);
+            }
+        }
+
+        // ① 声称只读的工具，**任何调用形状**都不能被判成写。
+        //    用一批代表性参数把"按调用变性质"的几种形状都覆盖上（见 is_write_call）。
+        for t in &defs {
+            let name = t["name"].as_str().unwrap_or("");
+            if flag(t, "readOnlyHint") != json!(true) {
+                continue;
+            }
+            for args in [
+                json!({}),
+                json!({ "action": "list" }),
+                json!({ "action": "add" }),
+                json!({ "index": 0 }),
+                json!({ "pane": "main" }),
+            ] {
+                assert!(
+                    !is_write_call(name, &args),
+                    "{} 标了 readOnlyHint 但 is_write_call({}) 为真 —— 客户端会把它当只读放行",
+                    name,
+                    args
+                );
+            }
+        }
+
+        // ② `destructiveHint` 与 DANGER_TOOLS **互为充要**（两向都要查：
+        //    漏标=危险操作不弹确认，错标=普通操作天天弹确认，后者会让人关掉确认）
+        for t in &defs {
+            let name = t["name"].as_str().unwrap_or("");
+            assert_eq!(
+                flag(t, "destructiveHint") == json!(true),
+                danger_note(name).is_some(),
+                "{} 的 destructiveHint 与 DANGER_TOOLS 不一致",
+                name
+            );
+        }
+
+        // ③ 只读与破坏性不能同时成立（规范里 destructiveHint 只在非只读时有意义）
+        for t in &defs {
+            let name = t["name"].as_str().unwrap_or("");
+            assert!(
+                !(flag(t, "readOnlyHint") == json!(true) && flag(t, "destructiveHint") == json!(true)),
+                "{} 同时被标成只读与破坏性",
+                name
+            );
+        }
+
+        // ④ 两张表里指向的工具必须**真实存在** —— 表过期了（工具改名/删除后没同步）
+        //    比标错更阴：它会让"只读模式拦谁"悄悄漏掉一个真写操作。
+        for n in WRITE_TOOLS {
+            assert!(find(n).is_some(), "WRITE_TOOLS 里的 {} 不在 tool_defs() 里（表已过期）", n);
+            assert_eq!(
+                flag(find(n).unwrap(), "readOnlyHint"),
+                json!(false),
+                "{} 在 WRITE_TOOLS 里，不许标 readOnlyHint: true",
+                n
+            );
+        }
+        for (n, _) in DANGER_TOOLS {
+            assert!(find(n).is_some(), "DANGER_TOOLS 里的 {} 不在 tool_defs() 里（表已过期）", n);
+        }
+
+        // ⑤ **本文件里最容易标错的一处**："性质随调用而变"的那两个绝不能被标只读
+        //    （列进 SOMETIMES_WRITE_TOOLS 的意义就在这里）；同时反向确认它确实"有时是写"，
+        //    否则这条断言就成了空话。
+        for n in SOMETIMES_WRITE_TOOLS {
+            let t = find(n).unwrap_or_else(|| panic!("{} 不在 tool_defs() 里", n));
+            assert_eq!(
+                flag(t, "readOnlyHint"),
+                json!(false),
+                "{} 的性质随调用而变（见 is_write_call），不许标 readOnlyHint: true",
+                n
+            );
+            assert!(
+                is_write_call(n, &json!({ "action": "add" })) || is_write_call(n, &json!({ "index": 0 })),
+                "{} 在 SOMETIMES_WRITE_TOOLS 里，但没有任何参数形状被判成写",
+                n
+            );
+        }
+
+        // ⑥ `annotations_for` 的三种典型判定（纯函数，直接钉死口径）。
+        //    `ctl_*` 不来自 tool_defs()（它在 exposed_tools() 里按注册表生成），
+        //    所以必须在这里单独覆盖 —— 否则"ctl_* 算写"这条只靠 `is_write_call` 的
+        //    `starts_with("ctl_")` 分支，annotations 那一侧没人核。
+        let ro = |n: &str| annotations_for(n)["readOnlyHint"].clone();
+        let de = |n: &str| annotations_for(n)["destructiveHint"].clone();
+        // 只读工具：读值/列举类
+        assert_eq!(ro("ble_read"), json!(true), "ble_read 是只读");
+        assert_eq!(ro("log_tail"), json!(true), "log_tail 是只读");
+        // 普通写工具：改设置 —— 是写，但**不是破坏性**（否则客户端天天弹确认框，
+        // 用户会把确认关掉，那才真危险）
+        assert_eq!(ro("serial_set_baud"), json!(false));
+        assert_eq!(de("serial_set_baud"), json!(false), "改波特率不是破坏性操作");
+        // 危险工具：两个标记都要对
+        assert_eq!(ro("adb_open_shell"), json!(false));
+        assert_eq!(de("adb_open_shell"), json!(true));
+        // ctl_* 一律算写、不算破坏性
+        assert_eq!(ro("ctl_serial_conn_portSelect"), json!(false), "ctl_* 是写");
+        assert_eq!(de("ctl_serial_conn_portSelect"), json!(false), "ctl_* 不是破坏性");
+        // 未知名字（未来新增但忘了登记）按"保守"处理：非只读、非破坏性。
+        // 这一句是这张断言里最关键的一条 —— 它就是把 annotations 从"白名单否定"
+        // 改成"显式登记"的**原因**（见 READ_ONLY_TOOLS 的注释）。
+        assert_eq!(ro("some_future_tool"), json!(false), "没登记的工具不许被当成只读");
+    }
+
+    /// 每个内置工具都必须被**显式分类**：写 / 按调用变性质 / 只读，三选一。
+    ///
+    /// 为什么值得单独一条：`WRITE_TOOLS` 是"漏登记就静默放行"的白名单 —— 新增一个写工具却
+    /// 忘了登记，**只读模式不拦它**，而 `annotations` 还（在改成显式登记之前）会主动告诉客户端
+    /// "它是只读的"：两边一起错，且所有现存断言都是绿的（它们只核"已登记的那部分一致"）。
+    /// 名字本身判断不出读写，所以"没被写进任何一张表"必须是一个**可检测**的状态，
+    /// 而不是默认落在只读那一侧。
+    #[test]
+    fn every_tool_is_explicitly_classified() {
+        let defs = tool_defs();
+        let names: Vec<&str> = defs.iter().filter_map(|t| t["name"].as_str()).collect();
+
+        // ① 不许有"没分类"的工具
+        let unclassified: Vec<&str> = names
+            .iter()
+            .copied()
+            .filter(|n| {
+                !WRITE_TOOLS.contains(n) && !SOMETIMES_WRITE_TOOLS.contains(n) && !READ_ONLY_TOOLS.contains(n)
+            })
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "这些工具没有被分类（读 / 写 / 按调用变性质）: {:?} —— 登记到 WRITE_TOOLS 或 \
+             READ_ONLY_TOOLS，**别让它默认落在只读那一侧**（那样只读模式会漏拦它）",
+            unclassified
+        );
+
+        // ② 三张表加起来正好等于全部工具：多了说明有重复或过期条目，少了就是①的情形
+        assert_eq!(
+            WRITE_TOOLS.len() + SOMETIMES_WRITE_TOOLS.len() + READ_ONLY_TOOLS.len(),
+            defs.len(),
+            "三张表的条目数之和应当等于内置工具总数（{}）—— 表里有重复或过期条目",
+            defs.len()
+        );
+
+        // ③ 表里不许留"已经不存在"的工具名（改名/删除后忘清理 = 表在说谎，
+        //    而只读模式是按这张表拦的 —— 它会让"拦住谁"与"文档写了谁"悄悄对不上）
+        for (label, list) in [
+            ("WRITE_TOOLS", WRITE_TOOLS),
+            ("SOMETIMES_WRITE_TOOLS", SOMETIMES_WRITE_TOOLS),
+            ("READ_ONLY_TOOLS", READ_ONLY_TOOLS),
+        ] {
+            for n in list {
+                assert!(names.contains(n), "{} 里的 {} 不在 tool_defs() 里（表已过期）", label, n);
+            }
+        }
+
+        // ④ 两两不交：同时出现在"写"和"只读"里 = 分类自相矛盾
+        for a in READ_ONLY_TOOLS {
+            assert!(!WRITE_TOOLS.contains(a), "{} 同时出现在 READ_ONLY_TOOLS 与 WRITE_TOOLS 里", a);
+            assert!(
+                !SOMETIMES_WRITE_TOOLS.contains(a),
+                "{} 同时出现在 READ_ONLY_TOOLS 与 SOMETIMES_WRITE_TOOLS 里",
+                a
+            );
+        }
+        for a in SOMETIMES_WRITE_TOOLS {
+            assert!(!WRITE_TOOLS.contains(a), "{} 同时出现在 SOMETIMES_WRITE_TOOLS 与 WRITE_TOOLS 里", a);
+        }
+    }
+
+    /// `tools/list` 的**响应**里必须真的有 `annotations`。
+    ///
+    /// 为什么要单独查一次：`tools/list` 走的是 `exposed_tools()`（内置工具 + 可选的 `ctl_*`），
+    /// **不是** `tool_defs()`。注入点写错一处，客户端就一个 annotations 也拿不到，
+    /// 而上面那几条查 `tool_defs()` 的断言**全是绿的** —— 它们查的是另一个函数。
+    /// 这正是"每个注入点都要从真实出口验一次"的同一类问题。
+    #[test]
+    fn tools_list_carries_annotations() {
+        block_on(async {
+            let c = core();
+            let r = call(&c, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await;
+            let tools = r["result"]["tools"].as_array().expect("tools/list 应当返回 tools");
+            assert!(!tools.is_empty(), "{}", r);
+            for t in tools {
+                let name = t["name"].as_str().unwrap_or("");
+                assert!(t["annotations"].is_object(), "tools/list 里 {} 缺 annotations: {}", name, t);
+                assert!(t["annotations"]["readOnlyHint"].is_boolean(), "{} 的 readOnlyHint 不是布尔", name);
+            }
+            // 抽查一读一写，确认不是"所有工具都给了同一个值"
+            let find = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap_or_else(|| panic!("第一页里应有 {}", n));
+            assert_eq!(find("mcp_status")["annotations"]["readOnlyHint"], json!(true), "mcp_status 是只读");
+            assert_eq!(find("serial_send")["annotations"]["readOnlyHint"], json!(false), "serial_send 是写");
+        });
+    }
+
+    /// 「描述里提到的工具名必须真实存在」—— 扫**幽灵工具**引用。
+    ///
+    /// 为什么要有这条：工具描述**大量**跨工具指路（"见 `ble_get_services` 的 …"、
+    /// "用 `ui_set` 传 …"、"要再找别的设备就重新 `ble_start_scan`"）—— 这正是"让 AI 知道
+    /// 下一步该调什么、什么场景用哪个"的主要手段。但工具一旦改名或删除，描述里就留下指向
+    /// **不存在工具**的引用：AI 会照着一个幽灵去调，拿到一句"工具不存在"，而**两端各自的
+    /// 单测全绿** —— 描述是文本，此前没有任何东西在核它。
+    ///
+    /// 这与 `.walkthrough` 里那条"`protocol.rs` 发出的每个 `op`，前端必须有对应分支"是同一个
+    /// 模式：**跨边界的名字引用，必须在握有权威名单的那一侧校验**。
+    ///
+    /// 口径刻意收窄（只认"像工具名"的词），免得把参数名与旧拼写别名误报到没法用：
+    /// 要求 **以已知工具前缀开头且含下划线**。于是 `case_sensitive` / `ok_only` / `since_seq`
+    /// （描述里明确写的"也接受旧拼写"）和 `serial:main:rx` 这类通道名都不会被误伤。
+    #[test]
+    fn descriptions_only_reference_real_tools() {
+        let defs = tool_defs();
+        let names: Vec<&str> = defs.iter().filter_map(|t| t["name"].as_str()).collect();
+
+        /// 递归收集 schema 里每个属性的 `description`（参数说明同样是模型要读的文本）
+        fn collect(v: &Value, owner: &str, out: &mut Vec<(String, String)>) {
+            if let Some(props) = v.get("properties").and_then(|p| p.as_object()) {
+                for (k, sub) in props {
+                    let here = format!("{}.{}", owner, k);
+                    if let Some(d) = sub.get("description").and_then(|d| d.as_str()) {
+                        out.push((here.clone(), d.to_string()));
+                    }
+                    collect(sub, &here, out);
+                }
+            }
+            if let Some(items) = v.get("items") {
+                collect(items, owner, out);
+            }
+            for key in ["oneOf", "anyOf", "allOf"] {
+                if let Some(arr) = v.get(key).and_then(|a| a.as_array()) {
+                    for sub in arr {
+                        collect(sub, owner, out);
+                    }
+                }
+            }
+        }
+
+        const TOOL_PREFIXES: &[&str] =
+            &["serial_", "ble_", "adb_", "ui_", "log_", "mcp_", "app_", "ctl_"];
+        let is_tool_like = |w: &str| {
+            w.len() > 2 && w.contains('_') && TOOL_PREFIXES.iter().any(|p| w.starts_with(p))
+        };
+        let words = |t: &str| -> Vec<String> {
+            t.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| !w.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+
+        // 收集所有**对模型可见**的文本：每个工具的 description + 每个参数的 description
+        // + 握手时那份 instructions（它同样会点工具名）
+        let mut corpus: Vec<(String, String)> = Vec::new();
+        for t in &defs {
+            let name = t["name"].as_str().unwrap_or("");
+            corpus.push((
+                format!("{} 的 description", name),
+                t["description"].as_str().unwrap_or("").to_string(),
+            ));
+            collect(&t["inputSchema"], name, &mut corpus);
+        }
+        corpus.push(("initialize 的 instructions".to_string(), SERVER_INSTRUCTIONS.to_string()));
+
+        let mut ghosts: Vec<String> = Vec::new();
+        for (owner, text) in &corpus {
+            for w in words(text) {
+                if is_tool_like(&w) && !names.contains(&w.as_str()) {
+                    ghosts.push(format!("{} → {}", owner, w));
+                }
+            }
+        }
+        ghosts.sort();
+        ghosts.dedup();
+        assert!(
+            ghosts.is_empty(),
+            "描述引用了**不存在的工具**，AI 会照着幽灵去调（改名/删除工具时忘了改描述）：\n  {}",
+            ghosts.join("\n  ")
+        );
+
+        // 反向确认这套口径真的扫得到东西 —— 否则"没有幽灵"可能只是没扫到（假阴性），
+        // 那这条断言就是一句自我安慰。
+        let referenced = corpus
+            .iter()
+            .flat_map(|(_, t)| words(t))
+            .filter(|w| names.contains(&w.as_str()))
+            .count();
+        assert!(
+            referenced > 10,
+            "描述里应当有大量跨工具引用，只扫到 {} 处 —— 扫描口径失效了",
+            referenced
+        );
+        // 口径本身的自检：该认的认、不该认的不认
+        assert!(is_tool_like("serial_get_state") && is_tool_like("ui_set"));
+        assert!(
+            !is_tool_like("case_sensitive") && !is_tool_like("since_seq") && !is_tool_like("ok_only"),
+            "旧拼写别名不该被当成工具名（会误报）"
+        );
+        assert!(!is_tool_like("serial"), "没有下划线的词不该被当成工具名");
     }
 
     /// 找出**没有约束力**或**可移植性差**的子 schema。递归进 `properties` 与 `items`。
@@ -5302,6 +5748,22 @@ mod tests {
                 "sinceSeq",           // 日志增量拉取，别重复拉全量
             ] {
                 assert!(ins.contains(key), "指引里应提到 {}: {}", key, ins);
+            }
+            // 场景覆盖：**"用在哪些场景"才是 instructions 的核心职责** —— 只钉住错误码这类
+            // "通用纪律"不够，还得确认四个面板的任务链都在。否则模型面对 54 个工具只能靠猜着挑，
+            // 而"挑错工具"正是 instructions 能省掉的最大一类失败（见常量上方的注释）。
+            for key in [
+                "pane",              // 多分栏：WSL 与额外面板都靠它区分
+                "portOptions",       // WSL 分栏要的是 /dev/*，不能拿 serial_list_ports 当依据
+                "ble_connect",       // BLE 任务链（含"不广播就按 MAC 直连"这条唯一出路）
+                "ble_get_output",    // BLE 读通知
+                "adb_list_devices",  // ADB 任务链
+                "log_channels",      // "读内容该选哪个"—— 最容易选错的一组
+                "serial_quick_cmd",  // 快速指令 / 工作流
+                "serial_workflow_run",
+                "ui_list",           // 没有语义工具时的通用界面桥
+            ] {
+                assert!(ins.contains(key), "任务链里应提到 {}: {}", key, ins);
             }
         });
     }

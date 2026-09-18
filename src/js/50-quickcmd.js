@@ -935,11 +935,90 @@ function qcmdExportCols() {
 /// `## 组名` 抬头 + 表头行 + 分隔行 + **每条一行**（一律带 顺序号/指令/延时/HEX，`fill:true`
 /// 把 0 / 1000 / false 写全，空条目也占一行 —— 行数必须与面板上的条数一致）。
 /// 导出的是副本，补列/补抬头只动副本、不碰用户的挂载文件。
-function qcmdExportPrep(groups, style) {
+/// 导出物开头那段**注释形式的用法说明 + 案例**（用户 2026-09 要求："快捷指令的 md 文件中，
+/// 应该使用注释的方式提供案例，比如表格案例，DSL 编写案例"）。
+///
+/// 为什么放在**导出物**里、而不是只在 `doc/QUICK_CMDS.md`：用户手里真正会打开的是这份文件 ——
+/// 让他"导出一份看看"就等于拿到一份自带语法的模板，不必再去翻文档。
+///
+/// 三条纪律：
+/// ① **只在导出物里出现**（靠 `qcmdExportPrep` 的 `withHelp`），绝不进 `qcmdCurrentText` ——
+///    后者是**要写回用户文件**的内容，往人家表里塞说明就是污染；
+/// ② 每一行都以 `#` 开头：解析端是"**单个 `#` 是注释、`##` 及以上才是组抬头**"
+///    （见 `qcmdParseText` 里那条"必须写在注释判断之前"的注释），所以案例里的 `## 组名`
+///    只能写成 `#   ## 组名`（行首只有一个 `#`，不会被当成组抬头）；
+/// ③ 这些行会被解析器**原样保留**（当注释丢掉、不进条目），所以"把导出的文件再导入回来"
+///    条目数与组名必须一模一样 —— 断言集里有一条专门守这个往返。
+function qcmdHelpComment(style) {
+    var head = [
+        '# ══ 快速指令文件 · 自带说明（本段每行都以 # 开头 = 注释，不会被当成指令发送）══',
+        '#',
+        '# 【结构】一组一张表：`## 组名` 抬头 → 表头行 → 每条指令一行。',
+        '#   循环顺序 = 组的**上下顺序** → 组内「顺序号」升序；组名不参与排序（拖组抬头才改顺序）。',
+        '#   单个 `#` 是注释（原样保留、不解释）；`##` 及以上是**组抬头**。',
+        '#'
+    ];
+    if (style === 'tsv') {
+        head.push('#   （这份文件是 TSV：同一张表里各列用制表符分隔，下面为便于阅读画成表格）');
+        head.push('#');
+    }
+    return head.concat([
+        '# 【表格案例】',
+        '#   ## 上电初始化',
+        '#   | 顺序号 | 指令 | 超时(ms) | HEX | 期望 | 重试 | 成功跳转 | 失败跳转 |',
+        '#   |---|---|---|---|---|---|---|---|',
+        '#   | 1 | AT | 1000 | false |  | 3 |  |  |',
+        '#   | 2 | AT+CWMODE=1 | 2000 | false | OK | 3 |  |  |',
+        '#   | 3 | AT+CWJAP="ssid","pwd" | 15000 | false | WIFI GOT IP\\|OK | 2 | 结束 | 10 |',
+        '#   | 10 | AT+RST | 1000 | false | ready | 3 | 结束 | 结束 |',
+        '#',
+        '# 【判断与分支案例】「期望」是**条件**，「成功跳转 / 失败跳转」就是**分支出口** ——',
+        '#   一张表就能表达"识别到什么就往哪走"，不必另学一套语法：',
+        '#   ## 配网：连上就问 IP，连不上就重启',
+        '#   | 顺序号 | 指令 | 超时(ms) | HEX | 期望 | 重试 | 成功跳转 | 失败跳转 |',
+        '#   |---|---|---|---|---|---|---|---|',
+        '#   | 1 | AT+CWJAP="ssid","pwd" | 15000 | false | WIFI GOT IP | 2 | 5 | 8 |',
+        '#   | 5 | AT+CIFSR | 1000 | false |  | 3 | 结束 | 结束 |',
+        '#   | 8 | AT+RST | 1000 | false | ready | 3 | 结束 | 结束 |',
+        '#   读法：整行收到 `WIFI GOT IP` → 跳到顺序号 5；超时或用完重试 → 跳到 8。',
+        '#   跳转列可填顺序号（跨组也行），或「结束」= 收尾停下；留空 = 成功走"下一条"、失败"终止整条链"。',
+        '#   内置判定：整行 `OK`（或以 " OK" 结尾）= 成功；含 `error` = 失败；含 `busy` = 继续等。',
+        '#   ⚠️ 自定义「期望」是**整行完全相等**，不是包含 —— 设备若回 `+CWJAP:WIFI GOT IP` 就匹配不上。',
+        '#      要"包含某个词就算成功"，请用**工作流规则**（面板「更多设置 → 工作流」，条件选 `string_contains`）。',
+        '#   跳转可以成环（成功回到自己就是轮询），但有**跳转次数上限**保护，超了会自愈停止。',
+        '#',
+        '# 【DSL 案例】只写「指令」一列也认（第 2 列起是你的备注，原样保留）：',
+        '#   AT',
+        '#   AT+CWMODE=1',
+        '#   AT+CWJAP="ssid","pwd"',
+        '#',
+        '# 【HEX 案例】',
+        '#   | 顺序号 | 指令 | 超时(ms) | HEX |',
+        '#   |---|---|---|---|',
+        '#   | 1 | 01 03 00 00 00 02 | 0 | true |',
+        '#',
+        '# 【各列】顺序号：0 = 不参与循环，>0 在组内按它升序发；',
+        '#   超时(ms)：发出去后最多等多久，填 0 = 这条不等响应（连续 HEX 帧）；',
+        '#   期望：自定义成功词，多个用 \\| 分隔（留空则只用内置的 OK / ERROR / busy）；',
+        '#   重试：收到 ERROR 后最多重发几次；成功跳转 / 失败跳转：填顺序号，「结束」= 收尾 / 终止整条链。',
+        '#   注：面板上没有「期望 / 重试 / 跳转」的入口 —— 它们只从文件读。',
+        '# ══ 说明结束，下面是你的指令 ══'
+        // ⚠️ 行尾必须是 `\r\n`：`qcmdBuildText` 最后是 `out.join('\r\n')`，而 raw 块是**原样回吐**的。
+        // 这里用 `\n` 的话，导出物就成了"注释段 LF、其余 CRLF"的混合行尾 ——
+        // 后果不是不好看，而是"导出 → 导入 → 原样写回"**不再逐字节一致**
+        // （2026-09 就是这么被往返断言逮住的）。
+    ]).join('\r\n');
+}
+
+function qcmdExportPrep(groups, style, withHelp) {
     var cols = qcmdExportCols();
     var map = {}, header = [];
     cols.forEach(function(c, i) { map[c.key] = i; header.push(c.label); });
     var blocks = [];
+    // 导出物自带一段注释形式的说明 + 案例（见 qcmdHelpComment）。
+    // ⚠️ **只在导出时给**（withHelp）：`qcmdCurrentText` 也走这个函数，但那是要**写回用户文件**
+    // 的内容 —— 往人家的表里塞说明就是污染。
+    if (withHelp) blocks.push({ kind: 'raw', text: qcmdHelpComment(style) });
     (groups || []).forEach(function(g, gi) {
         if (gi) blocks.push({ kind: 'raw', text: '' });          // 组与组之间空一行，读起来清楚
         blocks.push({ kind: 'raw', text: '## ' + String((g && g.name) || ('循环 ' + (gi + 1))).replace(/[\r\n]+/g, ' '), heading: true });
@@ -989,7 +1068,7 @@ function qcmdExportFile(mid) {
                  style: 'lines', cols: null };
     } else {
         if (style === 'lines') upgraded = true;
-        prep = qcmdExportPrep(groups, style === 'tsv' ? 'tsv' : 'md');
+        prep = qcmdExportPrep(groups, style === 'tsv' ? 'tsv' : 'md', true);
     }
     var text = qcmdBuildText(prep.blocks, prep.style);
     var defName = qcmdExportBaseName(mid) + '.' + (prep.style === 'tsv' ? 'tsv' : 'md');

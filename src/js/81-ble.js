@@ -371,16 +371,30 @@ function bleLogEntry(base, meta) {
     }
     return e;
 }
-function logBle(text, meta) {
-    _bleLog.push(bleLogEntry({ text: text }, meta));
+/// 把一条 BLE 日志放进缓冲（并回灌日志中心）。
+///
+/// 抽成一个函数的理由：缓冲裁剪 + 回灌这两件事原来在两个 `logBle*` 里各写一遍，
+/// 加"回灌 tx"时很容易只改一处 —— 那就变成"通知的日志每路都有、写的日志时有时无"。
+function bleLogRecord(e) {
+    _bleLog.push(e);
     if (_bleLog.length > _bleLogMax) _bleLog.splice(0, _bleLog.length - _bleLogMax);
+    // 回灌到日志中心：**只回灌 tx**。rx（通知 / 读回的值）那边 Rust 侧已经在推 `ble:rx`
+    // （见 main.rs 的通知处理），这里再推一遍就是逐条重复。
+    // `bytes` 给 0：这一路手上只有 hex 字符串、没有原始字节数 —— 宁可报 0，
+    // 也不要瞎估一个数字塞进"字节数"字段（那会让 AI 拿它去算吞吐）。
+    if (e.kind === 'tx' && e.text) {
+        mcpLogPush('ble:tx', 'info', 'tx', e.text, 0, 'none');
+    }
+    return e;
+}
+function logBle(text, meta) {
+    bleLogRecord(bleLogEntry({ text: text }, meta));
     renderBleLog();
 }
 // 末尾灰显的日志：dim 会**追加**在 text 之后（保证 dim 一定是整条 text 的后缀 ——
 // 渲染时靠这个不变式切分；调用方只需传"前半段"和"后半段"，不必自己拼）。
 function logBleDim(text, dim, meta) {
-    _bleLog.push(bleLogEntry({ text: (text || '') + (dim || ''), dim: dim || '' }, meta));
-    if (_bleLog.length > _bleLogMax) _bleLog.splice(0, _bleLog.length - _bleLogMax);
+    bleLogRecord(bleLogEntry({ text: (text || '') + (dim || ''), dim: dim || '' }, meta));
     renderBleLog();
 }
 // 日志缓冲 → HTML（纯函数，便于无头断言）。

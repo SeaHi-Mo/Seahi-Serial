@@ -46,6 +46,22 @@ pub const DIR_NONE: u8 = 0;
 pub const DIR_RX: u8 = 1;
 pub const DIR_TX: u8 = 2;
 
+/// **来源**：这条日志是"谁"产生的。
+///
+/// 为什么需要它（2026-09 用户提的）：`dir` 只说得出"发出去了还是收到了"，
+/// 而 AI 发送与用户手点发送**走的是同一条路**（MCP 的 `serial_send` 就是"填进输入框 +
+/// 点发送按钮"，见 AGENTS #3 那条"不为 AI 单写一套逻辑"），于是日志里两者一模一样 ——
+/// 用户复盘"这行 tx 是我发的还是 AI 发的"时，日志答不上来。
+///
+/// ⚠️ 它**只标 AI**：界面侧几乎所有写入都默认 `SRC_UI`，而 Rust 侧（串口读线程、ADB PTY、
+/// BLE 通知、workflow 通道）一律 `SRC_NONE` —— 那些本来就有别的办法区分（通道名），
+/// 硬塞一个"ui"反而是假信息。
+pub const SRC_NONE: u8 = 0;
+/// 用户手动操作（点发送按钮、敲指令…）
+pub const SRC_UI: u8 = 1;
+/// AI 通过 MCP 工具触发
+pub const SRC_AI: u8 = 2;
+
 /// 读日志时的**输出编码**。两种编码里的**数据完全一样**，只是写法不同：
 ///
 /// - `Json`（默认）：一行一个对象（`seq/ts/t/level/dir/bytes/text`），适合程序化处理；
@@ -246,6 +262,27 @@ fn dir_name(d: u8) -> &'static str {
     }
 }
 
+fn src_name(s: u8) -> &'static str {
+    match s {
+        SRC_UI => "ui",
+        SRC_AI => "ai",
+        _ => "none",
+    }
+}
+
+/// [`src_name`] 的反向映射（字符串 → 常量）。
+///
+/// 存在的理由：`"ai"` / `"ui"` 这两个字面量要在**三个地方**解析（前端回灌的入参、
+/// 文本编码的渲染、将来别处）—— 各自写一遍 `match` 就是三次漂移机会。
+/// 认不出的值一律 `SRC_NONE`（保守：宁可不标，也不要瞎标成 AI）。
+pub fn src_of(name: &str) -> u8 {
+    match name {
+        "ui" => SRC_UI,
+        "ai" => SRC_AI,
+        _ => SRC_NONE,
+    }
+}
+
 /// 一页日志的**纯文本编码**：头部一行元信息 + 一行一条日志（[`LogFormat::Text`]）。
 ///
 /// 取舍（2026-09）：
@@ -285,22 +322,32 @@ fn render_text_page(meta: &Value, picked: &[&LogLine]) -> String {
     out.push_str(&num(&meta["nextSinceSeq"]));
     out.push('\n');
     for l in picked {
-        push_text_line(&mut out, l.ts_ms, level_name(l.level), l.text());
+        push_text_line(&mut out, l.ts_ms, level_name(l.level), l.text(), l.src);
     }
     out
 }
 
-/// 一行日志的文本写法：`[HH:MM:SS.mmm] [<标签>] 正文` + 换行。
+/// 一行日志的文本写法：`[HH:MM:SS.mmm] [<标签>] [<来源>] 正文` + 换行。
 ///
 /// 标签由调用方决定：`log_tail` 用级别（`info`/`warn`…），`serial_get_output` 用方向
 /// （`rx`/`tx` —— 那边两个方向是**归并在一起**的，不标就分不清谁说的）。
 /// ⚠️ 转义规则必须有且只有这一处（见 [`push_escaped`]），否则"一行一条"两个工具就会漂移。
-pub fn push_text_line(out: &mut String, ts_ms: i64, tag: &str, body: &str) {
+///
+/// `src`（来源）**只在是 `ui`/`ai` 时才写**：绝大多数行都是"未标记"（Rust 侧那几路本来就
+/// 有通道名可区分），逐行写个 `[none]` 纯属烧 token。而它不能像方向那样省掉 ——
+/// `dir` 能从通道名推出来（`serial:<分栏>:rx|tx`），`src` 推不出来，
+/// 省掉就等于"text 编码下看不出这条是 AI 发的"。
+pub fn push_text_line(out: &mut String, ts_ms: i64, tag: &str, body: &str, src: u8) {
     out.push('[');
     out.push_str(&fmt_ts(ts_ms));
     out.push_str("] [");
     out.push_str(tag);
     out.push_str("] ");
+    if src == SRC_UI || src == SRC_AI {
+        out.push('[');
+        out.push_str(src_name(src));
+        out.push_str("] ");
+    }
     push_escaped(out, body);
     out.push('\n');
 }
@@ -330,6 +377,8 @@ pub struct LogLine {
     pub ts_ms: i64,
     pub level: u8,
     pub dir: u8,
+    /// 谁产生的（`SRC_NONE` / `SRC_UI` / `SRC_AI`）。只有一个字节 —— 每条日志都带。
+    pub src: u8,
     /// 正文（独占字符串）。
     ///
     /// ⚠️ 曾经为了"让搜索的快照克隆变便宜"把它换成过 `Arc<str>` —— **又换回来了**：
@@ -359,6 +408,9 @@ impl LogLine {
             "t": self.ts_ms,
             "level": level_name(self.level),
             "dir": dir_name(self.dir),
+            // 来源（`ai` = AI 通过 MCP 触发）。`dir` 说方向、`src` 说"谁"——
+            // 两个都说清了，才能回答"这行 tx 是 AI 发的还是我点的"。
+            "src": src_name(self.src),
             "bytes": self.raw_bytes,
             "text": &*self.text,
         })
@@ -580,7 +632,22 @@ impl LogHub {
     /// 在同一毫秒内写入时无法构造确定的顺序，所以给测试留一个能钉住 ts 的接缝。
     #[cfg(test)]
     pub fn push_at(&self, name: &str, level: u8, dir: u8, ts_ms: i64, text: &str, raw_bytes: u32) {
-        self.push(name, level, dir, text, raw_bytes);
+        self.push_at_src(name, level, dir, ts_ms, text, raw_bytes, SRC_NONE);
+    }
+
+    /// 单测专用：同 [`Self::push_at`]，但能指定来源（验证 `src` 的落库与读回）。
+    #[cfg(test)]
+    pub fn push_at_src(
+        &self,
+        name: &str,
+        level: u8,
+        dir: u8,
+        ts_ms: i64,
+        text: &str,
+        raw_bytes: u32,
+        src: u8,
+    ) {
+        self.push_src(name, level, dir, text, raw_bytes, src);
         let ch = self.handle(name);
         {
             // 注意作用域：guard 必须在 ch 之前析构，否则借用活得比 ch 长（E0597）
@@ -591,8 +658,16 @@ impl LogHub {
         }
     }
 
-    /// 写一条日志。**绝不阻塞**：拿不到通道锁就丢一条并计数。
+    /// 写一条日志（来源记作"未标记"）。**绝不阻塞**：拿不到通道锁就丢一条并计数。
     pub fn push(&self, name: &str, level: u8, dir: u8, text: &str, raw_bytes: u32) {
+        self.push_src(name, level, dir, text, raw_bytes, SRC_NONE);
+    }
+
+    /// 写一条**带来源**的日志。实现都在这里；`push` 是它的"不标来源"写法。
+    ///
+    /// 保留一个不带 `src` 的入口是有意的：Rust 侧那几处（串口读线程 / ADB PTY / BLE 通知 /
+    /// workflow 通道）本来就有别的办法区分来源（通道名），给它们硬塞一个 `ui` 是假信息。
+    pub fn push_src(&self, name: &str, level: u8, dir: u8, text: &str, raw_bytes: u32, src: u8) {
         // 关闭状态：一次原子读就返回（MCP 停用时零成本）
         if !self.enabled.load(Ordering::Relaxed) {
             return;
@@ -631,6 +706,7 @@ impl LogHub {
             ts_ms: chrono::Utc::now().timestamp_millis(),
             level,
             dir,
+            src,
             text: body.into_boxed_str(),
             raw_bytes,
         };
@@ -963,6 +1039,7 @@ impl LogHub {
                                 "ts": fmt_ts(l.ts_ms),
                                 "level": level_name(l.level),
                                 "dir": dir_name(l.dir),
+                                "src": src_name(l.src),
                                 "match": frag,
                             }));
                             if hits.len() >= limit {
@@ -996,6 +1073,7 @@ impl LogHub {
                             "ts": fmt_ts(l.ts_ms),
                             "level": level_name(l.level),
                             "dir": dir_name(l.dir),
+                            "src": src_name(l.src),
                             "text": l.text(),
                         });
                         if context > 0 {
@@ -1209,6 +1287,44 @@ mod tests {
             "丢过就必须写在头部（省 token 不能变成'谎报完整'）: {}",
             text
         );
+    }
+
+    /// `src`（来源）必须一路落库、并能从两种编码里读回来。
+    ///
+    /// 为什么值得单独一条：AI 发送与用户手点发送**走同一条路**（`serial_send` 就是
+    /// "填进输入框 + 点发送按钮"，见 AGENTS #3 那条"不为 AI 单写一套逻辑"），
+    /// 于是日志里两者一模一样 —— 不标来源，"这行 tx 是 AI 发的还是我点的"永远答不上来。
+    /// 而且 `src` 不像 `dir`（方向能从通道名 `serial:<分栏>:rx|tx` 推出来），
+    /// 它**没有别的地方能推** —— 所以在 text 编码里也必须写出来。
+    #[test]
+    fn source_survives_storage_and_both_encodings() {
+        let h = fresh();
+        h.set_enabled(true);
+        h.push_at_src("serial:main:tx", LEVEL_INFO, DIR_TX, 1000, "AT+GMR", 7, SRC_AI);
+        h.push_at_src("serial:main:tx", LEVEL_INFO, DIR_TX, 1001, "AT", 2, SRC_UI);
+        h.push_at_src("serial:main:tx", LEVEL_INFO, DIR_TX, 1002, "OK", 2, SRC_NONE);
+
+        // json：每条都带 src
+        let j = h.tail("serial:main:tx", None, 10).unwrap();
+        let lines = j["lines"].as_array().unwrap();
+        assert_eq!(lines[0]["src"], "ai", "AI 发出去的那条要标出来: {}", lines[0]);
+        assert_eq!(lines[1]["src"], "ui");
+        assert_eq!(lines[2]["src"], "none");
+
+        // text：只有 ai/ui 才写标记 —— 逐行写个 `[none]` 纯属白烧 token
+        let t = h.tail_fmt("serial:main:tx", None, 10, LogFormat::Text).unwrap();
+        let text = t["text"].as_str().unwrap();
+        assert!(text.contains("[ai] AT+GMR"), "AI 的来源必须写在行里: {}", text);
+        assert!(text.contains("[ui] AT"), "用户的来源必须写在行里: {}", text);
+        assert!(!text.contains("[none]"), "未标记的行不该写 [none]: {}", text);
+
+        // `src_of` 是"字符串 → 常量"的唯一映射；认不出的值必须**保守**
+        // （宁可不标，也不要瞎标成 AI —— 那会让用户以为 AI 动过手）
+        assert_eq!(src_of("ai"), SRC_AI);
+        assert_eq!(src_of("ui"), SRC_UI);
+        assert_eq!(src_of("none"), SRC_NONE);
+        assert_eq!(src_of("AI"), SRC_NONE, "大小写不同就当认不出（不猜）");
+        assert_eq!(src_of("whatever"), SRC_NONE);
     }
 
     /// 一条记录跨多行会破坏"一行一条"，还能伪造头部行 —— 必须转义。

@@ -346,6 +346,46 @@
 .mcp-url::-webkit-scrollbar-thumb:hover,
 .mcp-code::-webkit-scrollbar-thumb:hover,
 #mcpModal .ble-modal-body::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
+/* ---- 剩下这几处**原来漏了**（2026-09 审计：把全部 `overflow:auto/scroll` 的规则逐个与滚动条规则比对）----
+   `.ble-devList` 蓝牙设备列表、`.ble-detail-sec` 蓝牙详情、`.ble-modal-inp` 弹窗里的文本框、
+   `#paneContainer` 面板横向滚动、`.send-hist` 发送历史下拉、`.term-comp` 终端 TAB 补全弹层 ——
+   它们都真的会滚，却一直在用 Windows 原生滚动条（深色主题下就是一条白杠，非常突兀）。
+   ⚠️ 顺带记一笔：上面那组里的 `#mcpModal .ble-modal-body` 其实**不滚动**（第 215 行没有 overflow，
+   真正滚的是它里面的 `.ble-modal-inp`）—— 那条规则打空了目标，但留着无害，这里把本来该管的对象补上。
+   ⚠️ 新加可滚动区域时**别忘了这里**：`.walkthrough` 里有一条断言会拿"所有 overflow:auto 的选择器"
+   与"所有 ::-webkit-scrollbar 选择器"对账，漏一个就 fail。 */
+.ble-devList::-webkit-scrollbar,
+.ble-detail-sec::-webkit-scrollbar,
+.ble-modal-inp::-webkit-scrollbar,
+#paneContainer::-webkit-scrollbar,
+.send-hist::-webkit-scrollbar,
+.term-comp::-webkit-scrollbar { width:10px; height:10px; }
+.ble-devList::-webkit-scrollbar-track,
+.ble-detail-sec::-webkit-scrollbar-track,
+.ble-modal-inp::-webkit-scrollbar-track,
+#paneContainer::-webkit-scrollbar-track,
+.send-hist::-webkit-scrollbar-track,
+.term-comp::-webkit-scrollbar-track { background:transparent; }
+.ble-devList::-webkit-scrollbar-corner,
+.ble-detail-sec::-webkit-scrollbar-corner,
+.ble-modal-inp::-webkit-scrollbar-corner,
+#paneContainer::-webkit-scrollbar-corner,
+.send-hist::-webkit-scrollbar-corner,
+.term-comp::-webkit-scrollbar-corner { background:transparent; }
+.ble-devList::-webkit-scrollbar-thumb,
+.ble-detail-sec::-webkit-scrollbar-thumb,
+.ble-modal-inp::-webkit-scrollbar-thumb,
+#paneContainer::-webkit-scrollbar-thumb,
+.send-hist::-webkit-scrollbar-thumb,
+.term-comp::-webkit-scrollbar-thumb {
+    background:rgba(128,134,146,.42); border:3px solid transparent; background-clip:content-box; border-radius:6px;
+}
+.ble-devList::-webkit-scrollbar-thumb:hover,
+.ble-detail-sec::-webkit-scrollbar-thumb:hover,
+.ble-modal-inp::-webkit-scrollbar-thumb:hover,
+#paneContainer::-webkit-scrollbar-thumb:hover,
+.send-hist::-webkit-scrollbar-thumb:hover,
+.term-comp::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
 /* 水平间距一律交给 .global-bar 的 gap，这里不再自带 margin-right */
 .app-info { display:inline-flex; align-items:center; gap:6px; cursor:default; flex-shrink:0; }
 .app-info-icon { width:22px; height:22px; flex-shrink:0; object-fit:contain; }
@@ -537,6 +577,7 @@
 .adv-wf-wrap.vis { display:block; }
 .adv-wf-wrap::-webkit-scrollbar { width:6px; }
 .adv-wf-wrap::-webkit-scrollbar-track { background:transparent; }
+.adv-wf-wrap::-webkit-scrollbar-corner { background:transparent; }
 .adv-wf-wrap::-webkit-scrollbar-thumb { background:rgba(100,106,118,.4); border-radius:3px; }
 .adv-wf-wrap::-webkit-scrollbar-thumb:hover { background:rgba(100,106,118,.6); }
 .wf-add-btn {
@@ -608,6 +649,7 @@
 .output:focus { outline:none; }
 .output::-webkit-scrollbar { width:12px; }
 .output::-webkit-scrollbar-track { background:transparent; }
+.output::-webkit-scrollbar-corner { background:transparent; }
 .output::-webkit-scrollbar-thumb { background:rgba(100,106,118,.4); border:3px solid transparent; background-clip:content-box; border-radius:6px; }
 .output::-webkit-scrollbar-thumb:hover { background:rgba(100,106,118,.6); background-clip:content-box; }
 .ol { display:block; margin:0; padding:0; }

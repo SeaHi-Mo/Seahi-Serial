@@ -461,13 +461,22 @@ function requestScroll(el) {
     });
 }
 
+/// 输出行的**时间戳前缀**（「时间戳」开关关着时是空串）。
+///
+/// 为什么抽出来：`mcpSerialOp` 在"echo 关着、这次发送没进日志中心"时要**补记**一条 tx，
+/// 那条也得戴上与界面一致的前缀 —— 两处各写一份格式化必然漂移（一处改了、另一处忘了）。
+function outputTs(mid) {
+    var tsEl = document.getElementById(mid + '-btnTs');
+    var showTs = tsEl && tsEl.classList.contains('on');
+    if (!showTs) return '';
+    var now = new Date();
+    return '[' + now.toTimeString().slice(0,8) + '.' + String(now.getMilliseconds()).padStart(3,'0') + '] ';
+}
+
 function appendOutput(mid, type, text, opts) {
     var el = document.getElementById(mid + '-output');
     if (!el) return;
-    var tsEl = document.getElementById(mid + '-btnTs');
-    var showTs = tsEl && tsEl.classList.contains('on');
-    var now = new Date();
-    var ts = showTs ? '[' + now.toTimeString().slice(0,8) + '.' + String(now.getMilliseconds()).padStart(3,'0') + '] ' : '';
+    var ts = outputTs(mid);
     var div = document.createElement('div');
     div.className = 'ol ' + type;
     if (opts && opts.hex) div.classList.add('hex-view');

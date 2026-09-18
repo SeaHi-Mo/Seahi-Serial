@@ -1042,8 +1042,12 @@ fn push_batch_into(hub: &loghub::LogHub, lines: &[Value], dropped_by_channel: Op
             Some("tx") => loghub::DIR_TX,
             _ => loghub::DIR_NONE,
         };
+        // 来源（`ai` = AI 通过 MCP 触发，`ui` = 用户手动）。**这一跳少解析一次，
+        // 整个功能就静默失效**：前端标的 `src` 到这里被丢掉、日志中心存的还是"未标记"，
+        // 而两端的单测各自都是绿的（AGENTS #9 那条老教训）。
+        let src = loghub::src_of(l.get("src").and_then(|v| v.as_str()).unwrap_or(""));
         let bytes = l.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        hub.push(channel, level, dir, text, bytes);
+        hub.push_src(channel, level, dir, text, bytes, src);
         n += 1;
     }
     n
@@ -1197,6 +1201,34 @@ mod tests {
         hub.set_enabled(false);
         assert_eq!(push_batch_into(&hub, &many, Some(&drops)), 0);
         assert_eq!(hub.channel_count(), 0, "停用会真正释放通道（drop_all）");
+    }
+
+    /// 前端回灌里的 `src`（来源）必须被解析并落库 —— **这一跳少解析一次，整个功能静默失效**。
+    ///
+    /// 具体是：前端把 AI 发送标成 `src:"ai"`，若 `push_batch_into` 丢掉这个字段，
+    /// 日志中心存的仍是"未标记"，而**前端单测（标了）与后端单测（存了）各自都是绿的**
+    /// —— 正是 AGENTS #9 那条"回执那一跳不许丢字段"的翻版。
+    #[test]
+    fn log_push_batch_carries_source() {
+        let hub = loghub::LogHub::default();
+        hub.set_enabled(true);
+        let lines = vec![
+            json!({ "channel": "serial:main:tx", "text": "AI 发的", "dir": "tx", "src": "ai" }),
+            json!({ "channel": "serial:main:tx", "text": "用户发的", "dir": "tx", "src": "ui" }),
+            json!({ "channel": "serial:main:tx", "text": "没标来源", "dir": "tx" }),
+            // 认不出的值必须保守落成 none，而不是"猜一个"
+            json!({ "channel": "serial:main:tx", "text": "乱标的", "dir": "tx", "src": "robot" }),
+        ];
+        assert_eq!(push_batch_into(&hub, &lines, None), 4);
+
+        let v = hub.tail("serial:main:tx", None, 10).unwrap();
+        let arr = v["lines"].as_array().unwrap();
+        assert_eq!(arr[0]["src"], "ai", "AI 的来源必须活到存储层: {}", arr[0]);
+        assert_eq!(arr[1]["src"], "ui");
+        assert_eq!(arr[2]["src"], "none", "没给 src 的按未标记（不是 ui，更不能是 ai）");
+        assert_eq!(arr[3]["src"], "none", "认不出的值保守处理: {}", arr[3]);
+        // 方向不能被这次改动带坏
+        assert_eq!(arr[0]["dir"], "tx");
     }
 
     struct Sse {

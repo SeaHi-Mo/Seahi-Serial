@@ -15,7 +15,7 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/busid 白名单/MCP 协议与日志中心）
 ```
 
-无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，**243 条 + 1 条 `#[ignore]`**：
+无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，**249 条 + 1 条 `#[ignore]`**：
 那条 ignore 是手工联调用的 `mcp_serve_for_manual_check`，要跑 60 秒）。
 
 > ⛔ **BLE 从机（外设）方向已于 2026-09 整条删除**（用户确认"实现不了了"）：本机适配器自报支持
@@ -24,7 +24,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/
 > 证据与结论留在 `doc/BLE_PERIPHERAL.md`（已标归档）。**别再往这个方向加功能** ——
 > 先在真机上把广播跑起来再说。本应用现在的 BLE 能力只有**主机方向**。
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1612 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1631 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，94 条）：抽取前端真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，
 也有把渲染函数丢进假 DOM 跑行为断言）。前端 2026-09 已从单文件拆成
 `src/index.html`（骨架）+ `src/css/*.css` + `src/js/*.js`，**布局与加载顺序见 `doc/FRONTEND_LAYOUT.md`**；
@@ -122,6 +122,17 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
    四路都要传回界面/工具并提示一行。只有 LogHub 内部的 `channelSkips`/`lockSkips` 是纯内部计数。
    不做这件事的后果不是"少几条日志"，而是**工具明确告诉调用方"日志是完整的"**（`mayBeIncomplete:false`），
    于是 AI 拿被截断的证据下结论（2026-09 审计在 ADB 与前端回灌两路上都发现了）。
+   ⚠️ **每条日志还带一个「来源」`src`**（2026-09 用户提的："AI 发送的数据在日志里要和接收的区分开"）：
+   `ai` = AI 通过 MCP 触发、`ui` = 用户手动、`none` = 未标记。因为 MCP 发送与用户点按钮
+   **走的是同一条路**（`serial_send` 就是"填进输入框 + 点发送按钮"，见 #3），光看内容分不出是谁发的。
+   三条别改回去：① **前端三处必须成对** —— `mcpSerialOp` 的 send 分支先挂 `_mcpAiSend` 标记
+   （**必须早于 `click()`**：click 是同步派发，反了 sendData 已经跑完、认领不到）→ `bufferPush`
+   认领它（认领到就把那条标 `ai`）→ **没被认领就补记一条**（echo 关着 / 输出区没渲染时那次发送
+   本来完全不进日志中心；补记是为了"AI 干了什么一定可追溯"，不是可有可无的装饰）；
+   ② **这一跳不许丢字段**：前端 push → `log_push_batch` 入参 → `push_batch_into` → `LogHub::push_src`，
+   少解析一次功能就静默失效、而两端单测各自全绿（AGENTS #9 的老教训，已有测试守着）；
+   ③ **text 编码里必须把它写出来** —— `dir` 能从通道名推（`serial:<分栏>:rx|tx`），`src` 推不出来。
+   BLE 的写日志也回灌到 `ble:tx` 通道了（**只回灌 tx**：rx 那边 Rust 侧已在推 `ble:rx`，再推一遍就是逐条重复）。
 7. **`expose.autoControlTools` 默认关闭**：几百个 `ctl_*` 工具会明显拖累模型选工具的准确率。
    要打开就打开，但别改成默认开。
 8. **运行期错误必须进错误上报**（不只是写本地日志）：MCP 出问题以前只写 `dbg_log`，用户报障时
@@ -180,6 +191,24 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
     新工具"——**运行的是旧构建**。Rust 侧另有两条守着"结果真的说出来了"：每个工具的文本摘要里必须
     出现 structuredContent 里的至少一个真实取值（`leaf_scalars`），以及 `ble_list_devices` 的摘要里
     必须有设备 MAC 与名称。
+    ⑤ **"AI 怎么知道该用哪个工具"也要守**（2026-09 补）：AI 只认协议里传过去的四个通道 ——
+    `initialize.instructions`、`tools/list` 的 `description` 与字段描述、以及运行时的错误码；
+    **`doc/` 下的文档它一个字都看不到**（那是对人写的）。三条别改回去：
+    · **`instructions` 放"场景任务链"**（哪个面板走哪条链、"读内容该选哪个"这种最容易选错的
+      一组工具要摆在一起对比），而工具自己的参数细节与坑点留在它自己的 `description` 里 ——
+      抄一份必然漂移；
+    · **`description` 首句要说"什么时候用它"**（首句是最不容易被截断的位置）；
+    · **`annotations` 的"只读"必须来自显式登记的 `READ_ONLY_TOOLS`**，破坏性来自 `DANGER_TOOLS`；
+      `annotations_for` + `annotate_tools` 在 `tool_defs()` / `exposed_tools()` 返回前统一注入。
+      ⚠️ **绝不能用"不在 `WRITE_TOOLS` 里就当只读"** —— 名字判断不出读写，那等于"漏登记时
+      **主动说错话**"：客户端被告知"它只读"、只读模式也不会拦它，两边一起错（2026-09 第一版
+      就是这么写的，被自己的断言当场抓出来）。也不许给 `SOMETIMES_WRITE_TOOLS`（性质随调用变的
+      那两个）标 `readOnlyHint`。它是**提示不是约束**：不替代只读模式的 `-32007`，也不替代 `confirm:true`。
+    三条断言守着：`descriptions_only_reference_real_tools`（描述里点到的工具名必须真实存在，
+    否则 AI 会照着**幽灵工具**调，而两端单测都是绿的）、
+    `annotations_agree_with_write_and_danger_tables`（标注必须与真正的拦截逻辑一致），
+    以及 `every_tool_is_explicitly_classified`（**每个工具都必须被显式分类**为读 / 写 / 按调用变，
+    三张表不重、不漏、不过期 —— 新增工具忘了登记会 fail，不会静默落到只读那一侧）。
 12. **两种 MCP 传输并存，别拿一个换掉另一个**：`/mcp`（**Streamable HTTP**，2025-03-26+ 规范，新版客户端
     VS Code / Cline / 新版 Cursor / Claude Code 默认走它）与 `/sse` + `/messages`（遗留 SSE，只支持 SSE 的
     老客户端）**共用同一套工具、同一张会话表与同一份上限**。落地记录见 `doc/MCP_DESIGN.md` §17 的
@@ -271,6 +300,16 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
 - 串口友好名称直接调用 Win32 SetupAPI（UTF-16），避免 `serialport` crate 读取中文设备名时乱码（U+FFFD）
 - 前端通过 `withGlobalTauri: true` 与 Rust 通信，无 npm 桥接包
 - CSP 设为 `null`，无内容安全限制
+- **每个"会滚动"的区域都必须有滚动条样式**（2026-09 用户要求"确认所有的滚动条都已经做了美化"）。
+  改 CSS 时新加 `overflow:auto/scroll` 就得同时写 `::-webkit-scrollbar` 那一套
+  （尺寸 + track + **corner** + thumb + thumb:hover）；`corner` 最容易漏，漏一个就是横竖交汇处
+  的一个白方块（深色主题下尤其刺眼）。**有意隐藏**滚动条的（`.sel-drop` / `.no-scrollbar` / xterm）
+  也必须有规则，写 `display:none` / `scrollbar-width:none`。`.walkthrough` 里有**两条对账断言**守着：
+  "所有 `overflow:auto/scroll` 的选择器 ⊆ 所有 `::-webkit-scrollbar` 的选择器"、
+  "所有设了尺寸的滚动条规则都有同名 corner" —— 漏一处就 fail，不必靠人眼看界面（有些区域要先展开、
+  要连上设备、或只在特定主题下才看得见）。2026-09 这次就是靠它对账查出**6 处漏美化 + 3 处漏 corner**。
+  ⚠️ 另：别再写"corner 规则数量 === 4"这类断言 —— 一加滚动区就得改数字，而那正是最容易漏 corner 的时刻
+  （原断言就是这么当场 fail 的，已改成按选择器集合对账）。
 - **release 构建不带 DevTools**（用户要求）。真正的开关是 **tauri 的 `devtools` cargo feature 必须保持关闭**：`tauri-runtime-wry` 里那段 `with_devtools(..)` 被 `#[cfg(any(debug_assertions, feature = "devtools"))]` 整个门控，所以 release（`debug_assertions` 关闭）只要不开这个 feature，那段代码根本不编译，落到 wry 自己的默认值 `false`。**debug 构建仍然有 DevTools**（内存分析要靠它）。⚠️ `tauri.conf.json` 里的 `devtools` 字段是**死配置** —— tauri 2.11.2 / codegen / build 里没有任何代码读它（逐个 crate 搜过），写了也不生效，只会让人误判，**别再加回去**（断言集里两条守着）
 - 磁盘上的程序名为 `seahi-serial.exe`（带连字符）；Rust 包名为 `seahi_serial`（带下划线）
 - **`platform-tools` 会被自家 adb 服务器锁住，安装器必须先停掉服务器**：`adb` 启动的服务是常驻后台进程（应用退出后依然活着，直到 `adb kill-server` 或注销），它把 `{app}\platform-tools` 下的 `adb.exe`、`AdbWinApi.dll`、`AdbWinUsbApi.dll` 全部映射住 —— 运行中的 .exe 无法就地覆写，已加载的 DLL 连删除都不允许。所以重复安装/升级会重试 4 次后弹「尝试复制下列文件时出错」，同 AppId 升级时旧版卸载器也删不掉 `{app}`。`installer.iss` 的 `StopAdbServer` 在 `PrepareToInstall` / `ssInstall` / `usUninstall` 三处**只结束镜像路径位于本应用 `platform-tools` 下**的 adb（别误伤 Android Studio 等其它来源）；`[Files]` 用 `replacesameversion`（不是 `ignoreversion`）+ `restartreplace`/`uninsrestartdelete` 兜底。注意 `adb.exe`/`fastboot.exe` **没有版本信息**，按 Inno 规则每次安装仍会覆写它们，靠的就是先停服务器

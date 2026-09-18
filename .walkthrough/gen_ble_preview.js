@@ -443,7 +443,7 @@ console.log('preview ->', out);
   const logEl = { textContent: '', innerHTML: '', scrollTop: 0, scrollHeight: 10 };
   sb3.document = { getElementById: (id) => (id === 'ble-log' ? logEl : null) };
   vm.createContext(sb3);
-  vm.runInContext(['bleLogEntry', 'logBle', 'logBleDim', 'bleLogToHtml', 'escapeHtml', 'renderBleLog', 'clearBleLog'].map(extractFunction).join('\n'), sb3);
+  vm.runInContext(['bleLogEntry', 'bleLogRecord', 'logBle', 'logBleDim', 'bleLogToHtml', 'escapeHtml', 'renderBleLog', 'clearBleLog'].map(extractFunction).join('\n'), sb3);
   sb3.logBle('[连接中] X');
   sb3.logBle('[连接成功] X · 服务 5 · 特征 8');
   check(sb3._bleLog.length === 2, 'logBle 追加日志', String(sb3._bleLog.length));
@@ -563,7 +563,7 @@ console.log('preview ->', out);
       renderBleLog: () => {},   // 本段只关心缓冲里的条目，不渲染
     };
     vm.createContext(sbMeta);
-    vm.runInContext(['bleLogEntry', 'logBle'].map(extractFunction).join('\n'), sbMeta);
+    vm.runInContext(['bleLogEntry', 'bleLogRecord', 'logBle'].map(extractFunction).join('\n'), sbMeta);
     sbMeta.logBle('[通知] 0x2A2B: 时间', { kind: 'rx', hex: 'EA 07 01 02 03 04 05 06 00 00',
                                            charUuid: '00002A2B-0000-1000-8000-00805F9B34FB' });
     check(sbMeta._bleLog[0].kind === 'rx' && sbMeta._bleLog[0].hex === 'EA 07 01 02 03 04 05 06 00 00'
@@ -972,7 +972,7 @@ console.log('preview ->', out);
   sb6.renderBleDeviceList = () => {};
   sb6.renderBleDetail = () => {};
   vm.createContext(sb6);
-  vm.runInContext(['bleLogEntry', 'logBle', 'renderBleLog', 'clearBleLog', 'onBleLinkLost'].map(extractFunction).join('\n'), sb6);
+  vm.runInContext(['bleLogEntry', 'bleLogRecord', 'logBle', 'renderBleLog', 'clearBleLog', 'onBleLinkLost'].map(extractFunction).join('\n'), sb6);
   sb6.onBleLinkLost();
   check(sb6._bleConnAddr === null && sb6._bleServices.length === 0 && Object.keys(sb6._bleSubs).length === 0,
     '链路断开：清空连接态/服务/订阅');
@@ -1857,9 +1857,31 @@ console.log('preview ->', out);
     '滚动条交汇处不再是默认白方块（MCP 弹窗）');
   check(/\.ble-log::-webkit-scrollbar-corner,[\s\S]{0,400}?background:transparent/.test(html),
     '滚动条交汇处一并覆盖数据日志区（同一个毛病，别只修看得见的那一处）');
-  check((html.match(/::-webkit-scrollbar-corner/g) || []).length === 4,
-    '四个可滚动区都写了 corner（数据日志 + 2 MCP 内容框 + 弹窗主体）',
-    (html.match(/::-webkit-scrollbar-corner/g) || []).length);
+  // 横竖交汇处（corner）：只改 track/thumb 不够，漏了这块就留一个白色方块（用户截图指出来了）。
+  // ⚠️ 原来这条钉的是"corner 规则数量 === 4" —— 而**加一个可滚动区就得来改这个数字**，
+  // 偏偏"加可滚动区"正是最容易漏 corner 的时刻（2026-09 补 6 处滚动条时它当场 fail 了）。
+  // 改成按**选择器集合对账**：凡是"设了尺寸的滚动条规则"，都必须有一条同名 corner 规则。
+  // 判定取选择器末段（`.output` / `.ble-modal-body`），这样主题前缀（`[data-theme=…] .output`）
+  // 不会误报；而**有意隐藏**的写法（`display:none`，如 .sel-drop / xterm）本来就不需要 corner。
+  {
+    const tailOf = (s) => s.trim().replace(/::?[a-z-]+.*$/i, '').trim().split(/\s+/).pop();
+    const needCorner = new Set();
+    for (const m of html.matchAll(/([^{}]+)::-webkit-scrollbar\s*\{([^{}]*)\}/g)) {
+      if (!/width\s*:/.test(m[2]) || /display\s*:\s*none/.test(m[2])) continue;
+      m[1].split(',').forEach((s) => { const t = tailOf(s); if (t) needCorner.add(t); });
+    }
+    const haveCorner = new Set();
+    for (const m of html.matchAll(/([^{}]+)::-webkit-scrollbar-corner[^{}]*\{/g)) {
+      m[1].split(',').forEach((s) => { const t = tailOf(s); if (t) haveCorner.add(t); });
+    }
+    const noCorner = [...needCorner].filter((s) => !haveCorner.has(s));
+    check(needCorner.size >= 4,
+      '确实扫到了"设了尺寸的滚动条规则"（数量太少说明抽取口径坏了，这条就成了自我安慰）',
+      String(needCorner.size));
+    check(noCorner.length === 0,
+      '★ 每个设了尺寸的滚动条区都写了 corner（漏了就是横竖交汇处一个白方块）',
+      noCorner.join(' | '));
+  }
   // 标题在上、内容占满整行；复制按钮压在**内容框内的右上角**（用户指定的两轮调整结果）
   check(/\.mcp-label \{ display:block; font-size:12px; color:var\(--text-d\); margin-bottom:5px; \}/.test(html),
     '标题单独一行（不再和内容左右并排）');
@@ -2051,6 +2073,57 @@ console.log('preview ->', out);
       (/^tauri\s*=.*$/m.exec(cargoToml) || [''])[0].trim());
     const conf = fs.readFileSync(path.join(root, 'src-tauri', 'tauri.conf.json'), 'utf8');
     check(!/"devtools"/.test(conf), 'tauri.conf.json 里不再写 devtools（那行没人读，只会误导）');
+  }
+
+  // ---- 滚动条：**每个真的会滚的元素都必须有滚动条样式** ----
+  // 用户 2026-09："确认所有的滚动条都已经做了美化"。靠人眼看界面确认不了：有些区域要先展开、
+  // 要连上设备、或只在特定主题下才看得出来。所以拿**源码对账**：一份是"所有 `overflow:auto/scroll`
+  // 的选择器"，另一份是"所有 `::-webkit-scrollbar` 规则的选择器"，前者必须是后者的子集。
+  //
+  // ⚠️ "有样式"不等于"有美化"：`.sel-drop` / `.no-scrollbar` / xterm 那几处是**有意隐藏**
+  // （`display:none` / `scrollbar-width:none`），同样必须有规则 —— 所以这条只查"覆没覆盖"，
+  // 不查长什么样。真漏掉的后果很具体：深色主题下那一片就是一条 Windows 原生白杠
+  // （`.ble-devList` / `.ble-detail-sec` / `.ble-modal-inp` / `#paneContainer` / `.send-hist` /
+  //  `.term-comp` 这 6 处就是这么查出来的）。
+  {
+    const cssFiles = ['01-theme.css', '02-global.css', '03-quickcmd.css', '04-misc.css'];
+    const cssAll = cssFiles
+      .map((f) => fs.readFileSync(path.join(root, 'src', 'css', f), 'utf8'))
+      .join('\n')
+      .replace(/\/\*[\s\S]*?\*\//g, ''); // 先剥注释：注释里会引用选择器名，留着会误判
+
+    // ① 会滚的选择器（一个规则块里的选择器列表要逐个拆开）
+    const scrollSels = [];
+    for (const m of cssAll.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!/overflow(-[xy])?\s*:\s*(auto|scroll|overlay)/.test(m[2])) continue;
+      m[1].split(',').forEach((s) => {
+        const sel = s.trim();
+        if (sel && !sel.startsWith('@')) scrollSels.push(sel);
+      });
+    }
+    // ② 有滚动条规则的选择器（`::-webkit-scrollbar*` 是伪元素，取它前面那段基名）
+    const covered = new Set();
+    for (const m of cssAll.matchAll(/([^{}]+)::-webkit-scrollbar[^{}]*\{/g)) {
+      m[1].split(',').forEach((s) => {
+        const base = s.trim().replace(/::?[a-z-]+.*$/i, '').trim();
+        if (base) covered.add(base);
+      });
+    }
+    const isCovered = (sel) => {
+      const base = sel.replace(/::?[a-z-]+.*$/i, '').trim();
+      for (const c of covered) {
+        if (c === base || c.endsWith(' ' + base) || base.endsWith(' ' + c)) return true;
+      }
+      return false;
+    };
+    const missing = [...new Set(scrollSels.filter((s) => !isCovered(s)))];
+
+    check(scrollSels.length >= 10,
+      '确实扫到了可滚动区域（数量太少说明 CSS 抽取口径坏了，这条就成了自我安慰）',
+      '扫到 ' + scrollSels.length + ' 个可滚动选择器');
+    check(missing.length === 0,
+      '★ 每个 `overflow:auto/scroll` 的元素都有滚动条样式（含"有意隐藏"那几处）—— 漏掉的就是一条原生白杠',
+      missing.join(' | '));
   }
 
   // ---- 行为：状态点与按钮禁用 ----
@@ -3715,6 +3788,13 @@ console.log('preview ->', out);
       extractFunction('mcpSerialEl'), extractFunction('mcpSerialOptions'),
       extractFunction('mcpSerialState'), extractFunction('mcpSerialApply'), extractFunction('mcpSerialOp'),
       extractFunction('mcpSerialLogChannels'), extractFunction('mcpSerialPortOptions'),
+      // `mcpSerialOp` 的 send 分支在"这次发送没进日志中心"（echo 关着 / 输出区还没渲染）时会
+      // **补记一条 tx**。本节只验证"发出去的 op/参数"与"回执形状"，日志那条链路
+      // （mcpLogPush → 批量回灌 → Rust LogHub）另有专门的断言守着；
+      // 所以这里**打桩**，不把 `_mcpLogPending`/`mcpLogFlush`/`invoke` 那一串依赖拖进来。
+      'var __aiLogCalls = [];',
+      'function mcpLogPush(ch, lv, dir, text, bytes, src) { __aiLogCalls.push({ ch: ch, dir: dir, src: src, text: text }); }',
+      'function outputTs() { return ""; }',
       // mcpSerialOp 的 quick* 分支会调这些面板函数。本节只验证"发出去的 op/参数"与"回执形状"，
       // 所以按最小语义打桩；**真实行为**（改真的落到模型上）由下面侧栏那一节用真函数 + 假 DOM 测，
       // 两节各管一半、不重复。
@@ -3840,6 +3920,23 @@ console.log('preview ->', out);
     const sent = sbSer.mcpSerialOp({ action: 'send', data: 'AT+GMR' });
     check(sent.ok && sent.value.sent === true && els['main-sendInput'].value === 'AT+GMR' && els['main-btnSend']._clicks === 1,
       '发数据：写发送框 + 点发送按钮（与用户操作同一条路）');
+
+    // ★ AI 发送必须**留痕且可辨识**（2026-09 用户要求："AI 发送的数据在日志里要和别的区分开"）。
+    // 这条沙箱里 echo 关着 / 输出区没渲染，`bufferPush` 认领不到 → 走 `mcpSerialOp` 的**补记**分支。
+    // 补记不是可有可无的：没有它，echo 一关 AI 干了什么在日志里就是一片空白。
+    // 而且**只补一条**（认领成功时不该再补，否则同一次发送记两条）。
+    check(Array.isArray(sbSer.__aiLogCalls) && sbSer.__aiLogCalls.length === 1
+        && sbSer.__aiLogCalls[0].src === 'ai' && sbSer.__aiLogCalls[0].dir === 'tx'
+        && sbSer.__aiLogCalls[0].ch === 'serial:main:tx',
+      'AI 发送补记一条 tx 日志并标 src=ai（echo 关着也要留痕，且只记一条）',
+      JSON.stringify(sbSer.__aiLogCalls));
+    // 未开监控那次是**前置失败**，不该补记（否则日志里会出现一条根本没发出去的数据）
+    check(sbSer.__aiLogCalls.every(function (c) { return c.text.indexOf('AT+GMR') >= 0; }),
+      '前置失败（未开监控）不补记 —— 没发出去的东西不能出现在日志里',
+      JSON.stringify(sbSer.__aiLogCalls));
+    // 标记必须被清干净，不能留给下一次人工发送
+    check(sbSer._mcpAiSend === null, '发送后 `_mcpAiSend` 必须清空（否则下一次人工发送会被误标成 AI）',
+      String(sbSer._mcpAiSend));
 
     // 发送历史：sendHistory 是**新→旧**（send 里 unshift），所以"最近的在前"= 取前 limit 条。
     // ⚠️ 老断言（items[0] === 'AT+GMR'）配着 `slice(-limit).reverse()` 的实现恰好也能通过 ——
@@ -4002,7 +4099,7 @@ console.log('preview ->', out);
        'qcmdMdCells', 'qcmdColKey', 'qcmdHeaderMap', 'qcmdIsSeparatorRow', 'qcmdIsStructureRow',
        'qcmdCellInt', 'qcmdCellHex', 'qcmdParamCell', 'qcmdParseText', 'qcmdJoinRow', 'qcmdItemCells', 'qcmdBuildText', 'qcmdBaseName',
        'qcmdApplyParsed', 'qcmdCarryItemPrefs', 'renderQcmdSource', 'qcmdImportFile', 'qcmdReloadFile', 'qcmdUnmountFile',
-       'qcmdExportCols', 'qcmdExportPrep', 'qcmdItemHasParams', 'qcmdExportBaseName', 'qcmdExportFile',
+       'qcmdExportCols', 'qcmdExportPrep', 'qcmdHelpComment', 'qcmdItemHasParams', 'qcmdExportBaseName', 'qcmdExportFile',
        'qcmdCurrentText', 'scheduleQcmdFileSave', 'qcmdFileSaveNow',
        'qcmdFlushPendingFileSaves', 'qcmdFileMountedBy', 'collectConfigForMonitor',
        'qcmdNewGroupId', 'qcmdGroups', 'qcmdGroupById', 'qcmdGroupIndex', 'qcmdAllItems', 'qcmdItemAt',
@@ -4027,7 +4124,7 @@ console.log('preview ->', out);
        'qcmdGotoNorm', 'qcmdItemOkGoto', 'qcmdItemErrGoto', 'qcmdPlanIndexOfSeq', 'qcmdGotoWarnings',
        'genWfId', 'findWfRule', 'addWorkflowRule', 'deleteWorkflowRule', 'renameWorkflowRule',
        'toggleWorkflowEnabled', 'updateWfCondition', 'addWfCondition', 'removeWfCondition',
-       'updateWfAction', 'addWfAction', 'removeWfAction', 'toggleWorkflowRun', 'renderWorkflowList',
+       'updateWfAction', 'addWfAction', 'removeWfAction', 'toggleWorkflowRun', 'renderWorkflowList', 'renderWfActRow',
        'saveWorkflowConfig',
        // renderWorkflowList 的渲染依赖：图标集、HTML 转义、三个标签/占位符助手
        'escapeHtml', 'wfCondLabel', 'wfCondPlaceholder', 'wfActLabel',
@@ -4926,13 +5023,28 @@ console.log('preview ->', out);
         { label: '', value: 'AT+RST', seq: 1 },
       ];
       const groups = [{ name: '循环 1', items: items }];
-      const prep = sbSide.qcmdExportPrep(groups, 'md');
+      // 走**真实导出路径**（withHelp=true）：导出物开头有一段注释形式的说明与案例。
+      const prep = sbSide.qcmdExportPrep(groups, 'md', true);
       const txt = sbSide.qcmdBuildText(prep.blocks, prep.style);
       const txtLines = txt.split('\r\n');
-      check(/^## 循环 1$/.test(txtLines[0])
-        && /^\| 顺序号 \| 指令 \| 超时\(ms\) \| HEX \| 期望 \| 重试 \| 成功跳转 \| 失败跳转 \|$/.test(txtLines[1]),
-        '导出**一组一段**：先写 `## 组名` 抬头，再写这张表的表头（自包含：超时/期望/重试/跳转都在）',
-        txtLines.slice(0, 2).join(' / '));
+      check(txt.indexOf('# 【表格案例】') >= 0 && txt.indexOf('# 【DSL 案例】') >= 0
+        && txt.indexOf('# 【HEX 案例】') >= 0,
+        '导出物自带**注释形式**的案例（表格 / DSL / HEX）—— 打开这份文件就等于拿到一份语法说明，'
+        + '不必再去翻 doc/QUICK_CMDS.md');
+      // 用户 2026-09 问过"DSL 没有判断功能吗？" —— 说明光在表格里带上那两列不够：
+      // 得有**一段专门讲判断与分支**的案例，并且把"期望是整行相等"这个坑点明。
+      check(txt.indexOf('# 【判断与分支案例】') >= 0
+        && /整行完全相等/.test(txt) && /string_contains/.test(txt),
+        '★ 导出物专门讲了**判断与分支**（期望=条件、成功/失败跳转=分支出口），并点明"整行相等"这个坑',
+        '判断段存在: ' + (txt.indexOf('# 【判断与分支案例】') >= 0));
+      check(txtLines[0].charAt(0) === '#',
+        '说明整段都以 `#` 开头（解析端只认"单个 # = 注释"，`##` 及以上才是组抬头）', txtLines[0]);
+      // 抬头与表头要**跳过注释段**再找
+      const headAt = txtLines.findIndex((l) => /^## 循环 1$/.test(l));
+      check(headAt >= 0
+        && /^\| 顺序号 \| 指令 \| 超时\(ms\) \| HEX \| 期望 \| 重试 \| 成功跳转 \| 失败跳转 \|$/.test(txtLines[headAt + 1]),
+        '注释段之后才是"一组一段"：`## 组名` 抬头 + 这张表的表头（自包含：超时/期望/重试/跳转都在）',
+        txtLines.slice(Math.max(0, headAt - 1), headAt + 1).join(' / '));
       check(/\| 2 \| AT\+GMR \| 500 \| true \|/.test(txt) && /\| 1 \| AT\+RST \| 3000 \| false \|/.test(txt),
         '每一行都是真值（超时缺省写全 3000 / HEX 缺省 false；HEX 是布尔字面 true/false）', txt);
       // 导出的**默认文件名按监视器区分**：WSL 分栏/额外分栏/蓝牙内嵌各有自己的一份列表，
@@ -4950,6 +5062,12 @@ console.log('preview ->', out);
         String(sbSide.qcmdExportBaseName(null)) + '/' + String(sbSide.qcmdExportBaseName('')));
       check(sbSide.qcmdExportBaseName('a/b:c') === 'quick-cmds-a-b-c',
         'mid 里的非法字符换成 -（文件名安全）', sbSide.qcmdExportBaseName('a/b:c'));
+      // ★ 反向纪律：说明段**只进导出物**。`qcmdCurrentText` 是"把当前列表拼成文本去**写回用户
+      // 挂载的文件**"那条路 —— 它要是也带上几十行说明，就是往用户的表里塞垃圾。
+      const curSrc = extractFunction('qcmdCurrentText');
+      check(/qcmdExportPrep\(groups, style\)/.test(curSrc) && !/withHelp/.test(curSrc),
+        '★ 写回路径（qcmdCurrentText）**不给** withHelp —— 说明段只进导出物，不进用户挂载的文件',
+        curSrc.indexOf('withHelp') >= 0 ? '它带上了 withHelp' : '');
       const exSrc = extractFunction('qcmdExportFile');
       check(/qcmdExportBaseName\(mid\) \+ '\.'/.test(exSrc) && /qcmdFileMountedBy\(res\.path, mid\)/.test(exSrc),
         '导出走监视器专属默认名，且导出后检查"是不是盖了别人挂载的文件"（盖上就说清）');
@@ -5026,6 +5144,10 @@ console.log('preview ->', out);
         '文档写明上限（256 KB / 500 条 / 4096 字符）');
       check(/true/.test(doc) && /false/.test(doc) && /宽容/.test(doc),
         '文档写明 HEX 列读写口径（读宽容、写回 true/false）');
+      // 「期望」的匹配语义是最容易误解的一处（用户 2026-09 就是问到判断功能时暴露的）：
+      // 它是**整行完全相等**、不是包含 —— 不写清，用户会以为填 `ERROR:5` 能匹配 `+CME ERROR:5`。
+      check(/整行完全相等/.test(doc) && /string_contains/.test(doc),
+        '★ 文档写明「期望」是**整行完全相等**（不是包含），并指向工作流规则的 `string_contains`');
     }
     // ---- YAML / TOML 文件头（front matter）：原样保留，且**不能**被当成指令 ----
     const fmText = [
@@ -6348,12 +6470,17 @@ console.log('preview ->', out);
       check(fs.existsSync(exportPath), '① 导出真的写了文件', exportPath);
       const onDisk = fs.readFileSync(exportPath, 'utf8');         // ← 从磁盘读回来
       const diskLines = onDisk.split('\r\n');
-      check(/^## 循环 1$/.test(diskLines[0])
-        && /^\| 顺序号 \| 指令 \| 超时\(ms\) \| HEX \| 期望 \| 重试 \| 成功跳转 \| 失败跳转 \|$/.test(diskLines[1]),
-        '① 第 1 行是组抬头，第 2 行是这张表的表头（一组一张表；超时/期望/重试/跳转都写出来）',
+      // 导出物开头是**注释形式**的说明与案例（用户要求），所以抬头/表头要跳过去再找
+      check(onDisk.indexOf('# 【表格案例】') >= 0 && onDisk.indexOf('# 【DSL 案例】') >= 0,
+        '① 落盘的导出物自带注释形式的案例（表格 / DSL）—— 打开就是一份语法说明');
+      const headAt2 = diskLines.findIndex((l) => /^## 循环 1$/.test(l));
+      check(headAt2 >= 0
+        && /^\| 顺序号 \| 指令 \| 超时\(ms\) \| HEX \| 期望 \| 重试 \| 成功跳转 \| 失败跳转 \|$/.test(diskLines[headAt2 + 1]),
+        '① 注释段之后：`## 组名` 抬头 + 这张表的表头（一组一张表；超时/期望/重试/跳转都写出来）',
         diskLines.slice(0, 2).join(' / '));
-      check(diskLines.length === 6 && /^\|\s*---/.test(diskLines[2]),
-        '① 抬头 + 表头 + Markdown 分隔行 + 3 条数据行', diskLines.length + ' 行 / ' + diskLines[2]);
+      check(/^\|\s*---/.test(diskLines[headAt2 + 2]) && diskLines.length === headAt2 + 6,
+        '① 抬头 + 表头 + Markdown 分隔行 + 3 条数据行（前面那段注释不算行）',
+        diskLines.length + ' 行 / 第 ' + (headAt2 + 2) + ' 行是 ' + diskLines[headAt2 + 2]);
       check(/\| 2 \| AT\+GMR \| 500 \| true \|/.test(onDisk)
         && /\| 1 \| 01 02 03 04 \| 250 \| true \|/.test(onDisk)
         && /\| 0 \| AT\+RST \| 1000 \| false \|/.test(onDisk),
@@ -6619,6 +6746,76 @@ console.log('preview ->', out);
     check(!/delayBefore \|\| 0/.test(html) && sbWf.wfDelayOf({ delayBefore: 250 }) === 250
       && sbWf.wfDelayOf({ delay_before: 250 }) === 250 && sbWf.wfDelayOf({}) === 0,
       '动作延时两种字段名都认（驼峰是既有数据，snake_case 是后端结构体的名字）');
+
+    mWf.workflows = [];
+    // ---- 动作行类型切换：重渲染必须落到**它指向的那一行** ----
+    // 用户 2026-09 报的真 bug：把「执行动作」从「发送数据」改成「切换信号」、再改回「发送数据」，
+    // DTR/RTS 那两栏不消失。根因在 `renderWfActRow`：它按"第几个 .wf-row"数行
+    // （`querySelectorAll('.wf-row')[targetIdx + 1]`，注释还写着"rows[0] 是标题行"），
+    // 可标题的 class 是 `.wf-section-title`（**不在** .wf-row 里），
+    // 而末尾那颗「+ 添加动作」按钮**是** .wf-row → 整体错位一行：
+    // 改第 0 个动作，被重渲染的是第 1 个；只有 1 个动作时被换掉的是那颗添加按钮。
+    // 真正该刷新的那行从头到尾没被刷新过，`extraInputs` 一直是上一次渲染的残留。
+    {
+      const rwAct = extractFunction('renderWfActRow');
+      // ⚠️ 先**剥掉注释**再查：上面那段注释里为了讲清根因，原样引用了旧写法
+      // `querySelectorAll('.wf-row')` —— 不剥的话这条正则会被自己写的注释绊倒
+      // （函数源码抽取是连注释一起抽的，这种"注释里提到被禁模式"的假阳性很常见）。
+      const rwActCode = rwAct.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+      check(/\[data-wf-act-idx="/.test(rwActCode) && !/querySelectorAll\('\.wf-row'\)/.test(rwActCode),
+        'renderWfActRow 用显式标记定位目标行（按"第几个 .wf-row"数一定错位一行）');
+      check(/setAttribute\('data-wf-act-idx', ai\)/.test(extractFunction('renderWorkflowList')),
+        '全量渲染也给每个动作行打上 data-wf-act-idx（否则行内重渲染找不到它）');
+
+      mWf.workflows = [{
+        id: 'wf_switch', name: 'switch', enabled: true, running: false,
+        conditions: [{ id: 'c1', type: 'string_contains', value: 'OK' }],
+        actions: [
+          { type: 'send_data', data: 'AT', encoding: 'text', delayBefore: 0 },
+          { type: 'send_data', data: 'AT2', encoding: 'text', delayBefore: 0 },
+        ],
+      }];
+      // 按**真实结构**造两行动作（都带 data-wf-act-idx 标记）。
+      // 故意不给 actSection 任何 querySelectorAll —— 定位一旦退回"数第几个 .wf-row"，这里立刻炸。
+      const actRows = [0, 1].map(function (i) {
+        return { i: i, replaced: null, replaceWith: function (n) { this.replaced = n; } };
+      });
+      const actSection = {
+        querySelector: function (sel) {
+          const mt = /^\[data-wf-act-idx="(\d+)"\]$/.exec(sel);
+          if (!mt) throw new Error('定位目标行应当用 [data-wf-act-idx=N]，实际查的是: ' + sel);
+          return actRows[Number(mt[1])] || null;
+        },
+      };
+      const renderAct = function () {
+        actRows[0].replaced = actRows[1].replaced = null;
+        sbWf.renderWfActRow(actSection, 'main', 'wf_switch', 0);
+        return actRows[0].replaced ? String(actRows[0].replaced.innerHTML) : '';
+      };
+
+      const h0 = renderAct();
+      check(!!actRows[0].replaced && !actRows[1].replaced,
+        '改第 0 个动作 → 重渲染的就是第 0 行（不是第 1 行、更不是那颗添加按钮）',
+        'row0=' + !!actRows[0].replaced + ' row1=' + !!actRows[1].replaced);
+      check(/name="wf-act-data"/.test(h0) && !/setWfActSig|setWfActLvl/.test(h0),
+        'send_data 的行里只有内容输入框，没有 DTR/RTS/电平下拉');
+      check(h0.indexOf('id="main-wf-wf_switch-a0"') >= 0,
+        '行内重渲染也要带稳定 id（与全量渲染一致；少一个 id，MCP 注册表切完类型就丢了这个控件）',
+        h0.slice(0, 160));
+
+      // 切到「切换信号」→ 该行换成 DTR/RTS + 电平两个下拉
+      mWf.workflows[0].actions[0] = { type: 'toggle_dtr_rts', signal: 'dtr', level: false, delayBefore: 0 };
+      const hSig = renderAct();
+      check(/setWfActSig/.test(hSig) && /setWfActLvl/.test(hSig) && !/name="wf-act-data"/.test(hSig),
+        '切到「切换信号」后该行出现 DTR/RTS + 电平两个下拉，内容输入框消失');
+
+      // ★ 用户报的那一步：再改回「发送数据」→ DTR/RTS 必须消失
+      mWf.workflows[0].actions[0] = { type: 'send_data', data: 'AT', encoding: 'text', delayBefore: 0 };
+      const hBack = renderAct();
+      check(!/setWfActSig|setWfActLvl/.test(hBack) && /name="wf-act-data"/.test(hBack),
+        '★ 改回「发送数据」后 DTR/RTS 选择栏必须消失、内容输入框回来（用户报的那条）',
+        hBack.slice(0, 200));
+    }
 
     mWf.workflows = [];
     sbWf.renderWorkflowList('main');

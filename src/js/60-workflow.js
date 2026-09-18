@@ -288,6 +288,10 @@ function renderWorkflowList(mid) {
         rule.actions.forEach(function(act, ai) {
             var row = document.createElement('div');
             row.className = 'wf-row';
+            // 显式标记：`renderWfActRow` 按它定位要重渲染的那一行。
+            // 不要靠"第几个 .wf-row"去数 —— 标题的 class 是 .wf-section-title（不在 .wf-row 里），
+            // 而末尾那颗「+ 添加动作」按钮**是** .wf-row，按位置数必然错位。
+            row.setAttribute('data-wf-act-idx', ai);
             var extraInputs = '';
             if (act.type === 'send_data') {
                 extraInputs =
@@ -400,15 +404,21 @@ function setWfActLvl(el, mid, ruleId, idx, val, e) {
 function renderWfActRow(actSection, mid, ruleId, targetIdx) {
     var rule = findWfRule(mid, ruleId);
     if (!rule) return;
-    // 找到目标行并替换
-    var rows = actSection.querySelectorAll('.wf-row');
-    // rows[0] 是标题行，rows[1+] 是动作行
-    var targetRow = rows[targetIdx + 1];
+    // 按**显式标记**找目标行，不按位置数。
+    // 原来写的是 `querySelectorAll('.wf-row')[targetIdx + 1]`，注释说"rows[0] 是标题行" ——
+    // 但标题的 class 是 `.wf-section-title`，**根本不带 `.wf-row`**；而末尾那颗「+ 添加动作」
+    // 按钮**倒**是 `.wf-row`。于是这里整体错位一行：改第 0 个动作的类型，被重渲染的是第 1 个；
+    // 只有 1 个动作时更糟 —— 被 replaceWith 掉的是那颗添加按钮。
+    // 表现就是用户报的那条：**「发送数据 → 切换信号 → 再改回发送数据，DTR/RTS 那两栏不消失」**，
+    // 因为真正该重渲染的那一行从头到尾没被重渲染过（只有 `setSel` 把它的文字改了，
+    // 而 `extraInputs` 是上一次渲染的残留）。
+    var targetRow = actSection.querySelector('[data-wf-act-idx="' + targetIdx + '"]');
     if (!targetRow) return;
     var act = rule.actions[targetIdx];
     if (!act) return;
     var newRow = document.createElement('div');
     newRow.className = 'wf-row';
+    newRow.setAttribute('data-wf-act-idx', targetIdx);
     var extraInputs = '';
     if (act.type === 'send_data') {
         extraInputs =
@@ -419,7 +429,7 @@ function renderWfActRow(actSection, mid, ruleId, targetIdx) {
                     '<div class="sel-opt' + (act.encoding==='hex'?' active':'') + '" onclick="setWfActEnc(this,\'' + mid + '\',\'' + ruleId + '\',' + targetIdx + ',\'hex\',event)">HEX</div>' +
                 '</div>' +
             '</div>' +
-            '<input type="text" name="wf-act-data" value="' + escapeHtml(act.data) + '" placeholder="发送内容" oninput="updateWfAction(\'' + mid + '\',\'' + ruleId + '\',' + targetIdx + ',\'data\',this.value)">';
+            '<input type="text" id="' + mcpWfElId(mid, ruleId, 'a' + targetIdx) + '" name="wf-act-data" value="' + escapeHtml(act.data) + '" placeholder="发送内容" oninput="updateWfAction(\'' + mid + '\',\'' + ruleId + '\',' + targetIdx + ',\'data\',this.value)">';
     } else if (act.type === 'toggle_dtr_rts') {
         extraInputs =
             '<div class="sel" onclick="toggleSelDrop(this)">' +
