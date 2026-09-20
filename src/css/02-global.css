@@ -224,6 +224,91 @@
 .ble-pair-input { display:block; width:100%; margin-top:8px; box-sizing:border-box; }
 .ble-pair-hint { font-size:11px; color:var(--text-d); margin-top:8px; }
 
+/* ===== BLE OTA（固件升级）弹窗 =====
+   阶段 0 只做「选固件 + 校验 + 版本比对」，见 js/84-ble-ota.js 与 doc/BLE_OTA_EVALUATION.md。
+   配色只用主题变量（--accent-green/red/orange），不写死颜色 —— 12 套主题都要能看。 */
+.ble-ota-modal { width:560px; }
+/* 内容区纵向排布且**可滚动**：固件信息行多（文件/大小/包头/芯片/两个 MD5/SHA-256/提醒），
+   小窗口下必然超屏。滚动条样式见下面 .ble-ota-body 那一组（漏了就是一条原生白杠）。 */
+.ble-ota-body { flex-direction:column; align-items:stretch; gap:10px; overflow-y:auto; }
+/* 标题栏：**左标题 · 中设备名 · 右「读取版本」**，中间那列真居中。
+   用 grid 的 `minmax(0,1fr) auto minmax(0,1fr)`（左右两列等宽）—— 中间的 auto 列才相对整个标题栏
+   居中；换成 flex + text-align:center 会变成"在标题右侧的剩余区域里居中"，视觉上偏右。
+   minmax(0,…) 是让两侧能被压缩到 0：设备名极长时标题退化成省略号，而不是把弹窗撑破。
+   三个子元素按顺序落三列：标题 / 设备名 / 按钮（用户 2026-09 要求按钮放标题栏最右）。 */
+.ble-ota-head { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:center; }
+.ble-ota-head .ble-modal-title { justify-self:start;
+                                 min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ble-ota-verbtn { justify-self:end; flex-shrink:0; }
+/* 标题栏中间那行：**名称正常色 + MAC 灰色**（用户 2026-09 要求：MAC 当提示信息用）。
+   ⚠️ 优先级：长名字可以省略，**MAC 永远完整** —— 它是"我正在写哪台设备"的凭据。
+   所以名字 min-width:0（可收缩 + 省略号），MAC flex:0 0 auto（不收缩）。 */
+.ble-ota-title { display:flex; align-items:baseline; justify-content:center; gap:6px;
+                 min-width:0; overflow:hidden; }
+.ble-ota-devname { font-size:13px; font-weight:600; color:var(--text);
+                   min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ble-ota-mac { flex:0 0 auto; font-family:var(--font-mono); font-size:12px;
+               color:var(--text-d); white-space:nowrap; }
+.ble-ota-sec { display:flex; flex-direction:column; gap:6px; }
+.ble-ota-sec-title { font-size:12px; font-weight:600; color:var(--text); }
+.ble-ota-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.ble-ota-recent { height:28px; max-width:240px; padding:0 6px; box-sizing:border-box;
+                  background:var(--input-bg); border:1px solid var(--border); border-radius:6px;
+                  color:var(--text); font-size:12px; }
+/* 协议档（阶段 1）：收起时只有一行摘要，展开后是两列表单。
+   摘要行走普通小字 —— 它是**状态**（配没配、缺什么），不是常驻说明文案（用户明确要求不摆那种）。 */
+.ble-ota-profile-sum { font-size:11.5px; line-height:1.6; color:var(--text-d); overflow-wrap:anywhere; }
+.ble-ota-toggle { margin-left:6px; padding:1px 6px; font-size:11px; font-weight:400;
+                  background:transparent; color:var(--text-d); border:1px solid var(--border);
+                  border-radius:4px; cursor:pointer; }
+.ble-ota-toggle:hover { color:var(--text); border-color:var(--btn-p); }
+.ble-ota-form { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:6px 10px; }
+.ble-ota-field { display:flex; align-items:center; gap:6px; min-width:0; }
+.ble-ota-field > span { flex:0 0 60px; font-size:11.5px; color:var(--text-d); }
+.ble-ota-inp { flex:1; min-width:0; height:26px; padding:0 6px; box-sizing:border-box;
+               background:var(--input-bg); border:1px solid var(--border); border-radius:5px;
+               color:var(--text); font-size:11.5px; }
+.ble-ota-inp:focus { outline:none; border-color:var(--btn-p); }
+.ble-ota-inp:disabled { opacity:.55; }
+.ble-ota-info { font-family:var(--font-mono); font-size:11.5px; line-height:1.65; color:var(--text);
+                background:var(--editor-bg); border:1px solid var(--border); border-radius:6px;
+                padding:8px 10px; max-height:190px; overflow-y:auto; }
+.ble-ota-kv { display:flex; gap:8px; }
+.ble-ota-k { flex:0 0 auto; min-width:96px; color:var(--text-d); }
+.ble-ota-v { flex:1; min-width:0; overflow-wrap:anywhere; word-break:break-all; }
+.ble-ota-kv.warn .ble-ota-v { color:var(--accent-orange); }
+.ble-ota-kv.bad .ble-ota-v { color:var(--accent-red); }
+.ble-ota-kv.ok .ble-ota-v { color:var(--accent-green); }
+.ble-ota-empty { color:var(--text-d); }
+/* 更新进度：轨道 + 填充条。阶段 0 里填充恒为 0%（没有传输），阶段 1 只改 width。
+   轨道用 overflow:hidden 裁圆角 —— 它不是"可滚动区域"，所以不需要滚动条规则。 */
+.ble-ota-track { height:6px; border-radius:3px; background:var(--input-bg);
+                 border:1px solid var(--border); overflow:hidden; }
+.ble-ota-bar { height:100%; width:0%; background:var(--accent-focus); transition:width .2s ease; }
+/* 阶段文字跟在「更新进度」标题右边（用户 2026-09 要求）—— 它是标题行里的一个 inline 片段，
+   `margin-left` 就是那个间距；**必须把 font-weight 收回 400**：标题是 600，不覆盖的话
+   这句状态会跟着变粗、抢成第二重点。 */
+.ble-ota-stage { margin-left:6px; font-size:11.5px; font-weight:400; color:var(--text-d); }
+/* OTA 日志窗口：固定高度（用户 2026-09："高度合理即可"）—— 固定而不是 max-height，
+   这样日志多起来时是它自己滚，弹窗高度不跟着跳。滚动条四件套见下面那组（含 corner）。 */
+.ble-ota-log { height:132px; overflow-y:auto; font-family:var(--font-mono); font-size:11.5px;
+               line-height:1.7; color:var(--text); background:var(--editor-bg);
+               border:1px solid var(--border); border-radius:6px; padding:6px 10px;
+               white-space:pre-wrap; word-break:break-all; }
+.ble-ota-log .ok { color:var(--accent-green); }
+.ble-ota-log .warn { color:var(--accent-orange); }
+.ble-ota-log .bad { color:var(--accent-red); }
+.ble-ota-log .dim { color:var(--text-d); }
+.ble-ota-risk { font-size:11.5px; line-height:1.6; color:var(--text-d);
+                border-left:2px solid var(--accent-orange); padding-left:8px; }
+/* 设备详情页头部的「固件升级」按钮（未连接时禁用） */
+.ble-ota-btn { width:auto; height:28px; padding:0 12px; box-sizing:border-box;
+               font-size:12px; flex-shrink:0; white-space:nowrap; }
+.ble-ota-btn:disabled { opacity:.45; cursor:default; }
+/* 禁用态必须压得住 .add-btn.icon-btn:hover（它的特异性是 (0,3,0)，会把这个按钮
+   悬停时又抬回 opacity:1、还描上边框 —— 看起来就像可点的）。本规则同样 (0,3,0) 且在后，故胜出。 */
+.ble-ota-btn:disabled:hover { opacity:.45; border-color:transparent; text-decoration:none; }
+
 .ble-modal-row .ble-write-opts { align-self:flex-start; }
 /* 弹窗右侧选项列：每行「标签 + 下拉」，三行外观与宽度统一（下拉外观对齐串口监视器的 .sel） */
 .ble-write-opts { display:flex; flex-direction:column; gap:6px; flex-shrink:0; }
@@ -245,6 +330,10 @@
 .ble-modal-btn:hover { border-color:var(--border-h); }
 .ble-modal-btn.primary { background:var(--accent-focus); border-color:transparent; color:#fff; }
 .ble-modal-btn.primary:hover { filter:brightness(1.08); }
+/* 危险按钮（OTA 阶段 1）：二次确认后的「确认升级」、以及传输中的「中止」。
+   必须与 primary 明显不同色 —— 这两颗按钮的后果是"开始写固件/中断写入"，不是普通操作。 */
+.ble-modal-btn.danger { background:var(--accent-red); border-color:transparent; color:#fff; }
+.ble-modal-btn.danger:hover { filter:brightness(1.08); }
 /* 禁用态必须一眼看得出来，并且不能再显示手型光标：
    「启用 MCP 服务器」在运行中是被禁用的，但它是 primary（蓝底白字），
    不压暗、不换光标的话就跟可点的按钮长得一模一样 —— 用户会去点、点了没反应。 */
@@ -386,6 +475,24 @@
 #paneContainer::-webkit-scrollbar-thumb:hover,
 .send-hist::-webkit-scrollbar-thumb:hover,
 .term-comp::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
+/* BLE OTA 弹窗里的两处滚动区（内容区 + 固件/版本信息框）+ 日志窗口。四件套必须齐：
+   尺寸 + track + **corner** + thumb:hover —— corner 漏了就是横竖交汇处一个白方块。 */
+.ble-ota-body::-webkit-scrollbar,
+.ble-ota-info::-webkit-scrollbar,
+.ble-ota-log::-webkit-scrollbar { width:10px; height:10px; }
+.ble-ota-body::-webkit-scrollbar-track,
+.ble-ota-info::-webkit-scrollbar-track,
+.ble-ota-log::-webkit-scrollbar-track { background:transparent; }
+.ble-ota-body::-webkit-scrollbar-corner,
+.ble-ota-info::-webkit-scrollbar-corner,
+.ble-ota-log::-webkit-scrollbar-corner { background:transparent; }
+.ble-ota-body::-webkit-scrollbar-thumb,
+.ble-ota-info::-webkit-scrollbar-thumb,
+.ble-ota-log::-webkit-scrollbar-thumb {
+    background:rgba(128,134,146,.45); border-radius:5px; background-clip:content-box; }
+.ble-ota-body::-webkit-scrollbar-thumb:hover,
+.ble-ota-info::-webkit-scrollbar-thumb:hover,
+.ble-ota-log::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
 /* 水平间距一律交给 .global-bar 的 gap，这里不再自带 margin-right */
 .app-info { display:inline-flex; align-items:center; gap:6px; cursor:default; flex-shrink:0; }
 .app-info-icon { width:22px; height:22px; flex-shrink:0; object-fit:contain; }

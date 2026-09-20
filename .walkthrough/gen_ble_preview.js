@@ -968,6 +968,7 @@ console.log('preview ->', out);
   sb6.stopBleNotifyPoll = () => {};
   sb6.stopBleRssiPoll = () => { sb6._stopped++; };
   sb6.closeBleWriteModal = () => {};
+  sb6.bleOtaSyncTarget = () => {};   // 跨文件（84-ble-ota.js）：断开时要刷新 OTA 弹窗的目标设备
   sb6.showToast = (m, t) => sb6._toasts.push(t);
   sb6.renderBleDeviceList = () => {};
   sb6.renderBleDetail = () => {};
@@ -1232,6 +1233,9 @@ console.log('preview ->', out);
         renderBleDeviceList: () => {}, renderBleDetail: () => {}, refreshBleDevices: () => {},
         refreshBleMtu: () => mkP(0),
         startBleNotifyPoll: () => {}, startBleRssiPoll: () => {}, showToast: () => {},
+        // 跨文件（84-ble-ota.js）：连上后要刷新 OTA 弹窗的目标设备。这个沙箱只测扫描互斥，
+        // 用空实现顶掉即可 —— 少了它就是 ReferenceError 把整段断言打崩（当初 closeBleWriteModal 同理）。
+        bleOtaSyncTarget: () => {},
       };
       vm.createContext(sb);
       vm.runInContext(['stopBleScan', 'stopBleScanOnConnect', 'bleOnConnected'].map(extractFunction).join('\n'), sb);
@@ -2653,6 +2657,19 @@ console.log('preview ->', out);
   const dangerNoUi = {};
   [...dangerNoUiSrc.matchAll(/^\s*([a-z_]+):/gm)].forEach((m) => { dangerNoUi[m[1]] = true; });
   const dangerNamed = Object.keys(dangerUi).concat(Object.keys(dangerNoUi)).sort();
+  // 第三张表：**界面上有危险按钮、但后端还没有对应工具**（阶段差）。
+  // 典型例子：OTA 的「开始升级」—— 阶段 1 起真的会写设备，而 MCP 的 ota_start 属阶段 3。
+  // 它必须带 data-mcp-skip（AI 点不到），又**不能**登记进 MCP_DANGER_CONTROLS
+  // （那张表的 key 必须与 Rust DANGER_TOOLS 一一对应，虚报一条就 fail）。
+  const skipNoToolSrc = (/var MCP_SKIP_NO_TOOL = \{([\s\S]*?)\n\};/.exec(html) || ['', ''])[1];
+  const skipNoTool = {};
+  [...skipNoToolSrc.matchAll(/^\s*([a-z_]+):\s*'/gm)].forEach((m) => { skipNoTool[m[1]] = true; });
+  const skipNoToolNamed = Object.keys(skipNoTool).sort();
+  check(skipNoToolNamed.every((k) => dangerNamed.indexOf(k) < 0),
+    '★ 三张表互斥：「有入口、工具还没做」的那些不能又出现在另外两张表里（同一件事两处打架）',
+    skipNoToolNamed.join(','));
+  check(skipNoToolNamed.length > 0 && /ota_start:/.test(skipNoToolSrc) && /阶段 3/.test(skipNoToolSrc),
+    '★ OTA 的「开始升级」在"工具还没做"那张表里，且写明了理由（阶段 3 才有 ota_start）');
   check(dangerTools.length >= 3, '扫到了 Rust 的危险动作表（不是空扫）', dangerTools.join(','));
   check(JSON.stringify(dangerTools) === JSON.stringify(dangerNamed),
     '危险动作表里每个工具都交代了"界面上有没有另一个入口"（有 → skip；没有 → 写清为什么）'
@@ -2661,9 +2678,9 @@ console.log('preview ->', out);
   check(/nodes\[i\]\.closest && nodes\[i\]\.closest\('\[data-mcp-skip\]'\)/.test(html),
     'mcpBuildRegistry 真的跳过带 data-mcp-skip 的控件（closest 带存在性判断，假 DOM 里不炸）');
   const skipCount = (html.match(/data-mcp-skip=/g) || []).length;
-  check(skipCount === Object.keys(dangerUi).length,
-    'data-mcp-skip 的出现次数 == 登记的危险控件数（加一个忘一个会被这条逮住）',
-    '源码 ' + skipCount + ' 处 / 表里 ' + Object.keys(dangerUi).length + ' 个');
+  check(skipCount === Object.keys(dangerUi).length + skipNoToolNamed.length,
+    'data-mcp-skip 的出现次数 == 登记的危险控件数 +「工具还没做」那张表（加一个忘一个会被这条逮住）',
+    '源码 ' + skipCount + ' 处 / 表里 ' + (Object.keys(dangerUi).length + skipNoToolNamed.length) + ' 个');
   check(Object.keys(dangerUi).every((k) => html.indexOf(dangerUi[k]) >= 0),
     '表里记的控件标识在源码里真的存在（名字写错 = 根本没保护）',
     Object.keys(dangerUi).filter((k) => html.indexOf(dangerUi[k]) < 0).join(',') || '(都在)');
@@ -7012,6 +7029,380 @@ console.log('preview ->', out);
     check(await waitFor(() => !sb.qcmdLoopRunning('main'), 12000),
       '连续跳转超过上限 → 自愈停止（防死循环）');
     check(/跳转次数超过上限/.test(toasts.join(' | ')), '停止原因写明是跳转上限', toasts.join(' | '));
+  }
+
+  // ---- 设备名来源：广播名 vs 系统/GAP 名（2026-09 用户报"左侧设备名出错了"）----
+  // 真相：btleplug 的 winrt 后端在 connect() 成功后拿 Windows 系统名**覆盖** local_name
+  // （vendor/btleplug/src/winrtble/peripheral.rs 的 "Query the system-cached device name"，
+  // **不是**我们那 4 处补丁之一），而 advertisement_name 仍是广播里的名字。前端两处用了相反的
+  // 优先级 → 同一台设备"卡片名"与"广播名"互相矛盾，且名字在连上的瞬间跳变。
+  console.log('\n【设备名来源】');
+  {
+    const vend = fs.readFileSync(
+      path.join(root, 'src-tauri', 'vendor', 'btleplug', 'src', 'winrtble', 'peripheral.rs'), 'utf8');
+    const vendDev = fs.readFileSync(
+      path.join(root, 'src-tauri', 'vendor', 'btleplug', 'src', 'winrtble', 'ble', 'device.rs'), 'utf8');
+    check(/Query the system-cached device name/.test(vend)
+      && /let mut local_name_guard = self\.shared\.local_name\.write\(\)\.unwrap\(\);/.test(vend)
+      && /\*local_name_guard = Some\(name_str\);/.test(vend),
+      '上游 winrt 后端确实在 connect() 后用系统名覆盖 local_name（钉住"我们知道原因"）');
+    check(/fn name\(&self\)[\s\S]{0,120}?self\.device\.Name\(\)/.test(vendDev),
+      '那个名字就是 WinRT 的 BluetoothLEDevice.Name（我们没解析它）→ 它可能是系统缓存/投射的误识别');
+    check(/name: j\.advertisement_name \|\| j\.local_name/.test(html),
+      '★ 设备名优先用**广播名**：local_name 连上后会被系统名覆盖，用它名字会在连接瞬间跳变');
+    check(!/name: j\.local_name \|\| j\.advertisement_name/.test(html),
+      '别把优先级写回去（那样"卡片名"与"广播名"两行会互相矛盾）');
+    // ★ 用户 2026-09 判定："tSample 是误识别" → 那个系统名**不进界面**（不单列、不当主名）
+    check(!/gapName/.test(html) && !/advRow\('系统名'/.test(html),
+      '★ 界面不展示那个"系统名"：它不是我们从报文里解出来的，留着会让人以为解析错了');
+    check(/name: j\.advertisement_name \|\| j\.local_name \|\| ''/.test(html),
+      '只有设备**根本没广播名字**时才拿系统名兜底（否则界面只剩"未知设备"，更没用）');
+  }
+
+  // ==================== BLE OTA（固件升级）阶段 0 ====================
+  // 阶段 0 = 只选固件 + 只校验 + 只读设备版本，**不写设备**。见 doc/BLE_OTA_EVALUATION.md。
+  // 这里守三件事：① 纯函数算得对（版本对照 / 字节数 / 特征定位）；② 阶段 0 里**没有任何写入调用**
+  // （半成品固件写入 = 变砖）；③ 前端调的 id 与命令都真实存在（否则按钮点了什么都不发生）。
+  console.log('\n【BLE OTA（阶段 0：选固件 + 校验）】');
+  {
+    // 先剥注释再扫：OTA 文件的注释里**故意**提到了 ble_write（"别偷偷调它"），
+    // 不剥掉的话这条断言会被自己的注释绊倒。
+    const otaFile = fs.readFileSync(path.join(root, 'src', 'js', '84-ble-ota.js'), 'utf8');
+    const otaCode = otaFile
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^[ \t]*\/\/.*$/gm, '');
+
+    // ---- ① 入口与弹窗 ----
+    // ⚠️ 脚本标签要读**原始骨架**：`html` 是 readFrontendSource() 内联回来的"逻辑单文件"，
+    // 里面的 `<script src>` 已经被替换成内联块了，在 html 上正则必然找不到。
+    const skeletonSrc = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
+    check(/<script src="js\/84-ble-ota\.js"><\/script>/.test(skeletonSrc),
+      '84-ble-ota.js 已通过 <script src> 加载（没挂上 = 整个功能不存在）');
+    check((html.match(/id="bleOtaModal"/g) || []).length === 1,
+      'OTA 弹窗只有一个（不重复造第二个）');
+    check(/function openBleOtaModal\(\)/.test(html) && /onclick="openBleOtaModal\(\)"/.test(html),
+      '设备详情页头部有「固件升级」入口（源码里在，**当前被总开关关着**，见下一条）');
+    check(/ble-ota-btn[\s\S]{0,400}?\(dev\.connected \? '' : 'disabled '\)/.test(html),
+      '「固件升级」按钮未连接时禁用（OTA 只能对已连接的设备发起）');
+    // ---- ①.1 整条 OTA **当前是隐藏状态**（用户 2026-09："OTA 的功能先隐藏起来吧"）----
+    // ⚠️ 隐藏用开关、不是删代码：阶段 0/1 的引擎与配套都还在，卡住的只是真机协议的 crc16 参数。
+    // 这两条同时守住"确实是关的"和"写明了为什么关、以及怎么打开" —— 缺一条就会变成
+    // "功能悄悄消失、半年后没人记得它存在过"。
+    check(/var BLE_OTA_UI_ENABLED = false;/.test(html),
+      '★ OTA 入口总开关当前是 false（界面上看不到「固件升级」按钮）');
+    check(/BLE_OTA_TELINK\.md[\s\S]{0,900}?var BLE_OTA_UI_ENABLED = false;/.test(html),
+      '★ 关掉的理由写明了（等真机核对泰凌微 OTA 的 crc16 参数，见 doc/BLE_OTA_TELINK.md）');
+    check(/typeof BLE_OTA_UI_ENABLED !== 'undefined' && BLE_OTA_UI_ENABLED[\s\S]{0,200}?ble-ota-btn/.test(html),
+      '★ 设备详情页那颗按钮**真的被开关控制着**（不是只写了个没人用的变量）');
+    check(/if \(!BLE_OTA_UI_ENABLED\) return;/.test(html),
+      '★ 关掉时 `openBleOtaModal()` 自己也拒绝打开（只藏按钮的话，一句手动调用就能把流程喊出来）');
+
+    // ---- ② ★ 阶段 0 绝不写设备 ----
+    // 这条是本次改动的**核心安全断言**：阶段 0 只允许只读命令。
+    const otaCmds = [...new Set([...otaCode.matchAll(/invoke\('([a-zA-Z_]+)'/g)].map((m) => m[1]))];
+    const forbidden = otaCmds.filter((t) => /^ble_(write|write_descriptor|subscribe|unsubscribe|disconnect|connect)/.test(t));
+    check(otaCmds.length > 0 && forbidden.length === 0,
+      '★ 阶段 0 的 OTA 代码只调只读命令（选固件 / 重解析 / 列最近 / 读版本），没有任何写设备或断链的命令',
+      '违规：' + forbidden.join(',') + ' 全部：' + otaCmds.join(','));
+    check(otaCmds.indexOf('ota_pick_firmware') >= 0 && otaCmds.indexOf('ota_inspect_firmware') >= 0
+      && otaCmds.indexOf('ota_list_firmwares') >= 0,
+      '选固件走的是 ota_* 三条命令（固件字节从不进 IPC）', otaCmds.join(','));
+
+    // ---- ③ 跨边界：前端调的每个 id / 命令都真实存在 ----
+    // 取不到 id 的后果不是报错，而是"按钮点了什么都不发生" —— 这类静默失败最难查。
+    const otaIds = [...new Set([...otaCode.matchAll(/getElementById\('([A-Za-z0-9_]+)'\)/g)].map((m) => m[1]))];
+    const missingIds = otaIds.filter((id) => !(new RegExp('id="' + id + '"')).test(html));
+    check(otaIds.length >= 6 && missingIds.length === 0,
+      'OTA 用到的每个元素 id 都在 index.html 里（少一个就是静默失效）', missingIds.join(','));
+    const missingCmds = otaCmds.filter((c) => !(new RegExp('fn ' + c + '\\b')).test(mainRs));
+    check(missingCmds.length === 0,
+      'OTA 调的每个后端命令都在 main.rs 里定义了（少一个就是点了没反应）', missingCmds.join(','));
+    check(/ota_pick_firmware,\s*\n\s*ota_inspect_firmware,\s*\n\s*ota_list_firmwares,/.test(mainRs),
+      '三条 OTA 命令都注册进了 generate_handler（漏注册 = 运行期 command not found）');
+    // 后端那一半：路径白名单与「读前判上限」是安全边界，不是装饰
+    check(/fn ota_firmware_allowed\(/.test(mainRs) && /这个路径不是你在文件框里选过的/.test(mainRs),
+      '固件路径只认用户在原生框里选过的（否则等于给本机任意进程一个文件读取原语）');
+    check(/ota_check_size\(meta\.len\(\)\)\?/.test(mainRs),
+      '大小上限在读文件**之前**判（别等读完才发现太大）');
+
+    // ---- ④ 纯函数行为 ----
+    const sbOta = { console, TextDecoder };
+    vm.createContext(sbOta);
+    vm.runInContext([
+      extractFunction('shortUuid'),   // bleOtaFindChar 靠它把 uuid 归一化后再比
+      extractVar('BLE_OTA_DIS_CHARS'),
+      extractFunction('bleOtaFindChar'), extractFunction('bleOtaHasService'),
+      extractFunction('bleOtaSvcCharShorts'), extractFunction('bleOtaReadBlockReason'),
+      extractFunction('bleOtaFmtSize'), extractFunction('bleOtaDecodeVersion'),
+      extractFunction('bleOtaVerdict'), extractFunction('bleOtaFwRows'),
+    ].join('\n'), sbOta);
+
+    check(sbOta.BLE_OTA_DIS_CHARS.length === 5
+      && sbOta.BLE_OTA_DIS_CHARS.some((d) => d.uuid === '2A26' && d.key === 'firmware'),
+      'DIS 版本表里必须有 0x2A26 Firmware Revision String（升级后拿它做验收）');
+
+    check(sbOta.bleOtaFmtSize(512) === '512 B' && sbOta.bleOtaFmtSize(2048) === '2.0 KB'
+      && sbOta.bleOtaFmtSize(3 * 1024 * 1024) === '3.00 MB',
+      '字节数显示成人话', [512, 2048, 3 * 1024 * 1024].map(sbOta.bleOtaFmtSize).join('|'));
+    check(sbOta.bleOtaFmtSize(undefined) === '0 B', '拿不到大小时显示 0 B（不显示 NaN）', sbOta.bleOtaFmtSize(undefined));
+
+    // ★ 真机回归（用户截图：ai-thinker 设备 0x180A 明明在，界面却说「设备未提供 0x180A」）：
+    //   根因是拿**完整 128 位字符串硬比**。现在统一走 shortUuid 归一化，三种写法都必须命中。
+    const svcTree = [{
+      uuid: '0000180a-0000-1000-8000-00805f9b34fb',
+      characteristics: [
+        { uuid: '00002A26-0000-1000-8000-00805F9B34FB' },   // 大写完整形式
+        { uuid: '00002a29-0000-1000-8000-00805f9b34fb' },   // 小写完整形式（btleplug 的写法）
+        { uuid: '2A24' },                                    // 短形式（别的后端可能这么给）
+      ],
+    }];
+    check(!!sbOta.bleOtaFindChar(svcTree, '2A26') && !!sbOta.bleOtaFindChar(svcTree, '2A29')
+      && !!sbOta.bleOtaFindChar(svcTree, '2A24'),
+      '★ uuid 的三种写法（大写完整 / 小写完整 / 短）都能命中（按完整 128 位硬比会误报"没有"）');
+    check(sbOta.bleOtaFindChar(svcTree, '2A27') === null,
+      '服务树里没有的特征返回 null（不是抛错，也不是编一个出来）');
+    check(sbOta.bleOtaFindChar(null, '2A26') === null, '服务树为空时不抛错');
+    check(sbOta.bleOtaHasService(svcTree, '180A') === true && sbOta.bleOtaHasService(svcTree, '180F') === false,
+      '能判断某个服务在不在（用来把"服务不在"与"服务在但没这个特征"分开说）');
+    const onlyPnp = [{ uuid: '0000180a-0000-1000-8000-00805f9b34fb',
+                       characteristics: [{ uuid: '00002a50-0000-1000-8000-00805f9b34fb' }] }];
+    check(JSON.stringify(sbOta.bleOtaSvcCharShorts(onlyPnp, '180A')) === '["2A50"]',
+      '能把服务下实际有哪些特征列出来（用户要知道该往设备侧补什么）',
+      JSON.stringify(sbOta.bleOtaSvcCharShorts(onlyPnp, '180A')));
+
+    // 三态必须分清：服务树空 / 没有 180A / 有 180A 但没有版本类特征
+    check(sbOta.bleOtaReadBlockReason(svcTree) === null, '有版本类特征 → 不拦（返回 null）');
+    check(/没拿到 GATT 服务树/.test(sbOta.bleOtaReadBlockReason([])),
+      '服务树为空 → 让用户重连，而不是说设备没有某服务', sbOta.bleOtaReadBlockReason([]));
+    check(/设备未提供 0x180A/.test(sbOta.bleOtaReadBlockReason([{ uuid: '0000fff0-0000-1000-8000-00805f9b34fb', characteristics: [] }])),
+      '确实没有 180A → 照实说');
+    const reason180A = sbOta.bleOtaReadBlockReason(onlyPnp);
+    check(/没有版本类特征/.test(reason180A) && /2A50/.test(reason180A),
+      '★ 有 180A 但没有版本类特征 → 这么说，并把现有特征列出来（别谎报"设备未提供 0x180A"）', reason180A);
+
+    check(sbOta.bleOtaDecodeVersion([0x31, 0x2E, 0x32, 0x2E, 0x33, 0, 0]) === '1.2.3',
+      '版本字段结尾的 NUL 被去掉（设备常在定长字段里补 0）',
+      JSON.stringify(sbOta.bleOtaDecodeVersion([0x31, 0x2E, 0x32, 0x2E, 0x33, 0, 0])));
+    check(sbOta.bleOtaDecodeVersion([]) === '' && sbOta.bleOtaDecodeVersion(null) === '',
+      '空值返回空串（不抛错）');
+
+    check(sbOta.bleOtaVerdict('1.2.3', '1.2.3').level === 'same', '版本一致 → same');
+    check(sbOta.bleOtaVerdict('1.2.3', '1.2.4').level === 'diff', '版本不同 → diff');
+    check(sbOta.bleOtaVerdict('V1.2', 'v1.2').level === 'same',
+      '比较忽略大小写（"V1.2" 与 "v1.2" 是同一个版本）');
+    check(sbOta.bleOtaVerdict('', '1.2.3').level === 'unknown'
+      && sbOta.bleOtaVerdict('1.2.3', '').level === 'unknown',
+      '缺一边 → unknown（读不到就说读不到，不猜）');
+    check(!/比设备|设备.*(新|旧)|(新|旧)于/.test(sbOta.bleOtaVerdict('1.2.3', '1.2.4').text),
+      '★ 不判断"谁新谁旧"：版本号写法各家不同（1.2.3 / V1.2 / 日期），猜大小必然误报');
+
+    const rowsOk = sbOta.bleOtaFwRows({
+      name: 'a.bin', size_text: '1.20 MB', header_kind: 'ai_pack_head', header_size: 169,
+      body_size: 1258000, body_md5: 'AB', md5_match: true, header: { chip: 'BL60', head_version: 'V1.0', md5: 'AB' },
+      file_sha256: 'DEAD', warnings: [],
+    });
+    check(rowsOk.some((r) => /一致/.test(r.v)) && rowsOk.some((r) => r.k === '固件体'),
+      '有包头时把「MD5 校验结论」与「固件体大小」都说出来（只说"169 B 包头"等于没说）');
+    check(rowsOk.every((r) => typeof r.k === 'string' && r.k.length > 0),
+      '每一行都有键名（不做"只有值没有名"的行）');
+    const rowsBad = sbOta.bleOtaFwRows({
+      header_kind: 'ai_pack_head', header_size: 169, md5_match: false,
+      header: { chip: 'UNKN' }, warnings: ['包头的 MD5 对不上'], file_sha256: 'X',
+    });
+    check(rowsBad.some((r) => r.cls === 'bad') && rowsBad.some((r) => r.cls === 'warn'),
+      '校验失败标 bad、提醒标 warn（颜色有依据，不是随机上色）');
+    check(rowsBad.some((r) => r.v.indexOf('包头的 MD5 对不上') >= 0),
+      '后端的 warnings 原样展示出来（不吞掉）');
+    const rowsRaw = sbOta.bleOtaFwRows({ header_kind: 'raw', md5_match: null, file_sha256: 'Y', warnings: [] });
+    // 用户 2026-09 要求：这一行只写「未识别」—— 括号里那句"按裸固件"是我们的做法，
+    // 不是这个字段的值（做法写在"已选固件…"那行日志里）。断言也跟着钉住这个措辞。
+    check(rowsRaw.some((r) => r.k === '包头' && r.v === '未识别'),
+      '★ 认不出包头时「包头」只写"未识别"（不拖一句做法在后面）',
+      JSON.stringify(rowsRaw.filter((r) => r.k === '包头')));
+    check(rowsRaw.filter((r) => r.k === '包头').every((r) => r.v.indexOf('裸固件') < 0),
+      '「包头」那一行不再出现"裸固件"字样（做法不占字段值的位置）');
+    check(rowsRaw.every((r) => r.cls !== 'bad'),
+      '裸固件不该被判成"校验失败"（md5_match=null ≠ false）');
+    check(sbOta.bleOtaFwRows(null).length === 0, '没选固件时不伪造任何行');
+
+    // ---- ⑤ 目标设备：显示在**标题栏**里（用户 2026-09 要求：放 Title、居中） ----
+    check(/<div class="ble-modal-head ble-ota-head">\s*<span class="ble-modal-title">固件升级（OTA）<\/span>\s*<span class="ble-ota-title" id="bleOtaDevLine">/
+      .test(html.replace(/\r\n/g, '\n')),
+      '标题栏左边是「固件升级（OTA）」、中间是设备名 + MAC（两个都在，别再把标题删掉）');
+    check(/\.ble-ota-head \{ display:grid; grid-template-columns:minmax\(0,1fr\) auto minmax\(0,1fr\); align-items:center; \}/.test(html),
+      '设备名 + MAC 相对**整个标题栏**居中（grid 左右等宽列；flex + text-align:center 会变成偏右）');
+    check(/\.ble-ota-title \{[^}]*min-width:0;/.test(html),
+      '设备名长了要显示省略号（min-width:0 少了，grid/flex 子项不会收缩、省略号不生效）');
+    check(!/class="ble-ota-dev"/.test(html), '内容区里不再留目标设备那一行（搬走就搬干净）');
+    const sbOtaTgt = {
+      console, _bleConnAddr: null,
+      _bleDevices: [{ address: 'AA:BB:CC:DD:EE:01', name: '模组A' }, { address: 'AA:BB:CC:DD:EE:02', name: '模组B' }],
+    };
+    vm.createContext(sbOtaTgt);
+    vm.runInContext([
+      extractFunction('bleOtaTargetParts'), extractFunction('bleOtaTargetText'),
+    ].join('\n'), sbOtaTgt);
+    check(/未连接设备/.test(sbOtaTgt.bleOtaTargetText()) && sbOtaTgt.bleOtaTargetParts().mac === '',
+      '未连接时只有「未连接设备」这句提示、没有 MAC', JSON.stringify(sbOtaTgt.bleOtaTargetParts()));
+    sbOtaTgt._bleConnAddr = 'AA:BB:CC:DD:EE:02';
+    const tgtText = sbOtaTgt.bleOtaTargetText();
+    check(/模组B/.test(tgtText) && !/模组A/.test(tgtText),
+      '★ 标题栏显示的是**后端真实已连接**的那台，不是列表里选中的那台（写错设备比不写更糟）', tgtText);
+    check(!/目标设备/.test(tgtText) && tgtText.indexOf('AA:BB:CC:DD:EE:02') >= 0,
+      '标题栏只给「名称 + MAC」，不带「目标设备」前缀（用户 2026-09 要求删，别加回来）', tgtText);
+    // 名称与 MAC **分开给**：界面上要把 MAC 单独上灰色（用户 2026-09：MAC 当提示信息用）
+    const tgtParts = sbOtaTgt.bleOtaTargetParts();
+    check(tgtParts.name === '模组B' && tgtParts.mac === 'AA:BB:CC:DD:EE:02',
+      '名称与 MAC 是分开的两个字段（合在一起就没法只给 MAC 上灰色）', JSON.stringify(tgtParts));
+    check(/<span class="ble-ota-devname" id="bleOtaDevName"><\/span><span class="ble-ota-mac" id="bleOtaDevMac"><\/span>/.test(html),
+      '标题栏里是两个 span（名称 / MAC），不是一整段文本');
+    check(/\.ble-ota-mac \{[^}]*color:var\(--text-d\)/.test(html),
+      '★ MAC 用灰色（--text-d）当提示用，不跟名称抢注意力');
+    check(/\.ble-ota-devname \{[^}]*color:var\(--text\)/.test(html),
+      '设备名仍是正常前景色（别整行都灰了）');
+    check(/\.ble-ota-mac \{[^}]*flex:0 0 auto/.test(html) && /\.ble-ota-devname \{[^}]*min-width:0/.test(html),
+      '长设备名可省略、MAC 永远完整（MAC 是"我在写哪台设备"的凭据）');
+    check(/bleOtaSyncTarget\(\)/.test(extractFunction('bleOnConnected'))
+      && /bleOtaSyncTarget\(\)/.test(extractFunction('onBleLinkLost')),
+      '连接与断开两条出口都刷新 OTA 弹窗（切设备/掉线后不能还写着上一台）');
+    check(/变砖风险/.test(html) && /勿断开设备/.test(html),
+      '弹窗里写明了变砖风险与"过程中勿断开设备"');
+    check(/function bleOtaStartBlockReason\(/.test(html) && /先选择固件/.test(html)
+      && /协议档里还没填「写入特征 UUID」/.test(html),
+      '★「开始升级」不是死按钮：逐条说清为什么还不能开始（纯函数给原因），而不是毫无反应');
+    // ---- ⑥ 风险提示：**内容区最前面 + 单行**（用户 2026-09 要求）----
+    // 这句话是弹窗里最该先看到的，压在底部等于没写；单行是刻意的 —— 超了会折行、再超只能截断，
+    // 而安全提示被截断比折行更糟。
+    const riskSrc = (html.match(/<div class="ble-ota-risk">([\s\S]*?)<\/div>/) || [, ''])[1];
+    const riskLines = riskSrc.split(/<br\s*\/?>/).map((s) => s.replace(/\s+/g, '')).filter(Boolean);
+    check(riskLines.length === 1 && riskLines[0].length <= 42,
+      '★ 变砖风险**单行**、≤42 字（放最前面、一行说完）',
+      JSON.stringify(riskLines));
+    check(/<div class="ble-modal-body ble-ota-body">[\s\S]*?<div class="ble-ota-risk">[\s\S]*?<div class="ble-ota-sec">/
+      .test(html.replace(/\r\n/g, '\n')),
+      '★ 风险提示在内容区**最前面**（排在第一个区块之前）——压在底部等于没写');
+    // 用户 2026-09 要求删掉常驻说明（"阶段 0 · 只做选择与校验，不会写入设备"）：
+    // 弹窗里只留"有结果才提示"的动态区，别再有常驻文案堆在上面。
+    check(!/bleOtaStageNote/.test(html),
+      '常驻说明函数已删干净（别又冒出一句常驻文案）');
+
+    // ---- ⑦ 布局：读取版本进标题栏 / 删设备版本区 / 下方换成进度+日志（用户 2026-09 要求）----
+    check(/<button class="ble-modal-btn ble-ota-verbtn" id="bleOtaVerBtn"/.test(html)
+      && /\.ble-ota-verbtn \{ justify-self:end;/.test(html),
+      '★「读取版本」在标题栏**最右**（grid 第三列 + justify-self:end）');
+    check(!/id="bleOtaDevInfo"/.test(html) && !/id="bleOtaVerdict"/.test(html),
+      '★ 内容区的「设备版本」显示区已删（读数与失败原因改走日志窗口）');
+    check(/id="bleOtaBar"/.test(html) && /id="bleOtaStage"/.test(html)
+      && /\.ble-ota-track \{/.test(html) && /\.ble-ota-bar \{/.test(html),
+      '内容区有「更新进度」（轨道 + 填充条 + 阶段文字）—— 阶段 1 接上传输后只填数值');
+    // 用户 2026-09 要求：「未开始」放在「更新进度」**右边**（不是自己单占一行 —— 单占一行会跟
+    // 下面那条轨道脱开）。顺带钉住 font-weight:400：标题是 600，不覆盖就跟着变粗。
+    check(/<div class="ble-ota-sec-title">更新进度<span class="ble-ota-stage" id="bleOtaStage">/
+      .test(html),
+      '★ 阶段文字在「更新进度」标题**右边**（同一行，不再单占一行）');
+    check(/\.ble-ota-stage \{[^}]*margin-left:6px/.test(html)
+      && /\.ble-ota-stage \{[^}]*font-weight:400/.test(html),
+      '阶段文字与标题之间有间距，且不继承标题的 600 粗细（状态不该跟标题抢重点）');
+    check(/id="bleOtaLog"/.test(html) && /\.ble-ota-log \{ height:132px; overflow-y:auto;/.test(html),
+      '内容区有「日志」窗口：固定高度 132px + 自己滚（弹窗高度不跟着跳）');
+    check(/function bleOtaLog\(text, level\)/.test(html) && !/function bleOtaNotice\(/.test(html),
+      '★ 提示统一走 bleOtaLog（那套结果提示区已删：两块提示区并存必然漂移）');
+    check(/BLE_OTA_LOG_MAX/.test(html) && /_bleOtaLogDropped/.test(html),
+      '日志有上限且**丢弃记账**（超了丢最旧，并在窗口里说明省掉多少条）');
+    check(/bleOtaLog\(v\.text, v\.level === 'same'/.test(html),
+      '读过版本后把「固件 ↔ 设备版本」的对照结论也写进日志（别让它变成没人调的死函数）');
+
+    // ---- ⑧ 阶段 1：真传输（协议档 / 二次确认 / 进度 / 中止）2026-09 ----
+    // 阶段 1 起「开始升级」**真的会往设备写固件**，所以这一段的重心全在：
+    // 别猜协议、别绕过人工确认、别让界面在传输中说实话。
+    check(/id="bleOtaStartBtn" data-mcp-skip="1"/.test(html),
+      '★「开始升级」带 data-mcp-skip：AI 的 ui_click 点不到它（危险门是按工具名判的，ui_click 不是危险工具）');
+    check(/\.ble-modal-btn\.danger \{/.test(html) && /id="bleOtaAbortBtn"/.test(html)
+      && /id="bleOtaCloseBtn"/.test(html),
+      '有「中止」按钮（只在传输中显示）；「关闭」有 id（升级中要能锁住它）');
+    ['bleOtaWriteUuid', 'bleOtaNotifyUuid', 'bleOtaAckMode', 'bleOtaChunk', 'bleOtaDelay',
+      'bleOtaAckTimeout', 'bleOtaRetry', 'bleOtaStartHex', 'bleOtaFinishHex'].forEach((id) => {
+      check(new RegExp('id="' + id + '"').test(html), '协议档字段 ' + id + ' 在界面里有入口');
+    });
+    check(/function bleOtaProfileDefaults\(\)[\s\S]{0,220}?writeUuid: ''/.test(html),
+      '★ 协议档默认值里 UUID 是空的（设备侧是私有协议，预填任何值都是猜）');
+    check(/invoke\('ota_start', \{ path: _bleOtaFw\.path, profileJson: JSON\.stringify\(profile\) \}\)/.test(html),
+      '★ 真传输只通过 ota_start 一个入口（路径 + 协议档；固件字节仍不进 IPC）');
+    check(/_bleOtaArmed/.test(html) && /确认升级/.test(html),
+      '★ 人工二次确认：第一次点只是把按钮改成「确认升级」，第二次才真的开始写');
+    check(/function bleOtaSetRunning\(on\)/.test(html)
+      && /if \(_bleOtaRunning\) \{[\s\S]{0,220}?不能关闭弹窗/.test(html),
+      '传输中不能关弹窗（关了就没进度可看，而后端还在写设备 —— 用户会以为"关掉就停了"）');
+    check(/function bleOtaStopPoll\(\)/.test(html) && /clearInterval\(_bleOtaPoll\)/.test(html)
+      && /_bleOtaPollLoggedPct/.test(html),
+      '进度靠 400ms 轮询，且只在跨 10% 档位时写日志（别把 200 行的日志窗口刷爆）');
+    check(/中止 ≠ 回滚/.test(html),
+      '★ 中止的文案写明"撤不回来"（用户会以为中止 = 回到升级前）');
+    // 后端那一半：唯一的写入入口 + 引擎三件套 + 两条硬约束
+    check(/fn ota_start\(/.test(mainRs) && /fn ota_task_body\(/.test(mainRs)
+      && /fn ota_profile_check\(/.test(mainRs) && /fn ota_chunk_span\(/.test(mainRs),
+      '后端有传输引擎（协议档校验 / 分包 / 任务体）');
+    // "没有整体超时"这条由 Rust 单测守着（`there_is_no_overall_timeout_constant`）：
+    // 在 main.rs 里扫 `OTA_TOTAL_TIMEOUT` **扫不出结论** —— 那条单测的源码里就有这个字面量。
+    check(/ack_timeout_ms/.test(mainRs) && /fn there_is_no_overall_timeout_constant\(\)/.test(mainRs),
+      '★ 只有单片 ACK 超时、没有整体超时（Rust 侧那条单测守着"别加全局 deadline"）');
+    check(/struct OtaAckSink/.test(mainRs) && /ack\.push\(n\.value\.clone\(\)\)/.test(mainRs)
+      && !/state\.notify_buf[\s\S]{0,40}?ota_/i.test(mainRs),
+      '★ 设备 ACK 走**独立出口**（绝不抢前端轮询的通知队列 —— 那条是单消费者队列）');
+    check(/ota_start,\s*\n\s*ota_status,\s*\n\s*ota_abort,/.test(mainRs),
+      '三条阶段 1 命令都注册进了 generate_handler（漏注册 = 点了没反应）');
+
+    // 协议档纯函数行为（沙箱里真跑）
+    const sbOta1 = { console };
+    vm.createContext(sbOta1);
+    vm.runInContext([
+      'var _bleOtaProfile = null;',
+      extractFunction('bleOtaProfileDefaults'), extractFunction('bleOtaProfileEnsure'),
+      extractFunction('bleOtaNum'), extractFunction('bleOtaProfileLoad'),
+      extractFunction('bleOtaProfileSummary'), extractFunction('bleOtaStartBlockReason'),
+      extractFunction('bleOtaStageText'), extractFunction('bleOtaResultLine'),
+      extractFunction('bleOtaRateText'),
+    ].join('\n'), sbOta1);
+    const blockOf = (fw, conn, prof) => sbOta1.bleOtaStartBlockReason(fw, conn, prof);
+    const okFw = { md5_match: null };   // 裸固件：md5_match 是 null（"没有这个字段可校"），不是失败
+    check(blockOf(null, 'AA:BB:CC', sbOta1.bleOtaProfileDefaults()) === '先选择固件',
+      '没选固件 → 直说');
+    check(blockOf(okFw, '', sbOta1.bleOtaProfileDefaults()) === '未连接设备', '没连设备 → 直说');
+    check(/校验/.test(blockOf({ md5_match: false }, 'AA', sbOta1.bleOtaProfileDefaults())),
+      '★ md5_match === false（真校验失败）才拦；null（裸固件没这个字段）不许拦 —— 两者不能混');
+    check(/协议档/.test(blockOf(okFw, 'AA', sbOta1.bleOtaProfileDefaults())),
+      '★ 协议档没填 → 卡在协议档这一条（而不是含糊地说"暂不能开始"）');
+    check(blockOf(okFw, 'AA', { writeUuid: 'FFE1' }) === '',
+      '填了写入特征就能开始（其余项都有可用的默认值）');
+    check(/通知特征/.test(blockOf(okFw, 'AA', { writeUuid: 'FFE1', ackMode: 'notify' })),
+      '★ 选了「等设备通知」却没填通知特征 → 拦（否则会等满超时才发现）');
+    const badP = sbOta1.bleOtaProfileLoad({ chunkSize: 'abc', delayMs: -5, ackTimeoutMs: 999999, retry: '9' });
+    check(badP.chunkSize === 0 && badP.delayMs === 0 && badP.ackTimeoutMs === 60000 && badP.retry === 9,
+      '★ 坏值/越界一律收敛（NaN 回默认、越界夹住）—— 配置是能手改的 JSON，不能原样信',
+      JSON.stringify(badP));
+    check(sbOta1.bleOtaProfileLoad({ ackMode: '乱写' }).ackMode === 'write_response',
+      '未知 ACK 方式回默认（write_response）');
+    check(sbOta1.bleOtaProfileLoad(null).writeUuid === ''
+      && sbOta1.bleOtaProfileDefaults().writeUuid === ''
+      && sbOta1.bleOtaProfileDefaults().notifyUuid === '',
+      '★ 从没配过 → UUID 是空的（绝不预填一个"像那么回事"的 UUID）');
+    check(sbOta1.bleOtaStageText(null) === '未开始'
+      && sbOta1.bleOtaStageText({ state: 'sending', pct: 42, sentBytes: 42, totalBytes: 100 }) === '传输中 42%（42/100 字节）'
+      && sbOta1.bleOtaStageText({ state: 'done' }) === '已完成',
+      '阶段文字把状态与百分比说清楚（进度条右边那一句）');
+    check(/撤不回来/.test(sbOta1.bleOtaResultLine({ state: 'aborted', sentBytes: 1024 })),
+      '★ 中止的结论行必须写明"已写入的部分撤不回来"');
+    check(/不会生效/.test(sbOta1.bleOtaResultLine({ state: 'done', finishConfigured: false }))
+      && /结束帧/.test(sbOta1.bleOtaResultLine({ state: 'done', finishConfigured: true })),
+      '★ 传完但没配结束帧 → 如实说"设备多半不会生效"（不许报"升级成功"）');
+    check(/未知原因/.test(sbOta1.bleOtaResultLine({ state: 'failed' })),
+      '失败但后端没给原因时也要说清（不许静默）');
+    check(sbOta1.bleOtaRateText(2048) === '2.0 KB/s' && sbOta1.bleOtaRateText(512) === '512 B/s',
+      '速率显示成人话');
+    check(/未配置/.test(sbOta1.bleOtaProfileSummary({ writeUuid: '' }))
+      && /无结束帧/.test(sbOta1.bleOtaProfileSummary({ writeUuid: 'FFE1', finishHex: '' }))
+      && /有结束帧/.test(sbOta1.bleOtaProfileSummary({ writeUuid: 'FFE1', finishHex: 'AA BB' })),
+      '收起时的摘要行如实说"配没配、缺什么"');
   }
 
   runQcmdLoopAsyncTests().then(function () {

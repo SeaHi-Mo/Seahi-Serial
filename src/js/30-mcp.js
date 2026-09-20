@@ -354,6 +354,15 @@ var MCP_SELECTOR = 'button, input, select, textarea, [onclick], [role="tab"]';
 var MCP_DANGER_CONTROLS = {
     serial_workflow_run: 'wf-run-btn',      // 工作流每条规则那颗「运行/停止」
 };
+/* 界面上的危险按钮，但**后端还没有对应工具**的那些（阶段差）：先只挡、不放开 ——
+   `data-mcp-skip` 让注册表跳过它，AI 连点都点不到。等专用工具（自带 confirm 门）落地后，
+   再把这一项挪进上面那张 `MCP_DANGER_CONTROLS`。
+   ⚠️ 与 `MCP_DANGER_NO_UI` 正好相反：那张表是"有工具、界面没入口"，这张是"有入口、工具还没做"。
+   两张表都**必须写明理由**，否则"漏登记"和"本来就没有"会分不清。
+   当前唯一一项：OTA 的「开始升级」（阶段 1 起真的会往设备写固件；MCP 的 `ota_start` 属阶段 3）。 */
+var MCP_SKIP_NO_TOOL = {
+    ota_start: '固件写入（OTA 阶段 1）：MCP 侧还没有 ota_start 工具（阶段 3 才做），先只挡不放开',
+};
 /* 危险动作里**界面上本来就没有可点入口**的那些（显式列出来，免得"漏了一个"和"本来就没有"分不清）：
    - adb_open_shell：设备卡片是 `div` + addEventListener，**不在 MCP_SELECTOR 里**，通用桥本来就点不到；
    - adb_shell_write：终端输入走 xterm 自己的 keydown/composition，往它的 textarea 写值不会执行 ——

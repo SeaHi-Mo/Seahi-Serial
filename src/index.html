@@ -213,6 +213,97 @@
     </div>
 </div>
 
+<!-- BLE OTA 固件升级弹窗：由设备详情页的「固件升级」按钮打开。
+     ⚠️ 阶段 0 只选固件 + 校验 + 读设备版本对比，**不会向设备写入任何数据**（见 js/84-ble-ota.js）。 -->
+<div class="ble-modal-mask" id="bleOtaModal" onmousedown="bleOtaMaskPress(event)" onclick="bleOtaMaskClick(event)">
+    <div class="ble-modal ble-ota-modal" onclick="event.stopPropagation()">
+        <!-- 标题在左、**设备名 + MAC 居中**（用户 2026-09 要求；前缀「目标设备」已删）。
+             中间拆成两个 span：**名称正常色、MAC 灰色**（MAC 是给用户核对的提示信息，
+             不该跟名称抢注意力）—— 所以名字可以省略、MAC 永远完整。
+             ⚠️ 居中是靠 `.ble-ota-head` 的 grid `minmax(0,1fr) auto minmax(0,1fr)` —— 左右两列等宽，
+             中间那列才相对**整个标题栏**居中；用 flex + text-align:center 会变成"在标题右边的剩余
+             区域里居中"，看着偏右。 -->
+        <div class="ble-modal-head ble-ota-head">
+            <span class="ble-modal-title">固件升级（OTA）</span>
+            <span class="ble-ota-title" id="bleOtaDevLine"><span class="ble-ota-devname" id="bleOtaDevName"></span><span class="ble-ota-mac" id="bleOtaDevMac"></span></span>
+            <!-- 「读取版本」放在标题栏**最右**（用户 2026-09 要求）：它是随时可点的辅助动作，
+                 不属于下面那几个流程区块；结果与失败原因一律写进「日志」区，不再占一块显示区。 -->
+            <button class="ble-modal-btn ble-ota-verbtn" id="bleOtaVerBtn" onclick="bleOtaReadDevice()" aria-label="读取设备当前版本">读取版本</button>
+        </div>
+        <div class="ble-modal-body ble-ota-body">
+            <!-- ⚠️ 风险提示**放在内容区最前面**（用户 2026-09 要求："放窗口最前面、单行显示"）——
+                 它是这个弹窗里最该先看到的一句话，压在底部等于没写。
+                 ⚠️ 一行装得下是有意的（≈37 字）：超了会折行、再超就得靠截断，而安全提示被截断
+                 比折行更糟 —— 改文案时别加长（断言守着"单行、≤42 字"）。 -->
+            <div class="ble-ota-risk">⚠️ 有变砖风险（设备需支持双分区/回滚）：勿断开设备、关闭程序或让设备走远。</div>
+            <div class="ble-ota-sec">
+                <div class="ble-ota-sec-title">固件文件</div>
+                <div class="ble-ota-row">
+                    <button class="ble-modal-btn" id="bleOtaPickBtn" onclick="bleOtaPickFirmware()" aria-label="选择 OTA 固件文件">选择固件…</button>
+                    <select class="ble-ota-recent" id="bleOtaRecent" onchange="bleOtaUseRecent(this.value)" aria-label="最近使用过的固件"></select>
+                </div>
+                <div class="ble-ota-info" id="bleOtaFwInfo"></div>
+            </div>
+            <!-- 协议档（阶段 1）：设备侧私有协议的**全部可变部分**都在这里填。
+                 ⚠️ **一个 UUID 都不预填**：私有协议猜错 UUID 的后果是"写到别的特征上"，
+                 比不写危险得多（见 doc/BLE_OTA_EVALUATION.md §5）。
+                 默认收起（不升级时不占地方）；点「开始升级」缺项时自动展开并指出缺哪一项。 -->
+            <div class="ble-ota-sec">
+                <div class="ble-ota-sec-title">协议档<button class="ble-ota-toggle" id="bleOtaProfileToggle" onclick="bleOtaToggleProfile()" aria-label="展开或收起协议档">展开</button></div>
+                <div class="ble-ota-profile-sum" id="bleOtaProfileSum"></div>
+                <div class="ble-ota-form" id="bleOtaProfileForm" style="display:none;">
+                    <label class="ble-ota-field"><span>写入特征</span>
+                        <input class="ble-ota-inp" id="bleOtaWriteUuid" oninput="bleOtaProfileChanged()" placeholder="如 FFE1，或完整 128 位" aria-label="写入特征 UUID"></label>
+                    <label class="ble-ota-field"><span>通知特征</span>
+                        <input class="ble-ota-inp" id="bleOtaNotifyUuid" oninput="bleOtaProfileChanged()" placeholder="ACK 方式选「等设备通知」时必填" aria-label="通知特征 UUID"></label>
+                    <label class="ble-ota-field"><span>ACK 方式</span>
+                        <select class="ble-ota-inp" id="bleOtaAckMode" onchange="bleOtaProfileChanged()" aria-label="ACK 方式">
+                            <option value="write_response">写响应（GATT 自带）</option>
+                            <option value="notify">等设备通知</option>
+                            <option value="none">不等应答（只靠延时）</option>
+                        </select></label>
+                    <label class="ble-ota-field"><span>分包</span>
+                        <input class="ble-ota-inp" id="bleOtaChunk" type="number" min="0" max="512" oninput="bleOtaProfileChanged()" placeholder="0 = 自动（MTU−3）" aria-label="分包大小字节数"></label>
+                    <label class="ble-ota-field"><span>片间延时</span>
+                        <input class="ble-ota-inp" id="bleOtaDelay" type="number" min="0" max="10000" oninput="bleOtaProfileChanged()" placeholder="ms" aria-label="片间延时毫秒"></label>
+                    <label class="ble-ota-field"><span>ACK 超时</span>
+                        <input class="ble-ota-inp" id="bleOtaAckTimeout" type="number" min="1" max="60000" oninput="bleOtaProfileChanged()" placeholder="ms（单片，不是整体）" aria-label="单片 ACK 超时毫秒"></label>
+                    <label class="ble-ota-field"><span>单片重传</span>
+                        <input class="ble-ota-inp" id="bleOtaRetry" type="number" min="0" max="20" oninput="bleOtaProfileChanged()" placeholder="次" aria-label="单片重传次数"></label>
+                    <label class="ble-ota-field"><span>起始帧</span>
+                        <input class="ble-ota-inp" id="bleOtaStartHex" oninput="bleOtaProfileChanged()" placeholder="HEX，可空 = 不发" aria-label="起始帧 HEX"></label>
+                    <label class="ble-ota-field"><span>结束帧</span>
+                        <input class="ble-ota-inp" id="bleOtaFinishHex" oninput="bleOtaProfileChanged()" placeholder="HEX，可空 = 不发（设备多半不会生效）" aria-label="结束帧 HEX"></label>
+                </div>
+            </div>
+            <!-- 更新进度 + 日志：**下方就是这两块**（用户 2026-09 要求：原来那块"设备版本"删掉）。
+                 进度条现在恒为 0%（阶段 0 没有传输），但结构先立住 —— 阶段 1 接上真传输时只填数值。 -->
+            <div class="ble-ota-sec">
+                <!-- 阶段文字（「未开始」）**跟在标题右边**（用户 2026-09 要求），不自己单占一行：
+                     它描述的就是这一条的进度状态，另起一行会跟下面那条轨道脱开。 -->
+                <div class="ble-ota-sec-title">更新进度<span class="ble-ota-stage" id="bleOtaStage">未开始</span></div>
+                <div class="ble-ota-track"><div class="ble-ota-bar" id="bleOtaBar"></div></div>
+            </div>
+            <div class="ble-ota-sec">
+                <div class="ble-ota-sec-title">日志</div>
+                <div class="ble-ota-log" id="bleOtaLog"></div>
+            </div>
+        </div>
+        <div class="ble-modal-foot">
+            <button class="ble-modal-btn" id="bleOtaCloseBtn" onclick="closeBleOtaModal()" aria-label="关闭升级弹窗">关闭</button>
+            <!-- 中止：只在传输中显示（阶段 1 起才有意义）。**中止 ≠ 回滚** —— 已写进设备的
+                 那部分撤不回来，文案与日志都要说清这件事。 -->
+            <button class="ble-modal-btn danger" id="bleOtaAbortBtn" onclick="bleOtaAbort()" style="display:none;" aria-label="中止升级">中止</button>
+            <!-- ⚠️ 阶段 1 起这颗按钮**真的会往设备写固件**：必须带 `data-mcp-skip`，
+                 否则 AI 一句 `ui_click` 就绕过了"人工二次确认"这道门（危险门是按工具名判的，
+                 而 ui_click 不是危险工具）。MCP 侧的 `ota_start` 工具属阶段 3，还没做 ——
+                 所以它登记在 30-mcp.js 的 `MCP_SKIP_NO_TOOL` 里（先只挡、不放开）。 -->
+            <button class="ble-modal-btn primary" id="bleOtaStartBtn" data-mcp-skip="1" onclick="bleOtaStart()" aria-label="开始升级固件">开始升级</button>
+        </div>
+        <div class="ble-modal-grip" aria-hidden="true">&#9698;</div>
+    </div>
+</div>
+
 <!-- BLE 配对弹窗：连接需要配对的设备时，由后端 ble-pair-request 事件驱动显示 -->
 <div class="ble-modal-mask" id="blePairModal">
     <div class="ble-modal ble-pair-modal">
@@ -267,6 +358,9 @@
 <script src="js/81-ble.js"></script>
 <script src="js/82-adb.js"></script>
 <script src="js/83-wsl-mcp.js"></script>
+<!-- BLE 固件升级（OTA）面板：阶段 0 只做「选固件 + 校验 + 版本比对」，不写设备。
+     见 doc/BLE_OTA_EVALUATION.md（分期）与 84-ble-ota.js 顶部的范围说明。 -->
+<script src="js/84-ble-ota.js"></script>
 <script src="js/90-init.js"></script>
 </body>
 </html>

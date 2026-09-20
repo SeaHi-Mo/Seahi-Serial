@@ -804,6 +804,7 @@ function onBleLinkLost() {
     showToast('设备已断开连接', 'error');
     renderBleDeviceList();
     renderBleDetail();
+    bleOtaSyncTarget();   // 断开后 OTA 弹窗里的「目标设备」不能还写着上一台
 }
 // 只更新该设备的信号强度显示：不重排列表、不重建详情，避免跳动与滚动位置复位
 function applyLiveRssi(address, rssi) {
@@ -1185,7 +1186,15 @@ function refreshBleDevices() {
         _bleDevices = devs.map(function(j) {
             return {
                 address: j.address || '',
-                name: j.local_name || j.advertisement_name || '',
+                // 名字**优先用广播名**（advertisement_name），别用 local_name：
+                // btleplug 的 winrt 后端在 connect() 成功后拿 Windows 的系统名**覆盖** local_name
+                // （vendor/btleplug/src/winrtble/peripheral.rs:549 那段 "Query the system-cached device name"，
+                // **不是**我们那 4 处补丁之一）。于是连上设备的一瞬间名字会跳变，而且同一个设备在
+                // "卡片名"与"广播名"两行里会互相矛盾 —— 2026-09 用户报的"左侧设备名出错了"就是这个：
+                // 列表写 tSample（系统名），广播名写 ai-thinker（设备自己广播的）。
+                // ⚠️ 那个系统名**实测是误识别**（用户判定），所以：① 不当主名；② 也不单独展示。
+                // 只有设备**根本没广播名字**时才拿它兜底（否则界面上只剩"未知设备"，更没用）。
+                name: j.advertisement_name || j.local_name || '',
                 rssi: j.rssi,
                 connected: !!connAddr && j.address === connAddr,
                 addressType: j.address_type || '',
@@ -1345,6 +1354,15 @@ function renderBleDetail() {
             '<div class="ble-detail-name">' + escapeHtml(dev.name || '未知设备') + '</div>' +
             '<div class="ble-detail-meta">' + escapeHtml(bleDetailMetaText(dev, dev.rssi, _bleMtu)) + '</div>' +
             '<button class="add-btn icon-btn ble-connect-btn' + (dev.connected ? ' connected' : '') + '" onclick="toggleBleConnect()" title="连接/断开">' + (dev.connected ? '断开设备' : '连接设备') + '</button>' +
+            // 固件升级入口：**整条功能由 `BLE_OTA_UI_ENABLED` 总开关控制**（定义在 js/84-ble-ota.js）。
+            // 当前 = false：先隐藏（真机协议的 crc16 参数还没核对，见 doc/BLE_OTA_TELINK.md）。
+            // 打开时：未连接则禁用 —— OTA 只能对**已连接**的设备发起。
+            // ⚠️ 用 `typeof` 判断：断言集里有些沙箱只抽了本文件的片段，没有那个全局变量。
+            (typeof BLE_OTA_UI_ENABLED !== 'undefined' && BLE_OTA_UI_ENABLED
+                ? '<button class="add-btn icon-btn ble-ota-btn" onclick="openBleOtaModal()" aria-label="固件升级（OTA）" ' +
+                    (dev.connected ? '' : 'disabled ') +
+                    'title="' + (dev.connected ? '对这台设备做固件升级' : '先连接设备才能升级') + '">固件升级</button>'
+                : '') +
         '</div>' +
         '<div class="ble-detail-sec ble-adv-sec">' +
             '<div class="ble-sec-title ble-adv-toggle" onclick="toggleBleAdv(this)"><span class="ble-svc-caret">&#9654;</span>广播内容 <span class="ble-adv-count">' + (advBytes > 0 ? advBytes + ' B' : '') + '</span></div>' +
@@ -1459,6 +1477,11 @@ function renderBleAdv(dev) {
     }
     var brief = [];
     if (a.adName) brief.push(advRow('广播名', a.adName));
+    // ⚠️ **不展示系统名**（2026-09 用户判定："tSample 是误识别"）：`local_name` 连上后会被
+    // WinRT 的 `BluetoothLEDevice.Name` 覆盖（vendor 的 "Query the system-cached device name"），
+    // 而那个值是 Windows 那一侧的名字投射/缓存，实测会给出设备根本没叫过的名字（比如 tSample）。
+    // 它既不是我们从报文里解出来的，留着只会让人以为我们解析错了 —— 干脆不进界面。
+    // 要确认设备自称什么，读 GAP 服务（0x1800）下的 0x2A00 Device Name 才是权威值。
     if (a.svcs && a.svcs.length) brief.push(advRow('广播服务', a.svcs.map(function(s){ return '0x' + shortUuid(s); }).join(' | ')));
     if (a.appearance != null) brief.push(advRow('外观', '0x' + a.appearance.toString(16).toUpperCase()));
     if (a.txPower != null) brief.push(advRow('发射功率', a.txPower + ' dBm'));
@@ -1585,6 +1608,7 @@ function bleOnConnected(address, label) {
         renderBleDeviceList();   // 让列表立刻出现「已连接」提示
         startBleNotifyPoll();
         startBleRssiPoll();   // 连接期间周期刷新信号强度
+        bleOtaSyncTarget();   // 连接态变了，OTA 弹窗（若开着）要同步目标设备
     }).catch(function(e) {
         logBle('[服务获取失败] ' + e);
         showToast('获取服务失败: ' + e, 'error');

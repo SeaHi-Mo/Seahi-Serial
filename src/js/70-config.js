@@ -71,6 +71,10 @@ function collectConfig() {
         selected: _bleSelected || '',
         scanSecs: _bleScanSecs,
     });
+    // OTA 协议档（阶段 1）：设备侧私有协议的可变部分，用户填一次就该记住 ——
+    // 但它**不是**蓝牙页状态的一部分（升级弹窗随时可能先于蓝牙页打开），所以单独存一个键。
+    // 落盘的是**归一化后**的那一份（bleOtaProfileLoad）：界面上的临时值不许原样写进配置。
+    cfg.otaProfile = bleOtaProfileLoad(bleOtaProfileEnsure());
     Object.keys(monitors).forEach(function(mid) {
         var m = monitors[mid];
         // 蓝牙页内嵌监视器是临时助手（不持久化；恢复逻辑也只按 extra-N 重建）
@@ -545,6 +549,9 @@ async function loadAndApplyConfig() {
         // 不再在这里用 set_window_size 二次设置，以免窗口显示后再次跳变尺寸。
         // 恢复蓝牙页状态（纯内存变量先就位；内嵌监视器等蓝牙页 DOM 建立后再开，见 openBle）
         if (cfg.ble) restoreBleState(cfg.ble);
+        // 恢复 OTA 协议档（阶段 1）：纯数据，蓝牙页 DOM 还没建也照常生效
+        // （升级弹窗自己会在打开时把它填回表单，见 openBleOtaModal）
+        if (cfg.otaProfile) _bleOtaProfile = bleOtaProfileLoad(cfg.otaProfile);
         // 恢复主监视器配置
         if (cfg.monitors && cfg.monitors['main']) {
             applyMonitorConfig('main', cfg.monitors['main']);

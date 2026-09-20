@@ -195,6 +195,65 @@
                 text-align:center; margin:10px 0 4px; }
 .ble-pair-input { display:block; width:100%; margin-top:8px; box-sizing:border-box; }
 .ble-pair-hint { font-size:11px; color:var(--text-d); margin-top:8px; }
+.ble-ota-modal { width:560px; }
+.ble-ota-body { flex-direction:column; align-items:stretch; gap:10px; overflow-y:auto; }
+.ble-ota-head { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:center; }
+.ble-ota-head .ble-modal-title { justify-self:start;
+                                 min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ble-ota-verbtn { justify-self:end; flex-shrink:0; }
+.ble-ota-title { display:flex; align-items:baseline; justify-content:center; gap:6px;
+                 min-width:0; overflow:hidden; }
+.ble-ota-devname { font-size:13px; font-weight:600; color:var(--text);
+                   min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ble-ota-mac { flex:0 0 auto; font-family:var(--font-mono); font-size:12px;
+               color:var(--text-d); white-space:nowrap; }
+.ble-ota-sec { display:flex; flex-direction:column; gap:6px; }
+.ble-ota-sec-title { font-size:12px; font-weight:600; color:var(--text); }
+.ble-ota-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.ble-ota-recent { height:28px; max-width:240px; padding:0 6px; box-sizing:border-box;
+                  background:var(--input-bg); border:1px solid var(--border); border-radius:6px;
+                  color:var(--text); font-size:12px; }
+.ble-ota-profile-sum { font-size:11.5px; line-height:1.6; color:var(--text-d); overflow-wrap:anywhere; }
+.ble-ota-toggle { margin-left:6px; padding:1px 6px; font-size:11px; font-weight:400;
+                  background:transparent; color:var(--text-d); border:1px solid var(--border);
+                  border-radius:4px; cursor:pointer; }
+.ble-ota-toggle:hover { color:var(--text); border-color:var(--btn-p); }
+.ble-ota-form { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:6px 10px; }
+.ble-ota-field { display:flex; align-items:center; gap:6px; min-width:0; }
+.ble-ota-field > span { flex:0 0 60px; font-size:11.5px; color:var(--text-d); }
+.ble-ota-inp { flex:1; min-width:0; height:26px; padding:0 6px; box-sizing:border-box;
+               background:var(--input-bg); border:1px solid var(--border); border-radius:5px;
+               color:var(--text); font-size:11.5px; }
+.ble-ota-inp:focus { outline:none; border-color:var(--btn-p); }
+.ble-ota-inp:disabled { opacity:.55; }
+.ble-ota-info { font-family:var(--font-mono); font-size:11.5px; line-height:1.65; color:var(--text);
+                background:var(--editor-bg); border:1px solid var(--border); border-radius:6px;
+                padding:8px 10px; max-height:190px; overflow-y:auto; }
+.ble-ota-kv { display:flex; gap:8px; }
+.ble-ota-k { flex:0 0 auto; min-width:96px; color:var(--text-d); }
+.ble-ota-v { flex:1; min-width:0; overflow-wrap:anywhere; word-break:break-all; }
+.ble-ota-kv.warn .ble-ota-v { color:var(--accent-orange); }
+.ble-ota-kv.bad .ble-ota-v { color:var(--accent-red); }
+.ble-ota-kv.ok .ble-ota-v { color:var(--accent-green); }
+.ble-ota-empty { color:var(--text-d); }
+.ble-ota-track { height:6px; border-radius:3px; background:var(--input-bg);
+                 border:1px solid var(--border); overflow:hidden; }
+.ble-ota-bar { height:100%; width:0%; background:var(--accent-focus); transition:width .2s ease; }
+.ble-ota-stage { margin-left:6px; font-size:11.5px; font-weight:400; color:var(--text-d); }
+.ble-ota-log { height:132px; overflow-y:auto; font-family:var(--font-mono); font-size:11.5px;
+               line-height:1.7; color:var(--text); background:var(--editor-bg);
+               border:1px solid var(--border); border-radius:6px; padding:6px 10px;
+               white-space:pre-wrap; word-break:break-all; }
+.ble-ota-log .ok { color:var(--accent-green); }
+.ble-ota-log .warn { color:var(--accent-orange); }
+.ble-ota-log .bad { color:var(--accent-red); }
+.ble-ota-log .dim { color:var(--text-d); }
+.ble-ota-risk { font-size:11.5px; line-height:1.6; color:var(--text-d);
+                border-left:2px solid var(--accent-orange); padding-left:8px; }
+.ble-ota-btn { width:auto; height:28px; padding:0 12px; box-sizing:border-box;
+               font-size:12px; flex-shrink:0; white-space:nowrap; }
+.ble-ota-btn:disabled { opacity:.45; cursor:default; }
+.ble-ota-btn:disabled:hover { opacity:.45; border-color:transparent; text-decoration:none; }
 .ble-modal-row .ble-write-opts { align-self:flex-start; }
 .ble-write-opts { display:flex; flex-direction:column; gap:6px; flex-shrink:0; }
 .ble-write-row { display:flex; align-items:center; gap:6px; }
@@ -215,6 +274,8 @@
 .ble-modal-btn:hover { border-color:var(--border-h); }
 .ble-modal-btn.primary { background:var(--accent-focus); border-color:transparent; color:#fff; }
 .ble-modal-btn.primary:hover { filter:brightness(1.08); }
+.ble-modal-btn.danger { background:var(--accent-red); border-color:transparent; color:#fff; }
+.ble-modal-btn.danger:hover { filter:brightness(1.08); }
 .ble-modal-btn:disabled { cursor:default; opacity:.45; }
 .ble-modal-btn:disabled:hover { border-color:var(--border); filter:none; }
 .ble-log::-webkit-scrollbar,
@@ -271,6 +332,22 @@
 #paneContainer::-webkit-scrollbar-thumb:hover,
 .send-hist::-webkit-scrollbar-thumb:hover,
 .term-comp::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
+.ble-ota-body::-webkit-scrollbar,
+.ble-ota-info::-webkit-scrollbar,
+.ble-ota-log::-webkit-scrollbar { width:10px; height:10px; }
+.ble-ota-body::-webkit-scrollbar-track,
+.ble-ota-info::-webkit-scrollbar-track,
+.ble-ota-log::-webkit-scrollbar-track { background:transparent; }
+.ble-ota-body::-webkit-scrollbar-corner,
+.ble-ota-info::-webkit-scrollbar-corner,
+.ble-ota-log::-webkit-scrollbar-corner { background:transparent; }
+.ble-ota-body::-webkit-scrollbar-thumb,
+.ble-ota-info::-webkit-scrollbar-thumb,
+.ble-ota-log::-webkit-scrollbar-thumb {
+    background:rgba(128,134,146,.45); border-radius:5px; background-clip:content-box; }
+.ble-ota-body::-webkit-scrollbar-thumb:hover,
+.ble-ota-info::-webkit-scrollbar-thumb:hover,
+.ble-ota-log::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
 body { background: var(--bg, #1c1e22); padding: 28px; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
 .note { color: var(--text-d, #8b949e); font-size: 12px; margin: 0 0 14px; }
 h3 { color: var(--text, #c9d1d9); font-size: 14px; margin: 22px 0 6px; }
@@ -496,6 +573,11 @@ function renderBleAdv(dev) {
     }
     var brief = [];
     if (a.adName) brief.push(advRow('广播名', a.adName));
+    // ⚠️ **不展示系统名**（2026-09 用户判定："tSample 是误识别"）：`local_name` 连上后会被
+    // WinRT 的 `BluetoothLEDevice.Name` 覆盖（vendor 的 "Query the system-cached device name"），
+    // 而那个值是 Windows 那一侧的名字投射/缓存，实测会给出设备根本没叫过的名字（比如 tSample）。
+    // 它既不是我们从报文里解出来的，留着只会让人以为我们解析错了 —— 干脆不进界面。
+    // 要确认设备自称什么，读 GAP 服务（0x1800）下的 0x2A00 Device Name 才是权威值。
     if (a.svcs && a.svcs.length) brief.push(advRow('广播服务', a.svcs.map(function(s){ return '0x' + shortUuid(s); }).join(' | ')));
     if (a.appearance != null) brief.push(advRow('外观', '0x' + a.appearance.toString(16).toUpperCase()));
     if (a.txPower != null) brief.push(advRow('发射功率', a.txPower + ' dBm'));

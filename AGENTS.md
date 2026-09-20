@@ -15,7 +15,7 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/busid 白名单/MCP 协议与日志中心）
 ```
 
-无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，**249 条 + 1 条 `#[ignore]`**：
+无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，**272 条 + 1 条 `#[ignore]`**：
 那条 ignore 是手工联调用的 `mcp_serve_for_manual_check`，要跑 60 秒）。
 
 > ⛔ **BLE 从机（外设）方向已于 2026-09 整条删除**（用户确认"实现不了了"）：本机适配器自报支持
@@ -24,7 +24,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/
 > 证据与结论留在 `doc/BLE_PERIPHERAL.md`（已标归档）。**别再往这个方向加功能** ——
 > 先在真机上把广播跑起来再说。本应用现在的 BLE 能力只有**主机方向**。
 
-前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1631 条，随代码演进增补；MCP 的 npm 安装器另有
+前端**有**无头断言集 `.walkthrough/gen_ble_preview.js`（当前 1744 条，随代码演进增补；MCP 的 npm 安装器另有
 `npm/seahi-serial-mcp/test/self-test.js`，94 条）：抽取前端真实函数/对象丢进 `vm` 沙箱断言（既有源码正则，
 也有把渲染函数丢进假 DOM 跑行为断言）。前端 2026-09 已从单文件拆成
 `src/index.html`（骨架）+ `src/css/*.css` + `src/js/*.js`，**布局与加载顺序见 `doc/FRONTEND_LAYOUT.md`**；
@@ -47,7 +47,7 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
 才会重读 `tools/list`）。安全模式下：只读工具真调；写工具用"必填缺失 → -32602"探针；
 危险工具用"不带 confirm → -32006"探针；其余有副作用的跳过并标注（绝不关用户的串口 / 断用户的设备）。
 
-## BLE 主机方向的六条关键约定（别改回去）
+## BLE 主机方向的八条关键约定（别改回去）
 
 1. **设备不广播就搜不到**：从机一旦被 Windows 配对过、或被别的手机连走，往往就不再广播，
    于是永远进不了扫描列表。唯一出路是 `ble_connect_direct`（btleplug `add_peripheral`，
@@ -80,6 +80,107 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
    **按长度认字段**（`2A2B`=10 / `2A0F`=2 / `2A14`=4，对不上就不猜）；三处一起改
    （`ble_cts_decode` / 前端 `BLE_CTS_CHARS` / `attach_cts_decodes`），
    改了必须同时核对 `gss/org.bluetooth.characteristic.{dst_offset,time_zone,time_source,time_accuracy,reference_time_information}.yaml`。
+7. **BLE OTA 分两阶段落地：阶段 0 = 选固件 + 校验 + 读设备版本对比；阶段 1 = 真传输引擎。**
+   ⛔ **但整条功能当前是「隐藏」状态**（用户 2026-09："OTA 的功能先隐藏起来吧"）：
+   `src/js/84-ble-ota.js` 顶部的 **`var BLE_OTA_UI_ENABLED = false;`** 是唯一总开关 ——
+   设备详情页不再渲染「固件升级」按钮，`openBleOtaModal()` 自己也直接 `return`（只藏按钮的话，
+   一句手动调用就能把整条流程喊出来）。**为什么用开关而不是删代码**：阶段 0/1 的引擎、协议档、
+   二次确认、危险登记与断言全都是好的，真正卡住的只有**真机协议里 `crc16()` 的参数**
+   （实现在泰凌的预编译库 `liblt_8258.a` 里，见 `doc/BLE_OTA_TELINK.md` §6）——
+   核对完把那一行改成 `true`，整条就回来。**别把按钮删掉**：那样再打开时没人记得还有哪些配套
+   （`data-mcp-skip` / `MCP_SKIP_NO_TOOL` / 三份文档 / 断言）。断言里有四条守着这件事
+   （开关是 false、关的理由写明、按钮真受开关控制、`openBleOtaModal` 自己也拒绝）。
+   ⚠️ 顺带一句**已经查清的真机协议**：目标设备（TB 系列 = **泰凌微 TLSR8250**，不是 PHY/奉加微）
+   走的是 **Telink OTA**，UUID 与帧格式都在 `doc/BLE_OTA_TELINK.md` 里（20 字节定长包 /
+   `0xFF01` 开始 / `0xFF02` 结束 / 不等 ACK）。
+   落地在 `src/js/84-ble-ota.js` + `main.rs` 的 `ota_pick_firmware` / `ota_inspect_firmware` /
+   `ota_list_firmwares`（阶段 0）与 `ota_start` / `ota_status` / `ota_abort` + `ota_task_body`
+   （阶段 1）；评估、协议选型与分期见 `doc/BLE_OTA_EVALUATION.md`。五条别改回去：
+   ① **前端（`84-ble-ota.js`）里不许出现任何写入/断链调用**（`ble_write` / `ble_write_descriptor` /
+   `ble_subscribe` / `ble_disconnect`）—— `.walkthrough` 里有一条断言专门扫这件事。理由不是洁癖：
+   **半成品的固件写入 = 变砖**，而变砖的兜底只能在设备侧（双 bank / rollback），上位机做不到；
+   阶段 1 的写入**全在 Rust 引擎里**，前端只有 `ota_start`/`ota_status`/`ota_abort` 三条命令；
+   ② **固件路径只认用户在原生框里亲手选过的**（后端 `ota-firmwares.json`，LRU 20；前端传任意路径一律拒）
+   —— 与快速指令同一套纪律；**固件字节从不进 IPC**（前端拿到的是校验结果，不是数据）；
+   ③ **大小上限在读文件之前判**（`ota_check_size(meta.len())`，8 MB）—— 别等读完 2 GB 才发现太大；
+   ④ **`md5_match` 的 `null` 与 `false` 是两件事**：认不出包头时是 `null`（"没有这个字段可校"），
+   校验失败才是 `false`。混成一个就是界面对用户说谎。
+   ⑤ **GATT 特征的 UUID 必须先归一化（`shortUuid`）再比，别拿完整 128 位字符串硬比** ——
+   2026-09 真机事故（用户截图）：ai-thinker 设备的 `0x180A` 明明在服务树里，界面却报
+   「设备未提供 0x180A」。而且**"找不到"必须分三态说清**（服务树是空的 / 确实没有 180A /
+   **有** 180A 但没有版本类特征 —— 后者要把该服务下**实际有哪些特征**列出来，用户要知道该补什么），
+   三件事报成一句话就是在说假话。判定抽成纯函数 `bleOtaReadBlockReason` 以便无头断言。
+   ⚠️ **阶段 1（真传输）已落地，但它同样是"参数全部外置"的**：`main.rs` 的 `ota_start` /
+   `ota_status` / `ota_abort` + `ota_task_body` 就是引擎。四条别改回去：
+   · **协议档（`OtaProfile`）里一个 UUID / 分包 / 帧格式都不许预填** ——
+     设备侧是自研私有协议，服务与特征 UUID、分包大小、ACK 方式、结束与重启语义**至今没给**；
+     缺哪一项就**拒启动并说清缺哪一项**（`ota_profile_check`），别拿一个"像那么回事"的默认值去写设备。
+   · **写入只发生在 Rust 侧**：前端只调 `ota_start` / `ota_status` / `ota_abort`，
+     `84-ble-ota.js` 里**依然**不许出现 `ble_write` / `ble_write_descriptor` / `ble_subscribe` /
+     `ble_disconnect`（断言扫这个文件）—— 一次 invoke 传不了 8 MB，而且"谁在写设备"必须只有一个答案。
+   · **设备 ACK 走独立出口 `OtaAckSink`**（`BleState.ota_ack`）：通知循环在**产生处**多投一份，
+     引擎按 `sink.pop()` 取 —— **绝不去 drain 前端轮询的 `notify_buf`**（单消费者队列，抢走就是
+     "界面偶发丢通知"）。而且**写之前先 `drain_stale()` 清过期 ACK 并记进 `ack_stale`**：
+     上一片多出来的通知若被当成这一片的 ACK，就会把"丢片"读成"成功"。
+   · **只有单片 `ack_timeout_ms`，绝不设整体超时**（分钟级任务被整体超时会白写一遍）——
+     `there_is_no_overall_timeout_constant` 那条 Rust 单测守着，别加全局 deadline。
+   ⚠️ **`ack_mode: notify` 时"任何一条通知都算这一片的 ACK"是明处的取舍**（设备 ACK 格式没给，
+   **不编匹配规则** —— 编错就是把丢片读成成功）。原文记进 `recentAcks` 显示在日志里，
+   协议到位后再补匹配。同理：**结束帧没配就只是不发**，传完只如实说"设备多半不会生效"，
+   绝不报「升级成功」。
+   ⚠️ **人工二次确认是硬要求**：第一次点「开始升级」只把按钮改成「确认升级」+ 写一行日志，
+   第二次才真的调 `ota_start`；**改协议档会收回这个状态**（`bleOtaProfileChanged` → `bleOtaDisarm`）。
+   传输中锁住 关闭 / 换固件 / 改协议档（关了就没进度可看，而后端还在写），
+   「中止」的文案必须写明**中止 ≠ 回滚**。
+   ⚠️ **危险动作的登记是"三张表"，别只记两张**：界面上的危险按钮带 `data-mcp-skip`
+   （`mcpBuildRegistry` 靠 `closest('[data-mcp-skip]')` 跳过 → AI 的 `ui_click` 点不到），
+   而它登记在哪张表取决于**后端有没有对应工具**：
+   · 有 → `MCP_DANGER_CONTROLS`（key 必须与 Rust `DANGER_TOOLS` 一一对应）；
+   · 没有 → **`MCP_SKIP_NO_TOOL`**，并且**必须写明理由**（当前唯一一项就是 OTA 的
+     「开始升级」：阶段 1 起它真的会写固件，而 MCP 的 `ota_start` 属阶段 3）。
+   把没有工具的按钮塞进 `MCP_DANGER_CONTROLS` 会让"不漏也不虚"的对账断言当场 fail（虚报）。
+   ⚠️ **弹窗布局与文案（都是用户 2026-09 的明确要求，断言守着）**：
+   ① 弹窗里**不摆常驻说明文字**，也**不设结果提示区**（`#bleOtaNotice` 已删）——
+   所有提示（选固件的结果、读版本的结果、为什么还不能开始）**统一走日志窗口** `bleOtaLog()`，
+   它同时把同一份写进 BLE 面板的数据日志（MCP 的 `ble_get_output` 靠那份）。
+   两块提示区并存必然漂移，所以只留一处；边界与阶段说明一律写进 `doc/BLE_OTA_EVALUATION.md`。
+   ② **标题栏是三段**：左「固件升级（OTA）」、中**设备名 + MAC**、右**「读取版本」按钮**
+   （`.ble-ota-verbtn { justify-self:end }`）。中间那列靠 grid `minmax(0,1fr) auto minmax(0,1fr)`
+   才相对**整个标题栏**居中 —— 换成 flex + `text-align:center` 会变成"在标题右侧的剩余区域里居中"。
+   设备名**不带「目标设备」前缀**（要求删）、未连接时才写「未连接设备」，内容区不再单占一行。
+   ③ **名称与 MAC 是两个 span、MAC 用灰色（`--text-d`）当提示信息** —— 渲染走
+   `bleOtaTargetParts()`（返回 `{name, mac}`），不是一个拼好的字符串；**长名称可省略、MAC 永远完整**
+   （名字 `min-width:0` 可收缩，MAC `flex:0 0 auto`）—— MAC 被截掉就等于失去了"我在写哪台设备"的凭据。
+   ④ **变砖风险提示放在内容区最前面、单行（≤42 字）**：
+   `⚠️ 有变砖风险（设备需支持双分区/回滚）：勿断开设备、关闭程序或让设备走远。`
+   —— 压在底部等于没写；**单行是刻意的**（超了会折行、再超只能截断，而安全提示被截断比折行更糟）。
+   ⑤ **内容区顺序 = 风险提示 → 固件文件 → 协议档 → 更新进度 → 日志**（用户要求删掉原来那块
+   「设备版本」、下方换成"更新进度 + 日志"；协议档是阶段 1 加的，默认收起、只占一行状态摘要）：
+   `#bleOtaDevInfo` / `#bleOtaVerdict` 两个显示区**已删**，
+   读到的版本按行写进日志（连带一行"固件 ↔ 设备版本"对照结论）；进度条（`#bleOtaBar` +
+   `#bleOtaStage`）阶段 0 恒为 0% / 「未开始」，**阶段 1 起由 `ota_status` 轮询填数值**；
+   ⚠️ **「未开始」这类阶段文字跟在「更新进度」标题右边**（用户 2026-09 要求：`<div
+   class="ble-ota-sec-title">更新进度<span class="ble-ota-stage" id="bleOtaStage">…`）——
+   单占一行会跟下面那条轨道脱开；而且它**必须显式写 `font-weight:400`**（标题是 600，
+   不覆盖就跟着变粗、抢成第二重点）。
+   日志窗口 `#bleOtaLog` **固定 132px 高、自己滚**（弹窗高度不跟着跳），上限 200 行且
+   **丢弃记账**（`_bleOtaLogDropped`：超了丢最旧，并在窗口里说明省掉多少条）。
+8. **设备名有两个来源（广播名 vs 系统名），只认广播名**：btleplug 的 winrt 后端在 `connect()`
+   成功后拿 **Windows 的系统名覆盖 `local_name`**
+   （`vendor/btleplug/src/winrtble/peripheral.rs` 里 "Query the system-cached device name" 那段，
+   **不是**我们那 4 处补丁之一；那个名字就是 WinRT 的 `BluetoothLEDevice.Name`，
+   见 `ble/device.rs` 的 `fn name()`），而 `advertisement_name` 仍是广播里的名字。三条别改回去：
+   ① **展示名一律 `advertisement_name || local_name`（广播名优先）** —— 用 local_name 优先会让
+   名字在**连上那一瞬间跳变**，而且"卡片名"与"广播内容 → 广播名"两行会互相矛盾
+   （2026-09 用户报的"左侧设备名出错了"就是这个：列表写 `tSample`、广播名写 `ai-thinker`）。
+   断言守着优先级，写反就 fail；
+   ② **那个系统名不进界面**：用户 2026-09 直接判定「`tSample` 是误识别」—— 它不是我们从报文里
+   解出来的（我们只解析 AD 段），而是 Windows 那一侧的名字投射/缓存，**可能是设备从来没叫过的名字**。
+   所以既不当主名、也不单列展示（曾经加过一行「系统名」，已删）；只在设备**根本没广播名字**时
+   才拿它兜底，否则界面上只剩"未知设备"。要确认设备自称什么，读 `0x1800` 下的 `0x2A00` Device Name
+   —— 那才是权威值；
+   ③ ⚠️ **别去改 vendor 让系统名不覆盖**：那是上游语义，在展示层定优先级就够了 ——
+   动 vendor 要再加一处补丁、还要同步 `VENDOR.md`，成本不值。
 
 ## 窗口几何记忆的三条约定（别改回去）
 
@@ -258,12 +359,12 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
 
 ## 项目结构
 
-- `src/index.html` + `src/css/*.css` + `src/js/*.js` — **整个前端**（无框架、无打包器、无构建步骤；2026-09 从单文件拆成 4 个 CSS + 15 个 JS + 272 行骨架，含 12 套主题变量；串口 / WSL / ADB / 蓝牙 四个面板）。其中 `src/js/81-ble-uuids.js` 是**生成文件**（SIG 官方 UUID 名称表，见下）
+- `src/index.html` + `src/css/*.css` + `src/js/*.js` — **整个前端**（无框架、无打包器、无构建步骤；2026-09 从单文件拆成 4 个 CSS + 16 个 JS + 272 行骨架，含 12 套主题变量；串口 / WSL / ADB / 蓝牙 四个面板）。其中 `src/js/81-ble-uuids.js` 是**生成文件**（SIG 官方 UUID 名称表，见下）；`src/js/84-ble-ota.js` 是**拆分后新增**的 BLE 固件升级（OTA）面板，**阶段 0 + 阶段 1 都已落地**（真传输的引擎在 Rust 侧，见 `doc/BLE_OTA_EVALUATION.md` §5.1/§5.2），但**界面入口当前被 `BLE_OTA_UI_ENABLED = false` 隐藏着**（见第 7 条）
   **目录结构、加载顺序、"原 index.html 行号 ↔ 新文件"映射、以及拆分时逐字符校验的记录，全在 `doc/FRONTEND_LAYOUT.md`** —— 改前端前先看它（尤其"只用普通 `<script src>`、绝不用 `type="module"`"这一条）
 - `src-tauri/src/mcp/` — **MCP 服务器**（模块级，约 6300 行）：`transport.rs`（hyper 服务器 + **Streamable HTTP `/mcp`** + 遗留 SSE `/sse` + 会话/鉴权/限流/广播）、`protocol.rs`（JSON-RPC + 工具定义与分派）、`bridge.rs`（前端桥：emit + 回执 + 超时回收）、`registry.rs`（控件注册表 → `ctl_*` 工具）、`loghub.rs`（日志中心）、`calllog.rs`（`ai-calls.jsonl`）、`aiconfig.rs`（`ai-config.json`）、`report.rs`（运行期错误 → 程序既有的错误上报通道）、`mod.rs`（启停/生命周期 + 10 个命令）
 - `npm/seahi-serial-mcp/` — **MCP 客户端配置安装器**（零依赖 CLI + 94 条自测；`npx seahi-serial-mcp install`，`--transport sse|http`）
 - `doc/MCP.md` — MCP 使用说明（面向使用者）｜`doc/MCP_TOOLS.md` — **54 个工具的参考手册**（工具名/描述/入参由 `.walkthrough/gen_mcp_tools_doc.js` 从 `protocol.rs` 生成，返回结构是实调抓的）｜`doc/MCP_DESIGN.md` — MCP 设计文档（含每步的实施记录）
-- `src-tauri/src/main.rs` — 整个 Rust 后端（约 7700 行，91 个 `#[tauri::command]`）：串口枚举（SetupAPI）、多串口连接/断开、DTR/RTS 切换、收发数据、WSL 端口映射、USB 设备管理、ADB 会话、**快速指令外部文件（导入/导出/写回，见 `quick_cmds_*`）**、**BLE 主机（btleplug，代码在 `fn main()` 内；原「BLE 从机」方向已于 2026-09 删除）**
+- `src-tauri/src/main.rs` — 整个 Rust 后端（约 8360 行，94 个 `#[tauri::command]`）：串口枚举（SetupAPI）、多串口连接/断开、DTR/RTS 切换、收发数据、WSL 端口映射、USB 设备管理、ADB 会话、**快速指令外部文件（导入/导出/写回，见 `quick_cmds_*`）**、**BLE 主机（btleplug；原「BLE 从机」方向已于 2026-09 删除）+ BLE OTA 阶段 0/1（`ota_*`）**。⚠️ BLE 的类型别名与 `BleState` **在模块级**（阶段 1 的引擎要能被无盘单测覆盖），**既有 BLE 命令仍在 `fn main()` 内** —— 加新 BLE 代码时先确认自己在哪一层（模块级看不到 `fn main()` 里的东西）
 - `src-tauri/Cargo.toml` — Rust 依赖（serialport 3.3, rfd 0.15, winapi 0.3, windows-sys 0.59, **windows 0.62 + windows-future 0.3（BLE 配对用 WinRT）**, **tokio（`time::timeout` + MCP 的 `rt/net/sync/io-util`，刻意不开 `macros`）**, reqwest 0.12, base64 0.22, btleplug 0.13, **hyper 1 + hyper-util + http-body-util + bytes（MCP 的 SSE 服务器；都已由 reqwest 带入依赖树，无新增下载）**）
 - `src-tauri/vendor/btleplug/` — **btleplug 的 vendored fork**（`[patch.crates-io]` 指向此处），共 4 处本地补丁；**升级依赖时必须按 `vendor/btleplug/VENDOR.md` 重新打**
 - `src-tauri/tauri.conf.json` — Tauri 窗口配置，CSP 设为 `null`；**不要擅自设 CSP**：Tauri 会注入 nonce，按规范 `'unsafe-inline'` 即失效，本应用的行内 `style="…"` 属性与行内 `onclick`（拆分时 HTML 里 51 处 + JS 模板串里 151 处）会全被拦（界面掉样式、按钮点了没反应）。要设 CSP 必须先做「事件委托化 + 行内样式外置」重构。
@@ -271,7 +372,7 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
 - `src-tauri/capabilities/default.json` — 窗口/Webview 的 ACL 权限（仅 `core:*`，无 shell/fs/http 插件权限）
 - `src-tauri/wsl-daemon/` — WSL bridge 脚本（base64 编码嵌入）
 - `installer.iss` — Inno Setup 安装脚本（包含 usbipd-win.msi 打包）
-- `doc/FRONTEND_LAYOUT.md` — **前端目录结构**（4 个 CSS + 15 个 JS + 骨架的加载顺序、生成文件 `81-ble-uuids.js` 的来源与纪律、原单文件行号映射、拆分校验记录）
+- `doc/FRONTEND_LAYOUT.md` — **前端目录结构**（4 个 CSS + 16 个 JS + 骨架的加载顺序、生成文件 `81-ble-uuids.js` 的来源与纪律、拆分后新增的 `84-ble-ota.js`、原单文件行号映射、拆分校验记录）
 - `doc/` — 架构、交接、代码评估（`CODE_REVIEW_FULL_2026-09.md`）、BLE 真机验证（`BLE_VERIFICATION.md`，主机方向）、**BLE 从机（`BLE_PERIPHERAL.md`，已归档：确认做不出来、代码已删）** 等
 - `skills/seahi-serial-dev/SKILL.md` — AI 开发技能指南
 

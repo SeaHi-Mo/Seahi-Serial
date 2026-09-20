@@ -6541,6 +6541,1466 @@ mod qcmd_hs_tests {
     }
 }
 
+/* ===== BLE OTA 固件（阶段 0：只选文件、只做校验，**一个字节都不写设备**） =====
+   评估见 doc/BLE_OTA_EVALUATION.md §5「阶段 0」。这里只做「选固件 → 认包头 → 算校验」，
+   传输引擎（分包 / 流控 / 重传 / 进度）属阶段 1，等设备侧私有协议确认后再做。
+
+   ⚠️ 与快速指令同一套纪律：**固件路径只认用户在原生框里亲手选过的**。允许表在后端自己的
+   文件里（`ota-firmwares.json`），前端既读不到也传不进任意路径 —— 否则等于给本机任意进程
+   一个文件读取原语。
+
+   ⚠️ 固件**不进内存做全量 IPC**：只在这里读一次算校验，前端拿到的是校验结果不是字节。
+   （阶段 1 的分片传输也必须在 Rust 侧从磁盘流式读，别把固件塞进 invoke 参数。） */
+
+/// 固件大小上限。BLE 的实际吞吐是 KB/s 量级（评估文档 §4），8 MB 已是小时级传输；
+/// 再大的一律拒收 —— 同时也挡住"前端/AI 塞一个大文件把内存打爆"。
+const OTA_FIRMWARE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// 允许表上限（超出按最久未用淘汰）
+const OTA_FIRMWARE_MAX_ALLOWED: usize = 20;
+/// 安信可 OTA 包头（ai_pack_head）：5 版本 + 4 芯片 + 32 MD5 + 128 URL = 169
+const AI_PACK_HEAD_LEN: usize = 169;
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct OtaFirmwares {
+    /// 用户在原生文件框里选过的固件路径（只有这些能被重新解析）
+    allowed: Vec<String>,
+}
+
+static OTA_FIRMWARES: std::sync::OnceLock<std::sync::Mutex<OtaFirmwares>> = std::sync::OnceLock::new();
+
+fn ota_firmwares_path() -> Option<std::path::PathBuf> {
+    dirs_config_path().map(|d| d.join("ota-firmwares.json"))
+}
+
+fn ota_firmwares() -> &'static std::sync::Mutex<OtaFirmwares> {
+    OTA_FIRMWARES.get_or_init(|| {
+        let loaded = ota_firmwares_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_json::from_str::<OtaFirmwares>(&s).ok())
+            .unwrap_or_default();
+        std::sync::Mutex::new(loaded)
+    })
+}
+
+/// 原子落盘（临时文件 + rename）。这张表丢了顶多重选一次固件，失败只记日志不报错。
+fn ota_firmwares_persist(fw: &OtaFirmwares) {
+    let Some(path) = ota_firmwares_path() else { return };
+    if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
+    let Ok(text) = serde_json::to_string_pretty(fw) else { return };
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text.as_bytes()).is_ok() { let _ = std::fs::rename(&tmp, &path); }
+}
+
+/// 插入逻辑（纯函数，便于无盘单测）：LRU 挪到末尾，超上限丢最旧的
+fn ota_firmware_allow_push(fw: &mut OtaFirmwares, path: &str) {
+    if path.is_empty() { return; }
+    if let Some(pos) = fw.allowed.iter().position(|p| p == path) { fw.allowed.remove(pos); }
+    fw.allowed.push(path.to_string());
+    while fw.allowed.len() > OTA_FIRMWARE_MAX_ALLOWED { fw.allowed.remove(0); }
+}
+
+fn ota_firmware_remember(path: &str) {
+    if path.is_empty() { return; }
+    let mut fw = ota_firmwares().lock().unwrap_or_else(|e| e.into_inner());
+    ota_firmware_allow_push(&mut fw, path);
+    ota_firmwares_persist(&fw);
+}
+
+/// 纯函数判据（便于单测）；带全局锁的查询见 `ota_firmware_allowed`
+fn ota_allowed_in(fw: &OtaFirmwares, path: &str) -> bool {
+    fw.allowed.iter().any(|p| p == path)
+}
+
+fn ota_firmware_allowed(path: &str) -> bool {
+    ota_allowed_in(&ota_firmwares().lock().unwrap_or_else(|e| e.into_inner()), path)
+}
+
+/// 大小上限判据（纯函数）：**在读文件之前**判，别等读完才发现太大
+fn ota_check_size(len: u64) -> Result<(), String> {
+    if len == 0 { return Err("文件是空的".to_string()); }
+    if len > OTA_FIRMWARE_MAX_BYTES {
+        return Err(format!(
+            "固件 {} 超过上限 {} MB",
+            ota_fmt_size(len),
+            OTA_FIRMWARE_MAX_BYTES / 1024 / 1024
+        ));
+    }
+    Ok(())
+}
+
+fn ota_fmt_size(n: u64) -> String {
+    if n < 1024 { return format!("{n} B"); }
+    if n < 1024 * 1024 { return format!("{:.1} KB", n as f64 / 1024.0); }
+    format!("{:.2} MB", n as f64 / 1024.0 / 1024.0)
+}
+
+/// 纯 Rust MD5（RFC 1321）。**用途只有一个**：核对安信可 OTA 包头里声明的固件体 MD5 ——
+/// 不是安全用途（真要完整性/防篡改用上面的 `sha256_hex`）。
+/// 为什么手写：本机 cargo 无法联网下载新 crate，不为一个校验再引依赖
+/// （与 `sha256_hex` 同一个理由，见 Cargo.toml 里 MCP 那段的说明）。
+/// 正确性由 RFC 1321 的官方向量钉住（见 ota_firmware_tests::md5_matches_rfc1321_vectors）。
+fn md5_hex(data: &[u8]) -> String {
+    /// 每轮的左移位数（RFC 1321）
+    const S: [u32; 64] = [
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
+    /// K[i] = floor(2^32 × abs(sin(i+1)))（RFC 1321 附录）
+    const K: [u32; 64] = [
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
+        0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+        0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
+        0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+        0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa,
+        0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+        0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+        0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
+        0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+        0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05,
+        0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+        0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039,
+        0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
+        0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+    ];
+    let mut h: [u32; 4] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
+    // 填充：0x80 → 补 0 到 56 (mod 64) → 追加**小端**的原始比特长度
+    // （SHA-256 那处是 big-endian，这里别照抄，抄错一字节向量就对不上）
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 { msg.push(0); }
+    msg.extend_from_slice(&bit_len.to_le_bytes());
+    for chunk in msg.chunks(64) {
+        let mut m = [0u32; 16];
+        for i in 0..16 {
+            m[i] = u32::from_le_bytes([chunk[i * 4], chunk[i * 4 + 1], chunk[i * 4 + 2], chunk[i * 4 + 3]]);
+        }
+        let (mut a, mut b, mut c, mut d) = (h[0], h[1], h[2], h[3]);
+        for i in 0..64 {
+            let (f, g) = match i / 16 {
+                0 => ((b & c) | ((!b) & d), i),
+                1 => ((d & b) | ((!d) & c), (5 * i + 1) % 16),
+                2 => (b ^ c ^ d, (3 * i + 5) % 16),
+                _ => (c ^ (b | (!d)), (7 * i) % 16),
+            };
+            let tmp = d;
+            d = c;
+            c = b;
+            b = b.wrapping_add(a.wrapping_add(f).wrapping_add(K[i]).wrapping_add(m[g]).rotate_left(S[i]));
+            a = tmp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+    }
+    let mut out = String::with_capacity(32);
+    for v in h {
+        for byte in v.to_le_bytes() { out.push_str(&format!("{byte:02x}")); }
+    }
+    out
+}
+
+/// 从定长字段里取字符串：截到第一个 NUL、去掉首尾空白、非 UTF-8 字节按有损处理
+/// （包头是定长字节段，不是 C 字符串，但生成工具习惯补 0）
+fn ota_field(bytes: &[u8]) -> String {
+    let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).trim().to_string()
+}
+
+/// 解析固件（纯函数，便于无盘单测）。**只认已知包头，认不出就当裸固件**，不猜：
+///  - `ai_pack_head`：安信可 169 字节包头（`V1.0\0` + 芯片 4B + MD5 32B + URL 128B）。
+///    并用**包头声明的 MD5** 与固件体实测 MD5 对比 —— 这一条同时验证了
+///    「头确实按这个布局切、固件体没被改」：布局猜错时它必然对不上，不会假通过。
+///  - `raw`：未识别到已知包头（裸 .bin）。此时 `md5_match` 是 **null 而不是 false** ——
+///    「没有这个字段可校」和「校验失败」是两件事，混成一个会让界面说谎。
+fn ota_parse_firmware(raw: &[u8]) -> serde_json::Value {
+    let mut warnings: Vec<String> = Vec::new();
+    let packaged = raw.starts_with(b"V1.0\0") && raw.len() > AI_PACK_HEAD_LEN;
+    if raw.starts_with(b"V1.0\0") && !packaged {
+        warnings.push("以 V1.0 开头但缺固件体：按裸固件处理".to_string());
+    }
+    let (header_kind, header, body) = if packaged {
+        let head = &raw[..AI_PACK_HEAD_LEN];
+        let chip = ota_field(&head[5..9]);
+        let declared = ota_field(&head[9..41]);
+        if chip.is_empty() || chip.eq_ignore_ascii_case("UNKN") {
+            warnings.push("芯片类型未写（UNKN）".to_string());
+        }
+        (
+            "ai_pack_head",
+            json!({
+                // 0x00 起 5 字节（含 NUL）。是否是「固件版本」取决于生成工具，
+                // 本项目**未在真机上核对**，所以只原样显示，不拿它判新旧。
+                "head_version": ota_field(&head[0..5]),
+                "chip": chip,
+                "md5": declared.to_uppercase(),
+                "url": ota_field(&head[41..169]),
+                "md5_field_ok": declared.len() == 32 && declared.bytes().all(|b| b.is_ascii_hexdigit()),
+            }),
+            &raw[AI_PACK_HEAD_LEN..],
+        )
+    } else {
+        ("raw", serde_json::Value::Null, raw)
+    };
+    let body_md5 = md5_hex(body);
+    let md5_match = if packaged {
+        let declared = header["md5"].as_str().unwrap_or("").to_string();
+        if !header["md5_field_ok"].as_bool().unwrap_or(false) {
+            warnings.push("MD5 字段不是 32 位十六进制".to_string());
+            json!(false)
+        } else if !body_md5.eq_ignore_ascii_case(&declared) {
+            warnings.push("MD5 与固件体不符：文件损坏或被改过".to_string());
+            json!(false)
+        } else {
+            json!(true)
+        }
+    } else {
+        json!(null)
+    };
+    json!({
+        "size": raw.len() as u64,
+        "size_text": ota_fmt_size(raw.len() as u64),
+        "file_sha256": sha256_hex(raw),
+        "header_kind": header_kind,
+        "header_size": if packaged { AI_PACK_HEAD_LEN } else { 0 },
+        "body_size": body.len(),
+        "body_md5": body_md5,
+        "md5_match": md5_match,
+        "header": header,
+        "warnings": warnings,
+    })
+}
+
+/// 读文件 + 解析。**上限在读之前判**（按 `metadata`），别等读完才发现太大。
+fn ota_inspect_path(path: &str) -> Result<serde_json::Value, String> {
+    let p = std::path::PathBuf::from(path);
+    let meta = std::fs::metadata(&p).map_err(|e| format!("读不到文件信息: {e}"))?;
+    if !meta.is_file() { return Err("这不是一个文件".to_string()); }
+    ota_check_size(meta.len())?;
+    let raw = std::fs::read(&p).map_err(|e| format!("读取失败: {e}"))?;
+    let mut v = ota_parse_firmware(&raw);
+    if let Some(o) = v.as_object_mut() {
+        o.insert("path".to_string(), json!(path));
+        o.insert(
+            "name".to_string(),
+            json!(p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()),
+        );
+    }
+    Ok(v)
+}
+
+/// 选固件：弹原生框。选中的路径**记进后端自己的允许表**，之后只认这份记录。
+#[tauri::command]
+fn ota_pick_firmware() -> Result<Option<serde_json::Value>, String> {
+    let picked = rfd::FileDialog::new()
+        .set_title("选择 OTA 固件")
+        .add_filter("固件（.bin / .img）", &["bin", "img"])
+        .add_filter("全部文件", &["*"])
+        .pick_file();
+    let Some(path) = picked else { return Ok(None) };
+    let p = path.to_string_lossy().to_string();
+    // 先解析、成功才记进允许表：选到一个打不开/超限的文件不该占位
+    let v = ota_inspect_path(&p)?;
+    ota_firmware_remember(&p);
+    Ok(Some(v))
+}
+
+/// 重新解析已选过的固件（路径必须曾在原生框里选过）
+#[tauri::command]
+fn ota_inspect_firmware(path: String) -> Result<serde_json::Value, String> {
+    if !ota_firmware_allowed(&path) {
+        return Err("这个路径不是你在文件框里选过的，已拒绝读取".to_string());
+    }
+    ota_firmware_remember(&path);   // 用一次 = 刷新 LRU
+    ota_inspect_path(&path)
+}
+
+/// 最近选过的固件（新的在前）。带 `exists`/`size`，文件被移走或改名时界面能一眼看出来。
+#[tauri::command]
+fn ota_list_firmwares() -> Result<Vec<serde_json::Value>, String> {
+    let fw = ota_firmwares().lock().unwrap_or_else(|e| e.into_inner());
+    Ok(fw.allowed.iter().rev().map(|p| {
+        let pb = std::path::PathBuf::from(p);
+        let meta = std::fs::metadata(&pb).ok();
+        let len = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        json!({
+            "path": p,
+            "name": pb.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+            "size": len,
+            "size_text": ota_fmt_size(len),
+            "exists": meta.map(|m| m.is_file()).unwrap_or(false),
+        })
+    }).collect())
+}
+
+#[cfg(test)]
+mod ota_firmware_tests {
+    use super::*;
+
+    /// 手写的 MD5 必须拿 RFC 1321 的官方向量钉住 —— "能编译"完全不代表算得对，
+    /// 而这里算错的后果是**把好固件判成坏的**（或反过来）。
+    #[test]
+    fn md5_matches_rfc1321_vectors() {
+        assert_eq!(md5_hex(b""), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(md5_hex(b"a"), "0cc175b9c0f1b6a831c399e269772661");
+        assert_eq!(md5_hex(b"abc"), "900150983cd24fb0d6963f7d28e17f72");
+        assert_eq!(md5_hex(b"message digest"), "f96b697d7cb7938d525a2f31aaf161d0");
+        assert_eq!(md5_hex(b"abcdefghijklmnopqrstuvwxyz"), "c3fcd3d76192e4007dfb496cca67e13b");
+        // 跨块（>64 字节）也要对：填充与长度字段是最容易写错的地方
+        assert_eq!(
+            md5_hex(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"),
+            "d174ab98d277d9f5a5611c2c9f419d9f"
+        );
+        assert_eq!(
+            md5_hex(b"12345678901234567890123456789012345678901234567890123456789012345678901234567890"),
+            "57edf4a22be3c955ac49da2e2107b67a"
+        );
+    }
+
+    /// 造一个安信可格式的 OTA 固件：169 字节包头 + 固件体。
+    /// md5_field 传 None 用正确 MD5，传 Some 用指定值（造"校验失败"）。
+    fn ai_pack(body: &[u8], chip: &str, md5_field: Option<&str>) -> Vec<u8> {
+        let mut fw = Vec::new();
+        fw.extend_from_slice(b"V1.0\0");
+        let mut chip_field = [b' '; 4];
+        let cb = chip.as_bytes();
+        let n = cb.len().min(4);
+        chip_field[..n].copy_from_slice(&cb[..n]);
+        fw.extend_from_slice(&chip_field);
+        let md5 = md5_field.map(|s| s.to_string()).unwrap_or_else(|| md5_hex(body).to_uppercase());
+        fw.extend_from_slice(md5.as_bytes());
+        fw.extend_from_slice(&[0u8; 128]);
+        fw.extend_from_slice(body);
+        fw
+    }
+
+    #[test]
+    fn ai_pack_head_is_recognized_and_md5_verified() {
+        let body: Vec<u8> = (0..500u32).map(|i| (i % 251) as u8).collect();
+        let fw = ai_pack(&body, "BL60", None);
+        let v = ota_parse_firmware(&fw);
+        assert_eq!(v["header_kind"], json!("ai_pack_head"));
+        assert_eq!(v["header_size"], json!(AI_PACK_HEAD_LEN));
+        assert_eq!(v["body_size"], json!(body.len()));
+        assert_eq!(v["header"]["chip"], json!("BL60"));
+        assert_eq!(v["header"]["head_version"], json!("V1.0"));
+        assert_eq!(v["body_md5"], json!(md5_hex(&body)));
+        assert_eq!(v["md5_match"], json!(true), "自洽的包头必须判为通过");
+        assert_eq!(v["size"], json!(fw.len()));
+        assert!(v["warnings"].as_array().unwrap().is_empty(), "{:?}", v["warnings"]);
+    }
+
+    #[test]
+    fn md5_mismatch_is_reported_not_silently_ignored() {
+        let body = vec![7u8; 300];
+        let fw = ai_pack(&body, "BL60", Some("00000000000000000000000000000000"));
+        let v = ota_parse_firmware(&fw);
+        assert_eq!(v["md5_match"], json!(false));
+        let w = v["warnings"].as_array().unwrap();
+        assert!(
+            w.iter().any(|x| x.as_str().unwrap_or("").contains("MD5")),
+            "对不上必须留下可读理由：{w:?}"
+        );
+    }
+
+    #[test]
+    fn md5_field_that_is_not_hex_is_rejected() {
+        let body = vec![1u8; 64];
+        let fw = ai_pack(&body, "BL60", Some("not-a-hex-string-at-all-1234567"));
+        let v = ota_parse_firmware(&fw);
+        assert_eq!(v["header"]["md5_field_ok"], json!(false));
+        assert_eq!(v["md5_match"], json!(false));
+    }
+
+    #[test]
+    fn raw_binary_is_not_mistaken_for_a_packaged_firmware() {
+        let raw = vec![0xAAu8; 1024];
+        let v = ota_parse_firmware(&raw);
+        assert_eq!(v["header_kind"], json!("raw"));
+        assert_eq!(v["header_size"], json!(0));
+        assert!(v["header"].is_null(), "认不出包头就不该编一个出来");
+        assert!(
+            v["md5_match"].is_null(),
+            "裸固件的 md5_match 必须是 null：「没这个字段可校」≠「校验失败」"
+        );
+        assert_eq!(v["body_md5"], json!(md5_hex(&raw)));
+        assert_eq!(v["body_size"], json!(1024));
+    }
+
+    #[test]
+    fn unknown_chip_is_warned_but_still_verified() {
+        let fw = ai_pack(b"firmware-bytes", "UNKN", None);
+        let v = ota_parse_firmware(&fw);
+        assert_eq!(v["md5_match"], json!(true));
+        assert!(
+            v["warnings"].as_array().unwrap().iter().any(|x| x.as_str().unwrap_or("").contains("芯片")),
+            "UNKN 要提示（但校验结论不能因此变成失败）：{:?}",
+            v["warnings"]
+        );
+    }
+
+    /// 允许表：LRU 语义 + 有界。前端传任意路径必须落在表外（=拒读）。
+    #[test]
+    fn allow_list_is_lru_and_bounded() {
+        let mut fw = OtaFirmwares::default();
+        ota_firmware_allow_push(&mut fw, "a");
+        ota_firmware_allow_push(&mut fw, "b");
+        ota_firmware_allow_push(&mut fw, "a");   // 再选一次 a → 挪到末尾
+        assert_eq!(fw.allowed, vec!["b", "a"]);
+        for i in 0..OTA_FIRMWARE_MAX_ALLOWED + 5 {
+            ota_firmware_allow_push(&mut fw, &format!("p{i}"));
+        }
+        assert_eq!(fw.allowed.len(), OTA_FIRMWARE_MAX_ALLOWED, "必须有上限");
+        assert!(!ota_allowed_in(&fw, "a"), "最久未用的要被淘汰");
+        assert!(ota_allowed_in(&fw, &format!("p{}", OTA_FIRMWARE_MAX_ALLOWED + 4)), "最新的还在");
+        // 前端凭空传一个路径 → 不在表里 → 拒
+        assert!(!ota_allowed_in(&fw, "C:\\Windows\\System32\\config\\SAM"));
+    }
+
+    #[test]
+    fn size_limit_is_checked_before_reading() {
+        assert!(ota_check_size(0).is_err(), "空文件不是固件");
+        assert!(ota_check_size(OTA_FIRMWARE_MAX_BYTES).is_ok(), "正好到上限应放行");
+        let e = ota_check_size(OTA_FIRMWARE_MAX_BYTES + 1).unwrap_err();
+        assert!(e.contains("上限"), "{e}");
+    }
+
+    #[test]
+    fn inspect_walks_a_real_file_and_rejects_oversize_before_reading() {
+        let dir = std::env::temp_dir();
+        let p = dir.join(format!("seahi-ota-test-{}.bin", std::process::id()));
+        let body = vec![3u8; 128];
+        std::fs::write(&p, ai_pack(&body, "BL60", None)).unwrap();
+        let path = p.to_string_lossy().to_string();
+        let v = ota_inspect_path(&path).unwrap();
+        assert_eq!(v["name"], json!(p.file_name().unwrap().to_string_lossy().to_string()));
+        assert_eq!(v["path"], json!(path.clone()));
+        assert_eq!(v["md5_match"], json!(true));
+        assert_eq!(v["body_size"], json!(128));
+        let _ = std::fs::remove_file(&p);
+
+        // 超限文件：稀疏文件即可（不必真占 8 MB），关键是**读之前**就拒
+        let big = dir.join(format!("seahi-ota-big-{}.bin", std::process::id()));
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(OTA_FIRMWARE_MAX_BYTES + 1).unwrap();
+        drop(f);
+        let e = ota_inspect_path(&big.to_string_lossy()).unwrap_err();
+        assert!(e.contains("上限"), "{e}");
+        let _ = std::fs::remove_file(&big);
+    }
+
+    #[test]
+    fn size_text_is_human_readable() {
+        assert_eq!(ota_fmt_size(512), "512 B");
+        assert_eq!(ota_fmt_size(2048), "2.0 KB");
+        assert_eq!(ota_fmt_size(1024 * 1024), "1.00 MB");
+    }
+}
+
+/* ===== BLE OTA 阶段 1：真传输引擎（分包 / 流控 / ACK / 重传 / 取消 / 进度） =====
+
+   评估与分期见 `doc/BLE_OTA_EVALUATION.md` §5。五条硬纪律（都是踩过的，别改回去）：
+
+   ① **协议参数一律由「协议档」给出，代码里不写死任何 UUID / 分包 / ACK 规则** ——
+      目标设备是自研私有协议，包头长什么样、ACK 长什么样都还没给；猜错的后果是设备起不来。
+      所以 `OtaProfile` 的每一项都来自界面，缺哪一项就**拒启动并说清缺哪一项**。
+   ② **写入只发生在 Rust 侧**：前端只调 `ota_start` / `ota_status` / `ota_abort`，
+      固件字节从不进 IPC —— 前端至今没有任何 `ble_write` 调用，`.walkthrough` 里那条
+      「OTA 面板不许出现写入调用」的断言因此仍然成立（它守的是"谁在写"这件事）。
+   ③ **不设整体超时**：OTA 是分钟级任务，整体超时会在快传完时把任务掐掉、白写一遍。
+      只有**单片**的 ACK 超时（`ack_timeout_ms`），而且超时是重传、不是中止。
+   ④ **ACK 走独立出口**（`OtaAckSink`），**绝不去 drain 前端轮询的 `notify_buf`** ——
+      那条是单消费者队列，抢走就是"界面偶发丢通知"（评估文档 §4）。
+   ⑤ **写之前先清过期的 ACK**：上一片多出来的通知若被当成这一片的 ACK，
+      就会把"丢片"读成"成功"；清掉的条数记进 `ack_stale`（丢弃必须能被看出来）。
+*/
+
+/// ATT 头 3 字节：协议档给 0 时按 `MTU - 3` 自动算分包。
+// btleplug 的类型别名原先只在 `fn main()` 里 `use` 过；阶段 1 的引擎放在模块级
+// （纯净逻辑要能被无盘单测覆盖），所以这里再 use 一份 —— 不同作用域，不冲突。
+use btleplug::api::{Characteristic as BtChar, Peripheral as PeripheralTrait, Service as BtService, WriteType};
+use btleplug::platform::{Adapter as BtAdapter, Peripheral as BtPeripheral};
+
+/// BLE 后端状态。**放在模块级**（原先在 `fn main()` 里）：OTA 引擎要在模块级拿到它，
+/// 而且它本来就只是个数据容器，没有任何"必须先初始化什么"的顺序要求。
+struct BleState {
+    /// 系统里的**全部**蓝牙适配器（`ble_start_scan` 时刷新）。
+    /// 以前只留第一个，导致"插在第二个适配器上的设备永远搜不到"。
+    adapters: Mutex<Vec<BtAdapter>>,
+    scanning: std::sync::atomic::AtomicBool,
+    connected: Mutex<Option<BtPeripheral>>,
+    /// 上次断开时保留的外设对象。
+    /// btleplug 在 DeviceDisconnected 时会把它从适配器表里删掉，若直接丢弃，
+    /// 重连就只能靠重新广播（要等设备恢复广播，常常 1~2 秒都扫不到）。
+    /// WinRT 的 connect() 内部按地址重建连接、不依赖适配器表，所以留着它可秒连。
+    last_peripheral: Mutex<Option<BtPeripheral>>,
+    /// 已连接设备的地址（与 connected 同步维护）。
+    /// 前端切换页面回来时靠它恢复连接态，关闭程序时靠它做主动断开。
+    connected_addr: Mutex<Option<String>>,
+    services: Mutex<Vec<BtService>>,
+    notify_buf: std::sync::Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>,
+    /// 通知缓冲溢出被丢掉的条数。以前只是静默丢最旧的，用户完全不知道丢了数据。
+    notify_dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// 通知循环是否在跑。用 Arc 是为了让循环结束时能自行复位 ——
+    /// 断开会让通知流结束，若不复位则重连后再订阅不会起新循环（收不到通知）。
+    notify_spawned: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// OTA 的 ACK 出口：**与 `notify_buf` 分开**（那条是前端轮询取走的单消费者队列，
+    /// 抢走就是"界面偶发丢通知"）。通知循环会把原件同时投到这两处。
+    ota_ack: OtaAckSink,
+    /// 当前升级任务（同一时间只允许一个 —— 两条写入交错必然写坏固件）
+    ota_run: Mutex<Option<OtaRun>>,
+}
+
+const OTA_ATT_HEADER_BYTES: u16 = 3;
+/// 分包上限（协议档显式给值时也受它约束）
+const OTA_CHUNK_MAX: u16 = 512;
+/// 单片 ACK 等待上限
+const OTA_ACK_TIMEOUT_MAX_MS: u64 = 60_000;
+/// 片间延时上限
+const OTA_DELAY_MAX_MS: u64 = 10_000;
+/// 单片重传次数上限
+const OTA_RETRY_MAX: u32 = 20;
+/// 起始 / 结束帧长度上限（免得有人把整个固件粘进输入框）
+const OTA_FRAME_MAX_BYTES: usize = 1024;
+/// 等 ACK 的轮询间隔
+const OTA_ACK_POLL_MS: u64 = 5;
+/// ACK 队列上限（没人在取时的堆积上限；丢弃**记账**）
+const OTA_ACK_QUEUE_MAX: usize = 256;
+
+const OTA_ACK_MODE_WRITE_RESPONSE: &str = "write_response";
+const OTA_ACK_MODE_NOTIFY: &str = "notify";
+const OTA_ACK_MODE_NONE: &str = "none";
+
+/// 协议档：设备侧私有协议的全部可变部分。**每一项都由用户在界面上填**，
+/// 后端一个默认 UUID / 默认帧格式都不假设（只有"怎么写"的机制在这里）。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct OtaProfile {
+    /// 写入特征 UUID（4 位短号 / 128 位 / 带 `0x` 都认，比对前先归一化）
+    write_uuid: String,
+    /// 通知特征 UUID：`ack_mode = notify` 时必填
+    notify_uuid: String,
+    /// 分包大小（字节）。**0 = 自动 = MTU − 3**
+    chunk_size: u16,
+    /// 片间固定延时（ms）。ACK 模式为 `none` 时它就是唯一的节奏控制
+    delay_ms: u64,
+    /// `write_response`（默认，靠 GATT 写响应）/ `notify`（等设备通知）/ `none`
+    ack_mode: String,
+    /// 等一片 ACK 的上限（ms）。**这是单片超时，不是整体超时**
+    ack_timeout_ms: u64,
+    /// 单片重传次数（默认 3）。用完还失败 → 整个任务失败并保留现场
+    retry: u32,
+    /// 起始帧（HEX，可空 = 不发）。私有协议要"开始传输"命令时填这里
+    start_hex: String,
+    /// 结束帧（HEX，可空 = 未配置 → 传完不发任何东西，并在结果里说明）
+    finish_hex: String,
+}
+
+impl Default for OtaProfile {
+    fn default() -> Self {
+        Self {
+            write_uuid: String::new(),
+            notify_uuid: String::new(),
+            chunk_size: 0,
+            delay_ms: 0,
+            ack_mode: OTA_ACK_MODE_WRITE_RESPONSE.to_string(),
+            ack_timeout_ms: 3000,
+            retry: 3,
+            start_hex: String::new(),
+            finish_hex: String::new(),
+        }
+    }
+}
+
+/// UUID 相等判定：**两边都归一化**再比。理由见 AGENTS「BLE 主机方向」第 7 条 ⑤ ——
+/// 阶段 0 真机事故就是拿完整 128 位字符串硬比，导致界面谎报"设备未提供 0x180A"。
+fn ota_uuid_eq(a: &str, b: &str) -> bool {
+    if a.trim().is_empty() || b.trim().is_empty() { return false; }
+    ble_short_uuid(a) == ble_short_uuid(b)
+}
+
+/// 按 UUID 找特征（与真正写入时用的是**同一个**查找口径）。
+/// 归一化比对由 `ota_uuid_eq` 负责 —— 别改回"完整 128 位字符串硬比"。
+fn ota_find_char(services: &[BtService], uuid: &str) -> Option<BtChar> {
+    if uuid.trim().is_empty() { return None; }
+    for s in services {
+        if let Some(c) = s.characteristics.iter().find(|c| ota_uuid_eq(&c.uuid.to_string(), uuid)) {
+            return Some(c.clone());
+        }
+    }
+    None
+}
+
+/// HEX 文本 → 字节。接受空格 / 冒号 / 连字符分隔（用户从别处粘过来常常带这些）。
+/// **奇数长度一律拒**（宁可报错，也别把半字节猜成 0）。
+fn ota_hex_bytes(s: &str) -> Result<Vec<u8>, String> {
+    let cleaned: String = s.chars().filter(|c| !c.is_whitespace() && *c != ':' && *c != '-' && *c != '_').collect();
+    if cleaned.is_empty() { return Ok(Vec::new()); }
+    if cleaned.len() % 2 != 0 {
+        return Err(format!("HEX 长度为奇数（{} 个字符）：多半是少写了一位", cleaned.len()));
+    }
+    let mut out = Vec::with_capacity(cleaned.len() / 2);
+    let bytes = cleaned.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let hi = (bytes[i] as char).to_digit(16).ok_or_else(|| format!("不是 HEX 字符：'{}'", bytes[i] as char))?;
+        let lo = (bytes[i + 1] as char).to_digit(16).ok_or_else(|| format!("不是 HEX 字符：'{}'", bytes[i + 1] as char))?;
+        out.push(((hi << 4) | lo) as u8);
+        i += 2;
+    }
+    Ok(out)
+}
+
+/// 校验协议档（纯函数，便于无盘单测）：**返回实际使用的分包大小**。
+/// `has_char` 由调用方用真实服务树给（与真正写入时同一个查找函数 ——
+/// 校验用一套、写的时候用另一套，迟早漂移）。
+fn ota_profile_check(p: &OtaProfile, mtu: u16, has_char: &dyn Fn(&str) -> bool) -> Result<u16, String> {
+    if p.write_uuid.trim().is_empty() {
+        return Err("协议档里还没填「写入特征 UUID」".to_string());
+    }
+    if !has_char(&p.write_uuid) {
+        return Err(format!("服务树里找不到写入特征 {}（先确认设备已连接，并核对 UUID）", p.write_uuid.trim()));
+    }
+    let mode = p.ack_mode.trim();
+    if mode != OTA_ACK_MODE_WRITE_RESPONSE && mode != OTA_ACK_MODE_NOTIFY && mode != OTA_ACK_MODE_NONE {
+        return Err(format!("ACK 方式只认 write_response / notify / none，收到的是「{mode}」"));
+    }
+    if mode == OTA_ACK_MODE_NOTIFY {
+        if p.notify_uuid.trim().is_empty() {
+            return Err("ACK 方式选了「等设备通知」，但没填通知特征 UUID".to_string());
+        }
+        if !has_char(&p.notify_uuid) {
+            return Err(format!("服务树里找不到通知特征 {}（先确认设备已连接，并核对 UUID）", p.notify_uuid.trim()));
+        }
+        if p.ack_timeout_ms == 0 || p.ack_timeout_ms > OTA_ACK_TIMEOUT_MAX_MS {
+            return Err(format!("单片 ACK 超时要落在 1 ~ {} ms", OTA_ACK_TIMEOUT_MAX_MS));
+        }
+    }
+    if p.delay_ms > OTA_DELAY_MAX_MS {
+        return Err(format!("片间延时不能超过 {} ms（OTA 是分钟级任务，别用延时当限速）", OTA_DELAY_MAX_MS));
+    }
+    if p.retry > OTA_RETRY_MAX {
+        return Err(format!("单片重传次数不能超过 {}", OTA_RETRY_MAX));
+    }
+    let chunk = if p.chunk_size == 0 {
+        if mtu == 0 {
+            return Err("读不到本链路的 ATT MTU：分包大小请手工填（自动值 = MTU − 3）".to_string());
+        }
+        mtu.saturating_sub(OTA_ATT_HEADER_BYTES)
+    } else {
+        p.chunk_size
+    };
+    if chunk == 0 {
+        return Err("分包大小算出来是 0：请手工填一个值".to_string());
+    }
+    if p.chunk_size > OTA_CHUNK_MAX {
+        return Err(format!("分包 {} B 超过上限 {} B", p.chunk_size, OTA_CHUNK_MAX));
+    }
+    // MTU 读得到时，显式分包也要过一遍可写长度检查 —— 否则要写到第 1 片由设备报错才知道
+    if p.chunk_size > 0 && mtu > 0 && chunk + OTA_ATT_HEADER_BYTES > mtu {
+        return Err(format!(
+            "分包 {} B 超过本链路可写长度（MTU {} − {} = {} B）",
+            chunk, mtu, OTA_ATT_HEADER_BYTES, mtu.saturating_sub(OTA_ATT_HEADER_BYTES)
+        ));
+    }
+    for (label, hex) in [("起始帧", &p.start_hex), ("结束帧", &p.finish_hex)] {
+        let bytes = ota_hex_bytes(hex).map_err(|e| format!("{label}：{e}"))?;
+        if bytes.len() > OTA_FRAME_MAX_BYTES {
+            return Err(format!("{label} {} B 超过上限 {} B", bytes.len(), OTA_FRAME_MAX_BYTES));
+        }
+    }
+    Ok(chunk)
+}
+
+/// 第 `i` 片在固件里的 (偏移, 长度)。纯函数 —— 整除 / 余数 / 末片 / 越界全靠单测钉住。
+fn ota_chunk_span(i: usize, total: usize, chunk: usize) -> Option<(usize, usize)> {
+    if chunk == 0 || total == 0 { return None; }
+    let off = i.checked_mul(chunk)?;
+    if off >= total { return None; }
+    Some((off, std::cmp::min(chunk, total - off)))
+}
+
+fn ota_chunk_count(total: usize, chunk: usize) -> usize {
+    if chunk == 0 || total == 0 { return 0; }
+    total.div_ceil(chunk)
+}
+
+/// 等一片 ACK 的结果（纯枚举，便于把"重传还是放弃"抽成纯函数测）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum OtaAckOutcome { Got, Timeout, Cancelled }
+
+/// 下一步动作
+#[derive(Debug, PartialEq)]
+enum OtaStep { Next, Retry, Fail }
+
+/// 写失败之后：还有重传额度就重传，否则**失败**（不静默跳过 —— 跳一片 = 设备上少一段代码）
+fn ota_step_write_err(attempt: u32, retry: u32) -> OtaStep {
+    if attempt < retry { OtaStep::Retry } else { OtaStep::Fail }
+}
+
+/// 等 ACK 之后：Got → 下一片；Timeout → 重传/失败；Cancelled 交给外层判取消。
+fn ota_step_ack(outcome: OtaAckOutcome, attempt: u32, retry: u32) -> OtaStep {
+    match outcome {
+        OtaAckOutcome::Got => OtaStep::Next,
+        OtaAckOutcome::Cancelled => OtaStep::Fail,
+        OtaAckOutcome::Timeout => if attempt < retry { OtaStep::Retry } else { OtaStep::Fail },
+    }
+}
+
+/// 速率（字节/秒）。elapsed 为 0 时回 0，别除零。
+fn ota_rate_bps(sent: u64, elapsed_ms: u64) -> u64 {
+    if elapsed_ms == 0 { return 0; }
+    sent.saturating_mul(1000) / elapsed_ms
+}
+
+fn ota_pct(sent: u64, total: u64) -> u32 {
+    if total == 0 { return 0; }
+    ((sent.min(total).saturating_mul(100)) / total) as u32
+}
+
+/// 预估剩余时间（ms）：还没开始发/已经发完时给 `None`（别拿 0 冒充"马上好"）。
+fn ota_eta_ms(sent: u64, total: u64, elapsed_ms: u64) -> Option<u64> {
+    if sent == 0 || total == 0 || sent >= total || elapsed_ms == 0 { return None; }
+    let remain = total - sent;
+    Some((remain.saturating_mul(elapsed_ms)) / sent)
+}
+
+/// OTA ACK 的**独立出口**。`active` 为假时不收（免得平时白堆一队列通知）。
+#[derive(Clone, Default)]
+struct OtaAckSink {
+    buf: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl OtaAckSink {
+    fn push(&self, v: Vec<u8>) {
+        let mut b = self.buf.lock().unwrap_or_else(|e| e.into_inner());
+        while b.len() >= OTA_ACK_QUEUE_MAX {
+            b.pop_front();
+            self.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        b.push_back(v);
+    }
+    /// 取一条（没有就 None）
+    fn pop(&self) -> Option<Vec<u8>> {
+        self.buf.lock().unwrap_or_else(|e| e.into_inner()).pop_front()
+    }
+    fn clear(&self) {
+        self.buf.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+    /// 清掉过期 ACK 并返回条数（**记账**，见文件头 ⑤）
+    fn drain_stale(&self) -> u64 {
+        let mut b = self.buf.lock().unwrap_or_else(|e| e.into_inner());
+        let n = b.len() as u64;
+        b.clear();
+        n
+    }
+}
+
+/// 传输进度快照（含给界面看的计数）。`started` 不参与序列化，只用来算速率。
+#[derive(Clone)]
+struct OtaStatus {
+    state: String,
+    sent_bytes: u64,
+    total_bytes: u64,
+    chunks_sent: u64,
+    chunks_total: u64,
+    offset: usize,
+    chunk: u16,
+    mtu: u16,
+    retries: u64,
+    acks: u64,
+    ack_stale: u64,
+    ack_timeouts: u64,
+    /// 设备实际回的前 3 条 ACK 原文（协议未知时，这是最有用的线索）
+    recent_acks: Vec<String>,
+    start_frame_sent: bool,
+    finish_frame_sent: bool,
+    finish_configured: bool,
+    note: Option<String>,
+    error: Option<String>,
+    started: Option<std::time::Instant>,
+    finished_elapsed_ms: Option<u64>,
+}
+
+impl Default for OtaStatus {
+    fn default() -> Self {
+        Self {
+            state: "idle".to_string(),
+            sent_bytes: 0,
+            total_bytes: 0,
+            chunks_sent: 0,
+            chunks_total: 0,
+            offset: 0,
+            chunk: 0,
+            mtu: 0,
+            retries: 0,
+            acks: 0,
+            ack_stale: 0,
+            ack_timeouts: 0,
+            recent_acks: Vec::new(),
+            start_frame_sent: false,
+            finish_frame_sent: false,
+            finish_configured: false,
+            note: None,
+            error: None,
+            started: None,
+            finished_elapsed_ms: None,
+        }
+    }
+}
+
+/// 一次升级任务（已被 `ota_start` 起在后台）。字段都是 `Arc`，克隆便宜 ——
+/// `ota_status` 读快照时不会持锁等整个任务。
+#[derive(Clone)]
+struct OtaRun {
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    status: std::sync::Arc<std::sync::Mutex<OtaStatus>>,
+}
+
+impl OtaRun {
+    fn new(chunk: u16, mtu: u16) -> Self {
+        Self {
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            status: std::sync::Arc::new(std::sync::Mutex::new(OtaStatus { chunk, mtu, ..Default::default() })),
+        }
+    }
+    fn cancelled(&self) -> bool {
+        self.cancel.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+fn ota_update(run: &OtaRun, f: impl FnOnce(&mut OtaStatus)) {
+    let mut s = run.status.lock().unwrap_or_else(|e| e.into_inner());
+    f(&mut s);
+}
+
+/// 落终态：state + 错误原因 + 耗时。**每条返回路径都要落一个终态**，
+/// 让界面上的进度条永远有个结论（停在"传输中"就是撒谎）。
+fn ota_finish(run: &OtaRun, state: &str, error: Option<String>) {
+    ota_update(run, |s| {
+        s.state = state.to_string();
+        s.error = error;
+        s.finished_elapsed_ms = s.started.map(|t| t.elapsed().as_millis() as u64);
+    });
+}
+
+fn ota_elapsed_ms(s: &OtaStatus) -> u64 {
+    if let Some(t) = s.started {
+        if s.finished_elapsed_ms.is_none() { return t.elapsed().as_millis() as u64; }
+    }
+    s.finished_elapsed_ms.unwrap_or(0)
+}
+
+fn ota_status_json(run: &OtaRun, ack_dropped: u64) -> serde_json::Value {
+    let s = { run.status.lock().unwrap_or_else(|e| e.into_inner()).clone() };
+    let elapsed = ota_elapsed_ms(&s);
+    json!({
+        "state": s.state,
+        "sentBytes": s.sent_bytes,
+        "totalBytes": s.total_bytes,
+        "pct": ota_pct(s.sent_bytes, s.total_bytes),
+        "chunksSent": s.chunks_sent,
+        "chunksTotal": s.chunks_total,
+        "offset": s.offset,
+        "chunk": s.chunk,
+        "mtu": s.mtu,
+        "retries": s.retries,
+        "acks": s.acks,
+        "ackStale": s.ack_stale,
+        "ackTimeouts": s.ack_timeouts,
+        "ackDropped": ack_dropped,
+        "recentAcks": s.recent_acks,
+        "startFrameSent": s.start_frame_sent,
+        "finishFrameSent": s.finish_frame_sent,
+        "finishConfigured": s.finish_configured,
+        "elapsedMs": elapsed,
+        "rateBps": ota_rate_bps(s.sent_bytes, elapsed),
+        "etaMs": ota_eta_ms(s.sent_bytes, s.total_bytes, elapsed),
+        "note": s.note,
+        "error": s.error,
+    })
+}
+
+/// 等一片 ACK：拿到 → Got(原文)；到点 → Timeout；中途被取消 → Cancelled。
+/// ⚠️ **阶段 1 里"任何一条来自通知特征的数据"都算这一片的 ACK** ——
+/// 设备侧的 ACK 报文格式还没给，所以**不编一个匹配规则**（编错会把丢片读成成功）。
+/// 设备若会发无关通知，这里就可能误判；原文会记进 `recent_acks` 让它可见，
+/// 协议到位后再补真正的匹配。这是本阶段已知的、写在文档里的取舍。
+async fn ota_wait_ack(sink: &OtaAckSink, timeout_ms: u64, run: &OtaRun) -> (OtaAckOutcome, Option<Vec<u8>>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(1));
+    loop {
+        if let Some(v) = sink.pop() { return (OtaAckOutcome::Got, Some(v)); }
+        if run.cancelled() { return (OtaAckOutcome::Cancelled, None); }
+        if std::time::Instant::now() >= deadline { return (OtaAckOutcome::Timeout, None); }
+        tokio::time::sleep(std::time::Duration::from_millis(OTA_ACK_POLL_MS)).await;
+    }
+}
+
+struct OtaTaskArgs {
+    periph: BtPeripheral,
+    write_char: BtChar,
+    data: Vec<u8>,
+    profile: OtaProfile,
+    chunk: u16,
+    start_frame: Vec<u8>,
+    finish_frame: Vec<u8>,
+    ack_sink: OtaAckSink,
+    run: OtaRun,
+}
+
+async fn ota_run_task(args: OtaTaskArgs) {
+    let sink = args.ack_sink.clone();
+    let run = args.run.clone();
+    ota_task_body(args).await;
+    // 收尾：无论走哪条路径返回，都要把 ACK 出口关掉并清干净 ——
+    // 留着 `active` 会让通知一直往没人取的队列里堆。
+    sink.active.store(false, std::sync::atomic::Ordering::Relaxed);
+    sink.clear();
+    // 兜底：body 里每条路径都会落终态；万一漏了，就如实说"任务异常结束"，
+    // 绝不把进度条永久停在"传输中"。
+    let st = run.status.lock().unwrap_or_else(|e| e.into_inner()).state.clone();
+    if st == "sending" || st == "finishing" {
+        ota_finish(&run, "failed", Some("任务异常结束（没有落终态）".to_string()));
+    }
+}
+
+async fn ota_task_body(args: OtaTaskArgs) {
+    let OtaTaskArgs { periph, write_char, data, profile, chunk, start_frame, finish_frame, ack_sink, run } = args;
+    let total = data.len();
+    let chunk_us = chunk as usize;
+    let chunks_total = ota_chunk_count(total, chunk_us);
+    // 写响应模式靠 ATT 响应当确认；notify / none 只能用"无响应写"（否则每片都白等一次响应）
+    let wt = if profile.ack_mode == OTA_ACK_MODE_WRITE_RESPONSE { WriteType::WithResponse } else { WriteType::WithoutResponse };
+    ota_update(&run, |s| {
+        s.state = "sending".to_string();
+        s.total_bytes = total as u64;
+        s.chunks_total = chunks_total as u64;
+        s.finish_configured = !finish_frame.is_empty();
+        s.started = Some(std::time::Instant::now());
+    });
+
+    if !start_frame.is_empty() {
+        if let Err(e) = periph.write(&write_char, &start_frame, wt).await {
+            ota_finish(&run, "failed", Some(format!("起始帧写入失败：{e}")));
+            return;
+        }
+        ota_update(&run, |s| s.start_frame_sent = true);
+    }
+
+    for i in 0..chunks_total {
+        if run.cancelled() { ota_finish(&run, "aborted", None); return; }
+        let Some((off, len)) = ota_chunk_span(i, total, chunk_us) else {
+            ota_finish(&run, "failed", Some(format!("分包计算异常：第 {} 片越界", i + 1)));
+            return;
+        };
+        // 写之前清掉过期 ACK（见文件头 ⑤）：上一片多出来的通知若被当成这一片的 ACK，
+        // 就会把"丢片"读成"成功"。
+        let stale = ack_sink.drain_stale();
+        if stale > 0 { ota_update(&run, |s| s.ack_stale += stale); }
+        let mut attempt: u32 = 0;
+        loop {
+            match periph.write(&write_char, &data[off..off + len], wt).await {
+                Ok(()) => {}
+                Err(e) => {
+                    let step = ota_step_write_err(attempt, profile.retry);
+                    ota_update(&run, |s| s.retries += 1);
+                    if step == OtaStep::Retry {
+                        attempt += 1;
+                        continue;
+                    }
+                    ota_finish(&run, "failed", Some(format!(
+                        "第 {}/{} 片写入失败（已重传 {} 次）：{e}", i + 1, chunks_total, attempt
+                    )));
+                    return;
+                }
+            }
+            if profile.ack_mode != OTA_ACK_MODE_NOTIFY { break; }
+            let (outcome, payload) = ota_wait_ack(&ack_sink, profile.ack_timeout_ms, &run).await;
+            if let Some(pl) = payload {
+                let hex = ble_hex(&pl);
+                ota_update(&run, |s| {
+                    s.acks += 1;
+                    if s.recent_acks.len() < 3 { s.recent_acks.push(hex); }
+                });
+            }
+            if outcome == OtaAckOutcome::Cancelled || run.cancelled() {
+                ota_finish(&run, "aborted", None);
+                return;
+            }
+            match ota_step_ack(outcome, attempt, profile.retry) {
+                OtaStep::Next => break,
+                OtaStep::Retry => {
+                    attempt += 1;
+                    ota_update(&run, |s| { s.retries += 1; s.ack_timeouts += 1; });
+                    continue;
+                }
+                OtaStep::Fail => {
+                    ota_update(&run, |s| s.ack_timeouts += 1);
+                    ota_finish(&run, "failed", Some(format!(
+                        "第 {}/{} 片等 ACK 超时（{} ms，已重传 {} 次）", i + 1, chunks_total, profile.ack_timeout_ms, attempt
+                    )));
+                    return;
+                }
+            }
+        }
+        ota_update(&run, |s| {
+            s.sent_bytes += len as u64;
+            s.chunks_sent += 1;
+            s.offset = off + len;
+        });
+        if profile.delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(profile.delay_ms)).await;
+        }
+    }
+
+    if !finish_frame.is_empty() {
+        ota_update(&run, |s| s.state = "finishing".to_string());
+        if let Err(e) = periph.write(&write_char, &finish_frame, wt).await {
+            ota_finish(&run, "failed", Some(format!("结束帧写入失败：{e}")));
+            return;
+        }
+        ota_update(&run, |s| s.finish_frame_sent = true);
+    }
+    if finish_frame.is_empty() {
+        ota_update(&run, |s| {
+            s.note = Some("结束动作未配置：数据已全部发出，但没发任何结束帧 —— 设备多半不会自己生效".to_string());
+        });
+    }
+    ota_finish(&run, "done", None);
+}
+
+async fn ble_notify_loop(
+    peripheral: BtPeripheral,
+    buf: std::sync::Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ack: OtaAckSink,
+) {
+    use futures::StreamExt;
+    /// 通知缓冲上限：前端每 250ms 轮询取走（drain），正常远到不了这个量。
+    /// 但前端若停止轮询（切到别的页面、或自身异常），通知会在这里无限堆积 ——
+    /// 加上限后丢最旧的，内存不会随设备持续上报而线性增长。
+    /// **丢弃要记账**：静默丢数据会让人以为"设备就没发那么多"。
+    const NOTIFY_BUF_MAX: usize = 2000;
+    if let Ok(mut stream) = peripheral.notifications().await {
+        while let Some(n) = stream.next().await {
+            let hex = ble_hex(&n.value);
+            // 生产端旁路：BLE 通知是"前端轮询取走的单消费者队列"，所以只能在**产生处**复制一份，
+            // 不能去 drain 队列（那会把界面要的数据抢走）。
+            crate::mcp::loghub::hub().push(
+                "ble:rx",
+                crate::mcp::loghub::LEVEL_INFO,
+                crate::mcp::loghub::DIR_RX,
+                &format!("{} · {} = {}", n.service_uuid, n.uuid, hex),
+                n.value.len() as u32,
+            );
+            let item = json!({
+                "uuid": n.uuid.to_string(),
+                "service_uuid": n.service_uuid.to_string(),
+                "value_hex": hex,
+            });
+            // OTA 的 ACK 走**独立出口**（与上面那条前端轮询队列分开，见 OtaAckSink）：
+            // 只有在真的有升级任务时才投，平时不多堆一份。
+            if ack.active.load(std::sync::atomic::Ordering::Relaxed) {
+                ack.push(n.value.clone());
+            }
+            {
+                // 锁中毒也照常写（`unwrap_or_else(into_inner)`）：写成 `if let Ok(..)` 会把一次中毒
+                // 变成"静默丢一条**且不计入 dropped**" —— 与"丢弃要记账"的纪律相悖
+                // （2026-09 审计发现；同一函数的其它锁都用了 into_inner）。
+                let mut b = buf.lock().unwrap_or_else(|e| e.into_inner());
+                while b.len() >= NOTIFY_BUF_MAX {
+                    b.pop_front();
+                    dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                b.push_back(item);
+            }
+        }
+    }
+}
+
+/// 起通知循环（**只有一个出口**）。`ble_subscribe`（用户点订阅）与 OTA 的 notify 模式共用 ——
+/// 两条路径各自 spawn 会变成两个消费者抢同一份通知流，那正是"偶发等不到 ACK"的成因之一。
+/// 已经在跑就什么都不做（`notify_spawned` 由循环结束时自行复位）。
+fn ble_spawn_notify_loop(peripheral: &BtPeripheral, state: &BleState) {
+    let flag = state.notify_spawned.clone();
+    if flag.swap(true, std::sync::atomic::Ordering::Relaxed) { return; }
+    let p = peripheral.clone();
+    let buf = state.notify_buf.clone();
+    let dropped = state.notify_dropped.clone();
+    let ack = state.ota_ack.clone();
+    tauri::async_runtime::spawn(async move {
+        ble_notify_loop(p, buf, dropped, ack).await;
+        // 通知流结束（断开连接会走到这里）：复位标志，下次订阅才能重新起循环
+        flag.store(false, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
+/// 起升级。**这是本项目唯一的固件写入入口**，也是 MCP 侧将来唯一的危险动作。
+///
+/// 校验顺序是刻意的：路径白名单 → 连接 → 协议档 → 特征真的在服务树里 → 文件大小 → 读到内存。
+/// 任何一步不过就**什么都不发**（半成品写入 = 变砖）。
+#[tauri::command]
+async fn ota_start(
+    state: tauri::State<'_, BleState>,
+    path: String,
+    profile_json: String,
+) -> Result<serde_json::Value, String> {
+    if !ota_firmware_allowed(&path) {
+        return Err("这个路径不是你在文件框里选过的，已拒绝读取".to_string());
+    }
+    let periph = state.connected.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("未连接设备")?;
+    let profile: OtaProfile = serde_json::from_str(&profile_json).map_err(|e| format!("协议档解析失败：{e}"))?;
+    let mtu = periph.mtu();
+    // 校验用的查找口径必须与写入时一致（都用 ota_find_char）
+    let (write_char, notify_char, svc_dump) = {
+        let svcs = state.services.lock().unwrap_or_else(|e| e.into_inner());
+        let wc = ota_find_char(&svcs, &profile.write_uuid);
+        let nc = ota_find_char(&svcs, &profile.notify_uuid);
+        let dump: Vec<String> = svcs.iter()
+            .flat_map(|s| s.characteristics.iter().map(|c| ble_short_uuid(&c.uuid.to_string())))
+            .collect();
+        (wc, nc, dump)
+    };
+    let has = |u: &str| svc_dump.iter().any(|x| x == &ble_short_uuid(u));
+    // 服务树是空的 → **别说"找不到这个特征"**：那是两件事（阶段 0 的三态纪律，
+    // 见 AGENTS「BLE 主机方向」第 7 条 ⑤）。这时用户该做的是重连，不是去改 UUID。
+    if svc_dump.is_empty() {
+        return Err("还没拿到 GATT 服务树：先断开重连一次再试".to_string());
+    }
+    let chunk = ota_profile_check(&profile, mtu, &has)?;
+    let write_char = write_char.ok_or_else(|| format!("服务树里找不到写入特征 {}", profile.write_uuid.trim()))?;
+    if profile.ack_mode == OTA_ACK_MODE_NOTIFY && notify_char.is_none() {
+        return Err(format!("服务树里找不到通知特征 {}", profile.notify_uuid.trim()));
+    }
+
+    // 同一时间只允许一个任务（两条写入交错 = 固件必然写坏）
+    {
+        let cur = state.ota_run.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(r) = cur {
+            let st = r.status.lock().unwrap_or_else(|e| e.into_inner()).state.clone();
+            if st == "sending" || st == "finishing" {
+                return Err("已经有一个升级在进行中：先等它结束，或点「中止」".to_string());
+            }
+        }
+    }
+
+    // 大小在读之前判（阶段 0 的纪律照旧），然后才整块读进内存
+    let meta = std::fs::metadata(&path).map_err(|e| format!("读不到文件信息：{e}"))?;
+    ota_check_size(meta.len())?;
+    let data = std::fs::read(&path).map_err(|e| format!("读文件失败：{e}"))?;
+    if data.is_empty() { return Err("固件是空文件".to_string()); }
+
+    let start_frame = ota_hex_bytes(&profile.start_hex)?;
+    let finish_frame = ota_hex_bytes(&profile.finish_hex)?;
+    let run = OtaRun::new(chunk, mtu);
+    let ack_sink = state.ota_ack.clone();
+    // 起任务前清干净：上一次升级残留的通知不能被当成这一片的 ACK
+    ack_sink.clear();
+    ack_sink.dropped.store(0, std::sync::atomic::Ordering::Relaxed);
+
+    // notify 模式要先把通知订阅上，否则一片 ACK 都等不到（等满超时才发现，白费几分钟）
+    if profile.ack_mode == OTA_ACK_MODE_NOTIFY {
+        if let Some(nc) = notify_char.clone() {
+            periph.subscribe(&nc).await.map_err(|e| format!("订阅通知特征失败：{e}"))?;
+            ble_spawn_notify_loop(&periph, &state);
+        }
+    }
+    ack_sink.active.store(true, std::sync::atomic::Ordering::Relaxed);
+    *state.ota_run.lock().unwrap_or_else(|e| e.into_inner()) = Some(run.clone());
+
+    let total = data.len();
+    let chunks = ota_chunk_count(total, chunk as usize);
+    tauri::async_runtime::spawn(ota_run_task(OtaTaskArgs {
+        periph,
+        write_char,
+        data,
+        profile,
+        chunk,
+        start_frame,
+        finish_frame,
+        ack_sink,
+        run,
+    }));
+    Ok(json!({
+        "state": "sending",
+        "mtu": mtu,
+        "chunk": chunk,
+        "totalBytes": total,
+        "chunksTotal": chunks,
+    }))
+}
+
+/// 读进度快照。前端在升级期间每 250ms 调一次（与 BLE 通知轮询同一套节奏）。
+#[tauri::command]
+async fn ota_status(state: tauri::State<'_, BleState>) -> Result<serde_json::Value, String> {
+    let dropped = state.ota_ack.dropped.load(std::sync::atomic::Ordering::Relaxed);
+    let run = state.ota_run.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    match run {
+        Some(r) => Ok(ota_status_json(&r, dropped)),
+        None => Ok(json!({
+            "state": "idle",
+            "sentBytes": 0, "totalBytes": 0, "pct": 0,
+            "chunksSent": 0, "chunksTotal": 0,
+            "ackDropped": dropped,
+        })),
+    }
+}
+
+/// 中止。**已写入设备的那部分无法撤回**（这是升级本身的语义，不是我们的实现问题），
+/// 所以界面上的文案要写清"中止 ≠ 回滚"。
+#[tauri::command]
+async fn ota_abort(state: tauri::State<'_, BleState>) -> Result<serde_json::Value, String> {
+    let run = state.ota_run.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let Some(r) = run else {
+        return Ok(json!({ "aborted": false, "reason": "没有正在进行的升级" }));
+    };
+    r.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    let st = r.status.lock().unwrap_or_else(|e| e.into_inner()).state.clone();
+    Ok(json!({ "aborted": true, "state": st, "sentBytes": r.status.lock().unwrap_or_else(|e| e.into_inner()).sent_bytes }))
+}
+
+#[cfg(test)]
+mod ota_engine_tests {
+    use super::*;
+
+    fn prof() -> OtaProfile {
+        OtaProfile { write_uuid: "FFE1".to_string(), ..Default::default() }
+    }
+
+    // ---- 分包数学：边界全靠这里钉住（写错一片 = 设备上少一段代码）----
+    #[test]
+    fn chunk_span_covers_the_file_exactly() {
+        // 整除：3 片，每片 4
+        assert_eq!(ota_chunk_span(0, 12, 4), Some((0, 4)));
+        assert_eq!(ota_chunk_span(2, 12, 4), Some((8, 4)));
+        assert_eq!(ota_chunk_span(3, 12, 4), None, "越界不能再给片");
+        // 余数：末片短一截
+        assert_eq!(ota_chunk_count(13, 4), 4);
+        assert_eq!(ota_chunk_span(3, 13, 4), Some((12, 1)));
+        // 一片装得下
+        assert_eq!(ota_chunk_count(3, 20), 1);
+        assert_eq!(ota_chunk_span(0, 3, 20), Some((0, 3)));
+        // 空固件 / 零分包：没有片，别返回 (0,0) 那种"看起来能写"的东西
+        assert_eq!(ota_chunk_span(0, 0, 4), None);
+        assert_eq!(ota_chunk_count(0, 4), 0);
+        assert_eq!(ota_chunk_span(0, 12, 0), None);
+        assert_eq!(ota_chunk_count(12, 0), 0);
+    }
+
+    #[test]
+    fn walk_all_chunks_reconstructs_the_whole_file() {
+        for (total, chunk) in [(1usize, 1usize), (100, 20), (101, 20), (999, 7), (8 * 1024 * 1024, 244)] {
+            let n = ota_chunk_count(total, chunk);
+            let mut seen = 0usize;
+            for i in 0..n {
+                let (off, len) = ota_chunk_span(i, total, chunk).expect("片必须都在范围内");
+                assert_eq!(off, seen, "片必须首尾相接、不留缝（total={total} chunk={chunk}）");
+                assert!(len > 0 && len <= chunk, "片长必须在 (0, chunk] 内");
+                seen += len;
+            }
+            assert_eq!(seen, total, "所有片加起来必须正好是文件长度");
+            assert_eq!(ota_chunk_span(n, total, chunk), None, "最后一片之后就没有了");
+        }
+    }
+
+    // ---- 协议档校验：缺什么说什么，别让用户猜 ----
+    #[test]
+    fn profile_check_requires_a_real_write_characteristic() {
+        let has = |u: &str| ota_uuid_eq(u, "FFE1");
+        let e = ota_profile_check(&OtaProfile::default(), 23, &has).unwrap_err();
+        assert!(e.contains("写入特征 UUID"), "{e}");
+        let mut p = prof();
+        p.write_uuid = "FFE2".to_string();
+        let e = ota_profile_check(&p, 23, &has).unwrap_err();
+        assert!(e.contains("找不到写入特征"), "{e}");
+        // 短号 / 完整 128 位 / 带 0x 三种写法都要认（阶段 0 的老事故）
+        for spelled in ["FFE1", "ffe1", "0xFFE1", "0000ffe1-0000-1000-8000-00805f9b34fb"] {
+            let mut p2 = prof();
+            p2.write_uuid = spelled.to_string();
+            assert!(ota_profile_check(&p2, 23, &has).is_ok(), "{spelled} 应该认得出来");
+        }
+    }
+
+    #[test]
+    fn profile_check_resolves_auto_chunk_from_mtu() {
+        let has = |u: &str| ota_uuid_eq(u, "FFE1");
+        let p = prof();
+        assert_eq!(ota_profile_check(&p, 23, &has).unwrap(), 20, "MTU 23 → 自动 20");
+        assert_eq!(ota_profile_check(&p, 247, &has).unwrap(), 244, "MTU 247 → 自动 244");
+        // 读不到 MTU 时不许"猜一个 20" —— 让用户手工填
+        let e = ota_profile_check(&p, 0, &has).unwrap_err();
+        assert!(e.contains("MTU"), "{e}");
+        let mut p1 = prof();
+        p1.chunk_size = 20;
+        assert_eq!(ota_profile_check(&p1, 0, &has).unwrap(), 20, "显式分包在 MTU 未知时放行");
+    }
+
+    #[test]
+    fn profile_check_rejects_oversized_chunk_and_params() {
+        let has = |u: &str| ota_uuid_eq(u, "FFE1");
+        let mut p = prof();
+        p.chunk_size = 200;
+        let e = ota_profile_check(&p, 23, &has).unwrap_err();
+        assert!(e.contains("超过本链路可写长度"), "{e}");
+        p.chunk_size = OTA_CHUNK_MAX + 1;
+        assert!(ota_profile_check(&p, 2000, &has).unwrap_err().contains("超过上限"));
+        p.chunk_size = 0;
+        p.delay_ms = OTA_DELAY_MAX_MS + 1;
+        assert!(ota_profile_check(&p, 247, &has).unwrap_err().contains("片间延时"));
+        p.delay_ms = 0;
+        p.retry = OTA_RETRY_MAX + 1;
+        assert!(ota_profile_check(&p, 247, &has).unwrap_err().contains("重传"));
+        p.retry = 3;
+        p.ack_mode = "whatever".to_string();
+        assert!(ota_profile_check(&p, 247, &has).unwrap_err().contains("ACK 方式"));
+    }
+
+    #[test]
+    fn profile_check_notify_mode_needs_the_notify_characteristic() {
+        let has = |u: &str| ota_uuid_eq(u, "FFE1");
+        let mut p = prof();
+        p.ack_mode = OTA_ACK_MODE_NOTIFY.to_string();
+        let e = ota_profile_check(&p, 247, &has).unwrap_err();
+        assert!(e.contains("通知特征 UUID"), "{e}");
+        p.notify_uuid = "FFE2".to_string();
+        assert!(ota_profile_check(&p, 247, &has).unwrap_err().contains("找不到通知特征"));
+        p.notify_uuid = "FFE1".to_string();
+        p.ack_timeout_ms = 0;
+        assert!(ota_profile_check(&p, 247, &has).unwrap_err().contains("超时"));
+        p.ack_timeout_ms = OTA_ACK_TIMEOUT_MAX_MS + 1;
+        assert!(ota_profile_check(&p, 247, &has).unwrap_err().contains("超时"));
+        p.ack_timeout_ms = 3000;
+        assert!(ota_profile_check(&p, 247, &has).is_ok());
+    }
+
+    #[test]
+    fn profile_frames_are_hex_checked_not_guessed() {
+        assert_eq!(ota_hex_bytes("").unwrap(), Vec::<u8>::new());
+        assert_eq!(ota_hex_bytes("AA BB").unwrap(), vec![0xAA, 0xBB]);
+        assert_eq!(ota_hex_bytes("aa:bb-cc_dd").unwrap(), vec![0xAA, 0xBB, 0xCC, 0xDD]);
+        // 奇数长度 / 非 HEX：**报错**，不静默丢半字节
+        assert!(ota_hex_bytes("AAB").unwrap_err().contains("奇数"));
+        assert!(ota_hex_bytes("ZZ").unwrap_err().contains("不是 HEX"));
+        let has = |u: &str| ota_uuid_eq(u, "FFE1");
+        let mut p = prof();
+        p.finish_hex = "AAB".to_string();
+        assert!(ota_profile_check(&p, 247, &has).unwrap_err().contains("结束帧"));
+        p.finish_hex = "AA".repeat(OTA_FRAME_MAX_BYTES + 1);
+        assert!(ota_profile_check(&p, 247, &has).unwrap_err().contains("超过上限"));
+        p.finish_hex = "AA BB".to_string();
+        assert!(ota_profile_check(&p, 247, &has).is_ok());
+    }
+
+    // ---- 重传 / 放弃：边界（retry=0 时第一次失败就得放弃）----
+    #[test]
+    fn retry_stops_exactly_at_the_budget() {
+        assert_eq!(ota_step_write_err(0, 0), OtaStep::Fail, "没有重传额度：第一次失败就放弃");
+        assert_eq!(ota_step_write_err(0, 1), OtaStep::Retry);
+        assert_eq!(ota_step_write_err(1, 1), OtaStep::Fail, "用完额度必须放弃，不能无限重传");
+        assert_eq!(ota_step_ack(OtaAckOutcome::Got, 0, 0), OtaStep::Next);
+        assert_eq!(ota_step_ack(OtaAckOutcome::Timeout, 0, 2), OtaStep::Retry);
+        assert_eq!(ota_step_ack(OtaAckOutcome::Timeout, 2, 2), OtaStep::Fail);
+        assert_eq!(ota_step_ack(OtaAckOutcome::Cancelled, 0, 5), OtaStep::Fail, "取消不算重传理由");
+    }
+
+    #[test]
+    fn rate_pct_and_eta_do_not_divide_by_zero() {
+        assert_eq!(ota_rate_bps(1000, 1000), 1000);
+        assert_eq!(ota_rate_bps(1000, 0), 0);
+        assert_eq!(ota_pct(0, 100), 0);
+        assert_eq!(ota_pct(50, 100), 50);
+        assert_eq!(ota_pct(100, 100), 100);
+        assert_eq!(ota_pct(5, 0), 0);
+        assert_eq!(ota_pct(200, 100), 100, "超过总量也只显示 100%");
+        assert_eq!(ota_eta_ms(0, 100, 500), None, "还没发就别给 ETA");
+        assert_eq!(ota_eta_ms(100, 100, 500), None, "发完了没有 ETA");
+        assert_eq!(ota_eta_ms(50, 100, 1000), Some(1000));
+    }
+
+    #[test]
+    fn wait_ack_sees_the_separate_sink_only() {
+        let sink = OtaAckSink::default();
+        assert_eq!(sink.pop(), None);
+        sink.push(vec![1, 2, 3]);
+        assert_eq!(sink.pop(), Some(vec![1, 2, 3]));
+        // 队列有界 + **丢弃记账**（静默丢会让人以为"设备就没回"）
+        for i in 0..(OTA_ACK_QUEUE_MAX + 10) { sink.push(vec![i as u8]); }
+        assert_eq!(sink.buf.lock().unwrap().len(), OTA_ACK_QUEUE_MAX);
+        assert_eq!(sink.dropped.load(std::sync::atomic::Ordering::Relaxed), 10);
+        // 清过期 ACK 要能被数出来（写之前那一步）
+        assert_eq!(sink.drain_stale(), OTA_ACK_QUEUE_MAX as u64);
+        assert_eq!(sink.drain_stale(), 0);
+    }
+
+    #[test]
+    fn status_json_is_honest_about_counters_and_notes() {
+        let run = OtaRun::new(244, 247);
+        ota_update(&run, |s| {
+            s.state = "sending".to_string();
+            s.total_bytes = 1000;
+            s.sent_bytes = 250;
+            s.chunks_total = 5;
+            s.chunks_sent = 2;
+            s.retries = 1;
+            s.ack_stale = 3;
+            s.started = Some(std::time::Instant::now());
+        });
+        let v = ota_status_json(&run, 7);
+        assert_eq!(v["state"], json!("sending"));
+        assert_eq!(v["pct"], json!(25));
+        assert_eq!(v["chunk"], json!(244));
+        assert_eq!(v["mtu"], json!(247));
+        assert_eq!(v["ackStale"], json!(3), "清掉多少过期 ACK 必须看得见");
+        assert_eq!(v["ackDropped"], json!(7));
+        assert_eq!(v["finishConfigured"], json!(false), "没配结束帧就要如实说没配");
+        // 落终态后：错误原因与耗时都要在
+        ota_finish(&run, "failed", Some("第 3/5 片写入失败：timeout".to_string()));
+        let v2 = ota_status_json(&run, 0);
+        assert_eq!(v2["state"], json!("failed"));
+        assert!(v2["error"].as_str().unwrap().contains("第 3/5 片"));
+        assert!(v2["elapsedMs"].is_u64());
+    }
+
+    /// 阶段 1 **不许**有整体超时：一旦有人加一个全局 deadline，这条会 fail，
+    /// 逼他先想清"OTA 是分钟级任务"这件事（评估文档 §1.3）。
+    #[test]
+    fn there_is_no_overall_timeout_constant() {
+        let src = include_str!("main.rs");
+        let block = src.split("/* ===== BLE OTA 阶段 1").nth(1).unwrap_or("");
+        let block = block.split("mod ota_engine_tests").next().unwrap_or("");
+        assert!(!block.contains("OTA_TOTAL_TIMEOUT"), "OTA 不能有整体超时");
+        assert!(!block.contains("timeout(Duration::from_secs(60)"), "别用 tokio::time::timeout 包整个任务");
+        assert!(block.contains("ack_timeout_ms"), "只有单片 ACK 超时");
+    }
+
+    /// ACK 出口必须是**独立队列**：这条守着"绝不去 drain 前端轮询的 notify_buf"。
+    /// ⚠️ 判据只覆盖**引擎那一段**（到 `ble_notify_loop` 为止）—— 通知循环本身当然要写
+    /// `notify_buf`（它是生产端）。而且**只扫"怎么用它"的那两种写法**，不扫裸词：
+    /// 本段的注释里就写着"绝不去 drain 前端轮询的 notify_buf"，扫裸词等于让断言自相矛盾。
+    #[test]
+    fn ack_outlet_is_separate_from_the_frontend_queue() {
+        let src = include_str!("main.rs");
+        let block = src.split("/* ===== BLE OTA 阶段 1").nth(1).unwrap_or("");
+        assert!(block.contains("async fn ble_notify_loop"), "通知循环要在同一段里（扫得到才说明切分点没漂）");
+        let engine = block.split("async fn ble_notify_loop").next().unwrap_or("");
+        assert!(engine.contains("OtaAckSink"), "要有独立的 ACK 出口");
+        // 引擎碰前端那条队列的两种写法，一个都不许出现
+        assert!(!engine.contains("state.notify_buf"), "OTA 引擎不许访问前端轮询的通知队列");
+        assert!(!engine.contains("notify_buf.lock"), "OTA 引擎不许锁前端那条队列");
+        // 通知循环那一侧：只往独立出口**追加**一份，绝不从任何队列里抢条
+        assert!(block.contains("ack.push(n.value.clone())"), "通知必须同时投进 ACK 出口");
+        assert!(engine.contains("sink.pop()"), "引擎应从独立出口取 ACK");
+        assert!(engine.contains("fn pop(&self)"), "出口要自带取条方法（别去动别人的队列）");
+    }
+}
+
 fn main() {
     // 初始化错误上报通道
     init_error_reporter();
@@ -6574,29 +8034,6 @@ use btleplug::api::{Service as BtService, Characteristic as BtChar, PeripheralPr
 use btleplug::api::bleuuid::BleUuid;
 use btleplug::api::BDAddr;
 use btleplug::platform::{Adapter as BtAdapter, Manager as BleManager, Peripheral as BtPeripheral, PeripheralId as BtPeripheralId};
-
-struct BleState {
-    /// 系统里的**全部**蓝牙适配器（`ble_start_scan` 时刷新）。
-    /// 以前只留第一个，导致"插在第二个适配器上的设备永远搜不到"。
-    adapters: Mutex<Vec<BtAdapter>>,
-    scanning: std::sync::atomic::AtomicBool,
-    connected: Mutex<Option<BtPeripheral>>,
-    /// 上次断开时保留的外设对象。
-    /// btleplug 在 DeviceDisconnected 时会把它从适配器表里删掉，若直接丢弃，
-    /// 重连就只能靠重新广播（要等设备恢复广播，常常 1~2 秒都扫不到）。
-    /// WinRT 的 connect() 内部按地址重建连接、不依赖适配器表，所以留着它可秒连。
-    last_peripheral: Mutex<Option<BtPeripheral>>,
-    /// 已连接设备的地址（与 connected 同步维护）。
-    /// 前端切换页面回来时靠它恢复连接态，关闭程序时靠它做主动断开。
-    connected_addr: Mutex<Option<String>>,
-    services: Mutex<Vec<BtService>>,
-    notify_buf: std::sync::Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>,
-    /// 通知缓冲溢出被丢掉的条数。以前只是静默丢最旧的，用户完全不知道丢了数据。
-    notify_dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// 通知循环是否在跑。用 Arc 是为了让循环结束时能自行复位 ——
-    /// 断开会让通知流结束，若不复位则重连后再订阅不会起新循环（收不到通知）。
-    notify_spawned: std::sync::Arc<std::sync::atomic::AtomicBool>,
-}
 
 /// 后端连接超时。比前端 `BLE_CONNECT_TIMEOUT_MS`(15s) 略短，
 /// 这样超时时**后端先报错并清干净**，而不是前端单方面放弃、
@@ -6764,49 +8201,6 @@ fn ble_find_descriptor(services: &[BtService], char_uuid: &str, desc_uuid: &str)
     }
     None
 }
-async fn ble_notify_loop(
-    peripheral: BtPeripheral,
-    buf: std::sync::Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>,
-    dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
-) {
-    use futures::StreamExt;
-    /// 通知缓冲上限：前端每 250ms 轮询取走（drain），正常远到不了这个量。
-    /// 但前端若停止轮询（切到别的页面、或自身异常），通知会在这里无限堆积 ——
-    /// 加上限后丢最旧的，内存不会随设备持续上报而线性增长。
-    /// **丢弃要记账**：静默丢数据会让人以为"设备就没发那么多"。
-    const NOTIFY_BUF_MAX: usize = 2000;
-    if let Ok(mut stream) = peripheral.notifications().await {
-        while let Some(n) = stream.next().await {
-            let hex = ble_hex(&n.value);
-            // 生产端旁路：BLE 通知是"前端轮询取走的单消费者队列"，所以只能在**产生处**复制一份，
-            // 不能去 drain 队列（那会把界面要的数据抢走）。
-            crate::mcp::loghub::hub().push(
-                "ble:rx",
-                crate::mcp::loghub::LEVEL_INFO,
-                crate::mcp::loghub::DIR_RX,
-                &format!("{} · {} = {}", n.service_uuid, n.uuid, hex),
-                n.value.len() as u32,
-            );
-            let item = json!({
-                "uuid": n.uuid.to_string(),
-                "service_uuid": n.service_uuid.to_string(),
-                "value_hex": hex,
-            });
-            {
-                // 锁中毒也照常写（`unwrap_or_else(into_inner)`）：写成 `if let Ok(..)` 会把一次中毒
-                // 变成"静默丢一条**且不计入 dropped**" —— 与"丢弃要记账"的纪律相悖
-                // （2026-09 审计发现；同一函数的其它锁都用了 into_inner）。
-                let mut b = buf.lock().unwrap_or_else(|e| e.into_inner());
-                while b.len() >= NOTIFY_BUF_MAX {
-                    b.pop_front();
-                    dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                b.push_back(item);
-            }
-        }
-    }
-}
-
 /// 取系统里的全部蓝牙适配器，并记进 state 供后续命令（设备列表 / 连接 / RSSI）使用。
 async fn ble_load_adapters(state: &BleState) -> Result<Vec<BtAdapter>, String> {
     let manager = BleManager::new().await.map_err(|e| format!("BLE manager: {e}"))?;
@@ -7338,16 +8732,7 @@ async fn ble_subscribe(state: tauri::State<'_, BleState>, char_uuid: String) -> 
         ble_find_char(&svcs, &char_uuid).ok_or("未找到特征")?
     };
     p.subscribe(&c).await.map_err(|e| format!("subscribe: {e}"))?;
-    let flag = state.notify_spawned.clone();
-    if !flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        let buf = state.notify_buf.clone();
-        let dropped = state.notify_dropped.clone();
-        tauri::async_runtime::spawn(async move {
-            ble_notify_loop(p.clone(), buf, dropped).await;
-            // 通知流结束（断开连接会走到这里）：复位标志，下次订阅才能重新起循环
-            flag.store(false, std::sync::atomic::Ordering::Relaxed);
-        });
-    }
+    ble_spawn_notify_loop(&p, &state);
     Ok(())
 }
 
@@ -7401,6 +8786,8 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
             notify_buf: std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new())),
             notify_dropped: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             notify_spawned: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            ota_ack: OtaAckSink::default(),
+            ota_run: Mutex::new(None),
         })
         .manage(BlePairState { responder: Mutex::new(None) })
         // 这里原来还 manage 过 `BlePeripheralState`（BLE 从机）。该方向已于 2026-09 删除：
@@ -7491,6 +8878,14 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
         ble_subscribe,
             ble_unsubscribe,
             ble_poll_notifications,
+            ota_pick_firmware,
+            ota_inspect_firmware,
+            ota_list_firmwares,
+            // 阶段 1：真传输（分包 / ACK / 重传 / 取消）。写动作只在后端发生 ——
+            // 前端只调这三个命令，本身没有任何 ble_write 调用。
+            ota_start,
+            ota_status,
+            ota_abort,
             ble_cts_decode_value,
             mcp::mcp_status,
             mcp::mcp_set_enabled,
