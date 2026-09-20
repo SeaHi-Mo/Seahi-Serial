@@ -4,10 +4,14 @@
 > NCM 就是该项目里**逻辑执行器**识别节点、以及 MCU 经 **emMCP / UART-MCP** 对外描述自身能力时
 > 用的那份结构 —— 它不新增字段，只是给"MCP 工具描述结构的节点侧用法"一个名字。
 >
-> **归档位置（2026-09）**：已推送到 Memory Hub 知识库 —— `wiki_id = wiki-hvts21ot`，
-> 名称「NCM 节点能力清单（Node Capability Manifest）」，`status = ready`（14 页，由本页素材
-> ingest 生成），`visibility = team`，已 allocate 到 `agt-opv6hie5ru`（该 Agent 下现有两个知识资产：
-> 项目 wiki `wiki-qudd3woh` + 本规范 `wiki-hvts21ot`）。**项目 wiki 那 170 页一页未动。**
+> **归档位置（2026-09）**：已**并入项目 wiki** —— `wiki_id = wiki-qudd3woh`
+> 「下一代开源硬件（塞尔达开源生态 · AiPi-NodeMCU-Hub）」，`visibility = team`，绑 `agt-opv6hie5ru`。
+> 做法：`raw/write` 追加素材页 `09_NCM_节点能力清单.md` → `ingest` → 轮询至 ready；
+> 结果 **页数 170 → 173**（`status = ready`，无丢页）：新增 `concepts/ncm-节点能力清单`（概念页）
+> 与 `sources/09-ncm-节点能力清单`（素材页），并回填进「校验与仿真闭环」「AI 上位机」
+> 「08 当前状态与待办」等既有页（内容与本页 §3–§5 一致）。
+> ⚠️ 并入之前曾单独建过一个 `wiki-hvts21ot`（14 页）做零风险尝试 —— 内容与本页重复，
+> **待清理**（`knowledge/unbind` → `meta/asset/delete` → `wiki/delete`）。
 >
 > **一句话**：NCM 是**「按已固化的 UART-MCP 结构描述节点能力」这件事的名字**。
 > 它**不定义字段、不新增字段、不改字段**，也不含传输与会话 —— 所以它是**用法（profile）**，
