@@ -64,7 +64,7 @@
 | 抽屉 | 设备过滤区 | `#ble-filterBody`（display 切换） | `toggleBleFilter` 8084 | ✅ `filterOpen` |
 | 抽屉 | 广播内容展开体 | `.ble-adv-body` | `toggleBleAdv` 8485 | ✅ `advOpen` |
 | 抽屉 | GATT 服务特征展开 | `.ble-charGroup`（动态插入） | `toggleBleService` 8496 | ✅ `openSvcs` |
-| 模态 | BLE 写入弹窗 | `#bleWriteModal.show` | `openBleWriteModal` 7227 / `closeBleWriteModal` 7291 | ❌ |
+| 侧栏 | BLE 写入（发送）面板 | `#bleWritePanel.show` + `.ble-right.write-open` | `openBleWritePanel` / `closeBleWritePanel`（都走 `showBleWritePanel`，两个类一起切） | ❌ |
 | 模态 | BLE 配对弹窗 | `#blePairModal.show` | `showBlePairDialog` 7326 / `submitBlePair` 7350 | ❌ |
 | 模态 | WSL 提权授权窗 | `#wsl-map-approval-overlay`（运行时建） | `showWslMapApproval` 9975 | ❌ |
 | 模态 | 首次引导 + 导航条 | `#onboarding-overlay.show` + `#onboard-nav` | `showOnboarding` 10473 / `goStep` 10495 / `nextStep` 10572 / `closeOnboarding` 10580 | ✅ 只落 `localStorage.onboarding_done` |
@@ -86,7 +86,7 @@
 | # | 类型 | 选择器 | 用途 | 触发 | 性质 | disabled 条件 |
 |---|---|---|---|---|---|---|
 | G1 | span(div 式) | `#appInfoWrap` | 回主界面（点图标） | `goMain()` 9445 | 改 | 无 |
-| G2 | span | `#addMonitorBtn` | 打开额外监视器／蓝牙页为"开关"语义 | `addMonitor()` 3842 | 副作用（新建面板、可能改窗口宽） | 由各页设 `pointerEvents:none`+`opacity .4`（ADB 页 9414、WSL 未运行 6030） |
+| G2 | span | `#addMonitorBtn` | 打开额外监视器／蓝牙页为"开关"语义（**开=向右撑开窗口放下右侧监视器，关=同步收回那截宽度**，用户 2026-09 要求） | `addMonitor()` 3842 → 蓝牙页路由到 `toggleBleMonitor()`（撑窗在 `growWindowForBleMon` / 收回在 `shrinkWindowForBleMon`） | 副作用（新建面板、改窗口宽） | 由各页设 `pointerEvents:none`+`opacity .4`（ADB 页 9414、WSL 未运行 6030） |
 | G3 | span | `#wslToggleBtn` | 进/出 WSL 页（`onclick` 被换绑） | `openWslMapping()` / `restoreMonitorPane()` | 改 | 无 |
 | G4 | span | `#adbToggleBtn` | 进/出 ADB 页（`onclick` 被换绑） | `openAdb()` / `closeAdb()` | 改 | 无 |
 | G5 | span | `#bleToggleBtn` | 进/出蓝牙页（`onclick` 被换绑） | `openBle()` / `closeBle()` | 改 | 无 |
@@ -276,18 +276,54 @@
 
 ### 2.8 模态框 / 引导（静态 DOM）
 
+> ⚠️ **2026-09**：BLE 写入（发送）窗已从"居中模态弹窗"改为**设备详情窗口右侧的侧栏面板**
+> （`#bleWritePanel`，在 `.ble-right` 内、与 `#ble-detail` 并列）—— 它**没有遮罩、不可拖拽缩放**，
+> 所以下面 D1/D9 两条的形态已经变了（原 `#bleWriteModal` 遮罩 + `bleWriteMaskPress/Click` 整套删除）。
+> 让位规则：面板打开时 `.ble-right` 挂 `write-open`（min-width:460px），内嵌的串口监视器
+> `.ble-monArea` 因此自动收窄到 280px（**不关闭、不释放串口**）。
+
 | # | 类型 | 选择器 | 用途 | 触发 | 性质 | disabled |
 |---|---|---|---|---|---|---|
-| D1 | div 遮罩 | `#bleWriteModal` | 点遮罩关闭 | `mousedown`→`bleWriteMaskPress` 7301；`click`→`bleWriteMaskClick` 7304 | 改 | 无 |
-| D2 | textarea | `#bleWriteValue` | 写入内容 | `keydown` 7265：Enter 发送、Esc 关闭 | **副作用**（写 GATT） | 无 |
-| D3 | div.send-as | `#bleWriteModeWrap` | 展开写入方式 | `toggleBleWriteMode()` 7273 | 改 | 由 `openBleWriteModal` 设整行 `display:none`（7256，仅一种模式时） |
-| D4 | div.send-as-opt ×2 | `#bleWriteModeDrop [data-val=write\|write_without_response]` | 写响应/无响应 | `setBleWriteMode(val,this,event)` 7277 | 改 | 无 |
-| D5 | div.send-as | `#bleWriteModal` 内"格式"（无 id） | 展开 文本/HEX | `toggleBleWriteAs()` 7366 | 改 | 无 |
-| D6 | div.send-as-opt ×2 | `#bleWriteAsDrop [data-val=text\|hex]` | 选格式 | `setBleWriteAs(val,this,event)` 7370 | 改 | 无 |
-| D7 | div.sel | `#bleWriteLineEnd` | 行尾 | `toggleSelDrop(this)` | 改 | 无 |
-| D8 | div.sel-opt ×4 | `#bleWriteLineEnd .sel-opt[data-val=crlf\|lf\|cr\|none]` | 行尾取值 | `setSel(this,val,event)` | 改 | 无 |
-| D9 | button.ble-modal-btn | `#bleWriteModal .ble-modal-foot button:nth-child(1)`（无 id） | 关闭 | `closeBleWriteModal()` 7291 | 改 | 无 |
-| D10 | button.ble-modal-btn.primary | `#bleWriteSendBtn` | 发送 | `sendBleWrite()` 7422 | **副作用**（写特征/描述符/从机设值·下发） | 无 |
+| D1 | div 侧栏面板 | `#bleWritePanel`（`.ble-right` 内，**详情右侧**） | 写入（发送）区；无遮罩、不可缩放 | 显示/隐藏走 `showBleWritePanel(on)`（同时切 `.show` 与 `.ble-right.write-open`） | 改 | 默认 `display:none`（靠 `.show` 展开） |
+| D2 | div 卡片列表 | `#bleWriteCards` | **多张发送卡片**（纵向堆叠）。**点一个特征的「写入」图标就新增一张**（同一个目标重复点不重复加）；各张卡片**自带目标**、内容互不复制 | `addBleWriteCard(target)` / `bleWriteCardForTarget(uuid,kind,charUuid)` | 改 | 无 |
+| D3 | div 卡片 | 每张卡片 `.ble-writeCard`，目标存在 `card._target` | 一张发送卡片 ＝ 卡片头（目标 + 关闭） + 输入框 + **两行控件**（同一个 grid）+ 底边拖拽区 | — | 改 | 无 |
+| D4 | span | 卡片头 `.ble-writeCard-target` | **这张卡片自己的**目标特征（短 UUID + 名称；完整值在 `title`） | `bleWriteTargetText(uuid, name)` | 只读 | 无 |
+| D5 | button | 卡片头 `.ble-writeCard-close` | **单独关闭这张卡片**（别的卡片照旧） | `closeBleWriteCard(this)` | 改 | 无 |
+| D6 | textarea | 卡片内 `.ble-writeValue`（**class，不是 id**） | 写入内容 | `keydown`：Enter 发送**本卡片**（面板级事件委托）、Esc 关闭面板 | **副作用**（写 GATT） | 无 |
+| D7 | div.send-as | 卡片内 `.ble-writeModeSel` | 写响应/无响应 | `toggleBleWriteMode(this)` / `setBleWriteMode(val,this,event)` | 改 | 只支持一种写入方式时整行隐藏 |
+| D8 | div.send-as | 卡片内 `.ble-writeAsSel` | 文本/HEX | `toggleBleWriteAs(this)` / `setBleWriteAs(val,this,event)` | 改 | 无 |
+| D9 | div.sel | 卡片内 `.ble-writeLineEnd` | 行尾 CRLF / LF / CR / 无 | `toggleSelDrop(this)` / `setSel(this,val,event)` | 改 | 无 |
+| D10 | button | 每张卡片内的 `.ble-writeCard-send`（**class**） | 发送**这一张**（用 `card._target` 作目标） | `sendBleWriteCard(this)` → `sendBleWriteCore(card)` | **副作用**（写特征/描述符） | **连发期间禁用** |
+| D11 | span（`role="switch"`） | 底行**最左** `.ble-writeRepeatSwitch`（**带 `data-mcp-skip`**），文本「循环发送」 | **循环发送的滑动开关**：拨开＝按中间那个「时间间隔」反复发这张卡片，拨关＝停止。结构照搬顶栏主题开关（`Track` + `Thumb`，`.on` 类切换） | `toggleBleWriteRepeat(this)`；状态由 `setBleWriteRepeatSwitch` 统一切（含 `aria-checked`） | **副作用**（**反复写设备**） | 无 —— 它是唯一的停止入口，锁了就没法停 |
+| D12 | span（组） | 底行**中间** `.ble-writeRepeatInterval` ＝ 「间隔」标签 + `.ble-writeRepeatMs` + 静态 `ms` | **循环发送的间隔**（夹取 20~60000，默认 1000） | 读于 `bleWriteRepeatMsOf` / `toggleBleWriteRepeat` | 改 | **循环期间 disabled**（输入锁定） |
+> ⚠️ **卡片里那两行控件共用一个 grid**（`.ble-writeCard-rows`，3 列 × 2 行）：
+> 第 1 行 = 方式 / 格式 / 行尾，第 2 行 = 循环发送 / 间隔 / 发送。
+> 这是"底行与上一行对齐"的**唯一**做法 —— 两行各自一个 flex 容器时，列边界各按自己的内容算，
+> 无论怎么调（等分 / 自适应 / 整行居中）都对不上（用户 2026-09 截图："都没有和上一行对齐"）。
+> 列宽 `minmax(0,auto)`（按内容、可收缩）；`.ble-writeCard-send` 用 `flex:1` **撑满第 3 列**，
+> 于是它的左缘对齐「行尾」标签、右缘对齐「CRLF」下拉。
+> ⚠️ 「方式」那一格在只支持一种写入方式时用 `visibility:hidden` 隐藏（**不能** `display:none`
+> —— grid 里少一格，后面的格子会整体前移、整张卡片的列全错位）。
+> ⚠️ 间隔输入框 `width:54px` + **关掉 `input[type=number]` 的原生微调箭头**：
+> 46px 加箭头占位会把 `1000` 显示成 `10€`（用户 2026-09 截图："时间显示不全"）。
+| D13 | div | 每张卡片的**底部边框** `.ble-writeCard-resize`（无 icon，贴住卡片下边缘） | **拖动调节这张卡片的高度**（夹取 150~700px；拖过之后输入框 `flex:1` 吸收多余空间） | `startBleWriteCardResize(event, this)`（拖动中挂 `.dragging` 高亮） | 改 | 无 |
+| D14 | button | 面板标题栏 `.ble-writePanel-close` | 关闭**整个面板**（顺带停掉所有连发） | `closeBleWritePanel()` | 改 | 无 |
+
+> ⚠️ **「连续发送」必须留在 `MCP_SKIP_NO_TOOL` 里**：它是个**无限循环写设备**的开关，
+> 而 `ui_click` 点得到按钮（卡片的写入图标也是可点的）—— 不挡就是"AI 一句话让设备被反复写"，
+> 且 AI 看不见这个循环、也没有工具能停它。MCP 侧没有、也不给对应工具（要连发应当自己用
+> `ble_write` 控制节奏与停止条件）。
+> ⚠️ **连发的停止路径有四条，漏一条就是"对着设备无限写"**：① 再点一次「停止」；
+> ② 单独关掉这张卡片（摘 DOM 之前先停）；③ 关闭面板（设备断开时会自动关面板）；
+> ④ **切页回来才发现已断开**那条路（`syncBleConnection` 的断开分支**不关面板**，所以自己停）。
+> 另外每一轮都会重新判断"卡片还在不在 DOM / 目标还在不在 / 这一次发送成没成功"——失败即自愈停止。
+> **锁定与解锁必须成对**：解锁写在 `stopBleWriteRepeat` 里，所有停止路径都会经过它。
+
+> ⚠️ **卡片内一律不用 id**：列表里可以同时有多张卡片，id 必然重复 —— 用 `#bleWriteValue` 那种写法
+> 只会命中**第一张**，也就是"改了 A 卡、发出去的是 B 卡"。MCP 的 `ble_write` 因此走
+> `bleWriteActiveCard()`（**最近点开的那张**，不是"最后一张"）做相对查询。
+> ⚠️ 面板标题栏**不再显示目标特征**：一张卡片对应一个特征，标题里只写得下其中一个。
+> 目标印在每张卡片的头上（D4）。
 | D11 | input[text] | `#blePairInput` | 输入配对码（provide 类型） | 无监听（读于 `submitBlePair`） | 改 | provide 之外 `display:none`（7340） |
 | D12 | button.ble-modal-btn | `#blePairModal .ble-modal-foot button:nth-child(1)`（无 id） | 取消配对 | `submitBlePair(false)` 7350 | **副作用**（回传后端） | 无 |
 | D13 | button | `#blePairOk` | 确认配对 | `submitBlePair(true)` | **副作用** | 无 |

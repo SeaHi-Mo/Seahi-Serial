@@ -58,7 +58,10 @@ function initBleMonResize() {
         handle.classList.remove('dragging');
         var finalW = area.offsetWidth;
         area.style.width = '';
-        area.style.flex = '0 0 ' + finalW + 'px';
+        // ⚠️ 必须是 `0 1`（可收缩）而不是 `0 0`（不可收缩）—— 用户 2026-09 要求
+        // 「发送面板打开时，串口监视器自动收窄」。`0 0` 会把 width 钉死，空间不够时
+        // 只能去挤设备详情（服务树被压没）。收缩下限由 CSS 的 min-width:280px 兜住。
+        area.style.flex = '0 1 ' + finalW + 'px';
         _bleMonWidth = finalW;            // 宽度随用户配置保留（下次进入/重启沿用）
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
@@ -190,10 +193,81 @@ function updateBleMonBtn() {
     btn.title = open ? '关闭右侧串口监视器' : '打开右侧串口监视器';
 }
 
-function toggleBleMonitor() {
+/* ===== 「打开右侧监视器」时向右撑开窗口（用户 2026-09 要求）=====
+   为什么要撑：设备详情是 GATT 服务树，被挤窄就没法用；而窗口右边通常本来就是空的。
+   与"监视器自动收窄"的关系：`.ble-monArea` 的 `flex:0 1` 那条规则**留着当兜底** ——
+   屏幕真的排不下、或者撑窗失败时，总得有人让位。正常情况下窗口被撑宽，收窄根本不会触发。
+
+   ⚠️ 坐标系是本功能最容易错的地方：`.ble-monArea` 的宽度是 **CSS 像素**（逻辑），
+   而 `set_window_size` 收的是**物理像素**（后端用 `Size::Physical`，见 main.rs）。
+   150% 缩放下 1 CSS px = 1.5 物理 px —— 拿 380 直接去加物理宽只能撑出 253 CSS px，
+   监视器照样放不下，用户看到的现象是"点了开关、窗口也确实变了，但详情还是被挤"。
+   所以下面一律在 CSS 像素里算，只在最后一步乘 devicePixelRatio。
+
+   ⚠️ 上限取「屏幕可用宽 − 窗口左边距」，不是无脑加：窗口已经接近屏幕宽时增量自然趋近 0
+   （不会把窗口撑到屏幕外），**最大化时必然为 0**（窗口宽 ≈ 可用宽）—— 于是"最大化下点开关"
+   不需要任何特判就安全（`set_size` 对最大化窗口本来也无效）。
+   多显示器下 `screenX` 可能大于主屏宽（`screen.availWidth` 只报主屏），那时**放弃减左边距**：
+   否则会算出负上限，反而把用户的窗口缩成 1047。
+
+   纯函数（便于无头断言）：返回实际可撑开的 CSS 像素数，0 = 不用撑 / 撑不动。 */
+function bleMonWindowGrowDelta(curLogicalW, monLogicalW, availLogicalW, screenX) {
+    var target = curLogicalW + monLogicalW;
+    var max = (typeof availLogicalW === 'number' && availLogicalW > 0) ? availLogicalW : target;
+    if (typeof screenX === 'number' && screenX > 0 && screenX < max) max = max - screenX;
+    max = Math.max(1047, max);          // 与 set_window_size / tauri.conf.json 的最小宽一致
+    target = Math.min(target, max);
+    return Math.max(0, Math.round(target - curLogicalW));
+}
+
+// 本次「打开监视器」实际撑开了多少 CSS 像素（关闭时按这个数收；被夹取时可能小于监视器宽度）
+var _bleMonWinGrow = 0;
+
+function growWindowForBleMon(monLogicalW) {
+    if (_bleMonWinGrow > 0) return;     // 已经撑过（正常路径到不了这里）
+    var dpr = window.devicePixelRatio || 1;
+    invoke('get_window_size').then(function(size) {
+        // 后端 get_window_size 返回 Result<(u32,u32)>，经 serde 序列化为数组 [width, height]
+        var physW = Array.isArray(size) ? size[0] : size.width;
+        var physH = Array.isArray(size) ? size[1] : size.height;
+        var curLog = physW / dpr;
+        var delta = bleMonWindowGrowDelta(curLog, monLogicalW,
+            (window.screen && window.screen.availWidth), window.screenX);
+        if (delta <= 0) {
+            // 撑不动只可能是"窗口已经贴到屏幕可用宽的上限"（含最大化）——
+            // 此时退回"监视器收窄让位"的兜底。写一行日志，免得用户以为开关坏了。
+            logBle('[监视器] 窗口已到屏幕宽度上限，改为收窄让位');
+            return;
+        }
+        _bleMonWinGrow = delta;
+        return invoke('set_window_size', { width: Math.round((curLog + delta) * dpr), height: physH })
+            .catch(function(e) {
+                // 撑失败就当没撑过：否则关掉监视器时会平白把窗口缩一次
+                _bleMonWinGrow = 0;
+                console.warn('[BLE] 撑开窗口失败:', e);
+            });
+    }).catch(function(e) { console.warn('[BLE] 读取窗口大小失败:', e); });
+}
+
+// 关闭监视器：把当初为它撑开的那截宽度收回去。
+// ⚠️ 按 `_bleMonWinGrow`（**实际**撑开量）收，不是按监视器宽度收 —— 被屏幕夹取过时两者不相等。
+// 用户若在这期间手动改过窗口大小，这里也只收掉"当初为它撑出来的那部分"，不会多缩。
+function shrinkWindowForBleMon() {
+    var delta = _bleMonWinGrow;
+    _bleMonWinGrow = 0;
+    if (delta <= 0) return;
+    var dpr = window.devicePixelRatio || 1;
+    invoke('get_window_size').then(function(size) {
+        var physW = Array.isArray(size) ? size[0] : size.width;
+        var physH = Array.isArray(size) ? size[1] : size.height;
+        return invoke('set_window_size', { width: Math.round(physW - delta * dpr), height: physH });
+    }).catch(function(e) { console.warn('[BLE] 收回窗口宽度失败:', e); });
+}
+
+function toggleBleMonitor(fromRestore) {
     var area = document.getElementById('ble-monitorArea');
     if (!area) return;
-    // 已打开 → 再点即关闭：走与窗口右上 ✕ 完全相同的释放路径（含串口释放）
+    // 已打开 → 再点即关闭：走与窗口右上 ✕ 完全相同的释放路径（含串口释放 + 收回窗口宽度）
     if (_bleExtraMon && monitors[_bleExtraMon]) {
         closeMonitor(_bleExtraMon);
         return;
@@ -209,6 +283,9 @@ function toggleBleMonitor() {
         pane.style.minWidth = '0';
         area.appendChild(pane);
     }
+    // 宽度统一按 _bleMonWidth（用户拖过的值）：**撑窗量必须与它一致**，否则撑出来的空间
+    // 和实际占用对不上。（不能拿 area.style.flex 当依据 —— 那可能只是上次拖拽的残留。）
+    area.style.flex = '0 1 ' + _bleMonWidth + 'px';
     area.classList.add('active');
     // 继承主监视器的显示/行为设置，但**不继承端口**：避免与主监视器抢同一个串口
     copyMonitorConfig('main', mid, { skipPort: true });
@@ -216,6 +293,10 @@ function toggleBleMonitor() {
     _bleExtraMon = mid;
     updateBleMonBtn();
     logBle('[监视器] 已在蓝牙页右侧打开串口监视器（端口需自行选择，可用来抓蓝牙设备的串口日志）');
+    // ⚠️ 恢复路径（fromRestore）**不撑窗**：那时窗口宽度已经从 window.json 恢复成上次退出时的值
+    // （上次就是开着监视器退出的，那个值本身就是宽的），再撑一次会变成"每启动一次宽 380"。
+    // 只有用户主动点开关（或 MCP 走 addMonitor → 这里不带参数）才撑。
+    if (!fromRestore) growWindowForBleMon(_bleMonWidth);
     scheduleConfigSave();
 }
 
@@ -295,6 +376,9 @@ function closeMonitor(mid) {
             var bleArea = document.getElementById('ble-monitorArea');
             if (bleArea) bleArea.classList.remove('active');
             updateBleMonBtn();   // 顶栏按钮回到「打开右侧串口监视器」
+            // 关掉内嵌监视器 → 把当初为它撑开的窗口宽度**同步收回**（用户 2026-09 要求）。
+            // 所有关闭路径（顶栏开关 / closeMonitor / MCP）都会经过这里，只写一处。
+            shrinkWindowForBleMon();
         }
         renderWslDeviceList('main'); // 及时刷新 WSL 设备状态点
         scheduleConfigSave();

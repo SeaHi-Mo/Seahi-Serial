@@ -42,7 +42,7 @@
     --font-mono: "Cascadia Code", "JetBrains Mono", "Fira Code", "Consolas", monospace;
 }
 
-.ble-body { flex:1; display:flex; min-height:0; }
+.ble-body { flex:1; display:flex; min-height:0; overflow-x:auto; overflow-y:hidden; }
 .ble-left {
     flex:0 0 288px; min-width:240px; max-width:38%;
     display:flex; flex-direction:column;
@@ -54,8 +54,9 @@
 .ble-left-title { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--text-b); white-space:nowrap; min-width:0; }
 .ble-left-title svg { color:var(--link); }
 .ble-devList { flex:1; min-height:0; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px; }
-.ble-right { flex:1; min-width:0; display:flex; flex-direction:column; }
-.ble-monArea { display:none; flex:0 0 380px; min-width:280px; max-width:46%; overflow:hidden; }
+.ble-right { flex:1; min-width:0; display:flex; flex-direction:row; }
+.ble-right.write-open { min-width:550px; }
+.ble-monArea { display:none; flex:0 1 380px; min-width:280px; max-width:46%; overflow:hidden; }
 .ble-monArea.active { display:flex; }
 .ble-mon-resize { width:5px; cursor:col-resize; background:var(--border);
                   flex-shrink:0; position:relative; z-index:10; }
@@ -107,7 +108,7 @@
                   background:var(--input-bg); color:var(--text-b); font-size:11px; font-family:inherit; cursor:pointer; }
 .ble-direct-btn:hover { border-color:var(--accent-focus); color:var(--accent-focus); }
 .ble-direct-btn:disabled { opacity:.5; cursor:not-allowed; }
-.ble-detail { flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; }
+.ble-detail { flex:1; min-width:260px; display:flex; flex-direction:column; overflow:hidden; }
 .ble-detail-empty { margin:auto; color:var(--text-d); font-size:13px; }
 .ble-detail-head { display:flex; align-items:center; gap:14px; padding:8px 16px; border-bottom:1px solid var(--border); flex-shrink:0; min-height:44px; }
 .ble-detail-name { font-size:15px; font-weight:600; color:var(--text-b); }
@@ -187,7 +188,6 @@
                   background:var(--toolbar-bg); border-bottom:1px solid var(--border); }
 .ble-modal-title { font-size:13px; font-weight:600; color:var(--text); flex-shrink:0; }
 .ble-modal-body { padding:14px; flex:1; min-height:0; display:flex; }
-.ble-modal-row { display:flex; align-items:stretch; gap:8px; flex:1; min-height:0; }
 .ble-pair-modal { width:380px; min-width:320px; resize:none; }
 .ble-pair-dev { font-family:var(--font-mono); font-size:12px; color:var(--text-d); margin-bottom:8px; }
 .ble-pair-text { font-size:13px; color:var(--text); line-height:1.6; }
@@ -254,14 +254,79 @@
                font-size:12px; flex-shrink:0; white-space:nowrap; }
 .ble-ota-btn:disabled { opacity:.45; cursor:default; }
 .ble-ota-btn:disabled:hover { opacity:.45; border-color:transparent; text-decoration:none; }
-.ble-modal-row .ble-write-opts { align-self:flex-start; }
-.ble-write-opts { display:flex; flex-direction:column; gap:6px; flex-shrink:0; }
-.ble-write-row { display:flex; align-items:center; gap:6px; }
+.ble-writePanel { display:none; flex:0 1 340px; min-width:290px;
+                  flex-direction:column; overflow:hidden;
+                  border-left:1px solid var(--border); background:var(--editor-bg); }
+.ble-writePanel.show { display:flex; }
+.ble-writePanel-head { display:flex; align-items:center; gap:8px; padding:8px 12px;
+                       border-bottom:1px solid var(--border); background:var(--toolbar-bg);
+                       flex-shrink:0; min-height:44px; }
+.ble-writePanel-title { font-size:13px; font-weight:600; color:var(--text-b); flex-shrink:0;
+                        white-space:nowrap; }
+.ble-writePanel-close { margin-left:auto; flex-shrink:0; width:22px; height:22px; padding:0;
+                        display:inline-flex; align-items:center; justify-content:center;
+                        border:1px solid transparent; border-radius:4px; background:transparent;
+                        color:var(--text-d); font-size:12px; line-height:1; cursor:pointer; }
+.ble-writePanel-close:hover { color:var(--text); border-color:var(--border-h); }
+.ble-writePanel-body { flex:1; min-height:0; display:flex; flex-direction:column; gap:10px;
+                       padding:12px; overflow-y:auto; }
+.ble-writePanel-body:empty::before { content:'点特征行的「写入」图标：每选一个特征就会在下方新增一张卡片';
+                                     display:block; padding:8px 2px; font-size:12px;
+                                     color:var(--text-d); }
+.ble-writeCard { display:flex; flex-direction:column; gap:8px; padding:10px; flex-shrink:0;
+                 border:1px solid var(--border-h); border-radius:8px; background:var(--input-bg); }
+.ble-writeCard-head { display:flex; align-items:center; gap:6px; min-width:0; }
+.ble-writeCard-target { min-width:0; font-family:var(--font-mono); font-size:11px;
+                        color:var(--text-d); overflow:hidden; text-overflow:ellipsis;
+                        white-space:nowrap; }
+.ble-writeCard-close { margin-left:auto; flex-shrink:0; width:18px; height:18px; padding:0;
+                       display:inline-flex; align-items:center; justify-content:center;
+                       border:1px solid transparent; border-radius:4px; background:transparent;
+                       color:var(--text-d); font-size:11px; line-height:1; cursor:pointer; }
+.ble-writeCard-close:hover { color:var(--accent-red); border-color:var(--border-h); }
+.ble-writeCard .ble-modal-inp { flex:0 0 auto; background:var(--editor-bg); }
+.ble-writeCard-rows { display:grid; align-items:center; gap:8px 10px;
+                      grid-template-columns:minmax(0,auto) minmax(0,auto) minmax(0,auto); }
+.ble-write-row { display:flex; align-items:center; gap:4px; min-width:0; }
 .ble-write-label { font-size:11px; color:var(--text-d); flex-shrink:0; width:22px; text-align:right; }
-.ble-write-opts .send-as,
-.ble-write-opts .sel { width:68px; box-sizing:border-box; justify-content:space-between;
-                       height:24px; padding:0 6px 0 8px;
-                       background:var(--input-bg); border-radius:4px; color:var(--text); }
+.ble-write-row .send-as,
+.ble-write-row .sel { flex:1; min-width:0; box-sizing:border-box; justify-content:space-between;
+                      height:24px; padding:0 6px 0 8px;
+                      background:var(--editor-bg); border-radius:4px; color:var(--text); }
+.ble-writeFootL { display:flex; align-items:center; min-width:0; }
+.ble-writeFootC { display:flex; align-items:center; min-width:0; }
+.ble-writeFootR { display:flex; align-items:center; min-width:0; }
+.ble-writeCard-send { flex:1; }
+.ble-writeRepeatInterval { display:inline-flex; align-items:center; gap:4px; flex-shrink:0; }
+.ble-writeRepeatCaption { flex-shrink:0; font-size:11px; color:var(--text-d); }
+.ble-writeRepeatMs { width:54px; height:28px; box-sizing:border-box; padding:0 4px 0 6px;
+                     background:var(--editor-bg); border:1px solid var(--border); border-radius:6px;
+                     color:var(--text); font-family:var(--font-mono); font-size:12px; outline:none;
+                     -moz-appearance:textfield; appearance:textfield; }
+.ble-writeRepeatMs::-webkit-outer-spin-button,
+.ble-writeRepeatMs::-webkit-inner-spin-button { -webkit-appearance:none; appearance:none; margin:0; }
+.ble-writeRepeatMs:focus { border-color:var(--accent-focus); }
+.ble-writeRepeatUnit { flex-shrink:0; font-size:11px; color:var(--text-d); }
+.ble-writeRepeatSwitch { display:inline-flex; align-items:center; gap:5px; flex-shrink:0;
+                         cursor:pointer; user-select:none; }
+.ble-writeRepeatLabel { font-size:11px; color:var(--text-d); }
+.ble-writeRepeatSwitch.on .ble-writeRepeatLabel { color:var(--text-b); }
+.ble-writeRepeatTrack { position:relative; box-sizing:border-box; width:34px; height:18px;
+                        border-radius:10px; background:var(--editor-bg);
+                        border:1px solid var(--border-h); transition:background .25s; }
+.ble-writeRepeatSwitch.on .ble-writeRepeatTrack { background:var(--accent-focus); border-color:var(--accent-focus); }
+.ble-writeRepeatThumb { position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:50%;
+                        background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.25); transition:left .25s ease; }
+.ble-writeRepeatSwitch.on .ble-writeRepeatThumb { left:18px; }
+.ble-writeCard.repeating .ble-modal-inp,
+.ble-writeCard.repeating .ble-writeRepeatMs { opacity:.6; }
+.ble-writeCard.repeating .send-as,
+.ble-writeCard.repeating .sel { pointer-events:none; opacity:.6; }
+.ble-writeCard-resize { position:relative; flex-shrink:0; height:3px; margin:2px -10px -10px;
+                        border-radius:0 0 7px 7px; background:var(--border); cursor:ns-resize; }
+.ble-writeCard-resize::before { content:''; position:absolute; left:0; right:0; top:-4px; bottom:-4px; }
+.ble-writeCard-resize:hover, .ble-writeCard-resize.dragging { background:var(--split-line); }
+.ble-writeCard.sized .ble-modal-inp { flex:1 1 auto; }
 .ble-modal-inp { flex:1; min-width:0; min-height:64px; box-sizing:border-box;
                  padding:7px 10px; background:var(--input-bg); border:1px solid var(--border); border-radius:6px;
                  color:var(--text); font-family:var(--font-mono); font-size:13px; outline:none;
@@ -303,24 +368,32 @@
 .ble-devList::-webkit-scrollbar,
 .ble-detail-sec::-webkit-scrollbar,
 .ble-modal-inp::-webkit-scrollbar,
+.ble-body::-webkit-scrollbar,
+.ble-writePanel-body::-webkit-scrollbar,
 #paneContainer::-webkit-scrollbar,
 .send-hist::-webkit-scrollbar,
 .term-comp::-webkit-scrollbar { width:10px; height:10px; }
 .ble-devList::-webkit-scrollbar-track,
 .ble-detail-sec::-webkit-scrollbar-track,
 .ble-modal-inp::-webkit-scrollbar-track,
+.ble-body::-webkit-scrollbar-track,
+.ble-writePanel-body::-webkit-scrollbar-track,
 #paneContainer::-webkit-scrollbar-track,
 .send-hist::-webkit-scrollbar-track,
 .term-comp::-webkit-scrollbar-track { background:transparent; }
 .ble-devList::-webkit-scrollbar-corner,
 .ble-detail-sec::-webkit-scrollbar-corner,
 .ble-modal-inp::-webkit-scrollbar-corner,
+.ble-body::-webkit-scrollbar-corner,
+.ble-writePanel-body::-webkit-scrollbar-corner,
 #paneContainer::-webkit-scrollbar-corner,
 .send-hist::-webkit-scrollbar-corner,
 .term-comp::-webkit-scrollbar-corner { background:transparent; }
 .ble-devList::-webkit-scrollbar-thumb,
 .ble-detail-sec::-webkit-scrollbar-thumb,
 .ble-modal-inp::-webkit-scrollbar-thumb,
+.ble-body::-webkit-scrollbar-thumb,
+.ble-writePanel-body::-webkit-scrollbar-thumb,
 #paneContainer::-webkit-scrollbar-thumb,
 .send-hist::-webkit-scrollbar-thumb,
 .term-comp::-webkit-scrollbar-thumb {
@@ -329,6 +402,8 @@
 .ble-devList::-webkit-scrollbar-thumb:hover,
 .ble-detail-sec::-webkit-scrollbar-thumb:hover,
 .ble-modal-inp::-webkit-scrollbar-thumb:hover,
+.ble-body::-webkit-scrollbar-thumb:hover,
+.ble-writePanel-body::-webkit-scrollbar-thumb:hover,
 #paneContainer::-webkit-scrollbar-thumb:hover,
 .send-hist::-webkit-scrollbar-thumb:hover,
 .term-comp::-webkit-scrollbar-thumb:hover { background:rgba(128,134,146,.65); background-clip:content-box; }
@@ -449,8 +524,8 @@ function renderBleDeviceList() {
             '<div class="ble-dev-rssi-bar"><span style="width:' + pct + '%;background:' + rssiColor + '"></span></div>' +
             '<div class="ble-dev-rssi" style="color:' + rssiColor + '">' + (hasRssi ? dev.rssi + ' dBm' : '—') + '</div>';
         card.addEventListener('click', function() {
-            // 切换设备即清空日志与写入窗口：它们只属于「当前设备本次会话」
-            if (dev.address !== _bleSelected) { clearBleLog(); closeBleWriteModal(); }
+            // 切换设备即清空日志与写入面板：它们只属于「当前设备本次会话」
+            if (dev.address !== _bleSelected) { clearBleLog(); closeBleWritePanel(); }
             _bleSelected = dev.address;
             scheduleConfigSave();   // 选中的设备地址随用户配置保留
             renderBleDeviceList();

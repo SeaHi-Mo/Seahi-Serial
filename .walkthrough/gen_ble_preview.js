@@ -414,6 +414,10 @@ console.log('preview ->', out);
     s.startBleNotifyPoll = () => { s._started++; }; s.startBleRssiPoll = () => {};
     s.clearBleLog = () => { s._cleared++; };
     s.logBle = () => {};
+    // syncBleConnection 的**断开分支**现在还要停掉所有连发（用户 2026-09：
+    // "断开连接会自动关闭连续发送"）—— 这条路径不关面板，所以必须自己停。
+    s._repeatsStopped = 0;
+    s.stopAllBleWriteRepeats = () => { s._repeatsStopped++; };
     // refreshBleMtu 是 syncBleConnection 成功分支里的真实依赖：
     // 不打桩的话整条 then 会被 catch 吞掉，下面"启动轮询"的断言就形同虚设
     s.refreshBleMtu = () => { s._mtu++; return Promise.resolve(); };
@@ -428,6 +432,9 @@ console.log('preview ->', out);
   check(Object.keys(s1._bleSubs).length === 0,
     '未连接时清空订阅状态（不再显示「启用」）', JSON.stringify(s1._bleSubs));
   check(s1._cleared === 1, '连接不在时清空日志', String(s1._cleared));
+  check(s1._repeatsStopped === 1,
+    '连接不在时**停掉所有连续发送**（断开自动关闭连发，用户 2026-09 要求）',
+    String(s1._repeatsStopped));
   const s2 = mkSync('AA:BB:CC:DD:EE:01');
   s2.syncBleConnection();
   await new Promise((r) => setTimeout(r, 20));
@@ -436,6 +443,8 @@ console.log('preview ->', out);
   check(Object.keys(s2._bleSubs).length === 1, '连接仍在时保留订阅状态（切页不丢）');
   check(s2._started === 1, '连接仍在时启动通知轮询（成功分支真的走到了）', String(s2._started));
   check(s2._mtu === 1, '连接仍在时回读一次 MTU', String(s2._mtu));
+  check(s2._repeatsStopped === 0, '连接仍在时不动连发（别把用户跑着的连发停掉）',
+    String(s2._repeatsStopped));
   check(s1._started === 0, '未连接时不启动通知轮询');
 
   // ---- 5c) 数据日志：追加 / 清空（切设备、断开时调用 clearBleLog）----
@@ -460,17 +469,20 @@ console.log('preview ->', out);
     'logBleDim：后半段灰显', logEl.innerHTML);
   check(sb3._bleLog[0].text === '[通知] 0x180A Device Information · 0x2A19: 你叫什么名字\\r\\n · E4 BD A0',
     'logBleDim 保证 dim 一定是整条 text 的后缀（复制出来的文本是完整的）', sb3._bleLog[0].text);
-  const srcHasClear = /clearBleLog\(\); closeBleWriteModal\(\); \}/.test(html)
+  const srcHasClear = /clearBleLog\(\); closeBleWritePanel\(\); \}/.test(html)
     && /clearBleLog\(\);\s*\/\/ 断开即清空/.test(html);
   check(srcHasClear, '切设备与断开两处都接上了 clearBleLog');
 
-  // ---- 5d) BLE 写入（发送）弹窗 ----
-  check(/id="bleWriteModal"/.test(html) && /function openBleWriteModal/.test(html)
-    && /function closeBleWriteModal/.test(html), '写入弹窗（HTML + 开关函数）存在');
+  // ---- 5d) BLE 写入（发送）面板：设备详情窗口右侧的侧栏（2026-09 由居中弹窗改来）----
+  check(/id="bleWritePanel"/.test(html) && /function openBleWritePanel/.test(html)
+    && /function closeBleWritePanel/.test(html), '写入面板（HTML + 开关函数）存在');
   check(!/ble-sendInput/.test(html) && !/ble-sendTarget/.test(html),
     '底部发送栏已移除（不再有 ble-sendInput / ble-sendTarget）');
-  check(/if \(inp\) \{ inp\.value = ''; inp\.focus\(\); \}\s*\/\/ 发完一条即清空/.test(html),
-    '发送成功后清空 Value 输入框');
+  check(!/inp\.value = ''; inp\.focus\(\); \}\s*\/\/ 发完一条即清空/.test(html)
+     && !/var onOk = function\(\) \{[\s\S]{0,700}addBleWriteCardAndFocus/.test(html),
+    '发送成功**不再**自动加卡片（用户 2026-09 纠正："不是发送成功才会新加，而是点击新的发送特征就会新增"）');
+  check(/showToast\('发送失败: ' \+ e, 'error'\);[\s\S]{0,140}失败保留输入内容/.test(html),
+    '发送失败保留输入内容（便于修正重发），只有成功才新增卡片');
   check(/showToast\('发送成功：0x' \+ hex, 'success'\)/.test(html)
     && /showToast\('发送失败: ' \+ e, 'error'\)/.test(html), '成功/失败都有 toast 提示');
   check(/logBle\('\[发送\] 0x'/.test(html) && /logBle\('\[发送成功\] 0x'/.test(html)
@@ -661,8 +673,8 @@ console.log('preview ->', out);
   check(sbDesc.formatDescValue('00002901-0000-1000-8000-00805f9b34fb', []) === '0x',
     '空值不抛错（退化为 0x）');
   check(!/BLE_DESC_NAMES/.test(html), '旧的 BLE_DESC_NAMES 已完全被 BLE_DESC_META 取代');
-  check(/invoke\('ble_write_descriptor', \{ charUuid: _bleWriteTarget\.charUuid,/.test(html),
-    '描述符写入走 ble_write_descriptor（不误用 ble_write）');
+  check(/invoke\('ble_write_descriptor', \{ charUuid: tgt\.charUuid,/.test(html),
+    '描述符写入走 ble_write_descriptor（不误用 ble_write），且用**本卡片目标**的 charUuid');
   check(/\.ble-dev-conn \{ flex-shrink:0; margin-left:10px;/.test(html),
     '「已连接」与设备名的间距已加大到 10px');
   // 回归：图标 SVG 只带 viewBox、不自带宽高 —— 必须由 CSS 给出尺寸，否则不可见
@@ -721,7 +733,50 @@ console.log('preview ->', out);
     '监视器区默认隐藏、active 时才显示（不挤压详情面板）');
   check(/if \(blePane && blePane\.style\.display !== 'none' && blePane\._initialized\) \{\s*toggleBleMonitor\(\);/.test(html),
     'addMonitor 在蓝牙页路由到 toggleBleMonitor（开关语义）');
-  check(/function toggleBleMonitor\(\)/.test(html), 'toggleBleMonitor 已实现');
+  check(/function toggleBleMonitor\(fromRestore\)/.test(html),
+    'toggleBleMonitor 已实现（fromRestore=true = 按配置恢复，不撑窗）');
+
+  // ---- 5k) 「打开右侧监视器」向右撑开窗口 / 关闭同步收回（用户 2026-09 要求）----
+  // 为什么值得单开一段：撑窗是**跨坐标系**的行为（CSS 像素 ↔ 物理像素），且撑不动时还得退回落位。
+  // 写错的现象是"窗口确实变大了、但详情照样被挤"或者"高分屏下撑不够"—— 人眼很难判定。
+  check(/function bleMonWindowGrowDelta\(curLogicalW, monLogicalW, availLogicalW, screenX\)/.test(html),
+    '撑窗量抽成纯函数 bleMonWindowGrowDelta（便于无头断言）');
+  {
+    const sbG = { console };
+    vm.createContext(sbG);
+    vm.runInContext(extractFunction('bleMonWindowGrowDelta'), sbG);
+    const d = sbG.bleMonWindowGrowDelta;
+    // 常态：1047 窗口 + 380 监视器，屏幕 1920 → 整段撑开
+    check(d(1047, 380, 1920, 0) === 380, '常态：按监视器宽度整段撑开', String(d(1047, 380, 1920, 0)));
+    // 夹取：屏 1920、窗口左边距 600 → 可用 1320，只撑 273（不把窗口撑出屏幕右边）
+    check(d(1047, 380, 1320, 0) === 273, '夹到屏幕可用宽（窗口不被撑出屏幕右边）', String(d(1047, 380, 1320, 0)));
+    // 最大化：窗口宽 ≈ 可用宽 → 增量 0（于是不需要任何"是否最大化"的特判）
+    check(d(1920, 380, 1920, 0) === 0,
+      '窗口已占满可用宽（最大化）→ 增量为 0，交给 flex 收窄兜底', String(d(1920, 380, 1920, 0)));
+    // ⚠️ 多屏：screenX 可能大于主屏可用宽（availWidth 只报主屏）—— 那时不能减免，
+    // 否则上限算成负数、反而把用户的窗口压到最小
+    check(d(1400, 380, 1920, 2400) === 380,
+      '多屏（screenX 超出主屏宽）→ 不减免，绝不反过来缩窗口', String(d(1400, 380, 1920, 2400)));
+    check(d(1047, 380, undefined, undefined) === 380,
+      '拿不到屏幕信息 → 不夹取（宁可撑出去，也不要误缩）', String(d(1047, 380, undefined, undefined)));
+    check(d(1047, 380, 900, 0) === 0,
+      '可用宽比窗口最小宽还窄 → 不撑（不是把窗口缩了）', String(d(1047, 380, 900, 0)));
+  }
+  // ⚠️ `set_window_size` 收的是**物理像素**（后端 Size::Physical），而 .ble-monArea 的宽度是
+  // CSS 像素：漏掉 × dpr 这步，150% 缩放下只撑出 2/3，监视器还是放不下。
+  check(/invoke\('set_window_size', \{ width: Math\.round\(\(curLog \+ delta\) \* dpr\), height: physH \}\)/.test(html),
+    '撑窗时把 CSS 像素换算成物理像素（× devicePixelRatio）');
+  check(/invoke\('set_window_size', \{ width: Math\.round\(physW - delta \* dpr\), height: physH \}\)/.test(html),
+    '收回时同样按 dpr 换算（两个方向必须对称）');
+  check(/if \(!fromRestore\) growWindowForBleMon\(_bleMonWidth\);/.test(html),
+    '只有用户主动打开才撑窗；配置恢复路径（fromRestore）不撑');
+  check(/toggleBleMonitor\(true\);/.test(html),
+    '启动恢复监视器走 toggleBleMonitor(true)（否则每启动一次就宽 380）');
+  check(/if \(mid === _bleExtraMon\) \{[\s\S]{0,420}shrinkWindowForBleMon\(\);/.test(html),
+    '关闭监视器时收回窗口宽度（所有关闭路径都经过 closeMonitor 这一处）');
+  check(/var delta = _bleMonWinGrow;\s*_bleMonWinGrow = 0;\s*if \(delta <= 0\) return;/.test(html),
+    '收回量用记录的 _bleMonWinGrow（**实际**撑开量），不是监视器宽度 —— 被夹取过时两者不等');
+  check(/if \(_bleMonWinGrow > 0\) return;/.test(html), '重复撑窗有门闩（不会叠加越开越宽）');
   check(/if \(_bleExtraMon && monitors\[_bleExtraMon\]\) \{\s*closeMonitor\(_bleExtraMon\);\s*return;/.test(html),
     '已打开时再点即关闭（走与窗口 ✕ 相同的释放路径）');
   check(!/蓝牙页最多只能打开一个监视器/.test(html),
@@ -755,71 +810,350 @@ console.log('preview ->', out);
   check(!/蓝牙界面不可用/.test(html), '蓝牙页不再禁用「打开额外监视器」按钮');
   check(/var _bleExtraMon = null;/.test(html), '_bleExtraMon 已声明');
 
-  // ---- 5k) 写入弹窗精简（用户要求：删 UUID 副标题 / Value 标签 / 独立提示行）----
-  check(!/bleWriteChar/.test(html), '弹窗不再显示特征 UUID 副标题');
-  check(!/bleWriteHint/.test(html) && !/ble-modal-hint/.test(html), '弹窗不再有独立提示行');
-  check(!/ble-modal-label/.test(html), '弹窗不再有 Value 标签');
+  // ---- 5k) 写入面板与发送卡片（2026-09：居中弹窗 → 详情右侧侧栏；单卡片 → 多卡片）----
+  check(!/bleWriteChar/.test(html), '面板不再显示特征 UUID 副标题');
+  check(!/bleWriteHint/.test(html) && !/ble-modal-hint/.test(html), '面板不再有独立提示行');
+  check(!/ble-modal-label/.test(html), '面板不再有 Value 标签');
   check(!/ble-modal-sub/.test(html), '已清掉随之变成孤儿的 .ble-modal-sub 样式');
-  check(/id="bleWriteModeWrap"/.test(html), 'HEX/文本（写响应/无响应）选择器保留');
-  check(/标题区分两种用途/.test(html), '标题按目标区分特征/描述符（UUID 副标题删除后的信息补偿）');
+  check(/ble-writeModeSel/.test(html), '写响应/无响应选择器保留（现在是每张卡片各一份）');
+  // 标题只区分特征/描述符 —— **目标印在每张卡片自己头上**（列表里各张卡片可以指向不同特征）
   check(/id="bleWriteTitle">写入特征值</.test(html), '标题默认「写入特征值」');
-  check(/bleWriteTitle'\)[\s\S]{0,120}'写入描述符值'/.test(html), '描述符写入时标题变「写入描述符值」');
-  check(/if \(kind === 'desc' && shortUuid\(uuid\) === '2902'\) inp0\.placeholder =/.test(html),
+  check(/bleWriteTitle'\)[\s\S]{0,240}'写入描述符值'/.test(html), '描述符写入时标题变「写入描述符值」');
+  check(!/id="bleWriteTarget"/.test(html) && !/ble-writePanel-uuid/.test(html),
+    '面板标题后面**不再**挂目标特征（一张卡片一个特征，标题里只写一个就是说谎）');
+  // 目标改印在每张卡片头上：短 UUID + 名称，完整值进 title（私有 128 位缩不掉）
+  check(/function bleWriteTargetText\(uuid, name\)/.test(html)
+     && /return name \? \(u \+ ' ' \+ name\) : u;/.test(html),
+    '目标显示文本抽成纯函数 bleWriteTargetText（短 UUID + 名称）');
+  check(/ble-writeCard-target" title="' \+ escapeHtml\(label\)/.test(html),
+    '卡片头的目标带 title（完整值悬停可见）');
+  // ⚠️ 私有 128 位 UUID 有 36 字符：不可收缩就会把卡片头撑破（用户 2026-09 截图实证）
+  check(/\.ble-writeCard-target \{[^}]*min-width:0;[^}]*text-overflow:ellipsis;/.test(html),
+    '卡片目标可收缩 + 省略号（否则 128 位 UUID 溢出卡片）');
+  // **每张卡片单独关闭**（用户 2026-09 要求）
+  check(/class="ble-writeCard-close" onclick="closeBleWriteCard\(this\)"/.test(html),
+    '每张卡片头上有自己的关闭按钮（单独关这一张，别的照旧）');
+  check(/\.ble-writePanel-body:empty::before/.test(html),
+    '最后一张也关掉后给一句引导（不留一块空白）');
+  check(/if \(inp && tgt && tgt\.kind === 'desc'[\s\S]{0,90}shortUuid\(tgt\.uuid\) === '2902'\)/.test(html),
     'placeholder 按目标动态设置（CCCD 给取值提示）');
   check(/支持 \\\\r \\\\n \\\\t 转义，HEX 形如 01 A0 FF/.test(html),
-    '转义/HEX 提示已并入 placeholder');
+    '转义/HEX 提示在 placeholder 里');
   check(/CCCD：0100 开启通知，0200 开启指示，0000 关闭/.test(html), 'CCCD 的取值提示也在 placeholder 里');
-  // 输入框由单行 input 改为多行 textarea：默认更高（可调大小的是弹窗本身，见下）
-  check(/<textarea class="ble-modal-inp" id="bleWriteValue" rows="3"/.test(html),
-    '写入输入框是 textarea 且默认 3 行（比原单行 input 高）');
+  // ⚠️ 输入框由 id 改成 class：多张卡片同时存在时 id 必然重复
+  check(/<textarea class="ble-modal-inp ble-writeValue" rows="3"/.test(html),
+    '写入输入框是 textarea、3 行；且用 **class** 而不是 id');
   check(/\.ble-modal-inp \{[^}]*min-height:64px;/.test(html), '输入框有最小高度');
-  check(/\.ble-modal-inp \{[^}]*resize:none;/.test(html),
-    '输入框自身不可拖动调整（用户要的是整个弹窗可调，不是输入框）');
+  check(/\.ble-modal-inp \{[^}]*resize:none;/.test(html), '输入框自身不可拖动调整');
   check(!/resize:vertical/.test(html), '已移除输入框的 resize:vertical');
-  check(/if \(e\.key === 'Enter' && !e\.shiftKey\) \{ e\.preventDefault\(\); sendBleWrite\(\); \}/.test(html),
-    'Enter 仍发送；Shift+Enter 交给 textarea 插入换行（多行值可用）');
+  check(/if \(e\.key === 'Enter' && !e\.shiftKey\) \{[\s\S]{0,140}sendBleWriteCore\(/.test(html),
+    'Enter 发送**本卡片**；Shift+Enter 交给 textarea 插入换行');
 
-  // ---- 5l) 整个发送弹窗可拖动调整大小 + 去掉多余 ✕ ----
+  // ---- 5k2) 多张发送卡片（用户 2026-09：**点一个新的发送特征就新增一张**，各自独立、不复制）----
+  check(/id="bleWriteCards"/.test(html), '面板里是卡片**列表**容器 #bleWriteCards（不再是单张卡片）');
+  check(!/id="bleWriteValue"/.test(html) && !/id="bleWriteAsDrop"/.test(html)
+     && !/id="bleWriteLineEnd"/.test(html) && !/id="bleWriteSendBtn"/.test(html)
+     && !/id="bleWriteModeRow"/.test(html),
+    '卡片内控件全部去掉了 id（否则多卡片下就是"改 A 卡、发 B 卡"）');
+  check(/function bleWriteCardInnerHtml\(targetLabel\)/.test(html), '卡片结构抽成模板函数');
+  check(/function addBleWriteCard\(target\)/.test(html) && /card\._target = tgt \|\| null;/.test(html),
+    '新建卡片时把目标**存在卡片自己身上**（card._target）—— 多张卡片可以指向不同特征');
+  // ⚠️ 点「写入」= 新增一张卡片（用户 2026-09："点击新的发送特征就会新增"）；
+  // 同一个目标重复点**不重复加**（否则连点两下图标就多出两张一模一样的空卡片）
+  check(/var card = bleWriteCardForTarget\(uuid, kind, charUuid\) \|\| addBleWriteCardForTarget\(_bleWriteTarget\);/.test(html),
+    '点「写入」图标：没有该目标的卡片就新增一张，已有就聚焦那张');
+  check(/function bleWriteCardForTarget\(uuid, kind, charUuid\)/.test(html),
+    '可按目标查已有卡片（避免重复加）');
+  check(!/resetBleWriteCards/.test(html),
+    '旧的"换目标就清空整个列表"已删除（各张卡片各自绑目标，不再需要清空）');
+  // ⚠️ 用户 2026-09 明确"各自独立、**不复制**"：克隆函数必须**不存在**
+  check(!/cloneBleWriteCard/.test(html), '卡片**不复制**上一张的内容与配置（克隆函数已删除）');
+  // ⚠️ 用户 2026-09 要求**删掉**面板底部的「+ 新建卡片」按钮及其功能：
+  // 卡片必须绑定目标特征才能发送，手动加出来的空卡片没有目标、发了也无处可去。
+  // 现在新增卡片的入口**只有一个**：点特征行的「写入」图标。
+  check(!/addBleWriteCardAndFocus/.test(html) && !/ble-writeAddBtn/.test(html)
+     && !/ble-writePanel-foot/.test(html),
+    '「+ 新建卡片」按钮、它的函数、以及那块 footer 已全部删除');
+  check(/function addBleWriteCardForTarget\(target\)/.test(html)
+     && /var card = addBleWriteCard\(target\);/.test(html),
+    '新增卡片只走"按目标新建"这一条路（addBleWriteCardForTarget）');
+  // ⚠️ 用户 2026-09 纠正："不是发送成功才会新加，而是点击新的发送特征就会新增"
+  check(!/var onOk = function\(\) \{[\s\S]{0,700}addBleWriteCard/.test(html),
+    '发送成功**不再**自动加卡片');
+  check(/function focusBleWriteCard\(card\)/.test(html), '焦点/视野交给卡片抽成一个函数（三处共用）');
+  check(/function closeBleWriteCard\(btnEl\)/.test(html)
+     && /btnEl\.closest\('\.ble-writeCard'\)/.test(html),
+    'closeBleWriteCard 按 closest 定位要关的那张卡片');
+  // ⚠️ 关掉的正是"当前"那张时必须清掉指针，否则 bleWriteActiveCard() 会指向一个
+  // 已经不在列表里的幽灵卡片 —— MCP 的 ble_write 会往它里面填值（看起来什么都没发生）
+  check(/var wasFocus = \(card === _bleWriteCardFocus\);[\s\S]{0,140}if \(wasFocus\) _bleWriteCardFocus = null;/.test(html),
+    '关掉"当前"卡片时清掉 _bleWriteCardFocus');
+  check(/function bleWriteActiveCard\(\)/.test(html)
+     && /if \(cards\[i\] === _bleWriteCardFocus\) return cards\[i\];/.test(html),
+    '"当前卡片"优先用**最近点开的那张**（不能简单取最后一张 —— 已有卡片不会重复加）');
+  check(/var tgt = card\._target;/.test(html) && /if \(!tgt \|\| !tgt\.uuid\)/.test(html),
+    '发送时用**这张卡片自己**的目标（卡片没绑特征就如实说清，不拿别的卡片的目标顶上）');
+  check(/function sendBleWriteCard\(btnEl\)/.test(html)
+     && /btnEl\.closest\('\.ble-writeCard'\)/.test(html),
+    '每张卡片自己的「发送」按钮按 closest 定位所属卡片');
+  check(/function setBleWriteCardOpt\(card, kind, val\)/.test(html),
+    '配置写入统一走 setBleWriteCardOpt（data-val + 文案 + 高亮三处一起改，不会只改一半）');
+  check(/function bindBleWritePanelKeys\(\)/.test(html) && /panel\.addEventListener\('keydown'/.test(html),
+    '键盘事件用一次**委托**绑在面板容器上（卡片动态增删，逐个绑必然漏）');
+  check(/bindBleWritePanelKeys\(\);/.test(html), '蓝牙页初始化时就绑好委托');
+  // ⚠️ 换了目标特征必须重建卡片：旧卡片里装的是写给**上一个**特征的数据
+  // ⚠️ 这条契约 2026-09 被用户推翻了：原先"换目标就清空重建整个列表"，
+  // 现在改成"**点一个新的发送特征就新增一张卡片**"（各张卡片自带目标，互不干扰）。
+  // 断言跟着转向：不再是清空，而是"按目标查已有卡片 → 没有才新增"。
+  check(!/sameTarget/.test(html) && !/resetBleWriteCards/.test(html),
+    '旧的"换目标就清空重建"已彻底删除（改为按目标新增卡片）');
+  {
+    const sbC = { console };
+    vm.createContext(sbC);
+    vm.runInContext(extractObject('BLE_WRITE_OPT_KINDS'), sbC);
+    const K = sbC.BLE_WRITE_OPT_KINDS;
+    check(Object.keys(K).length === 3, '正好三种配置（方式 / 格式 / 行尾）', Object.keys(K).join(','));
+    check(K.mode.labels.write === '写响应' && K.mode.labels.write_without_response === '无响应'
+       && K.as.labels.text === '文本' && K.as.labels.hex === 'HEX'
+       && K.lineEnd.labels.crlf === 'CRLF' && K.lineEnd.labels.lf === 'LF'
+       && K.lineEnd.labels.cr === 'CR' && K.lineEnd.labels.none === '无',
+      '每种取值的显示文案齐全（data-val ↔ 下拉里那行字一一对应）');
+    check(K.mode.box === '.ble-writeModeSel' && K.as.box === '.ble-writeAsSel'
+       && K.lineEnd.box === '.ble-writeLineEnd',
+      '三个容器选择器与模板里的一致（写错一个就是配置静默失效）');
+  }
+
+  // ---- 5l) 发送面板的布局契约（2026-09 用户要求：挪到设备详情窗口右侧，且不与串口监视器冲突）----
+  // 这一段是本次改动的**核心守护**：它把"谁该让位"钉死在 CSS 上 —— 光靠人眼看界面证不了，
+  // 而且真出问题时（详情被挤成一条缝）界面看起来只是"有点窄"，不会报任何错。
+  check(/<div class="ble-writePanel" id="bleWritePanel">/.test(html),
+    '发送窗是侧栏面板 #bleWritePanel');
+  check(!/id="bleWriteModal"/.test(html) && !/function bleWriteMaskPress/.test(html),
+    '原居中弹窗那套（#bleWriteModal 遮罩 + 按下点判定）已整块删除，不留两套 UI');
+  // 位置契约：详情 → 面板 → 串口监视器（顺序反了就不再是"详情右侧"）
+  check(html.indexOf('id="ble-detail"') < html.indexOf('id="bleWritePanel"')
+    && html.indexOf('id="bleWritePanel"') < html.indexOf('id="ble-monitorArea"'),
+    'DOM 顺序 = 设备详情 → 发送面板 → 串口监视器（面板确实在详情右侧、监视器左侧）');
+  check(/\.ble-writePanel \{ display:none; flex:0 1 340px; min-width:290px;/.test(html),
+    '面板默认 340px、最小 290px（两行共用的 grid 要这个宽度才不折行）');
+  check(/\.ble-writePanel\.show \{ display:flex; \}/.test(html), '面板靠 .show 类展开');
+  check(/\.ble-detail \{ flex:1; min-width:260px;/.test(html),
+    '设备详情有 260px 保底宽度（用户明确要求"详情保底"）');
+  check(/\.ble-monArea \{ display:none; flex:0 1 380px; min-width:280px;/.test(html),
+    '串口监视器改成**可收缩**（0 1）—— 这是"发送面板打开时它自动让位"的唯一机制');
+  // ⚠️ 少了 .write-open 的 min-width，嵌套的 .ble-right 不会替内层喊话（外层 flex:1 的子容器
+  // 不反映内层最小需求），于是"监视器让位"永远不触发，被挤成一条缝的反而是设备详情。
+  check(/\.ble-right \{ flex:1; min-width:0; display:flex; flex-direction:row; \}/.test(html)
+    && /\.ble-right\.write-open \{ min-width:550px; \}/.test(html),
+    '.write-open 的 min-width = 详情 260 + 面板 290（这两个数必须与上面对齐）');
+  check(/function showBleWritePanel\(on\) \{[\s\S]{0,320}classList\.toggle\('write-open', !!on\)/.test(html),
+    '开关面板时同步挂/摘 .write-open（两个类必须一起变）');
+  check(/function closeBleWritePanel\(\) \{[\s\S]{0,200}showBleWritePanel\(false\);/.test(html),
+    '关闭面板走同一个开关函数（不会漏摘 .write-open）');
+  // ⚠️ 用户 2026-09 选了"面板加宽、但**不撑窗**"：于是"最小窗口 + 监视器也开着"时**必然装不下**，
+  // 兜底只能是 .ble-body 的横向滚动 —— 少了它，被压成一条缝的是设备详情（而且不报任何错）。
+  check((288 + 5 + 260 + 290 + 280 + 5) > 1047,
+    '确认这个取舍：面板 290 + 详情 260 + 监视器 280 在最小窗口 1047 下装不下');
+  check(/\.ble-body \{[^}]*overflow-x:auto/.test(html),
+    '装不下时由 .ble-body 横向滚动兜底（宁可滚动，也不挤设备详情）');
+  // 面板让位靠 CSS 收窄，**绝不 closeMonitor** —— 那会释放串口、丢掉用户的监视器会话
+  check(!/function showBleWritePanel\(on\) \{[\s\S]{0,300}closeMonitor/.test(html),
+    '开关面板绝不关掉串口监视器（只让它收窄，串口与会话都留着）');
+  // 用户拖过监视器宽度之后它仍须可收缩，否则一拖就又把详情挤爆
+  check(/area\.style\.flex = '0 1 ' \+ finalW \+ 'px';/.test(html),
+    '监视器拖拽写回的是 0 1（可收缩），不是 0 0');
+
+  // ---- 5l2) 发送面板里的控件（原弹窗那套控件的 id/类沿用，别丢）----
+  check(/\.ble-modal-grip \{ position:absolute; right:2px; bottom:2px;/.test(html) && /pointer-events:none/.test(html),
+    '右下角手柄提示仍在（OTA / 配对弹窗还在用它）');
+  check(!/ble-modal-close/.test(html), '多余的 ✕ 关闭按钮已删除（面板自带一个 .ble-writePanel-close）');
+  check(/\.ble-writePanel-close \{/.test(html), '侧栏面板自带关闭按钮（没有遮罩可点了，必须留一个明确出口）');
+
+  // ---- 5l3) `.ble-modal` 通用弹窗外观（发送窗自 2026-09 起不再用它，但 OTA / 配对 / MCP 三个仍在用）----
   check(/\.ble-modal \{[^}]*resize:both;/.test(html), '弹窗本体可拖动调整大小（原生 resize:both）');
   check(/\.ble-modal \{[^}]*overflow:hidden;/.test(html), 'resize 需 overflow 非 visible，弹窗已满足');
   check(/\.ble-modal \{[^}]*min-width:320px; min-height:180px;/.test(html), '弹窗有最小尺寸（拖不没）');
   check(/\.ble-modal \{[^}]*max-height:calc\(100vh - 40px\)/.test(html), '弹窗有最大高度（不超出屏幕）');
   check(/\.ble-modal-body \{ padding:14px; flex:1; min-height:0; display:flex; \}/.test(html),
     '内容随窗口伸缩：body 吃掉剩余高度');
-  check(/\.ble-modal-row \{ display:flex; align-items:stretch; gap:8px; flex:1; min-height:0; \}/.test(html),
-    '行也拉伸，输入框填满可用空间');
-  check(/\.ble-modal-row \.ble-write-opts \{ align-self:flex-start; \}/.test(html),
-    '右侧选项列顶部对齐（不随输入框高度拉伸）');
-  check(/\.ble-modal-grip \{ position:absolute; right:2px; bottom:2px;/.test(html) && /pointer-events:none/.test(html),
-    '右下角有手柄提示且不拦截拖动（pointer-events:none，事件交给原生 resize）');
-  check(!/ble-modal-close/.test(html), '多余的 ✕ 关闭按钮已删除（底部已有「关闭」）');  check(/bleWriteMaskPress\(event\)[\s\S]{0,80}bleWriteMaskClick\(event\)/.test(html),
-    '遮罩改为按下点判定：拖弹窗时松手落到遮罩上不会误关');
-  check(/if \(pressedOnMask && e\.target && e\.target\.id === 'bleWriteModal'\) closeBleWriteModal\(\);/.test(html),
-    '只有「按下点就在遮罩上」才关闭弹窗');
 
-  // ---- 5m) 弹窗新增「行尾」选项（与串口监视器一致）----
-  check(/id="bleWriteLineEnd"/.test(html), '弹窗里有行尾下拉 #bleWriteLineEnd');
-  check(html.indexOf('id="bleWriteAsText"') < html.indexOf('id="bleWriteLineEnd"'),
-    '「行尾」位于「文本」格式设置下方（DOM 顺序）');
-  check(/<span class="ble-write-label">行尾<\/span>/.test(html), '行尾控件带「行尾」标签（同串口监视器）');
-  // 三行统一：每行「标签 + 下拉」，标签同款同宽、下拉同款同宽
+  // ---- 5m) 三配置**横向并排**（用户 2026-09 要求）+ 行尾继续沿用串口那套 ----
+  check(/class="sel ble-writeLineEnd"/.test(html), '卡片里有行尾下拉 .ble-writeLineEnd（class 而非 id）');
+  check(/<span class="ble-write-label">行尾<\/span>/.test(html), '行尾控件带「行尾」标签');
   check(/<span class="ble-write-label">方式<\/span>/.test(html)
      && /<span class="ble-write-label">格式<\/span>/.test(html)
      && /<span class="ble-write-label">行尾<\/span>/.test(html),
-    '方式/格式/行尾 三行都有标签（外观统一）');
-  check((html.match(/class="ble-write-row"/g) || []).length === 3, '三行结构一致（.ble-write-row）',
-    String((html.match(/class="ble-write-row"/g) || []).length));
-  check(/\.ble-write-label \{[^}]*width:22px; text-align:right;/.test(html), '标签定宽右对齐 → 三个下拉左边缘对齐');
-  check(/\.ble-write-opts \.send-as,\s*\.ble-write-opts \.sel \{ width:68px;[^}]*background:var\(--input-bg\);/.test(html),
-    '弹窗内 .send-as 与 .sel 用同款盒子与同宽（原先一个是透明无边框、一个是盒子）');
+    '方式/格式/行尾 三个标签都保留（用户 2026-09 明确要标签）');
+  // 注意「方式」那一行是 `class="ble-write-row ble-writeModeRow"`，所以模式**不能带收尾引号**
+  check((html.match(/class="ble-write-row/g) || []).length === 3, '三行结构一致（.ble-write-row）',
+    String((html.match(/class="ble-write-row/g) || []).length));
+  check(/\.ble-write-label \{[^}]*width:22px; text-align:right;/.test(html), '标签定宽右对齐');
+  // ⚠️ 两行控件**共用同一个 grid**（3 列 × 2 行）—— 这是"底行与上一行对齐"的**唯一**做法：
+  // 两行各自 flex 时，列边界靠各自内容算，怎么调（等分 / 自适应 / 整行居中）都对不上
+  // （用户 2026-09 截图："都没有和上一行对齐"）。
+  check(/\.ble-writeCard-rows \{ display:grid; align-items:center; gap:8px 10px;/.test(html)
+     && /grid-template-columns:minmax\(0,auto\) minmax\(0,auto\) minmax\(0,auto\);/.test(html),
+    '两行共用同一个 grid（3 列，列宽 minmax(0,auto) 可按内容收缩）');
+  check(/\.ble-write-row \{ display:flex; align-items:center; gap:4px; min-width:0; \}/.test(html),
+    '每格内部是「标签 + 下拉」（列宽交给 grid，不再各自 flex:1）');
+  check(/\.ble-write-row \.send-as,\s*\.ble-write-row \.sel \{ flex:1; min-width:0;/.test(html),
+    '下拉在格内自适应（原写死 width:68px，面板一收窄就整体溢出）');
+  check(/\.ble-writeCard \{/.test(html) && /\.ble-writeCard-rows \{/.test(html)
+     && /\.ble-writeCard-resize \{/.test(html),
+    '卡片本体、两行 grid、底部边框（高度拖拽区）都有样式');
+
+  // ---- 拖**卡片底部边框**调节高度（用户 2026-09：不是 icon 按钮，就是底部那条边）----
+  check(/class="ble-writeCard-resize" onmousedown="startBleWriteCardResize\(event, this\)"/.test(html),
+    '卡片底边就是拖拽区（模板里是最后一项，不带任何 icon 文字）');
+  check(!/ble-writeCard-grip/.test(html), '旧的 ↕ icon 手柄已删除（用户明确不要 icon 按钮）');
+  // ⚠️ 负 margin 把它顶到卡片真正的下边缘 —— 没有它，这条带子会浮在 padding 里，
+  // 看着是"卡片里多了一条线"，而不是"卡片的下边框"。
+  check(/\.ble-writeCard-resize \{[^}]*margin:2px -10px -10px;/.test(html),
+    '底边拖拽带贴住卡片左右下边缘（负 margin 吃掉 padding）');
+  check(/\.ble-writeCard-resize \{[^}]*cursor:ns-resize;/.test(html),
+    '底边光标 ns-resize（明示上下拖）');
+  // ⚠️ 先是 6px，用户 2026-09 反馈"太粗了"（一条亮色横带太抢眼）→ 3px。
+  // 细了之后中不住，所以热区靠伪元素上下外扩（视觉仍是细边）。
+  check(/\.ble-writeCard-resize \{[^}]*height:3px;/.test(html),
+    '底边只有 3px 粗（用户反馈 6px 太粗）');
+  check(/\.ble-writeCard-resize::before \{[^}]*top:-4px; bottom:-4px;/.test(html),
+    '3px 的细边靠伪元素把**热区**上下外扩 4px（否则拖不中）');
+  check(/\.ble-writeCard-resize:hover, \.ble-writeCard-resize\.dragging \{ background:var\(--split-line\); \}/.test(html)
+     && /edgeEl\.classList\.add\('dragging'\)/.test(html),
+    '悬停/拖动时底边高亮（与分栏手柄同一套观感）');
+  check(/function startBleWriteCardResize\(e, edgeEl\)/.test(html)
+     && /edgeEl\.closest\('\.ble-writeCard'\)/.test(html),
+    '拖拽按 closest 找到所属卡片（改的是**这张卡片**的高度）');
+  check(/card\.style\.height = clampBleWriteCardH\(startH \+ \(ev\.clientY - startY\)\) \+ 'px';/.test(html),
+    '拖动时按鼠标位移改卡片高度，并夹取到上下限');
+  check(/card\.classList\.add\('sized'\)/.test(html)
+     && /\.ble-writeCard\.sized \.ble-modal-inp \{ flex:1 1 auto; \}/.test(html),
+    '拖过高度后输入框吸收多余空间（否则卡片高了、输入框还是 3 行，下面一片空白）');
+
+  // ---- 连续发送（用户 2026-09：放在「发送」左侧，间隔可调，单位 ms）----
+  check(/class="ble-writeRepeatMs" type="number" min="20" max="60000" value="1000"/.test(html),
+    '间隔输入框在（number，带上下限与默认 1000ms）');
+  check(html.indexOf('class="ble-writeRepeatMs"') < html.indexOf('class="ble-modal-btn primary ble-writeCard-send"'),
+    '连续发送的控件都在「发送」按钮**左侧**（DOM 顺序）');
+  check(/class="ble-writeRepeatUnit">ms</.test(html), '间隔输入框旁边标了单位 ms');
+  // ⚠️ 底行必须**左对齐 + 「发送」margin-left:auto**：
+  // 用 justify-content:flex-end 会让整行控件浮在右边、左边缘与上面几行对不齐
+  // （用户 2026-09 截图："控件都没有对齐"）。
+  check(html.indexOf('class="ble-writeFootL"') < html.indexOf('class="ble-writeFootC"')
+     && html.indexOf('class="ble-writeFootC"') < html.indexOf('class="ble-writeFootR"'),
+    '底行是三段式：L(开关) → C(间隔) → R(发送)');
+  // ⚠️ 第 2 行的三格与第 1 行**同处一个 grid**，所以逐列对齐是网格本身保证的。
+  // 但格**内部**还要各自占满：第 3 列尤其明显 —— 只做右对齐时，`发送` 的左边缘
+  // 与上一行「行尾」标签差着 40 多像素（用户 2026-09 截图："要与上一行的控件对齐"）。
+  check(/\.ble-writeFootL \{ display:flex; align-items:center; min-width:0; \}/.test(html)
+     && /\.ble-writeFootC \{ display:flex; align-items:center; min-width:0; \}/.test(html)
+     && /\.ble-writeFootR \{ display:flex; align-items:center; min-width:0; \}/.test(html)
+     && /\.ble-writeCard-send \{ flex:1; \}/.test(html),
+    '「发送」撑满第 3 列（左缘对齐「行尾」标签、右缘对齐「CRLF」下拉）');
+  check(!/\.ble-writeFootR \{[^}]*justify-content:flex-end/.test(html),
+    '第 3 列不再只做右对齐（那样左边缘差 40 多像素）');
+  check(!/\.ble-writeCard-send \{ margin-left:auto; \}/.test(html),
+    '「发送」不用 margin-left:auto（第 3 格已用 justify-content:flex-end 贴右）');
+  // 「间隔」标签 + 「循环发送」文案（用户 2026-09 要求）
+  check(/<span class="ble-writeRepeatCaption">间隔<\/span>/.test(html),
+    '中间那格有「间隔」标签');
+  check(/<span class="ble-writeRepeatLabel">循环发送<\/span>/.test(html),
+    '开关的文本是「循环发送」');
+  check(!/>连续</.test(html), '旧的「连续」文案已改掉');
+  check(!/>时间间隔</.test(html), '「时间间隔」已精简成「间隔」');
+  check(/\.ble-writeRepeatCaption \{[^}]*font-size:11px; color:var\(--text-d\);/.test(html),
+    '「间隔」标签与三配置的标签同款（11px 次要色，一眼是一类东西）');
+  check(html.indexOf('class="ble-writeRepeatSwitch"') < html.indexOf('class="ble-writeRepeatInterval"'),
+    '「连续」文本与开关在最左（在时间间隔之前）');
+  // ⚠️ **组内紧、组间松**：底行 4 个元素、三配置 6 个元素，间距一样的话就是一片（用户 2026-09
+  // 截图："这么凌乱"）。所以「间隔+ms」要包成一个组，三配置的标签↔下拉也要比组↔组更近。
+  check(/\.ble-writeRepeatInterval \{ display:inline-flex; align-items:center; gap:4px; flex-shrink:0; \}/.test(html)
+     && /<span class="ble-writeRepeatInterval">/.test(html),
+    '「间隔 + ms」包成一个视觉组（组内 4px）');
+  check(/\.ble-writeCard-rows \{[^}]*gap:8px 10px;/.test(html)
+     && /\.ble-write-row \{[^}]*gap:4px;/.test(html),
+    '两行 grid 的列距 10px、格内（标签↔下拉）4px（组内紧、组间松）');
+  // ⚠️ `input[type=number]` 的宽度必须按"5 位数 + 内边距"给，并**关掉原生微调箭头**：
+  // 46px + 箭头占位会把 `1000` 显示成 `10€`（用户 2026-09 截图："时间显示不全"）。
+  check(/\.ble-writeRepeatMs \{ width:54px;/.test(html),
+    '间隔输入框够宽（54px，能显示 5 位数 60000）');
+  check(/\.ble-writeRepeatMs::-webkit-inner-spin-button \{ -webkit-appearance:none; appearance:none; margin:0; \}/.test(html)
+     && /\.ble-writeRepeatMs \{[^}]*appearance:textfield;/.test(html),
+    '关掉数字框的原生微调箭头（它白占 ~16px，正是把数字挤出去的那部分）');
+  // ⚠️ 它是个**无限循环写设备**的开关：不加 data-mcp-skip，AI 一句 ui_click 就拨开了
+  check(/class="ble-writeRepeatSwitch" role="switch" aria-checked="false" data-mcp-skip="1"/.test(html),
+    '「连续发送」是滑动开关（role=switch + aria-checked），并带 data-mcp-skip（不能让 ui_click 点到）');
+  check(/\.ble-writeRepeatSwitch\.on \.ble-writeRepeatTrack \{ background:var\(--accent-focus\); border-color:var\(--accent-focus\); \}/.test(html)
+     && /\.ble-writeRepeatSwitch\.on \.ble-writeRepeatThumb \{ left:18px; \}/.test(html),
+    '开关靠 .on 类切换 track 颜色与 thumb 位置');
+  // ⚠️ track 不能抄顶栏主题开关的 `--border`：顶栏底色是 --toolbar-bg，卡片底色是 --input-bg，
+  // 那点对比在卡片里等于没有 —— 用户 2026-09 截图里只剩一个白点、看不出是开关。
+  check(/\.ble-writeRepeatTrack \{[^}]*background:var\(--editor-bg\);/.test(html)
+     && /\.ble-writeRepeatTrack \{[^}]*border:1px solid var\(--border-h\);/.test(html),
+    'track 在卡片底色上看得见（更深的 --editor-bg + 一道边框）');
+  check(/function setBleWriteRepeatSwitch\(card, on\)/.test(html)
+     && /setAttribute\('aria-checked', on \? 'true' : 'false'\)/.test(html),
+    '开与关都走同一个 setter（含 aria-checked —— 只改一半会让读屏/自动化看到错的状态）');
+  check(!/ble-writeRepeatBtn/.test(html), '旧的「连续发送/停止」按钮已删除（用户要的是滑动开关）');
+  check(/ble_write_repeat: '/.test(html),
+    '已在 MCP_SKIP_NO_TOOL 里登记并写明理由（数量对账断言会核）');
+  check(/function clampBleRepeatMs\(v\)/.test(html), '间隔夹取抽成纯函数');
+  check(Number((/var BLE_REPEAT_MS_MIN = (\d+);/.exec(html) || [0, 0])[1]) >= 20,
+    '间隔下限 ≥ 20ms（再小就不是"连续发送"，而是把 BLE 写请求打成洪水）',
+    (/var BLE_REPEAT_MS_MIN = (\d+);/.exec(html) || [0, '?'])[1]);
+  // 连发期间锁输入（用户 2026-09 要求）
+  check(/function setBleWriteCardLocked\(card, locked\)/.test(html)
+     && /inp\.disabled = locked;/.test(html) && /ms\.disabled = locked;/.test(html),
+    '连发期间锁住正文与间隔输入框（disabled = 真锁，不只是变灰）');
+  check(/\.ble-writeCard\.repeating \.send-as,\s*\.ble-writeCard\.repeating \.sel \{ pointer-events:none; opacity:\.6; \}/.test(html),
+    '连发期间三个配置下拉也拦掉（div 不能用 disabled，只能 pointer-events）');
+  check(/setBleWriteCardLocked\(card, true\);/.test(html)
+     && /function stopBleWriteRepeat\(card\) \{[\s\S]{0,400}setBleWriteCardLocked\(card, false\);/.test(html),
+    '开始锁、停止解锁（锁/解锁成对）');
+  // ⚠️ 停止路径**四处都要接上**：漏一处留下的就是"对着设备无限写"的定时器
+  check(/function stopBleWriteRepeat\(card\)/.test(html)
+     && /setBleWriteCardLocked\(card, false\);/.test(html),
+    '「停止」与"解锁"在同一个函数里（任何停止路径都不会留"停了但还锁着"）');
+  check(/stopBleWriteRepeat\(card\);[\s\S]{0,140}var wasFocus/.test(html),
+    '① 单独关掉卡片时先停连发（在摘 DOM 之前）');
+  check(/function closeBleWritePanel\(\) \{[\s\S]{0,200}stopAllBleWriteRepeats\(\);/.test(html),
+    '② 关闭面板时全停');
+  check(/stopAllBleWriteRepeats\(\);[\s\S]{0,200}if \(prevAddr\)/.test(html),
+    '③ 设备断开（切页回来才发现那条路）也停 —— 它不关面板，只靠 ② 会漏');
+  check(/if \(r && r\.ok\) return;[\s\S]{0,200}stopBleWriteRepeat\(card\);/.test(html),
+    '④ 发送失败即自愈停止（并把原因写进日志）');
+  check(/if \(typeof card\.isConnected === 'boolean' && !card\.isConnected\)/.test(html),
+    '每一轮都重新判断卡片是否还在 DOM 里（被关掉的卡片不能继续跑）');
+  // 输入框自身**仍然不可拖**：两个拖拽入口会互相打架（断言见 5k 段的 resize:none）
+  check(/\.ble-modal-inp \{[^}]*resize:none;/.test(html), '输入框自身仍不可拖（只留卡片手柄一个入口）');
+  {
+    const sbH2 = { console };
+    vm.createContext(sbH2);
+    vm.runInContext([
+      /var BLE_WRITE_CARD_MIN_H = \d+;/.exec(html)[0],
+      /var BLE_WRITE_CARD_MAX_H = \d+;/.exec(html)[0],
+      extractFunction('clampBleWriteCardH'),
+    ].join('\n'), sbH2);
+    const c = sbH2.clampBleWriteCardH;
+    check(c(200) === 200, '高度正常值原样通过', String(c(200)));
+    check(c(10) === sbH2.BLE_WRITE_CARD_MIN_H, '拖太矮 → 夹到下限（三配置那行还塞得下）', String(c(10)));
+    check(c(99999) === sbH2.BLE_WRITE_CARD_MAX_H, '拖太高 → 夹到上限（不比面板还高）', String(c(99999)));
+    check(c(NaN) === sbH2.BLE_WRITE_CARD_MIN_H && c(undefined) === sbH2.BLE_WRITE_CARD_MIN_H,
+      '读到无效高度 → 回落下限（NaN 高度会让整张卡片消失）');
+    check(sbH2.BLE_WRITE_CARD_MIN_H >= 150, '下限至少 150px（再矮三配置与按钮就挤成一团）',
+      String(sbH2.BLE_WRITE_CARD_MIN_H));
+  }
+  // ⚠️ 输入框必须与卡片**不同底色**才看得出外框：同色时哪怕写了 border，深色主题下也只是
+  // 一块没有边界的区域（用户 2026-09 截图："卡片的输入框没有外框显示"）。
+  check(/\.ble-writeCard \.ble-modal-inp \{ flex:0 0 auto; background:var\(--editor-bg\); \}/.test(html),
+    '卡片输入框与卡片底色不同（有可见外框）');
   check(!/ble-write-le-label/.test(html), '旧的 .ble-write-le 结构已清理');
-  check(/var wrap = document\.getElementById\('bleWriteModeRow'\);[\s\S]{0,90}modes\.length > 1/.test(html),
-    '单写入方式时隐藏整行（含标签），不留孤立标签');
-  const mLe = html.slice(html.indexOf('id="bleWriteLineEnd"'), html.indexOf('id="bleWriteLineEnd"') + 1000);
+  check(/if \(modeRow\) modeRow\.style\.visibility = \(modes\.length > 1\) \? '' : 'hidden';/.test(html),
+    '单写入方式时隐藏「方式」那一格（必须用 visibility —— display:none 会让 grid 列错位）');
+  const mLe = html.slice(html.indexOf('class="sel ble-writeLineEnd"'),
+                         html.indexOf('class="sel ble-writeLineEnd"') + 1000);
   check(['crlf', 'lf', 'cr', 'none'].every((v) => mLe.indexOf('data-val="' + v + '"') > 0),
     '行尾取值与串口监视器一致：CRLF / LF / CR / 无');
-  check(/\.ble-write-opts \{ display:flex; flex-direction:column;/.test(html),
-    '右侧选项列改为纵向排列（文本下方就是行尾）');
   const sb12 = { console };
   vm.createContext(sb12);
   vm.runInContext(extractFunction('leEscOf'), sb12);
@@ -830,15 +1164,19 @@ console.log('preview ->', out);
     '未取到值时不追加（不会写入垃圾字节）');
   check(/var payload = hexMode \? text : \(text \+ leEscOf\(leVal\)\);/.test(html),
     '发送时按行尾拼接：仅文本模式追加（HEX 不追加，与串口一致）');
-  check(/var leVal = leEl \? \(leEl\.getAttribute\('data-val'\) \|\| 'crlf'\) : 'crlf';/.test(html),
+  check(/var leVal = leBox \? \(leBox\.getAttribute\('data-val'\) \|\| 'crlf'\) : 'crlf';/.test(html),
     '读不到控件时回退 crlf（与串口默认一致）');
   check(/leLog: \(hexMode \|\| leVal === 'none'\) \? '' : ' · 行尾 ' \+ leVal\.toUpperCase\(\)/.test(html),
     '日志里标明追加的行尾');
   check((html.match(/\+ leLog \+/g) || []).length === 2, '特征与描述符两条发送日志都带上行尾信息');
-  // 两种用途（特征 / 描述符）共用同一份弹窗内容解析
-  check(/function bleReadWriteModalInput\(\)/.test(html), '弹窗内容解析已抽成共用函数');
-  check(/var r = bleReadWriteModalInput\(\);/.test(html) && /bleReadWriteModalInput\(\)/.test(html),
-    '主机发送走共用解析');
+  // 两种用途（特征 / 描述符）共用同一份**卡片**内容解析
+  check(/function bleWriteCardInput\(card\)/.test(html), '卡片内容解析抽成共用函数 bleWriteCardInput(card)');
+  check(/var r = bleWriteCardInput\(card\);/.test(html), '发送走共用解析，且解析的是**这张**卡片');
+  check(/var hexMode = !!asBox && asBox\.getAttribute\('data-val'\) === 'hex';/.test(html),
+    '格式从容器 data-val 读（不再看下拉里的那行字 —— 多卡片各有一份）');
+  check(/var modeVal = modeBox \? \(modeBox\.getAttribute\('data-val'\) \|\| 'write'\) : 'write';/.test(html),
+    '写入方式从**这张卡片**读（原来读全局 _bleWriteTarget.mode）');
+  check(!/_bleWriteTarget\.mode\b/.test(html), '全局 mode 已废弃（多卡片下它必然张冠李戴）');
 
   // ---- 5j) 内嵌监视器的宽度拖拽（用户反馈「向左拖动失效」：原来根本没做拖拽）----
   check(/id="ble-monResize"/.test(html) && /title="拖动调节宽度"/.test(html), '监视器区有宽度拖拽手柄');
@@ -850,8 +1188,10 @@ console.log('preview ->', out);
     'initBleMonResize 已实现并在蓝牙页初始化时绑定');
   check(/document\.removeEventListener\('mousemove', onMouseMove\)/.test(html),
     '松手时移除 document 级监听（不泄漏）');
-  check(/area\.style\.flex = '0 0 ' \+ finalW \+ 'px';/.test(html),
-    '松手后宽度转 flex-basis（窗口缩小时仍能自动收窄）');
+  // ⚠️ 必须是 `0 1`：`0 0` 会把宽度钉死，"发送面板打开时监视器让位"就永远不触发，
+  // 被挤成一条缝的会是设备详情（见上面 5l 那一段）
+  check(/area\.style\.flex = '0 1 ' \+ finalW \+ 'px';/.test(html),
+    '松手后写回的是**可收缩**的 flex-basis（0 1 —— 窗口缩小时仍能自动收窄）');
   const sb11 = { console };
   vm.createContext(sb11);
   vm.runInContext(extractFunction('clampBleMonWidth'), sb11);
@@ -967,7 +1307,7 @@ console.log('preview ->', out);
   };
   sb6.stopBleNotifyPoll = () => {};
   sb6.stopBleRssiPoll = () => { sb6._stopped++; };
-  sb6.closeBleWriteModal = () => {};
+  sb6.closeBleWritePanel = () => {};
   sb6.bleOtaSyncTarget = () => {};   // 跨文件（84-ble-ota.js）：断开时要刷新 OTA 弹窗的目标设备
   sb6.showToast = (m, t) => sb6._toasts.push(t);
   sb6.renderBleDeviceList = () => {};
@@ -1310,10 +1650,12 @@ console.log('preview ->', out);
   check(/if \(cfg\.ble\) restoreBleState\(cfg\.ble\);/.test(html), '启动时恢复蓝牙页状态');
   check(/function restoreBleState\(b\) \{[\s\S]{0,400}_bleRestoreMon = b\.monitor \? \{ width: _bleMonWidth, cfg: b\.monitorCfg \|\| null \} : null;/.test(html),
     'restoreBleState 记录监视器意图（DOM 懒加载，不能在此直接开）');
-  check(/if \(_bleRestoreMon\) \{[\s\S]{0,420}toggleBleMonitor\(\);[\s\S]{0,200}applyMonitorConfig\('ble-mon', want\.cfg\);/.test(html),
-    '蓝牙页 DOM 就绪后消费：打开监视器并套用它的设置');
-  check(/if \(area && want\.width\) area\.style\.flex = '0 0 ' \+ want\.width \+ 'px';/.test(html),
-    '恢复内嵌监视器宽度');
+  check(/if \(_bleRestoreMon\) \{[\s\S]{0,420}toggleBleMonitor\(true\);[\s\S]{0,200}applyMonitorConfig\('ble-mon', want\.cfg\);/.test(html),
+    '蓝牙页 DOM 就绪后消费：打开监视器并套用它的设置（恢复路径不撑窗）');
+  // ⚠️ 恢复宽度时也必须是 `0 1`（可收缩）：用 `0 0` 恢复就等于把"让位"能力弄丢了 ——
+  // 发送面板一打开，空间只能从设备详情里扣（见 5l 那一段）
+  check(/if \(area && want\.width\) area\.style\.flex = '0 1 ' \+ want\.width \+ 'px';/.test(html),
+    '恢复内嵌监视器宽度（且保持可收缩 0 1）');
   check(/_bleMonWidth = finalW;[\s\S]{0,400}scheduleConfigSave\(\);/.test(html),
     '拖动结束后记录宽度并保存');
   check(/if \(filterInp\) filterInp\.value = _bleFilterText \|\| '';/.test(html)
@@ -1449,10 +1791,10 @@ console.log('preview ->', out);
   check(metaIcons.length > 0 && metaIcons.every((k) => iconKeysAll.indexOf(k) >= 0),
     'BLE_PROP_META / BLE_DESC_META 的图标名都存在', metaIcons.filter((k) => iconKeysAll.indexOf(k) < 0).join(','));
 
-  // 写入弹窗只有一个（描述符与特征共用，不重复造第二个）
-  check(/function openBleWriteModal\(uuid, name, modes, target\)/.test(html)
-    && (html.match(/id="bleWriteModal"/g) || []).length === 1,
-    '描述符与特征共用一个写入弹窗（不重复造一个）');
+  // 写入面板只有一个（描述符与特征共用，不重复造第二个）
+  check(/function openBleWritePanel\(uuid, name, modes, target\)/.test(html)
+    && (html.match(/id="bleWritePanel"/g) || []).length === 1,
+    '描述符与特征共用一个写入面板（不重复造一个）');
 
   // ---------- 10) 主机方向缺口修复（G1/G2/G3/G5/G6/G8） ----------
   console.log('\n【主机方向修复】');
@@ -5240,12 +5582,20 @@ console.log('preview ->', out);
         && /var findBtn = function\(prop0\) \{ return bleFindCharBtn\(wantUuid, prop0\); \};/.test(html)
         && /var wBtn = bleFindCharBtn\(wUuid, 'write'\);/.test(html),
         '读/订阅/写共用同一个"按 UUID 找面板图标"的辅助函数');
-      check(/wBtn\.click\(\);\s*\/\/ 打开写入窗/.test(html)
-        && /return sendBleWriteCore\(\)\.then\(function\(r\)/.test(html),
-        'ble_write 点开面板写入窗并用同一个 sendBleWriteCore 发送（HEX/行尾/写响应复用弹窗那套）');
-      check(/function sendBleWrite\(\) \{ return sendBleWriteCore\(\); \}/.test(html)
-        && /function sendBleWriteCore\(\)/.test(html),
-        '写入逻辑抽成 sendBleWriteCore（按钮与 MCP 共用，MCP 拿得到真实成败）');
+      check(/wBtn\.click\(\);\s*\/\/ 打开写入面板/.test(html)
+        && /return sendBleWriteCore\(card\)\.then\(function\(r\)/.test(html),
+        'ble_write 点开面板并用同一个 sendBleWriteCore(card) 发送（HEX/行尾/写响应复用卡片那套）');
+      // ⚠️ 面板里是多张卡片：用 `#bleWriteValue` 这种 id 只会命中第一张卡片，
+      // 于是就变成"AI 让这张发、实际却是那张发出去"，而且两边各自的单测都还是绿的。
+      check(/var card = \(typeof bleWriteActiveCard === 'function'\) \? bleWriteActiveCard\(\) : null;/.test(html)
+        && /qc\('\.ble-writeAsSel \.send-as-opt/.test(html)
+        && /qc\('\.ble-writeLineEnd \.sel-opt/.test(html)
+        && /qc\('\.ble-writeValue'\)/.test(html),
+        'ble_write 一律在**当前卡片**里做相对查询（不再用全局 id）');
+      check(/function sendBleWriteCard\(btnEl\)/.test(html)
+        && /function sendBleWrite\(\) \{ return sendBleWriteCore\(null\); \}/.test(html)
+        && /function sendBleWriteCore\(card\)/.test(html),
+        '写入逻辑抽成 sendBleWriteCore(card)（卡片按钮与 MCP 共用，MCP 拿得到真实成败）');
       check(/var le = \(payload\.lineEnding === undefined\) \? 'none' : String\(payload\.lineEnding\)\.toLowerCase\(\);/.test(html),
         'ble_write 省略 lineEnding 时按 none（协议帧不该被擅自补 CRLF）');
       check(/return connectBleDirect\(cAddr\)\.then\(function \(r\) \{/.test(html)
@@ -5320,27 +5670,103 @@ console.log('preview ->', out);
         };
         return e;
       };
+      // 一个"下拉容器"（.ble-writeModeSel / .ble-writeAsSel / .ble-writeLineEnd）的假 DOM：
+      // 要能 querySelector(文案节点) 与 querySelectorAll(选项) —— setBleWriteCardOpt 就靠这两样。
+      const mkOptBox = (textSel, optSel, vals) => {
+        const box = mkEl('', { 'data-val': vals[0] });
+        box._text = mkEl('');
+        box._drop = mkEl('');
+        box._opts = vals.map((v) => mkEl('', { 'data-val': v }));
+        // setSel 会走 `sel.querySelector('.sel-drop')` 再 `drop.querySelectorAll('.sel-opt')`
+        box._drop.querySelectorAll = (sel) => (sel === optSel ? box._opts : []);
+        box.querySelector = (sel) => (sel === textSel ? box._text
+          : ((sel === '.sel-drop' || sel === '.send-as-drop') ? box._drop : null));
+        box.querySelectorAll = (sel) => (sel === optSel ? box._opts : []);
+        return box;
+      };
+      // 一张发送卡片的假 DOM。真卡片是 innerHTML 建出来的，这里**不解析 HTML**，
+      // 而是按选择器给出持久 stub —— 好让 setBleWriteCardOpt 的读写
+      // 真的能互相看见（只比对源码字符串，是测不出"复制卡片时漏了一项配置"这类错的）。
+      const mkCard = () => {
+        const card = mkEl('');
+        const value = mkEl('');
+        value._cls['ble-writeValue'] = true;      // bindBleWritePanelKeys 的委托判据
+        value.closest = (sel) => (sel === '.ble-writeCard' ? card : null);
+        const modeBox = mkOptBox('.send-as-text', '.send-as-opt', ['write', 'write_without_response']);
+        const asBox = mkOptBox('.send-as-text', '.send-as-opt', ['text', 'hex']);
+        const leBox = mkOptBox('.sel-text', '.sel-opt', ['crlf', 'lf', 'cr', 'none']);
+        const modeRow = mkEl('');
+        const sendBtn = mkEl('');
+        const headEl = mkEl('');
+        const targetEl = mkEl('');       // 卡片头里的目标特征文字
+        const closeBtn = mkEl('');       // 单独关闭这张卡片
+        closeBtn.closest = (sel) => (sel === '.ble-writeCard' ? card : null);
+        const resizeEl = mkEl('');       // 卡片**底部边框**（高度拖拽区）
+        resizeEl.closest = (sel) => (sel === '.ble-writeCard' ? card : null);
+        const repeatMs = mkEl('');       // 连续发送的间隔输入框
+        const repeatSwitch = mkEl('');   // 连续发送的滑动开关
+        repeatSwitch.closest = (sel) => (sel === '.ble-writeCard' ? card : null);
+        card.isConnected = true;         // 真 DOM 里卡片挂在 document 上；假 DOM 显式给真
+        // 选项元素要能回溯到所属卡片/容器（setBleWriteMode / setBleWriteAs / setSel 都靠 closest）
+        modeBox._opts.forEach((o) => {
+          o.closest = (sel) => (sel === '.ble-writeCard' ? card : (sel === '.ble-writeModeSel' ? modeBox : null));
+        });
+        asBox._opts.forEach((o) => {
+          o.closest = (sel) => (sel === '.ble-writeCard' ? card : (sel === '.ble-writeAsSel' ? asBox : null));
+        });
+        leBox._opts.forEach((o) => {
+          // setSel 问的是 `.sel`（通用类），而不是 `.ble-writeLineEnd`
+          o.closest = (sel) => (((sel === '.sel' || sel === '.ble-writeLineEnd') ? leBox
+                                 : (sel === '.ble-writeCard' ? card : null)));
+        });
+        card._parts = { value, modeBox, asBox, leBox, modeRow, sendBtn, headEl, targetEl, closeBtn, resizeEl, repeatMs, repeatSwitch };
+        card.querySelector = (sel) => {
+          if (sel === '.ble-writeValue') return value;
+          if (sel === '.ble-writeModeSel') return modeBox;
+          if (sel === '.ble-writeAsSel') return asBox;
+          if (sel === '.ble-writeLineEnd') return leBox;
+          if (sel === '.ble-writeModeRow') return modeRow;
+          if (sel === '.ble-writeCard-send') return sendBtn;
+          if (sel === '.ble-writeCard-head') return headEl;
+          if (sel === '.ble-writeCard-target') return targetEl;
+          if (sel === '.ble-writeCard-close') return closeBtn;
+          if (sel === '.ble-writeCard-resize') return resizeEl;
+          if (sel === '.ble-writeRepeatMs') return repeatMs;
+          if (sel === '.ble-writeRepeatSwitch') return repeatSwitch;
+          const m = /\[data-val="([^"]+)"\]/.exec(sel);
+          if (m) {
+            const pool = (sel.indexOf('.sel-opt') >= 0) ? leBox._opts
+              : (sel.indexOf('.ble-writeAsSel') >= 0 ? asBox._opts : modeBox._opts);
+            return pool.filter((o) => o.getAttribute('data-val') === m[1])[0] || null;
+          }
+          return null;
+        };
+        card.querySelectorAll = () => [];
+        return card;
+      };
       const mkEnv = (opts) => {
         opts = opts || {};
         const calls = [];
+        // 卡片列表的假 DOM：appendChild 记账、querySelectorAll 回放、innerHTML='' 清空。
+        // ⚠️ `bleWriteActiveCard` 取的是**最后一张**，所以顺序必须真实（不能只记数量）。
+        const cardList = mkEl('bleWriteCards');
+        cardList._cards = [];
+        cardList.appendChild = (c) => { cardList._cards.push(c); };
+        cardList.querySelectorAll = (sel) => (sel === '.ble-writeCard' ? cardList._cards.slice() : []);
+        Object.defineProperty(cardList, 'innerHTML', {
+          get: () => '', set: (v) => { if (v === '') cardList._cards.length = 0; },
+        });
         const els = {
-          bleWriteTitle: mkEl('bleWriteTitle'), bleWriteValue: mkEl('bleWriteValue'),
-          bleWriteModeRow: mkEl('bleWriteModeRow'), bleWriteModeText: mkEl('bleWriteModeText'),
-          bleWriteAsText: mkEl('bleWriteAsText'), bleWriteLineEnd: mkEl('bleWriteLineEnd'),
-          bleWriteModal: mkEl('bleWriteModal'), bleDirectAddr: mkEl('bleDirectAddr'),
+          bleWriteTitle: mkEl('bleWriteTitle'),
+          // 目标特征位（用户 2026-09 要求「写入特征值」后面跟着特征值）
+          bleWriteTarget: mkEl('bleWriteTarget'),
+          bleWriteCards: cardList,
+          // 面板本体与它的宿主 .ble-right：showBleWritePanel 会同时 toggle 两个类
+          // （.show 让面板可见；.write-open 让 .ble-right 声明 min-width:550px 去挤监视器）
+          bleWritePanel: mkEl('bleWritePanel'), bleRight: mkEl('bleRight'),
+          bleDirectAddr: mkEl('bleDirectAddr'),
           bleDirectBtn: mkEl('bleDirectBtn'),
         };
-        const asOpts = ['text', 'hex'].map(v => mkEl('', { 'data-val': v }));
-        const modeOpts = ['write', 'write_without_response'].map(v => mkEl('', { 'data-val': v }));
-        const leOpts = ['crlf', 'lf', 'cr', 'none'].map(v => mkEl('', { 'data-val': v }));
-        els.bleWriteAsDrop = mkEl('bleWriteAsDrop');
-        els.bleWriteAsDrop.querySelectorAll = () => asOpts;
-        els.bleWriteModeDrop = mkEl('bleWriteModeDrop');
-        els.bleWriteModeDrop.querySelectorAll = () => modeOpts;
-        const leText = mkEl(''); const leDrop = mkEl('');
-        leDrop.querySelectorAll = () => leOpts;
-        leOpts.forEach(o => { o.closest = () => els.bleWriteLineEnd; });
-        els.bleWriteLineEnd.querySelector = (sel) => (sel === '.sel-text' ? leText : (sel === '.sel-drop' ? leDrop : null));
         const icons = opts.noStaticIcons ? [] : defs.map((d) => {
           const b = mkEl('', { onclick: "bleCharAction(this,'" + d.key + "')", 'data-modes': d.modes });
           b.key = d.key;
@@ -5399,11 +5825,27 @@ console.log('preview ->', out);
           else { pane.style.display = 'none'; paneKicks++; }
         };
         const docEls = Object.assign({}, els, { 'ble-pane': pane, bleToggleBtn: toggleBtn });
+        // 连续发送用 setInterval：假 DOM 把定时器**记下来**（id → {fn, ms}），
+        // 好让断言验证"开了几个、间隔多少、停止时清没清"，也能手动跑一轮看是否自愈停止。
+        let repeatSeq = 0;
+        const repeatTimers = new Map();
         const sb = {
           console, TextEncoder, Promise, Uint8Array, parseInt, isNaN, Error,
           setTimeout: () => 0, clearTimeout() {},
+          setInterval: (fn, ms) => { const id = ++repeatSeq; repeatTimers.set(id, { fn: fn, ms: ms }); return id; },
+          clearInterval: (id) => { repeatTimers.delete(id); },
           document: {
             getElementById: (id) => docEls[id] || null,
+            // 真代码里只拿它建"发送卡片"（addBleWriteCard），所以直接给一个卡片 stub
+            // 卡片要能**单独关闭**：`card.remove()` 必须真的从列表里摘掉（记账数组同步减一）
+            createElement: () => {
+              const c = mkCard();
+              c.remove = () => {
+                const i = cardList._cards.indexOf(c);
+                if (i >= 0) cardList._cards.splice(i, 1);
+              };
+              return c;
+            },
             querySelector: (sel) => {
               const m = /data-val="([^"]+)"/.exec(sel);
               if (!m) return null;
@@ -5420,7 +5862,7 @@ console.log('preview ->', out);
           getSelectedBleDev: () => dev,
           // 面板那颗「开始/停止扫描」按钮的函数（真面板里它按 _bleScanning 分流）
           toggleBleScan: () => { sb._bleScanning = !sb._bleScanning; },
-          showToast() {}, logBle() {}, logBleDim() {}, clearBleLog() {}, closeBleWriteModal() {},
+          showToast() {}, logBle() {}, logBleDim() {}, clearBleLog() {}, closeBleWritePanel() {},
           scheduleConfigSave() {}, renderBleDetail() {}, renderBleDeviceList() {}, refreshBleDevices() {
             // 真面板里它去问后端并填 _bleDevices；这里用 opts.scanDevices 仿真"后端扫到了什么"
             if (opts.scanDevices) sb._bleDevices = opts.scanDevices.slice();
@@ -5433,18 +5875,40 @@ console.log('preview ->', out);
           _bleServices: svcTree ? [{ uuid: svcTree.uuid,
                                      characteristics: (svcTree.chars || []).map((ch) => ({ uuid: ch.uuid, properties: ch.props })) }] : [],
           _bleSelected: null, _bleConnAddr: opts.connAddr || null, _bleConnInfo: null,
+          // 面板级目标（openBleWritePanel 会重新赋值；addBleWriteCard 读它决定默认写入方式）
+          _bleWriteTarget: null,
           _bleConnecting: false, _bleMtu: 0, _bleScanning: false, _bleExtraMon: false, _bleScanSecs: 15,
           BLE_CONNECT_TIMEOUT_MS: Number((/var BLE_CONNECT_TIMEOUT_MS = (\d+);/.exec(html) || [0, 0])[1]),
           BLE_PAIR_TIMEOUT_MS: Number((/var BLE_PAIR_TIMEOUT_MS = (\d+);/.exec(html) || [0, 0])[1]),
         };
         sb.calls = calls; sb.els = els; sb.icons = icons; sb.cards = cards; sb.svcRows = svcRows;
+        sb._repeatTimers = repeatTimers;
         sb.pane = pane; sb.paneStats = () => ({ toggles: paneToggles, kicks: paneKicks });
         const names = ['mcpBleOp', 'bleCharActionBtn', 'bleBtnUuid', 'bleDevCardEl', 'bleCharAction',
                        'bleSvcRowEl', 'bleSvcUuidOfChar', 'bleFindCharBtn', 'bleEnsurePaneVisible',
                        'mcpRevealPaneFor', 'bleRefreshDevicesNow', 'mcpBleScanResult',
-                       'openBleWriteModal', 'setBleWriteAs', 'setBleWriteMode', 'setSel',
-                       'sendBleWrite', 'sendBleWriteCore', 'bleSendBytes', 'bleReadWriteModalInput',
+                       'openBleWritePanel', 'setBleWriteAs', 'setBleWriteMode', 'setSel',
+                       // showBleWritePanel 必须一起抽：openBleWritePanel 会调它来展开面板
+                       // （它同时挂 .write-open —— 断言 5l 里守的就是那两个类必须一起变）
+                       // closeBleWritePanel 也要抽：不抽就落到 sb 上那个空 stub，
+                       // "关面板时全停连发"那条断言会变成一个永远为真的假象。
+                       'showBleWritePanel', 'closeBleWritePanel',
+                       // 多卡片：建卡片 / 克隆 / 定位"当前"卡片 / 写配置 —— MCP 的 ble_write
+                       // 与"发送成功后复制一张"都要用（少抽一个就是 ReferenceError 把断言打崩）
+                       'bleWriteCardInnerHtml', 'bleWriteCardList', 'bleWriteActiveCard',
+                       'bleWriteCardForTarget', 'bleWriteTargetText',
+                       'setBleWriteCardOpt', 'addBleWriteCard', 'addBleWriteCardForTarget',
+                       'focusBleWriteCard', 'closeBleWriteCard',
+                       'clampBleWriteCardH', 'startBleWriteCardResize',
+                       // 连续发送：间隔夹取、开/停、锁输入、全停
+                       'clampBleRepeatMs', 'bleWriteRepeatMsOf', 'stopBleWriteRepeat',
+                       'stopAllBleWriteRepeats', 'toggleBleWriteRepeat', 'setBleWriteCardLocked',
+                       'setBleWriteRepeatSwitch',
+                       'sendBleWrite', 'sendBleWriteCore', 'sendBleWriteCard',
+                       'bleSendBytes', 'bleWriteCardInput',
                        'leEscOf', 'bleBytesToHex', 'hexToBytes', 'parseEscapes', 'shortUuid',
+                       // openBleWritePanel 拼目标特征名时会调它
+                       'escapeHtml',
                        'bleConnectTo', 'bleDisconnect', 'connectBleDirect', 'bleMacLooksValid',
                        // 读取分支会顺手调它做 CTS 解读（本段读的是非 CTS 特征 'aaaa'，所以不会真发起）
                        'bleCtsLogDecoded'];
@@ -5452,6 +5916,12 @@ console.log('preview ->', out);
         vm.runInContext([
           extractObject('BLE_PROP_META'), extractObject('BLE_ICONS'), extractObject('BLE_CHAR_NAMES'),
           extractObject('BLE_CTS_CHARS'),
+          // setBleWriteCardOpt 靠它把 kind 映射到选择器与文案
+          extractObject('BLE_WRITE_OPT_KINDS'),
+          // 连续发送的间隔常量：clampBleRepeatMs 直接引用它们（不注入就是 ReferenceError）
+          /var BLE_REPEAT_MS_DEFAULT = \d+;/.exec(html)[0],
+          /var BLE_REPEAT_MS_MIN = \d+;/.exec(html)[0],
+          /var BLE_REPEAT_MS_MAX = \d+;/.exec(html)[0],
         ].join('\n'), sb);
         vm.runInContext(names.map(extractFunction).join('\n'), sb);
         icons.forEach((b) => { b.onclick = () => sb.bleCharAction(b, b.key); });
@@ -5556,7 +6026,7 @@ console.log('preview ->', out);
         'ble_subscribe on:false → 走退订（大小写不同的 UUID 也能对上服务树里的键）',
         JSON.stringify(envS.calls));
 
-      // write：打开的是真写入窗，字节按面板那套解析，写方式取特征支持的那种
+      // write：展开的是真写入面板，字节按面板那套解析，写方式取特征支持的那种
       const envW = mkEnv({ dev: connectedDev });
       const w1 = settled(envW.mcpBleOp({ action: 'write', char: 'AAAA', data: '01A0FF', format: 'hex' }));
       const wCall = envW.calls.filter(c => c.cmd === 'ble_write')[0];
@@ -5564,8 +6034,93 @@ console.log('preview ->', out);
         'ble_write：HEX 内容按面板那套解析成字节（01 A0 FF → [1,160,255]）', JSON.stringify(envW.calls));
       check(wCall.args.charUuid === 'AAAA' && wCall.args.writeType === 'with_response',
         'ble_write：写响应（特征支持两种时的默认）且 uuid 用服务树里的写法', JSON.stringify(wCall.args));
-      check(w1.value.hex === '01A0FF' && w1.value.bytes === 3 && envW.els.bleWriteModal._cls.show === true,
-        'ble_write：返回真实 hex/字节数，写入窗真的打开了（用户看得见这次写）');
+      check(w1.value.hex === '01A0FF' && w1.value.bytes === 3 && envW.els.bleWritePanel._cls.show === true,
+        'ble_write：返回真实 hex/字节数，写入面板真的展开了（用户看得见这次写）');
+      // ⚠️ 两个类必须一起变：少了 .write-open，窄窗口下 .ble-right 不会去挤监视器
+      // （外层 flex:1 的子容器不反映内层最小需求），被压成一条缝的会是设备详情 ——
+      // 界面上只是"详情有点窄"，不报错、极难发现。
+      check(envW.els.bleRight._cls['write-open'] === true,
+        'ble_write：同时挂上 .write-open（面板打开 → 串口监视器让位）');
+      // ⚠️ 用户实测报过"点发送后列表里只剩一张卡片"：下面三条把"旧卡片保留 + 末尾新增一张
+      // 空白卡"变成**可执行**的检查 —— 只比对源码字符串，是看不出运行期被清掉/覆盖的。
+      // ⚠️ 用户 2026-09 纠正："不是发送成功才会新加，而是点击新的发送特征就会新增"。
+      // 所以：新增发生在**点「写入」图标**那一刻；发送成功后卡片数**不变**。
+      check(envW.els.bleWriteCards._cards.length === 1,
+        '发送成功后卡片数**不变**（新增发生在点「写入」图标那一刻）',
+        String(envW.els.bleWriteCards._cards.length));
+      check(envW.els.bleWriteCards._cards[0]._parts.value.value === '01A0FF',
+        '发出去的那张保留原内容（作为一条已发送的指令）',
+        String(envW.els.bleWriteCards._cards[0]._parts.value.value));
+      // 同一个特征再点一次「写入」→ **不重复加卡片**（否则连点两下图标就多两张空卡片）
+      envW.mcpBleOp({ action: 'write', char: 'AAAA', data: '02' });
+      check(envW.els.bleWriteCards._cards.length === 1,
+        '同一个特征再点一次不重复加卡片',
+        String(envW.els.bleWriteCards._cards.length));
+      // 按目标各建一张 → 两张卡片（各自绑到自己的特征）；顺便用它验**单独关闭**
+      const envAdd = mkEnv({ dev: connectedDev });
+      envAdd.addBleWriteCardForTarget({ uuid: 'AAAA', name: '', modes: ['write'], kind: 'char', charUuid: '' });
+      envAdd.addBleWriteCardForTarget({ uuid: 'BBBB', name: '', modes: ['write'], kind: 'char', charUuid: '' });
+      check(envAdd.els.bleWriteCards._cards.length === 2,
+        '两个不同特征各点一次「写入」→ 下方两张卡片',
+        String(envAdd.els.bleWriteCards._cards.length));
+      check(envAdd.els.bleWriteCards._cards[0]._target.uuid === 'AAAA'
+         && envAdd.els.bleWriteCards._cards[1]._target.uuid === 'BBBB',
+        '两张卡片分别绑到各自的特征（不是共用面板级目标）');
+      // **单独关闭一张卡片**（用户 2026-09 要求）：只删那一张，别的照旧
+      envAdd.closeBleWriteCard(envAdd.els.bleWriteCards._cards[0]._parts.closeBtn);
+      check(envAdd.els.bleWriteCards._cards.length === 1
+         && envAdd.els.bleWriteCards._cards[0]._target.uuid === 'BBBB',
+        '单独关闭一张卡片：只删那一张，另一张（含它的目标）照旧',
+        String(envAdd.els.bleWriteCards._cards.length));
+
+      // ---- 连续发送：开 ⇄ 停、锁定、以及停止路径 ----
+      {
+        const envR = mkEnv({ dev: connectedDev });
+        envR.addBleWriteCardForTarget({ uuid: 'AAAA', name: '', modes: ['write'], kind: 'char', charUuid: '' });
+        const cardR = envR.els.bleWriteCards._cards[0];
+        cardR._parts.repeatMs.value = '250';
+        envR.toggleBleWriteRepeat(cardR._parts.repeatSwitch);
+        check(envR._repeatTimers.size === 1,
+          '点「连续发送」→ 建了一个定时器', String(envR._repeatTimers.size));
+        check([...envR._repeatTimers.values()][0].ms === 250,
+          '间隔取输入框里的值（250ms）', String([...envR._repeatTimers.values()][0].ms));
+        check(cardR._parts.repeatSwitch._cls.on === true
+           && cardR._parts.repeatSwitch._attrs['aria-checked'] === 'true',
+          '开关拨到「开」（.on 类 + aria-checked=true 一起变）');
+        // 连发期间锁输入（用户 2026-09 要求）
+        check(cardR._parts.value.disabled === true && cardR._parts.repeatMs.disabled === true
+           && cardR._parts.sendBtn.disabled === true && cardR._cls.repeating === true,
+          '连发期间：正文 / 间隔框 / 发送按钮都锁住，卡片带 .repeating（下拉靠它拦）');
+        envR.toggleBleWriteRepeat(cardR._parts.repeatSwitch);          // 再点一次 = 停
+        check(envR._repeatTimers.size === 0, '再点一次 → 定时器已清', String(envR._repeatTimers.size));
+        check(cardR._parts.value.disabled === false && cardR._cls.repeating !== true
+           && cardR._parts.repeatSwitch._cls.on !== true
+           && cardR._parts.repeatSwitch._attrs['aria-checked'] === 'false',
+          '停止后解锁、开关拨回「关」（不会留"停了但输入框还锁着"或开关还亮着）');
+        // 间隔越界 → 夹取（0ms 会变成无限刷）
+        cardR._parts.repeatMs.value = '0';
+        envR.toggleBleWriteRepeat(cardR._parts.repeatSwitch);
+        check([...envR._repeatTimers.values()][0].ms === 20,
+          '间隔填 0 → 夹到下限 20ms（不是 0ms 无限刷）',
+          String([...envR._repeatTimers.values()][0].ms));
+        // ① 单独关掉卡片 → 连发一起停
+        envR.closeBleWriteCard(cardR._parts.closeBtn);
+        check(envR._repeatTimers.size === 0,
+          '① 单独关掉卡片 → 连发一起停（不留对着空气写的定时器）', String(envR._repeatTimers.size));
+      }
+      {
+        // ② 关闭面板 → 所有卡片的连发全停
+        const envR2 = mkEnv({ dev: connectedDev });
+        envR2.addBleWriteCardForTarget({ uuid: 'AAAA', name: '', modes: ['write'], kind: 'char', charUuid: '' });
+        envR2.addBleWriteCardForTarget({ uuid: 'BBBB', name: '', modes: ['write'], kind: 'char', charUuid: '' });
+        envR2.toggleBleWriteRepeat(envR2.els.bleWriteCards._cards[0]._parts.repeatSwitch);
+        envR2.toggleBleWriteRepeat(envR2.els.bleWriteCards._cards[1]._parts.repeatSwitch);
+        check(envR2._repeatTimers.size === 2, '（前置）两张卡片可以各自跑一个连发',
+          String(envR2._repeatTimers.size));
+        envR2.closeBleWritePanel();
+        check(envR2._repeatTimers.size === 0,
+          '② 关闭面板 → 所有卡片的连发一起停', String(envR2._repeatTimers.size));
+      }
       const envW2 = mkEnv({ dev: connectedDev });
       const w2 = settled(envW2.mcpBleOp({ action: 'write', char: 'AAAA', data: 'AT', writeType: 'write_without_response' }));
       check(envW2.calls.filter(c => c.cmd === 'ble_write')[0].args.writeType === 'without_response'

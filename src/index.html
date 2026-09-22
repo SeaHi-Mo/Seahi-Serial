@@ -154,64 +154,13 @@
 <!-- 蓝牙(BLE) 调试面板（常驻 DOM，display:none 时不参与 flex 布局） -->
 <div class="pane-container" id="ble-pane" style="display:none;"></div>
 
-<!-- BLE 写入（发送）弹窗：点特征行的「写入」图标弹出 -->
-<div class="ble-modal-mask" id="bleWriteModal" onmousedown="bleWriteMaskPress(event)" onclick="bleWriteMaskClick(event)">
-    <div class="ble-modal" onclick="event.stopPropagation()">
-        <div class="ble-modal-head">
-            <span class="ble-modal-title" id="bleWriteTitle">写入特征值</span>
-        </div>
-        <div class="ble-modal-body">
-            <div class="ble-modal-row">
-                <textarea class="ble-modal-inp" id="bleWriteValue" rows="3" placeholder="要写入的值，回车发送；支持 \r \n \t 转义，HEX 形如 01 A0 FF" autocomplete="off" spellcheck="false"></textarea>
-                <!-- 右侧选项列：每行「标签 + 下拉」，三行外观统一（与串口监视器的 .sel 一致） -->
-                <div class="ble-write-opts">
-                    <div class="ble-write-row" id="bleWriteModeRow">
-                        <span class="ble-write-label">方式</span>
-                        <div class="send-as" id="bleWriteModeWrap" onclick="toggleBleWriteMode()">
-                            <span class="send-as-text" id="bleWriteModeText">写响应</span>
-                            <span class="send-as-arrow">&#9660;</span>
-                            <div class="send-as-drop" id="bleWriteModeDrop">
-                                <div class="send-as-opt active" data-val="write" onclick="setBleWriteMode('write',this,event)">写响应</div>
-                                <div class="send-as-opt" data-val="write_without_response" onclick="setBleWriteMode('write_without_response',this,event)">无响应</div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="ble-write-row">
-                        <span class="ble-write-label">格式</span>
-                        <div class="send-as" onclick="toggleBleWriteAs()">
-                            <span class="send-as-text" id="bleWriteAsText">文本</span>
-                            <span class="send-as-arrow">&#9660;</span>
-                            <div class="send-as-drop" id="bleWriteAsDrop">
-                                <div class="send-as-opt active" data-val="text" onclick="setBleWriteAs('text',this,event)">文本</div>
-                                <div class="send-as-opt" data-val="hex" onclick="setBleWriteAs('hex',this,event)">HEX</div>
-                            </div>
-                        </div>
-                    </div>
-                    <!-- 行尾：与串口监视器的行尾选项一致（无 / CR / LF / CRLF），
-                         文本模式下自动追加到内容末尾；HEX 模式不追加（与串口一致） -->
-                    <div class="ble-write-row">
-                        <span class="ble-write-label">行尾</span>
-                        <div class="sel" id="bleWriteLineEnd" data-val="crlf" onclick="toggleSelDrop(this)">
-                            <span class="sel-text">CRLF</span><span class="sel-arrow">&#9660;</span>
-                            <div class="sel-drop">
-                                <div class="sel-opt active" data-val="crlf" onclick="setSel(this,'crlf',event)">CRLF</div>
-                                <div class="sel-opt" data-val="lf" onclick="setSel(this,'lf',event)">LF</div>
-                                <div class="sel-opt" data-val="cr" onclick="setSel(this,'cr',event)">CR</div>
-                                <div class="sel-opt" data-val="none" onclick="setSel(this,'none',event)">无</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <div class="ble-modal-foot">
-            <button class="ble-modal-btn" onclick="closeBleWriteModal()">关闭</button>
-            <button class="ble-modal-btn primary" id="bleWriteSendBtn" onclick="sendBleWrite()">发送</button>
-        </div>
-        <!-- 右下角拖拽提示：拖动由 .ble-modal 的原生 resize:both 处理，本元素只是让位置可见 -->
-        <div class="ble-modal-grip" aria-hidden="true">&#9698;</div>
-    </div>
-</div>
+<!-- ⚠️ BLE 写入（发送）窗**不再是一个居中弹窗**（用户 2026-09 要求：挪到设备详情窗口的右侧）。
+     现在它是蓝牙页里的一块**侧栏面板** `#bleWritePanel`，与 `#ble-detail` 并列在 `.ble-right` 内，
+     由 `js/81-ble.js` 的 `openBle()` 建页面时一并构造（点特征行的「写入」图标才显示）。
+     放在那边而不是这里的原因：它只在蓝牙页里有意义，且必须与详情面板**并列在同一行**上
+     才能拿到"详情右侧"的位置；常驻 DOM 反而会让其它页面多出一块永远不显示的控件。
+     布局约束（别改回去）：详情 `min-width:260px` 保底、面板 `min-width:200px`、
+     内嵌串口监视器 `flex:0 1 380px`（**可收缩**到 280）—— 三者相加恰好是窗口最小宽度 1047px。 -->
 
 <!-- BLE OTA 固件升级弹窗：由设备详情页的「固件升级」按钮打开。
      ⚠️ 阶段 0 只选固件 + 校验 + 读设备版本对比，**不会向设备写入任何数据**（见 js/84-ble-ota.js）。 -->

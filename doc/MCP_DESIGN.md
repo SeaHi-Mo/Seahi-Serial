@@ -1124,6 +1124,7 @@ Channel {
 ### 10.2 点击后的弹窗（★ 用户指定）
 
 复用现有模态框结构（`#bleWriteModal` 那套 `.ble-modal-mask` + `.ble-modal` 的外观与"点遮罩关闭"交互；若其 CSS 足够通用就直接复用类名，否则按同结构新增 `.mcp-modal-mask`/`.mcp-modal`）。
+> ⚠️ **2026-09 追记**：`.ble-modal-mask` + `.ble-modal` 那套类**仍在**（MCP / 配对 / OTA 三个弹窗都在用），但作为参照物的 `#bleWriteModal` 本身已经不在了 —— BLE 写入窗改成了设备详情右侧的侧栏面板 `#bleWritePanel`（无遮罩、无 resize）。这一段是当时的实施记录，保留原样；要抄结构就抄上面那套**类**，别去找那个 id。
 
 **内容随状态变化：**
 
@@ -2690,7 +2691,8 @@ note 给下一页 offset、通用桥分页、offset 的 schema+payload+上限）
 **改动**
 
 - **`ble_write`**：没有绕开界面直接调后端，而是**点开面板那个写入窗、填进去、点「发送」** ——
-  HEX/文本解析、行尾、写响应/无响应全部复用弹窗自己那套（`bleReadWriteModalInput` + `sendBleWriteCore`）。
+  HEX/文本解析、行尾、写响应/无响应全部复用写入面板自己那套（`bleWritePanelInput` + `sendBleWriteCore`；
+  该函数 2026-09 前叫 `bleReadWriteModalInput` —— 写入窗当时是弹窗，后来改成了详情右侧的侧栏面板）。
   顺带把 `sendBleWrite()` 拆成 `sendBleWriteCore()`：**返回真实成败**（`{ok,hex,bytes,writeType}`
   或 `{ok:false,error}`），按钮入口忽略返回值，MCP 靠它给 AI 真实结论 —— 写失败绝不谎报成功。
   默认 `lineEnding=none`（AI 写的多是协议帧，擅自补 CRLF 会写坏数据）；`writeType` 给了但特征不支持时

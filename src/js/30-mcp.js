@@ -362,6 +362,10 @@ var MCP_DANGER_CONTROLS = {
    当前唯一一项：OTA 的「开始升级」（阶段 1 起真的会往设备写固件；MCP 的 `ota_start` 属阶段 3）。 */
 var MCP_SKIP_NO_TOOL = {
     ota_start: '固件写入（OTA 阶段 1）：MCP 侧还没有 ota_start 工具（阶段 3 才做），先只挡不放开',
+    // BLE 写入面板里每张卡片的「连续发送」：它是个**无限循环写设备**的开关。
+    // MCP 侧没有、也不打算给对应工具（AI 要连发应当自己用 ble_write 控制节奏与停止条件，
+    // 而不是点开一个它看不见、也停不掉的循环）—— 但 `ui_click` 点得到按钮，所以必须挡。
+    ble_write_repeat: '连续发送是"无限循环写设备"的开关；MCP 侧没有（也不给）对应工具，只能挡',
 };
 /* 危险动作里**界面上本来就没有可点入口**的那些（显式列出来，免得"漏了一个"和"本来就没有"分不清）：
    - adb_open_shell：设备卡片是 `div` + addEventListener，**不在 MCP_SELECTOR 里**，通用桥本来就点不到；
@@ -397,7 +401,11 @@ function mcpPanelOfNode(el) {
         var id = n.id || '';
         if (id === 'globalBar') return 'global';
         if (id === 'mcpModal') return 'mcp';
-        if (id === 'bleWriteModal' || id === 'blePairModal') return 'dialog';
+        // ⚠️ 这里**不再**列 `bleWriteModal`：BLE 写入（发送）窗自 2026-09 起是蓝牙页里的一块
+        // 侧栏面板（`#bleWritePanel`，在 `#ble-pane` 内），上溯到 `ble-pane` 会归到 'ble' ——
+        // 这正是我们要的：AI 写特征时 `mcpRevealPaneFor('ble')` 会把界面切到蓝牙页，
+        // 用户看得见 AI 在干什么（原先归 'dialog'，反而一个点都不发、界面停在原处）。
+        if (id === 'blePairModal') return 'dialog';
         if (id === 'wsl-map-approval-overlay') return 'dialog';
         if (id === 'ble-pane') return 'ble';
         if (id === 'wsl-pane') return 'wsl';
@@ -1335,16 +1343,21 @@ function mcpBleOp(payload) {
             return { ok: false, invalidParams: true,
                      error: 'writeType 只能是 ' + modes.join(' / ') + '（这个特征支持的写入方式）' };
         }
-        wBtn.click();      // 打开写入窗（与用户点那颗图标同一条路）
-        var q = function(sel) { return document.querySelector ? document.querySelector(sel) : null; };
-        // 弹窗里的三个选择器都用面板自己的 setter，免得下拉高亮与实际值不符
-        setBleWriteAs(fmt, q('#bleWriteAsDrop .send-as-opt[data-val="' + fmt + '"]'), null);
-        var leOpt = q('#bleWriteLineEnd .sel-opt[data-val="' + le + '"]');
+        wBtn.click();      // 打开写入面板（与用户点那颗图标同一条路）
+        // ⚠️ 面板里是**多张卡片**（每张卡片各有一套输入框与三项配置），所以一律在
+        // **当前卡片**（列表最后一张）里做相对查询。拿 `#bleWriteValue` 这种 id 只会命中第一张，
+        // 于是就成了"AI 让这张发、实际却是那张发出去"——而且两边各自的单测都是绿的。
+        var card = (typeof bleWriteActiveCard === 'function') ? bleWriteActiveCard() : null;
+        if (!card) return { ok: false, error: '写入面板里没有可用的发送卡片' };
+        var qc = function(sel) { return card.querySelector ? card.querySelector(sel) : null; };
+        // 三个选择器都用面板自己的 setter，免得下拉高亮与实际值不符
+        setBleWriteAs(fmt, qc('.ble-writeAsSel .send-as-opt[data-val="' + fmt + '"]'), null);
+        var leOpt = qc('.ble-writeLineEnd .sel-opt[data-val="' + le + '"]');
         if (leOpt) setSel(leOpt, le, null);
-        if (wantType) setBleWriteMode(wantType, q('#bleWriteModeDrop .send-as-opt[data-val="' + wantType + '"]'), null);
-        var wInp = document.getElementById('bleWriteValue');
+        if (wantType) setBleWriteMode(wantType, qc('.ble-writeModeSel .send-as-opt[data-val="' + wantType + '"]'), null);
+        var wInp = qc('.ble-writeValue');
         if (wInp) wInp.value = wData;
-        return sendBleWriteCore().then(function(r) {
+        return sendBleWriteCore(card).then(function(r) {
             if (!r || !r.ok) return { ok: false, error: (r && r.error) || '写入失败' };
             return { ok: true, value: {
                 pane: 'ble', uuid: (_bleWriteTarget && _bleWriteTarget.uuid) || wUuid,

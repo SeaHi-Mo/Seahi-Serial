@@ -180,7 +180,7 @@ function renderCharRow(ch) {
     // 两种写入属性合并成一个「发送」图标：
     //   write（带响应）与 write_without_response（无响应）是 BLE 的两个独立属性，
     //   但只差「要不要外设回执」，分开渲染会出现两个一模一样的图标（用户反馈的困惑点）。
-    //   具体用哪种方式，放到写入弹窗里选。
+    //    具体用哪种方式，放到写入面板里选。
     var writeModes = [];
     if (ch.props.indexOf('write') >= 0) writeModes.push('write');
     if (ch.props.indexOf('write_without_response') >= 0) writeModes.push('write_without_response');
@@ -241,8 +241,8 @@ function bleDescAction(ev, charUuid, descUuid, op) {
     var su = shortUuid(descUuid);
     var meta = BLE_DESC_META[su] || { name: '' };
     if (op === 'write') {
-        // 描述符按规范用带响应写：只传一种模式 → 弹窗里不显示「写响应/无响应」选择器
-        openBleWriteModal(descUuid, meta.name || '', ['write'], { kind: 'desc', charUuid: charUuid });
+        // 描述符按规范用带响应写：只传一种模式 → 面板里不显示「写响应/无响应」选择器
+        openBleWritePanel(descUuid, meta.name || '', ['write'], { kind: 'desc', charUuid: charUuid });
         return;
     }
     invoke('ble_read_descriptor', { charUuid: charUuid, descUuid: descUuid }).then(function(bytes) {
@@ -312,10 +312,10 @@ function bleCharAction(el, key) {
             bleCtsLogDecoded(charUuid, arr);
         }).catch(function(e) { console.warn('[BLE] 读取失败:', e); showToast('读取失败: ' + e, 'error'); });
     } else if (prop === 'write') {
-        // 点写入图标 → 弹出写入窗口（不再写死演示值 0x01）
+        // 点写入图标 → 在设备详情右侧展开写入面板（不再写死演示值 0x01）
         // data-modes 给出该特征支持的写入方式（write / write_without_response）
         var modes = ((el && el.getAttribute('data-modes')) || 'write').split(',');
-        openBleWriteModal(charUuid, BLE_CHAR_NAMES[shortUuid(charUuid)] || '', modes);
+        openBleWritePanel(charUuid, BLE_CHAR_NAMES[shortUuid(charUuid)] || '', modes);
     }
 }
 
@@ -506,86 +506,438 @@ function startBleNotifyPoll() {
         }).catch(function() {});
     }, 250);
 }
-// ---- BLE 写入（发送）弹窗 ----
-// 点特征行的「写入」图标 → 弹出该窗口；以前是直接写死 0x01 演示值
-var _bleWriteTarget = null;   // { uuid, name, prop }
+// ---- BLE 写入（发送）面板 ----
+// 点特征行的「写入」图标 → 在**设备详情窗口的右侧**展开这块侧栏（用户 2026-09 要求；
+// 为了不和内嵌的串口监视器抢地方，监视器会让位收窄，见 02-global.css）。
+// 以前是屏幕居中的弹窗，而且直接写死 0x01 演示值。
+//
+// ⚠️ 面板里是**多张发送卡片**（用户 2026-09 要求：每点一次「发送」就在末尾复制一张一样的）。
+// 所以卡片内的一切都用 **class 相对寻址、配置存在 DOM 上**（`card.querySelector(...)`）：
+// 用 id 只会命中第一张卡片 —— 多卡片下那就是"改了 A 卡、发出去的是 B 卡"。
+var _bleWriteTarget = null;   // 面板级目标：{ uuid, name, modes, kind, charUuid }
+
+// 目标特征的显示文本：短 UUID（标准 UUID 出短码、私有 128 位原样）+ 特征名。
+// 纯函数，便于无头断言。
+function bleWriteTargetText(uuid, name) {
+    var u = '0x' + shortUuid(uuid || '');
+    return name ? (u + ' ' + name) : u;
+}
+
+// 一张发送卡片的内部结构（每次新建都用这一份模板）。
+// **卡片头印着它自己的目标特征** —— 列表里各张卡片可以指向不同特征。
+// 三配置（方式/格式/行尾）**横排一行**；行尾沿用串口监视器那套 `.sel`（`setSel` 本来就是相对查询）。
+function bleWriteCardInnerHtml(targetLabel) {
+    var label = targetLabel || '(未选特征)';
+    return '<div class="ble-writeCard-head">' +
+               '<span class="ble-writeCard-target" title="' + escapeHtml(label) + '">' +
+                   escapeHtml(label) + '</span>' +
+               // **每张卡片单独关闭**（用户 2026-09 要求）：只删这一张，别的卡片照旧。
+               // 它同时是"临时说错目标"的补救出口 —— 点错了特征的「写入」图标时不用重建整个面板。
+               '<button class="ble-writeCard-close" onclick="closeBleWriteCard(this)" ' +
+                   'title="关闭这张卡片" aria-label="关闭这张发送卡片">&#10005;</button>' +
+           '</div>' +
+        '<textarea class="ble-modal-inp ble-writeValue" rows="3" ' +
+               'placeholder="要写入的值，回车发送；支持 \\r \\n \\t 转义，HEX 形如 01 A0 FF" ' +
+               'autocomplete="off" spellcheck="false"></textarea>' +
+        // 卡片的**两行控件放进同一个 grid**（3 列 × 2 行）—— 这是"底行与上一行对齐"的
+        // **唯一**做法：两行各自 flex 时，无论等分 / 自适应 / 整行居中，列边界都对不上
+        // （用户 2026-09 截图："都没有和上一行对齐"）。
+        // 第 1 行 = 方式 / 格式 / 行尾，第 2 行 = 循环发送 / 间隔 / 发送。
+        '<div class="ble-writeCard-rows">' +
+            '<div class="ble-write-row ble-writeModeRow">' +
+                '<span class="ble-write-label">方式</span>' +
+                '<div class="send-as ble-writeModeSel" data-val="write" onclick="toggleBleWriteMode(this)">' +
+                    '<span class="send-as-text">写响应</span><span class="send-as-arrow">&#9660;</span>' +
+                    '<div class="send-as-drop">' +
+                        '<div class="send-as-opt active" data-val="write" onclick="setBleWriteMode(\'write\',this,event)">写响应</div>' +
+                        '<div class="send-as-opt" data-val="write_without_response" onclick="setBleWriteMode(\'write_without_response\',this,event)">无响应</div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+            '<div class="ble-write-row">' +
+                '<span class="ble-write-label">格式</span>' +
+                '<div class="send-as ble-writeAsSel" data-val="text" onclick="toggleBleWriteAs(this)">' +
+                    '<span class="send-as-text">文本</span><span class="send-as-arrow">&#9660;</span>' +
+                    '<div class="send-as-drop">' +
+                        '<div class="send-as-opt active" data-val="text" onclick="setBleWriteAs(\'text\',this,event)">文本</div>' +
+                        '<div class="send-as-opt" data-val="hex" onclick="setBleWriteAs(\'hex\',this,event)">HEX</div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+            // 行尾：与串口监视器的行尾选项一致（无 / CR / LF / CRLF），
+            // 文本模式下自动追加到内容末尾；HEX 模式不追加（与串口一致）
+            '<div class="ble-write-row">' +
+                '<span class="ble-write-label">行尾</span>' +
+                '<div class="sel ble-writeLineEnd" data-val="crlf" onclick="toggleSelDrop(this)">' +
+                    '<span class="sel-text">CRLF</span><span class="sel-arrow">&#9660;</span>' +
+                    '<div class="sel-drop">' +
+                        '<div class="sel-opt active" data-val="crlf" onclick="setSel(this,\'crlf\',event)">CRLF</div>' +
+                        '<div class="sel-opt" data-val="lf" onclick="setSel(this,\'lf\',event)">LF</div>' +
+                        '<div class="sel-opt" data-val="cr" onclick="setSel(this,\'cr\',event)">CR</div>' +
+                        '<div class="sel-opt" data-val="none" onclick="setSel(this,\'none\',event)">无</div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+        // 第 2 行（同一个 grid 里）：最左＝循环发送（文本 + 滑动开关）、
+        // 中间＝间隔（「间隔」标签 + 输入框 + ms）、最右＝发送。
+        // 它们与上面三配置**共用同一套列**，所以逐列对齐（见 02-global.css 的 .ble-writeCard-rows）。
+            '<span class="ble-writeFootL">' +
+                // ⚠️ 开关带 `data-mcp-skip`：这是**会反复写设备**的东西，绝不能让 AI 用一句
+                // `ui_click` 就拨开（那是个无限循环）。登记在 30-mcp.js 的 MCP_SKIP_NO_TOOL 里。
+                '<span class="ble-writeRepeatSwitch" role="switch" aria-checked="false" data-mcp-skip="1" ' +
+                    'onclick="toggleBleWriteRepeat(this)" ' +
+                    'title="按右侧的间隔反复发送这张卡片" aria-label="循环发送">' +
+                    '<span class="ble-writeRepeatLabel">循环发送</span>' +
+                    '<span class="ble-writeRepeatTrack"><span class="ble-writeRepeatThumb"></span></span>' +
+                '</span>' +
+            '</span>' +
+            '<span class="ble-writeFootC">' +
+                // 间隔与 "ms" 包成**一个组**：底行元素多，全都吃同一个 gap 就分不出
+                // "谁和谁是一组"（用户 2026-09 截图："这么凌乱"）。
+                '<span class="ble-writeRepeatInterval">' +
+                    '<span class="ble-writeRepeatCaption">间隔</span>' +
+                    '<input class="ble-writeRepeatMs" type="number" min="20" max="60000" value="1000" ' +
+                        'title="循环发送的间隔（毫秒）" aria-label="时间间隔（毫秒）" spellcheck="false">' +
+                    '<span class="ble-writeRepeatUnit">ms</span>' +
+                '</span>' +
+            '</span>' +
+            '<span class="ble-writeFootR">' +
+                '<button class="ble-modal-btn primary ble-writeCard-send" onclick="sendBleWriteCard(this)">发送</button>' +
+            '</span>' +
+        '</div>' +
+        // 卡片**底部边框本身**就是高度拖拽区（用户 2026-09 要求：不要 icon 按钮）。
+        // 它在 DOM 里是最后一项、CSS 上贴着卡片的下边缘（负 margin 吃掉 padding），
+        // 所以看起来就是那条加粗的底边，而不是"卡片里多了一个控件"。
+        '<div class="ble-writeCard-resize" onmousedown="startBleWriteCardResize(event, this)" ' +
+            'title="拖动调节卡片高度" aria-label="拖动调节卡片高度"></div>';
+}
+
+// 三种配置在卡片里的定位与各取值的显示文案（kind → 选择器 + labels）
+var BLE_WRITE_OPT_KINDS = {
+    mode:    { box: '.ble-writeModeSel', opt: '.send-as-opt', text: '.send-as-text',
+               labels: { write: '写响应', write_without_response: '无响应' } },
+    as:      { box: '.ble-writeAsSel',   opt: '.send-as-opt', text: '.send-as-text',
+               labels: { text: '文本', hex: 'HEX' } },
+    lineEnd: { box: '.ble-writeLineEnd', opt: '.sel-opt',     text: '.sel-text',
+               labels: { crlf: 'CRLF', lf: 'LF', cr: 'CR', none: '无' } }
+};
+
+function bleWriteCardList() { return document.getElementById('bleWriteCards'); }
+
+// 面板的「当前」卡片：**最近一次点开/新建的那一张**。
+// MCP 的 ble_write 与回车键都靠它决定"写进哪张卡片"，所以必须是最近操作的那张，
+// 不能简单取"最后一张" —— 点同一个特征的「写入」图标不会新增卡片，那张可能夹在列表中间。
+var _bleWriteCardFocus = null;
+
+function bleWriteActiveCard() {
+    var list = bleWriteCardList();
+    if (!list) return null;
+    var cards = list.querySelectorAll('.ble-writeCard');
+    for (var i = 0; i < cards.length; i++) {
+        if (cards[i] === _bleWriteCardFocus) return cards[i];   // 还在列表里 → 就是它
+    }
+    return cards.length ? cards[cards.length - 1] : null;        // 否则退回到最后一张
+}
+
+// 找**已经绑定这个目标**的卡片：点同一个特征的「写入」图标不重复加卡片
+// （重复加会长出两张一模一样的空卡片，用户会以为点坏了）。
+function bleWriteCardForTarget(uuid, kind, charUuid) {
+    var list = bleWriteCardList();
+    if (!list) return null;
+    var cards = list.querySelectorAll('.ble-writeCard');
+    for (var i = 0; i < cards.length; i++) {
+        var t = cards[i]._target;
+        if (t && t.uuid === uuid && t.kind === kind
+            && (t.charUuid || '') === (charUuid || '')) return cards[i];
+    }
+    return null;
+}
+
+// 统一设置某张卡片的一项配置：data-val（发送时读它）+ 下拉里的文案 + 选项高亮，三处一起改
+function setBleWriteCardOpt(card, kind, val) {
+    var meta = BLE_WRITE_OPT_KINDS[kind];
+    if (!card || !meta) return;
+    var box = card.querySelector(meta.box);
+    if (!box) return;
+    box.setAttribute('data-val', val);
+    var text = box.querySelector(meta.text);
+    if (text) text.textContent = meta.labels[val] || val;
+    box.querySelectorAll(meta.opt).forEach(function(o) {
+        o.classList.toggle('active', o.getAttribute('data-val') === val);
+    });
+}
+
+// 新建一张**空白**卡片并**绑定目标特征**。
+// target 不给就沿用"最近一次点开的那个目标"（底部「+ 新建卡片」走这条）。
+// ⚠️ 目标存在**卡片自己**身上（`card._target`）而不是面板级变量 ——
+// 列表里各张卡片可以指向不同特征，发送时必须用**这张卡片自己的**目标。
+// 用全局变量就是"给 A 卡填了内容、却发到了 B 特征上"。
+// ⚠️ 内容**不复制**上一张（用户 2026-09："各自独立、不复制"）：复制会长出一堆一模一样的卡片。
+function addBleWriteCard(target) {
+    var list = bleWriteCardList();
+    if (!list) return null;
+    var tgt = target || _bleWriteTarget;
+    var modes = (tgt && tgt.modes && tgt.modes.length) ? tgt.modes : ['write'];
+    var card = document.createElement('div');
+    card.className = 'ble-writeCard';
+    card._target = tgt || null;
+    card.innerHTML = bleWriteCardInnerHtml(tgt ? bleWriteTargetText(tgt.uuid, tgt.name) : '');
+    list.appendChild(card);
+    // 「方式」整行（含标签）在该特征只支持一种写入方式时隐藏 —— 免得留一个孤零零的标签。
+    // ⚠️ 用 `visibility:hidden` 而**不是** `display:none`：两行控件是同一个 grid 的格子，
+    // 把一格 display:none 掉，后面的格子会整体前移、整张卡片的列全错位。
+    var modeRow = card.querySelector('.ble-writeModeRow');
+    if (modeRow) modeRow.style.visibility = (modes.length > 1) ? '' : 'hidden';
+    setBleWriteCardOpt(card, 'mode', modes[0]);
+    // placeholder 跟着目标走：CCCD（0x2902）给取值提示，其余给转义/HEX 提示
+    var inp = card.querySelector('.ble-writeValue');
+    if (inp && tgt && tgt.kind === 'desc' && shortUuid(tgt.uuid) === '2902') {
+        inp.placeholder = '要写入的值，回车发送；CCCD：0100 开启通知，0200 开启指示，0000 关闭';
+    }
+    return card;
+}
+
+// ===== 拖动调节**单张卡片**的高度（用户 2026-09 要求）=====
+// 高度上下限（纯函数便于无头断言）：下限保证"三配置那一行 + 发送按钮"还塞得下，
+// 上限避免拖出一条比面板还高的卡片（那样只能靠滚动看，等于白拖）。
+var BLE_WRITE_CARD_MIN_H = 150;
+var BLE_WRITE_CARD_MAX_H = 700;
+
+function clampBleWriteCardH(h) {
+    var n = Number(h);
+    if (!isFinite(n)) return BLE_WRITE_CARD_MIN_H;
+    return Math.max(BLE_WRITE_CARD_MIN_H, Math.min(BLE_WRITE_CARD_MAX_H, Math.round(n)));
+}
+
+// 拖**卡片底部那条边**：mousedown 时记下起始高度与鼠标 Y，move 时按位移改卡片高度。
+// 拖动中给底边挂 `dragging`（高亮）、给卡片挂 `sized`（输入框改成 flex:1 吸收多余空间）。
+function startBleWriteCardResize(e, edgeEl) {
+    if (!e || !edgeEl) return;
+    var card = (edgeEl.closest) ? edgeEl.closest('.ble-writeCard') : null;
+    if (!card) return;
+    e.preventDefault();
+    var startY = e.clientY;
+    var startH = card.offsetHeight || BLE_WRITE_CARD_MIN_H;
+    if (edgeEl.classList) edgeEl.classList.add('dragging');
+    function onMove(ev) {
+        card.style.height = clampBleWriteCardH(startH + (ev.clientY - startY)) + 'px';
+        if (card.classList) card.classList.add('sized');
+    }
+    function onUp() {
+        if (edgeEl.classList) edgeEl.classList.remove('dragging');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+    }
+    document.body.style.cursor = 'ns-resize';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+}
+
+// ===== 连续发送（用户 2026-09 要求：放在卡片「发送」按钮**左侧**，间隔可调，单位 ms）=====
+// 纪律与串口那边的"快速指令循环"同一条：**任何一条停止路径都不能漏** ——
+// 漏一个留下的就是"对着设备无限写"的定时器。停止路径共四处：
+//   ① 用户再点一次「停止」；② 这张卡片被单独关掉；③ 面板关闭（设备断开会自动触发它）；
+//   ④ 发送失败（每轮都重新判断目标、连接与返回值）。
+var BLE_REPEAT_MS_DEFAULT = 1000;
+var BLE_REPEAT_MS_MIN = 20;
+var BLE_REPEAT_MS_MAX = 60000;
+
+// 间隔夹取（纯函数，便于无头断言）：非法值回默认；下限 20ms —— 再小就不是"连续发送"，
+// 而是把 BLE 写请求打成洪水（设备侧的写响应排不过来，界面也会被日志刷爆）。
+function clampBleRepeatMs(v) {
+    var n = parseInt(v, 10);
+    if (!isFinite(n) || isNaN(n)) return BLE_REPEAT_MS_DEFAULT;
+    return Math.max(BLE_REPEAT_MS_MIN, Math.min(BLE_REPEAT_MS_MAX, n));
+}
+
+function bleWriteRepeatMsOf(card) {
+    var inp = card ? card.querySelector('.ble-writeRepeatMs') : null;
+    return clampBleRepeatMs(inp ? inp.value : BLE_REPEAT_MS_DEFAULT);
+}
+
+// 连发期间**锁住这张卡片的输入**（用户 2026-09 要求）。
+// 锁的是"会改变这一轮到底发什么"的东西：正文、间隔、以及三个配置下拉
+// （`.repeating` 类负责让下拉不可点，见 02-global.css）。
+// ⚠️ **不锁「停止」**（锁了就停不下来）；「发送」顺手禁掉 —— 手动插一帧会打乱连发节奏。
+function setBleWriteCardLocked(card, locked) {
+    if (!card) return;
+    locked = !!locked;
+    if (card.classList) card.classList.toggle('repeating', locked);
+    var inp = card.querySelector('.ble-writeValue');
+    if (inp) inp.disabled = locked;
+    var ms = card.querySelector('.ble-writeRepeatMs');
+    if (ms) ms.disabled = locked;
+    var send = card.querySelector('.ble-writeCard-send');
+    if (send) send.disabled = locked;
+}
+
+// 开关的视觉与无障碍状态：`.on` 类（track 变色 / thumb 右移）+ `aria-checked` + title。
+// **开与关都走它** —— 只改一半（比如忘了 aria-checked）会让读屏与自动化看到的开关状态是错的。
+function setBleWriteRepeatSwitch(card, on) {
+    var sw = card ? card.querySelector('.ble-writeRepeatSwitch') : null;
+    if (!sw) return;
+    if (sw.classList) sw.classList.toggle('on', !!on);
+    if (sw.setAttribute) sw.setAttribute('aria-checked', on ? 'true' : 'false');
+    sw.title = on ? '正在连续发送：再点一次停止' : '按左侧间隔反复发送这张卡片';
+}
+
+// 停掉这张卡片的连续发送（幂等：没在跑也安全）。
+// **解锁也放在这里** —— 所有停止路径都会经过它，于是不存在"停了但输入框还锁着"的残留。
+function stopBleWriteRepeat(card) {
+    if (!card) return;
+    if (card._repeatTimer) { clearInterval(card._repeatTimer); card._repeatTimer = null; }
+    setBleWriteRepeatSwitch(card, false);
+    setBleWriteCardLocked(card, false);
+}
+
+// 面板里**所有**卡片的连续发送一起停（关面板 / 设备断开时用）
+function stopAllBleWriteRepeats() {
+    var list = bleWriteCardList();
+    if (!list) return;
+    var cards = list.querySelectorAll('.ble-writeCard');
+    for (var i = 0; i < cards.length; i++) stopBleWriteRepeat(cards[i]);
+}
+
+// 「连续发送」滑动开关：拨开 ⇄ 拨关
+function toggleBleWriteRepeat(swEl) {
+    var card = (swEl && swEl.closest) ? swEl.closest('.ble-writeCard') : null;
+    if (!card) return;
+    if (card._repeatTimer) {              // 正在跑 → 停
+        stopBleWriteRepeat(card);
+        logBle('[连发] 已停止');
+        return;
+    }
+    var ms = bleWriteRepeatMsOf(card);
+    setBleWriteRepeatSwitch(card, true);
+    setBleWriteCardLocked(card, true);    // 锁住正文/间隔/配置（用户 2026-09 要求）
+    _bleWriteCardFocus = card;            // 连发的那张就是"当前卡片"（MCP 的回退也认它）
+    logBle('[连发] 开始：每 ' + ms + ' ms 发送一次');
+    card._repeatTimer = setInterval(function() {
+        // ⚠️ **每一轮都重新判断**，不能只在开始时判一次：卡片被关掉（DOM 已摘除）、
+        // 目标没了、或这一次发送失败 —— 都必须自愈停止。
+        if (typeof card.isConnected === 'boolean' && !card.isConnected) { stopBleWriteRepeat(card); return; }
+        if (!card._target) { stopBleWriteRepeat(card); return; }
+        sendBleWriteCore(card).then(function(r) {
+            if (r && r.ok) return;
+            logBle('[连发] 已停止：' + ((r && r.error) || '发送失败'));
+            stopBleWriteRepeat(card);
+        });
+    }, ms);
+}
+
+// 把焦点与视野交给某张卡片（新建 / 点写入图标 / 单独关闭之后都用它，避免三处各写一份）
+function focusBleWriteCard(card) {
+    if (!card) return;
+    var inp = card.querySelector('.ble-writeValue');
+    if (inp) { try { inp.focus(); } catch (_) {} }
+    try { card.scrollIntoView({ block: 'nearest' }); } catch (_) {}
+}
+
+// **单独关闭一张卡片**（用户 2026-09 要求）：只删这一张，别的卡片照旧。
+// 它同时是"点错目标"的补救出口 —— 点错了特征的「写入」图标时不用重建整个面板。
+// ⚠️ 删掉的如果正是"当前"那张，必须把 `_bleWriteCardFocus` 清掉：
+// 否则 `bleWriteActiveCard()` 会一直指着一个已经不在列表里的对象，
+// MCP 的 ble_write 就会往一个"幽灵卡片"里填值（看起来什么都没发生）。
+function closeBleWriteCard(btnEl) {
+    var card = (btnEl && btnEl.closest) ? btnEl.closest('.ble-writeCard') : null;
+    if (!card) return;
+    // ⚠️ 先停连发再摘 DOM：卡片没了而定时器还在，就是一个对着空气无限写的循环
+    stopBleWriteRepeat(card);
+    // ⚠️ 只有删掉的正是"当前"那张时才重新指定。否则会把用户正在编辑的卡片
+    // 无端切到列表最后一张（焦点也跟着跳走）。
+    var wasFocus = (card === _bleWriteCardFocus);
+    if (wasFocus) _bleWriteCardFocus = null;
+    if (card.remove) card.remove();
+    else if (card.parentNode && card.parentNode.removeChild) card.parentNode.removeChild(card);
+    if (wasFocus) {
+        var next = bleWriteActiveCard();     // focus 已清空 → 回退到最后一张
+        if (next) { _bleWriteCardFocus = next; focusBleWriteCard(next); }
+    }
+}
+
+// 新建一张卡片并把焦点/视野交给它（**唯一的入口**：点特征行的「写入」图标）。
+// 用户 2026-09 删掉了面板底部那个「+ 新建卡片」按钮 —— 卡片必须绑定目标特征才能发送，
+// 手动加出来的空卡片没有目标，点了发送也无处可去。
+function addBleWriteCardForTarget(target) {
+    var card = addBleWriteCard(target);
+    if (!card) return null;
+    _bleWriteCardFocus = card;
+    focusBleWriteCard(card);
+    return card;
+}
+
+// 卡片里的键盘事件：**一次委托**绑在面板容器上（卡片是动态增删的，逐个绑/解绑必然漏）。
+// Esc 交给文档级监听统一处理（见本文件下方），这里只管回车。
+function bindBleWritePanelKeys() {
+    var panel = document.getElementById('bleWritePanel');
+    if (!panel || panel._keysBound) return;
+    panel._keysBound = true;
+    panel.addEventListener('keydown', function(e) {
+        var t = e.target;
+        if (!t || !t.classList || !t.classList.contains('ble-writeValue')) return;
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendBleWriteCore((t.closest) ? t.closest('.ble-writeCard') : null);
+        }
+    });
+}
 
 // target 可选：{ kind:'desc', charUuid } 表示目标是特征下的描述符（如 0x2902 CCCD）；
 // 默认 { kind:'char' } 即普通特征写入。
-function openBleWriteModal(uuid, name, modes, target) {
+//
+// 点特征行的「写入」图标 = **新增一张绑定这个目标的卡片**（用户 2026-09：
+// "点击新的发送特征就会新增"）。列表里因此可以同时存在**指向不同特征**的多张卡片。
+// ⚠️ 同一个目标重复点**不重复加卡片**：否则连点两下图标就多出两张一模一样的空卡片，
+// 用户会以为点坏了。改为聚焦已有的那张。
+function openBleWritePanel(uuid, name, modes, target) {
     modes = (modes && modes.length) ? modes : ['write'];
     target = target || {};
     var kind = (target.kind === 'desc') ? 'desc' : 'char';
-    _bleWriteTarget = { uuid: uuid, name: name || '', modes: modes, mode: modes[0],
-                        kind: kind, charUuid: target.charUuid || '' };
-    // 标题区分两种用途（原先靠副标题里的 UUID 区分，现按需求去掉副标题）
+    var charUuid = target.charUuid || '';
+    // 面板级只保留"最近一次的目标"：底部「+ 新建卡片」沿用它（卡片各自的目标在 card._target 上）
+    _bleWriteTarget = { uuid: uuid, name: name || '', modes: modes, kind: kind, charUuid: charUuid };
+    // 标题只区分特征/描述符 —— **目标印在每张卡片自己头上**，标题里写不下多个目标
     var ttl = document.getElementById('bleWriteTitle');
-    if (ttl) {
-        ttl.textContent = (kind === 'desc') ? '写入描述符值' : '写入特征值';
-    }
-    // 提示并入输入框 placeholder（原先有独立提示行，按需求去掉，弹窗更简洁）
-    var inp0 = document.getElementById('bleWriteValue');
-    if (inp0) {
-        if (kind === 'desc' && shortUuid(uuid) === '2902') inp0.placeholder = '要写入的值，回车发送；CCCD：0100 开启通知，0200 开启指示，0000 关闭';
-        else inp0.placeholder = '要写入的值，回车发送；支持 \\r \\n \\t 转义，HEX 形如 01 A0 FF';
-    }
-    // 写入方式：两种都支持时才显示选择器，只有一种时隐藏（避免多一个没用的控件）
-    // （描述符写入按规范用带响应写，调用方只传一种模式，因此这里自然隐藏）
-    // 注意隐藏的是整行（含「方式」标签），否则会留下一个孤零零的标签
-    var wrap = document.getElementById('bleWriteModeRow');
-    if (wrap) wrap.style.display = (modes.length > 1) ? '' : 'none';
-    setBleWriteMode(modes[0]);
-    var mask = document.getElementById('bleWriteModal');
-    if (mask) mask.classList.add('show');
-    var inp = document.getElementById('bleWriteValue');
-    if (inp) {
-        inp.value = '';
-        if (!inp.dataset.bound) {          // 只绑一次
-            inp.dataset.bound = '1';
-            inp.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendBleWrite(); }
-                else if (e.key === 'Escape') { closeBleWriteModal(); }
-            });
-        }
-        setTimeout(function() { inp.focus(); }, 30);
-    }
+    if (ttl) ttl.textContent = (kind === 'desc') ? '写入描述符值' : '写入特征值';
+    var card = bleWriteCardForTarget(uuid, kind, charUuid) || addBleWriteCardForTarget(_bleWriteTarget);
+    _bleWriteCardFocus = card;
+    // 展开右侧面板（顺带给 .ble-right 挂 write-open —— 那才是监视器让位的触发条件）
+    showBleWritePanel(true);
+    focusBleWriteCard(card);
 }
-function toggleBleWriteMode() {
-    var d = document.getElementById('bleWriteModeDrop');
+// 「方式」「格式」下拉的展开/收起：容器由调用方（`this`）传进来。
+// ⚠️ 不能再按 id 找 —— 每张卡片各有一套，id 会重复。
+function toggleBleWriteMode(boxEl) {
+    if (!boxEl) return;
+    var d = boxEl.querySelector('.send-as-drop');
     if (d) d.classList.toggle('open');
 }
 function setBleWriteMode(val, el, e) {
     if (e) e.stopPropagation();
-    var label = val === 'write_without_response' ? '无响应' : '写响应';
-    var t = document.getElementById('bleWriteModeText');
-    if (t) t.textContent = label;
-    if (_bleWriteTarget) _bleWriteTarget.mode = val;
-    var drop = document.getElementById('bleWriteModeDrop');
-    if (drop) {
-        drop.querySelectorAll('.send-as-opt').forEach(function(o) {
-            o.classList.toggle('active', o.getAttribute('data-val') === val);
-        });
-        if (e) drop.classList.remove('open');
-    }
+    var card = (el && el.closest) ? el.closest('.ble-writeCard') : null;
+    if (card) setBleWriteCardOpt(card, 'mode', val);
+    var box = (el && el.closest) ? el.closest('.ble-writeModeSel') : null;
+    var drop = box ? box.querySelector('.send-as-drop') : null;
+    if (e && drop) drop.classList.remove('open');
 }
-function closeBleWriteModal() {
-    var mask = document.getElementById('bleWriteModal');
-    if (mask) mask.classList.remove('show');
+function closeBleWritePanel() {
+    // ⚠️ 先停掉所有连发：面板一关这些卡片就看不见了，留着的定时器就是"对着设备无限写"。
+    stopAllBleWriteRepeats();
+    showBleWritePanel(false);
     _bleWriteTarget = null;
 }
-// 只在「按下点就在遮罩上」时关闭弹窗。
-// 原因：拖弹窗右下角调整大小时，若向左上（变小）拖，松手会落在遮罩上 ——
-// 此时 click 的 target 会变成遮罩（按下与松手目标不同时，click 落在共同祖先），
-// 不做这个判断就会「一拖就关」。参见 .ble-modal 的 resize:both。
-var _bleWritePressOnMask = false;
-function bleWriteMaskPress(e) {
-    _bleWritePressOnMask = !!(e.target && e.target.id === 'bleWriteModal');
+// 面板的显示/隐藏**只在这里**做。它同时负责给 .ble-right 挂上 `write-open` 类 ——
+// 那个类上的 min-width:460px 是"内嵌串口监视器自动收窄"的触发条件（见 02-global.css）。
+// 少了这一步，窄窗口下被挤没的会是设备详情（GATT 服务树），而不是监视器。
+function showBleWritePanel(on) {
+    var panel = document.getElementById('bleWritePanel');
+    if (panel) panel.classList.toggle('show', !!on);
+    var right = document.getElementById('bleRight');
+    if (right) right.classList.toggle('write-open', !!on);
 }
-function bleWriteMaskClick(e) {
-    var pressedOnMask = _bleWritePressOnMask;
-    _bleWritePressOnMask = false;
-    if (pressedOnMask && e.target && e.target.id === 'bleWriteModal') closeBleWriteModal();
-}
+// 说明：这里原先还有一对 bleWriteMaskPress / bleWriteMaskClick（"按下点就在遮罩上才关闭"，
+// 用来防止拖弹窗大小时松手落到遮罩上误关）。侧栏面板没有遮罩、也不可拖拽缩放，整套已删。
 
 /* ===== BLE 配对弹窗 =====
    后端 ble_pair 需要用户确认时会发 ble-pair-request 事件（payload: {address, kind, pin}），
@@ -637,27 +989,26 @@ function submitBlePair(accept) {
         logBle('[配对] 回传答复失败: ' + e);
     });
 }
-// 弹窗打开时按 Esc 关闭（焦点不一定在输入框上，所以监听文档级）
+// 面板打开时按 Esc 关闭（焦点不一定在输入框上，所以监听文档级）
 document.addEventListener('keydown', function(e) {
     if (e.key !== 'Escape') return;
-    var mask = document.getElementById('bleWriteModal');
-    if (mask && mask.classList.contains('show')) { e.preventDefault(); closeBleWriteModal(); }
+    var panel = document.getElementById('bleWritePanel');
+    if (panel && panel.classList.contains('show')) { e.preventDefault(); closeBleWritePanel(); }
 });
-function toggleBleWriteAs() {
-    var d = document.getElementById('bleWriteAsDrop');
+function toggleBleWriteAs(boxEl) {
+    if (!boxEl) return;
+    var d = boxEl.querySelector('.send-as-drop');
     if (d) d.classList.toggle('open');
 }
 function setBleWriteAs(val, el, e) {
     if (e) e.stopPropagation();
-    var t = document.getElementById('bleWriteAsText');
-    if (t) t.textContent = val === 'hex' ? 'HEX' : '文本';
-    var drop = document.getElementById('bleWriteAsDrop');
-    if (drop) {
-        drop.querySelectorAll('.send-as-opt').forEach(function(o) { o.classList.remove('active'); });
-        drop.classList.remove('open');
-    }
-    if (el) el.classList.add('active');
-    var inp = document.getElementById('bleWriteValue');
+    var card = (el && el.closest) ? el.closest('.ble-writeCard') : null;
+    if (card) setBleWriteCardOpt(card, 'as', val);
+    var box = (el && el.closest) ? el.closest('.ble-writeAsSel') : null;
+    var drop = box ? box.querySelector('.send-as-drop') : null;
+    if (drop) drop.classList.remove('open');
+    // 选完格式把焦点交回**本卡片**的输入框（原来固定去找那个全局输入框）
+    var inp = card ? card.querySelector('.ble-writeValue') : null;
     if (inp) inp.focus();
 }
 // 输入内容 → 字节数组：HEX 模式按十六进制解析；文本模式先处理 \r\n 等转义再按 UTF-8 编码
@@ -672,18 +1023,20 @@ function bleSendBytes(text, hexMode) {
 function leEscOf(v) {
     return v === 'crlf' ? '\\r\\n' : (v === 'lf' ? '\\n' : (v === 'cr' ? '\\r' : ''));
 }
-// 读出写入弹窗的内容并解析成字节（HEX / 文本 + 行尾）。
-// 主机写入、描述符写入、从机设值 / 下发四种用途共用，避免各写一份解析逻辑。
+// 读出**某张卡片**的内容与三配置并解析成字节（HEX / 文本 + 行尾）。
+// 特征写入与描述符写入共用这一份解析，避免各写一份。
 // 返回 { bytes, hex, hexMode, leVal, leLog } 或 { error }（error 时调用方负责提示）。
-function bleReadWriteModalInput() {
-    var inp = document.getElementById('bleWriteValue');
+function bleWriteCardInput(card) {
+    if (!card) return { error: '没有可用的发送卡片' };
+    var inp = card.querySelector('.ble-writeValue');
     var text = inp ? inp.value : '';
     if (!text) return { error: '请输入要写入的值' };
-    var asEl = document.getElementById('bleWriteAsText');
-    var hexMode = !!asEl && asEl.textContent === 'HEX';
+    // 格式从容器的 data-val 读（不再去看下拉里的那行字）：多卡片下每个容器各有一份
+    var asBox = card.querySelector('.ble-writeAsSel');
+    var hexMode = !!asBox && asBox.getAttribute('data-val') === 'hex';
     // 行尾：与串口监视器一致 —— 仅文本模式追加（HEX 模式不追加）
-    var leEl = document.getElementById('bleWriteLineEnd');
-    var leVal = leEl ? (leEl.getAttribute('data-val') || 'crlf') : 'crlf';
+    var leBox = card.querySelector('.ble-writeLineEnd');
+    var leVal = leBox ? (leBox.getAttribute('data-val') || 'crlf') : 'crlf';
     var payload = hexMode ? text : (text + leEscOf(leVal));
     var bytes;
     try { bytes = bleSendBytes(payload, hexMode); }
@@ -699,38 +1052,55 @@ function bleReadWriteModalInput() {
     };
 }
 
-// 面板那颗「发送」按钮与回车键的入口（返回值给 MCP 的 ble_write 用，按钮忽略）
-function sendBleWrite() { return sendBleWriteCore(); }
+// 每张卡片自己那颗「发送」按钮的入口
+function sendBleWriteCard(btnEl) {
+    var card = (btnEl && btnEl.closest) ? btnEl.closest('.ble-writeCard') : null;
+    return sendBleWriteCore(card);
+}
+// 不带卡片的入口（MCP 的 ble_write、回车键）→ 操作**当前卡片**（列表最后一张）
+function sendBleWrite() { return sendBleWriteCore(null); }
 
 // 核心：返回 Promise<{ok:true, hex, bytes, writeType} | {ok:false, error}>（一律 resolve）。
 // **写失败不能当成成功** —— MCP 的 ble_write 靠这里的 ok 给 AI 真实结论，
 // 按钮路径只关心提示（提示与日志仍在本函数里给，两条路看到的东西一样）。
-function sendBleWriteCore() {
-    if (!_bleWriteTarget) {
-        showToast('请先点特征行的「写入」图标', 'error');
-        return Promise.resolve({ ok: false, error: '还没有选好要写入的特征' });
-    }
+// card 缺省 = 当前卡片（列表里最后一张，见 bleWriteActiveCard）。
+function sendBleWriteCore(card) {
     var dev = getSelectedBleDev();
     if (!dev || !dev.connected) {
         showToast('请先连接设备', 'error');
         return Promise.resolve({ ok: false, error: '请先连接设备' });
     }
-    var r = bleReadWriteModalInput();
+    card = card || bleWriteActiveCard();
+    if (!card) {
+        showToast('还没有发送卡片：点特征行的「写入」图标', 'error');
+        return Promise.resolve({ ok: false, error: '还没有发送卡片' });
+    }
+    // ⚠️ 目标从**这张卡片自己**身上取：列表里各张卡片可能分别指向不同的特征，
+    // 用面板级那个"最近目标"就会变成"给 A 卡填内容、发到了 B 特征上"。
+    var tgt = card._target;
+    if (!tgt || !tgt.uuid) {
+        showToast('这张卡片还没绑特征：点特征行的「写入」图标', 'error');
+        return Promise.resolve({ ok: false, error: '这张卡片还没绑定目标特征' });
+    }
+    var r = bleWriteCardInput(card);
     if (r.error) {
         showToast(r.error, 'error');
-        var inp0 = document.getElementById('bleWriteValue');
+        var inp0 = card.querySelector('.ble-writeValue');
         if (inp0 && !inp0.value) inp0.focus();
         return Promise.resolve({ ok: false, error: r.error });
     }
-    var inp = document.getElementById('bleWriteValue');
     var bytes = r.bytes, hex = r.hex, hexMode = r.hexMode, leLog = r.leLog;
-    // 写入方式由弹窗里的选择决定（特征同时支持两种时可选，否则用其唯一支持的那种）
-    var writeType = (_bleWriteTarget.mode === 'write_without_response') ? 'without_response' : 'with_response';
-    var isDesc = _bleWriteTarget.kind === 'desc';
+    // 写入方式从**这张卡片**读：每张卡片可以各自选（特征只支持一种时那一行本来就是隐藏的）
+    var modeBox = card.querySelector('.ble-writeModeSel');
+    var modeVal = modeBox ? (modeBox.getAttribute('data-val') || 'write') : 'write';
+    var writeType = (modeVal === 'write_without_response') ? 'without_response' : 'with_response';
+    var isDesc = tgt.kind === 'desc';
     var onOk = function() {
         logBle('[发送成功] 0x' + hex + ' · ' + bytes.length + ' 字节');
         showToast('发送成功：0x' + hex, 'success');
-        if (inp) { inp.value = ''; inp.focus(); }   // 发完一条即清空
+        // ⚠️ 发送成功**不再自动加卡片**（用户 2026-09 纠正："不是发送成功才会新加，
+        // 而是点击新的发送特征就会新增"）。这张卡片保留内容，便于核对或再发一次；
+        // 想要新卡片：点另一个特征的「写入」图标，或点底部「+ 新建卡片」。
         return { ok: true, hex: hex, bytes: bytes.length, writeType: writeType };
     };
     var onFail = function(e) {
@@ -740,17 +1110,17 @@ function sendBleWriteCore() {
     };
     if (isDesc) {
         // 描述符的值只标 `descUuid`（CCCD 也是 2 字节，别让它在 MCP 侧被当成时区解读）
-        logBle('[发送] 描述符 0x' + shortUuid(_bleWriteTarget.uuid) + ' ← 0x' + hex +
+        logBle('[发送] 描述符 0x' + shortUuid(tgt.uuid) + ' ← 0x' + hex +
                '（' + (hexMode ? 'HEX' : '文本') + leLog + '）',
-               { kind: 'tx', hex: hex, descUuid: _bleWriteTarget.uuid });
-        return invoke('ble_write_descriptor', { charUuid: _bleWriteTarget.charUuid,
-                                                descUuid: _bleWriteTarget.uuid, data: bytes })
+               { kind: 'tx', hex: hex, descUuid: tgt.uuid });
+        return invoke('ble_write_descriptor', { charUuid: tgt.charUuid,
+                                                descUuid: tgt.uuid, data: bytes })
             .then(onOk).catch(onFail);
     }
-    logBle('[发送] 0x' + shortUuid(_bleWriteTarget.uuid) + ' ← 0x' + hex +
+    logBle('[发送] 0x' + shortUuid(tgt.uuid) + ' ← 0x' + hex +
            '（' + (hexMode ? 'HEX' : '文本') + ' · ' + (writeType === 'without_response' ? '无响应' : '写响应') + leLog + '）',
-           { kind: 'tx', hex: hex, charUuid: _bleWriteTarget.uuid });
-    return invoke('ble_write', { charUuid: _bleWriteTarget.uuid, data: bytes, writeType: writeType })
+           { kind: 'tx', hex: hex, charUuid: tgt.uuid });
+    return invoke('ble_write', { charUuid: tgt.uuid, data: bytes, writeType: writeType })
         .then(onOk).catch(onFail);
 }
 
@@ -797,7 +1167,7 @@ function onBleLinkLost() {
     _bleSubs = {};
     stopBleNotifyPoll();
     stopBleRssiPoll();
-    closeBleWriteModal();
+    closeBleWritePanel();
     _bleDevices.forEach(function(d) { d.connected = false; });
     clearBleLog();                                          // 本次会话结束 → 先清空
     logBle('[已断开] 设备侧断开或超出范围（' + addr + '）');   // 再留一行原因，便于排查
@@ -895,8 +1265,32 @@ function openBle() {
                     '<div class="ble-devList no-scrollbar" id="ble-devList"></div>' +
                 '</div>' +
                 '<div class="ble-left-resize" id="ble-leftResize" title="拖动调节设备栏宽度"></div>' +
-                '<div class="ble-right">' +
+                '<div class="ble-right" id="bleRight">' +
                     '<div class="ble-detail" id="ble-detail"></div>' +
+                    // ===== 写入（发送）面板：紧贴**设备详情窗口的右边缘**（用户 2026-09 要求）=====
+                    // ⚠️ 它是 .ble-detail 的**兄弟**节点、不是子节点：renderBleDetail() 会整块重写
+                    // #ble-detail 的 innerHTML，放进去会被每次重渲染清掉（展开服务、刷新 RSSI、
+                    // 通知轮询都会重建详情）。
+                    // ⚠️ 也**不是** .ble-body 的第四列：那样它会跑到内嵌串口监视器的右边去，
+                    // 离详情更远；而"冲突"的关键约束是它和监视器都要能同时存在（见 02-global.css 的
+                    // .ble-right.write-open / .ble-monArea 的 flex:0 1）。
+                    '<div class="ble-writePanel" id="bleWritePanel">' +
+                        '<div class="ble-writePanel-head">' +
+                            '<span class="ble-writePanel-title" id="bleWriteTitle">写入特征值</span>' +
+                            // ⚠️ 面板标题后面**不再**挂目标特征：列表里各张卡片可以指向**不同**的特征
+                            // （点不同的「写入」图标就各加一张，用户 2026-09 要求），
+                            // 标题这里只写得下其中一个 —— 写了就是说谎。目标改印在**每张卡片自己**的头部。
+                            '<button class="ble-writePanel-close" onclick="closeBleWritePanel()" ' +
+                                'title="关闭写入面板" aria-label="关闭写入面板">&#10005;</button>' +
+                        '</div>' +
+                        // 发送**卡片列表**（纵向堆叠）：每张卡片自带 输入框 + 三配置 + 发送按钮，
+                        // 模板见 bleWriteCardInnerHtml。
+                        // 新增卡片的入口**只有一个**：点特征行的「写入」图标（用户 2026-09
+                        // 明确删掉了面板底部的「+ 新建卡片」按钮 —— 卡片必须有目标特征才能发，
+                        // 手动加出来的空卡片没有目标，发了也没地方去）。
+                        // ⚠️ 卡片内部一律用 class 而不是 id —— 多张卡片同时存在时 id 必然重复。
+                        '<div class="ble-writePanel-body" id="bleWriteCards"></div>' +
+                    '</div>' +
                 '</div>' +
                 // 内嵌串口监视器区：由 toggleBleMonitor() 动态放入一个监视器窗口（开关语义，最多一个），
                 // 左侧 5px 手柄可拖动调宽（见 initBleMonResize）
@@ -907,6 +1301,11 @@ function openBle() {
         blePane._initialized = true;
         // 监视器区（含宽度拖拽手柄）已就位：绑一次拖拽
         initBleMonResize();
+        // 写入面板：卡片是**动态增删**的（每发一次复制一张），键盘事件用一次事件委托，
+        // 并先建好第一张卡片 —— 保证"面板一出现就至少有一张可发的卡片"这个不变量。
+        bindBleWritePanelKeys();
+        // 这里**不预建卡片**：卡片一律由"点特征行的「写入」图标"或底部「+ 新建卡片」产生 ——
+        // 预建一张没有目标特征的空卡片（(未选特征)）只会让人困惑它到底能发给谁。
         // 左栏（设备列表）宽度：先套上记住的宽度，再绑拖拽手柄
         applyBleLeftWidth();
         initBleLeftResize();
@@ -926,11 +1325,15 @@ function openBle() {
         var want = _bleRestoreMon;
         _bleRestoreMon = null;                       // 只消费一次
         if (!_bleExtraMon) {
-            toggleBleMonitor();                      // 打开内嵌监视器
+            // ⚠️ 传 true：这是**按配置恢复**监视器，不是用户点开关 —— 不要撑窗
+            // （窗口宽度本来就是上次退出时的值，再撑一次会每启动一次宽 380）
+            toggleBleMonitor(true);
             if (want.cfg) applyMonitorConfig('ble-mon', want.cfg);   // 再套用它的端口/波特率等设置
         }
         var area = document.getElementById('ble-monitorArea');
-        if (area && want.width) area.style.flex = '0 0 ' + want.width + 'px';
+        // `0 1` 而不是 `0 0`：恢复宽度时也要保持**可收缩**，否则发送面板一打开，
+        // 空间只能从设备详情里扣（监视器被钉死在记下来的宽度上）。见 02-global.css。
+        if (area && want.width) area.style.flex = '0 1 ' + want.width + 'px';
         _bleMonWidth = want.width || _bleMonWidth;
     }
     // 蓝牙页的「打开额外监视器」是开关（开/关右侧嵌入的串口监视器，见 toggleBleMonitor），
@@ -960,6 +1363,9 @@ function syncBleConnection() {    var prevAddr = _bleConnAddr;   // 用于判断
             stopBleNotifyPoll();
             stopBleRssiPoll();
             clearBleLog();   // 连接不在了 → 日志也清空（与「断开即清空」一致）
+            // ⚠️ 连发必须跟着停：这条路径（切页回来才发现已经断开）**不会**关面板，
+            // 所以不能只指望 closeBleWritePanel 里那次清理。
+            stopAllBleWriteRepeats();
             if (prevAddr) logBle('[已断开] 设备侧断开或超出范围（' + prevAddr + '）');
             return null;
         }
@@ -1320,8 +1726,8 @@ function renderBleDeviceList() {
             '<div class="ble-dev-rssi-bar"><span style="width:' + pct + '%;background:' + rssiColor + '"></span></div>' +
             '<div class="ble-dev-rssi" style="color:' + rssiColor + '">' + (hasRssi ? dev.rssi + ' dBm' : '—') + '</div>';
         card.addEventListener('click', function() {
-            // 切换设备即清空日志与写入窗口：它们只属于「当前设备本次会话」
-            if (dev.address !== _bleSelected) { clearBleLog(); closeBleWriteModal(); }
+            // 切换设备即清空日志与写入面板：它们只属于「当前设备本次会话」
+            if (dev.address !== _bleSelected) { clearBleLog(); closeBleWritePanel(); }
             _bleSelected = dev.address;
             scheduleConfigSave();   // 选中的设备地址随用户配置保留
             renderBleDeviceList();
@@ -1695,7 +2101,7 @@ function bleDisconnect() {
         stopBleNotifyPoll();
         stopBleRssiPoll();
         clearBleLog();   // 断开即清空：本次连接会话结束
-        closeBleWriteModal();   // 写入窗口随连接失效
+        closeBleWritePanel();   // 写入面板随连接失效
         renderBleDetail();
         renderBleDeviceList();   // 去掉列表里的「已连接」提示
         return { ok: true };
