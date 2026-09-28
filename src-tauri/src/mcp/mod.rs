@@ -2075,6 +2075,48 @@ mod tests {
         });
     }
 
+    /// **Streamable HTTP 建会话同样必须推状态给界面**（用户 2026-09 报的
+    /// "MCP 服务区的会话监控没有实时刷新"）。
+    ///
+    /// 上面那条 `session_add_and_remove_push_status_to_the_ui` 守的是 SSE 路径（`open_sse`
+    /// 建会话时推了）。但 HTTP 这条路原本**除"淘汰"外一处都没推** —— 而新版客户端
+    /// （VS Code / Cline / 新版 Cursor / Claude Code）默认就走 `/mcp`：客户端明明连上了，
+    /// 界面上的「N 个会话」永远停在打开弹窗那一刻的值。
+    /// 这里钉住"HTTP 建会话推一次、断开推一次"。
+    #[test]
+    fn http_session_creation_pushes_status_to_the_ui() {
+        let rt = rt();
+        let core = test_core();
+        rt.block_on(async {
+            let port = serve(core.clone(), "127.0.0.1", 0).await.expect("起服务");
+            let before = core.status_emits.load(Ordering::Relaxed);
+            let (sid, resp) = mcp_initialize(port, "testtoken").await;
+            assert!(resp.starts_with("HTTP/1.1 200"), "{}", resp);
+            assert!(!sid.is_empty(), "initialize 应当建立会话并下发 Mcp-Session-Id");
+            assert_eq!(core.sessions.len(), 1, "会话应当已建立");
+            assert!(
+                core.status_emits.load(Ordering::Relaxed) > before,
+                "HTTP 建会话后必须推一次状态（否则界面上的会话数永远是打开弹窗那一刻的值）"
+            );
+
+            // 断开这一跳原本就有，一并钉住别退化（DELETE /mcp 是客户端主动终止会话的正规路径）
+            let after_connect = core.status_emits.load(Ordering::Relaxed);
+            let r = one_shot(
+                port,
+                &delete_req_h("/mcp?token=testtoken", &[("Mcp-Session-Id", sid.as_str())]),
+            )
+            .await;
+            assert!(r.starts_with("HTTP/1.1 204"), "{}", r);
+            assert_eq!(core.sessions.len(), 0, "会话应被回收");
+            assert!(
+                core.status_emits.load(Ordering::Relaxed) > after_connect,
+                "会话断开后也要推一次（否则界面上的数字不会回落）"
+            );
+
+            core.shutdown.store(true, Ordering::Relaxed);
+        });
+    }
+
     /// 客户端断开后会话必须**立刻**回收，而不是干等 30 分钟空闲超时。
     ///
     /// 这是官方 SDK 一致性检查抓出来的真问题：会话表只存了 `tx`，SSE 的接收端被 hyper

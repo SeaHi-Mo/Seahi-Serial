@@ -823,11 +823,22 @@ fn resolve_http_session(core: &Arc<McpCore>, headers: &HeaderMap) -> HttpSession
     let now = Instant::now();
     let idle = Duration::from_secs(super::IDLE_TIMEOUT_SECS);
     let mut evicted: Option<String> = None;
+    // 会话数**只要变了就得推一次状态**：新建、淘汰、空闲回收这三件事都会改数字。
+    // 2026-09 用户报的"MCP 服务区的会话监控没有实时刷新"就是这里 —— SSE 那条路建会话时推了
+    // （`open_sse` → `emit_status`），HTTP 这条路**除淘汰外一处都没推**，于是走 `/mcp` 的
+    // 新版客户端（VS Code / Cline / Claude Code 默认）连上了，界面上的「N 个会话」
+    // 也永远停在打开弹窗那一刻的值。
+    let mut count_changed = false;
     let out = {
         let mut map = core.sessions.map.lock().unwrap_or_else(|e| e.into_inner());
+        let len_before = map.len();
         // 顺手回收空闲会话。HTTP 会话**没有**"连接断开"这个信号可依赖（客户端进程没了
         // 也不会通知我们），所以不在这里收，就只能等下一次建会话时才收。
         map.retain(|_, s| now.duration_since(s.last_seen) < idle);
+        // 收回来的那些也要让界面知道（否则数字只增不减）
+        if map.len() != len_before {
+            count_changed = true;
+        }
 
         if let Some(sid) = header_str(headers, MCP_SESSION_HEADER) {
             match map.get_mut(&sid) {
@@ -865,6 +876,7 @@ fn resolve_http_session(core: &Arc<McpCore>, headers: &HeaderMap) -> HttpSession
                     Some(v) => {
                         map.remove(&v);
                         evicted = Some(v);
+                        count_changed = true;
                     }
                     None => return HttpSession::NoCapacity,
                 }
@@ -882,6 +894,7 @@ fn resolve_http_session(core: &Arc<McpCore>, headers: &HeaderMap) -> HttpSession
                     window_start: now,
                 },
             );
+            count_changed = true;
             HttpSession::Ready(id, true)
         }
     };
@@ -899,6 +912,11 @@ fn resolve_http_session(core: &Arc<McpCore>, headers: &HeaderMap) -> HttpSession
                 super::MAX_SESSIONS
             ),
         );
+    }
+    // 锁**已经释放**才推：`emit_status()` 内部要读 `sessions.len()`，持锁调它会死锁
+    // （同 `delete_mcp` 那条注释）。上面三种"会话数变了"的情况在这里统一收口，
+    // 免得以后再加一条增删路径时又漏掉推送。
+    if count_changed {
         core.emit_status();
     }
     out
