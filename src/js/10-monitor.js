@@ -1017,7 +1017,13 @@ function toggleTerminalMode(btn, mid) {
             // 显示终端当前行（提示符+输入框，内联跟随设备提示符），输入由输入框负责（继承系统输入法）。
             output.contentEditable = 'false';
             if (sendBar) sendBar.style.display = 'none';
-            if (termCur) termCur.classList.add('show');
+            // ⚠️ 必须先把「当前行」移回输出区**末尾**，再让它显示。
+            // 普通模式的输出走的是 `appendChild`（见 appendOutput / flushBatch），会一行行追加到
+            // 它**后面**，把它悄悄埋到中间 —— 而它是 display:none，用户在普通模式下看不见这个过程。
+            // 不移回末尾，下次开终端模式时新输出又全都 `insertBefore` 到它前面，光标就卡在那个旧
+            // 位置上（用户 2026-09 报的"光标应停在最新 log 行之下，却停在最顶部"）。
+            // clearLog 里也做过同样的末尾维护，别只修一处。
+            if (termCur) { output.appendChild(termCur); termCur.classList.add('show'); }
             setTermPrompt(mid, ''); // 提示符由设备输出决定，先清空
             if (monitors[mid]) closeRecvPartial(monitors[mid]); // 清空普通模式残留行，避免污染
             if (termInput) { termInput.value = ''; termInput.focus(); }

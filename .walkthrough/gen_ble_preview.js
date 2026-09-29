@@ -7960,6 +7960,90 @@ console.log('preview ->', out);
       '收起时的摘要行如实说"配没配、缺什么"');
   }
 
+  // ---------- 终端模式：当前行（含光标）必须跟在最新日志行之下 ----------
+  //
+  // 用户 2026-09 报的："终端模式的光标应该保持在最新 log 行之下，而不是保持在最顶部"。
+  // 成因：普通模式的输出走 appendChild，会追加到「当前行」**后面**，把它悄悄埋到中间
+  // —— 而它是 display:none，用户在普通模式下看不见这个过程；进终端模式时又没把它移回
+  // 末尾，于是新输出全部 insertBefore 到它前面，光标就卡在那个旧位置上。
+  // 这里用**真实的** toggleTerminalMode 复现整个场景，而不是只扫源码正则。
+  {
+    // 比 fakeEl() 更完整：必须能表达 insertBefore / parentNode / lastChild，
+    // 否则复现不出"被埋到中间"这个真实故障（fakeEl 只有 appendChild）。
+    const mkEl = () => {
+      const el = {
+        _kids: [],
+        id: '', className: '', textContent: '', value: '', style: {}, contentEditable: '',
+        get children() { return this._kids; },
+        get firstChild() { return this._kids[0] || null; },
+        get lastChild() { return this._kids[this._kids.length - 1] || null; },
+        appendChild(c) {
+          if (c.parentNode) c.parentNode.removeChild(c);
+          c.parentNode = this; this._kids.push(c); return c;
+        },
+        insertBefore(c, ref) {
+          if (c.parentNode) c.parentNode.removeChild(c);
+          const i = this._kids.indexOf(ref);
+          c.parentNode = this;
+          if (i < 0) this._kids.push(c); else this._kids.splice(i, 0, c);
+          return c;
+        },
+        removeChild(c) {
+          const i = this._kids.indexOf(c);
+          if (i >= 0) { this._kids.splice(i, 1); c.parentNode = null; }
+          return c;
+        },
+        setAttribute() {}, getAttribute() { return null; },
+        addEventListener() {}, focus() {}, querySelector() { return null; },
+      };
+      el.classList = {
+        _s: {},
+        add(c) { this._s[c] = 1; },
+        remove(c) { delete this._s[c]; },
+        contains(c) { return !!this._s[c]; },
+        toggle(c) { this._s[c] ? delete this._s[c] : (this._s[c] = 1); },
+      };
+      return el;
+    };
+
+    const output = mkEl(), termCur = mkEl(), termInput = mkEl();
+    output.appendChild(mkEl());    // 旧日志行
+    output.appendChild(mkEl());
+    output.appendChild(termCur);   // 当前行（此刻在末尾）
+
+    // 普通模式又追加了两行 → 当前行被埋到中间（这就是用户遇到的状态）
+    output.appendChild(mkEl());
+    output.appendChild(mkEl());
+    check(output.lastChild !== termCur, '前置：普通模式追加后，当前行确实已被埋到中间（复现故障现场）');
+
+    const btn = mkEl();
+    btn.classList.add('x');        // 占位，避免下面 toggle 的实现差异影响结果
+    const sbTerm = {
+      console,
+      monitors: { main: {} },
+      _terminalBuffers: {},
+      closeRecvPartial() {}, setTermPrompt() {}, hideTermComp() {},
+      scheduleConfigSave() {}, requestScroll() {},
+      document: {
+        getElementById(id) {
+          if (id === 'main-output') return output;
+          if (id === 'main-termCurrent') return termCur;
+          if (id === 'main-termInput') return termInput;
+          return null;
+        },
+        querySelector() { return null; },
+      },
+    };
+    vm.createContext(sbTerm);
+    vm.runInContext(extractFunction('toggleTerminalMode'), sbTerm);
+    sbTerm.toggleTerminalMode(btn, 'main');   // 点一下 = 进终端模式
+
+    check(output.lastChild === termCur,
+      '★ 开启终端模式后，当前行必须回到输出区末尾（光标跟在最新日志行之下，而不是卡在最顶部/中间）');
+    check(termCur.parentNode === output,
+      '当前行仍在输出区内（没有被移出 DOM）');
+  }
+
   runQcmdLoopAsyncTests().then(function () {
     console.log(`\n结果: ${pass} passed, ${fail} failed`);
     process.exit(fail ? 1 : 0);
