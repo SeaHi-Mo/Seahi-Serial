@@ -489,7 +489,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "serial_quick_cmd",
-            "description": "快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、timeoutMs 超时、expect 追加的成功词、retry 重试次数、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；每发一条**等它的回应**：busy 继续等 / OK 下一条 / ERROR 重发本条 / 等满超时终止整链；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。",
+            "description": "快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、timeoutMs 超时、expect 追加的成功词、retry 重试次数、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；⚠️ **只有同时配了 `expect`（成功词）和 `timeoutMs > 0` 的条目才等回应** —— 没写成功词的条目不等回应，此时 `timeoutMs` 就是「隔多久发下一条」的间隔（要等内置的 `OK` 也得把 `expect` 写成 `OK`）；等回应的条目：busy 继续等 / OK 下一条 / ERROR 重发本条 / 等满超时按失败跳转，默认终止整链；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -504,9 +504,9 @@ pub fn tool_defs() -> Vec<Value> {
                     "toIndex": { "type": "number", "description": "action=group 且 op=move 时的目标组序号（0 起；组的上下顺序就是循环顺序）" },
                     "value": { "type": "string", "description": "action=add/update 时的指令内容（原样发送，不按逗号切分）" },
                     "seq": { "type": "number", "description": "action=add/update 时的顺序号：0 = 不参与循环，>0 在**组内**按数字升序发" },
-                    "timeoutMs": { "type": "number", "description": "action=add/update 时的**超时**（毫秒）：这条发出去最多等多久 —— 等到 OK 发下一条、等到 ERROR 重发本条（见 retry）、等满这个时间还没等到 OK 就**终止整条循环**。缺省 3000，上限 600000。填 0 = 这条不等响应（连续 HEX 帧、设备本来就不回 OK 的指令）" },
+                    "timeoutMs": { "type": "number", "description": "action=add/update 时的**超时**（毫秒）= 这一条占用的时间。写了 `expect` 时它是**等回应的上限**：等到 OK 发下一条、等到 ERROR 重发本条（见 retry）、等满这个时间还没等到 OK 就按失败跳转（默认**终止整条循环**），缺省 3000、上限 600000。没写 `expect` 时没有回应可等，它就**直接是「隔多久发下一条」的间隔**。填 0 = 按 20ms 最小间隔连发（有 `expect` 时 = 不等响应）" },
                     "delayMs": { "type": "number", "description": "⚠️ **旧拼写**：与 timeoutMs 同一个值（这一项的语义是「超时」，不是「发送间隔」）。新调用请用 timeoutMs —— 两个都给时以 timeoutMs 为准" },
-                    "expect": { "type": "string", "description": "action=add/update 时的**自定义成功词**，多个用 `|` 分隔（如 `WIFI GOT IP|OK`）。留空 = 只用内置的 OK / ERROR / busy。⚠️ 面板上没有它的入口（它写在指令文件的「期望」列里），通过这里改会同时落到模型与文件" },
+                    "expect": { "type": "string", "description": "action=add/update 时的**自定义成功词**，多个用 `|` 分隔（如 `WIFI GOT IP|OK`）。⚠️ **它同时是「这条要不要等回应」的开关**：留空 = 这条**不等回应**（此时 `timeoutMs` 变成发下一条前的间隔）；写了才等，且内置的 OK / ERROR / busy 仍然认（`expect` 是**追加**在它们之上的成功词）。所以想等内置的 OK，就显式写 `OK`。⚠️ 面板上没有它的入口（它写在指令文件的「期望」列里），通过这里改会同时落到模型与文件" },
                     "retry": { "type": "number", "description": "action=add/update 时：收到 ERROR 后最多重发几次（缺省 3，上限 10；0 = 不重发，直接终止）" },
                     "hex": { "type": "boolean", "description": "action=add/update 时：这一条是否按 HEX 解析后发送（默认 false）" },
                     "pane": { "type": "string", "description": PANE_DESC }

@@ -337,8 +337,15 @@ document.getElementById('ble-adv-body').innerHTML = renderBleAdv({ adv: SAMPLE_A
 </html>
 `;
 const out = path.join(root, '.walkthrough', 'preview_ble_icons.html');
-fs.writeFileSync(out, page, 'utf8');
-console.log('preview ->', out);
+try {
+  fs.writeFileSync(out, page, 'utf8');
+  console.log('preview ->', out);
+} catch (e) {
+  // 这个文件是**给人看的预览产物**（断言集不读它）。它被编辑器/浏览器占用时（Windows 上是 EPERM）
+  // 不该把整轮断言的结论一起带走 —— 但也不能闷着：说清它这次没更新，别让人以为看的是新的。
+  console.warn('⚠️ 预览文件没更新（' + (e && e.code) + '）：' + out
+    + ' —— 它可能正被编辑器/浏览器打开着；断言结果不受影响');
+}
 
 // ---------- 4) 切页恢复回归防护 ----------
 // 回归点：refreshBleDevices 原先把 connected 硬编码为 false，
@@ -4472,6 +4479,7 @@ console.log('preview ->', out);
        'qcmdBlockIndexOf', 'qcmdInsertItemBlock', 'qcmdRemoveItemBlock',
        'qcmdGroupBlocksRange', 'qcmdGroupSectionBlocks', 'qcmdRemoveGroupBlocks', 'qcmdMoveGroupBlocks', 'qcmdRenameGroupBlock',
        'qcmdDigits', 'qcmdItemSeq', 'qcmdItemTimeout', 'qcmdItemExpect', 'qcmdItemRetry', 'qcmdItemHex',
+       'qcmdItemWaits',
        'qcmdTimeoutColIndex', 'qcmdTimeoutTitle', 'syncQcmdTimeoutMark',
        'qcmdLoopPlan', 'qcmdItemText',
        'qcmdLoopRunning', 'qcmdSideTabTitle', 'syncQcmdLoopBtn', 'stopQcmdLoop', 'qcmdLoopStep', 'setQcmdLoop', 'toggleQcmdLoop', 'qcmdLoopSyncPlan',
@@ -5091,6 +5099,48 @@ console.log('preview ->', out);
       check(sbSide.qcmdItemRetry({}) === 3 && sbSide.qcmdItemRetry({ retry: 0 }) === 0
         && sbSide.qcmdItemRetry({ retry: 99 }) === 10 && sbSide.qcmdItemRetry({ retry: 'x' }) === 3,
         '重试读法：缺省 3 / 0 = 不重发 / 超限夹到 10 / 非数字回缺省');
+      // ★ 等回话的判据：**超时 > 0 且「期望」非空**（2026-10 用户报的 bug —— 没写期望却仍按
+      //   内置 OK 判定，设备不回 OK 的指令全被判超时，整条链停在第一条上："只能发送一次"）
+      check(sbSide.qcmdItemWaits({ timeout: 3000, expect: 'OK' }) === true
+        && sbSide.qcmdItemWaits({ timeout: 3000 }) === false            // 没写期望 → 不等
+        && sbSide.qcmdItemWaits({}) === false                           // 缺省超时 3000，仍不等
+        && sbSide.qcmdItemWaits({ timeout: 0, expect: 'OK' }) === false // 超时 0 → 不等
+        && sbSide.qcmdItemWaits({ timeout: 'abc', expect: 'OK' }) === true,
+        '★ 等回话 ⇔ 超时 > 0 且「期望」非空（缺任何一头都不等）',
+        JSON.stringify([[3000, 'OK'], [3000, ''], ['缺省', ''], [0, 'OK']]
+          .map(p => p[0] + '/' + p[1] + '=' + sbSide.qcmdItemWaits({ timeout: p[0], expect: p[1] }))));
+      // 这一条**只由一个判据说了算**：runOne 里不许再出现"只看超时"的老写法
+      const runOneSrc = extractFunction('qcmdRunOne');
+      check(/if \(!qcmdItemWaits\(it\)\)/.test(runOneSrc) && !/if \(!timeoutMs\)/.test(runOneSrc),
+        '★ qcmdRunOne 用 qcmdItemWaits 分流（不再"只看超时"），不等回话的那一支不 arm',
+        runOneSrc.slice(0, 120));
+      // ★ 节奏由「超时」说了算：**不许**把不等回话的条目写死成固定间隔（20ms 只是"填 0"的兜底）
+      check(/qcmdSleep\(timeoutMs > 0 \? timeoutMs : QCMD_LOOP_MIN_GAP_MS\)/.test(runOneSrc),
+        '★ 不等回话时用这条自己的「超时」当间隔（0 才落回 QCMD_LOOP_MIN_GAP_MS 兜底）');
+      check(/qcmd_hs_arm/.test(runOneSrc) && /qcmdWaitVerdict/.test(runOneSrc),
+        '等回话的那一支仍然是 arm → send → 轮询（判定还是 Rust 那一份）');
+      // ★ 不等回话的条目**一句提示都不给**（用户 2026-10 的两条要求，先后删掉了逐条那行
+      //   "第 … 条已发出（…隔 3000ms…）"和开循环时那行"本次循环有 N 条没写「期望」"）
+      check(!/qcmdLogFire|qcmdFireLogFlush|qcmdLoopNoWaitCount/.test(html),
+        '★ 那两套"提示"连同它们的机器都删干净了（流水日志合并 / 不等回话计数），不留死代码',
+        /qcmdLogFire|qcmdLoopNoWaitCount/.test(html) ? '还有残留' : '');
+      check(!/qcmdLog/.test(extractFunction('setQcmdLoop')),
+        '★ `setQcmdLoop` 里一句日志都不写（开循环就是"直接发"，不提示）',
+        extractFunction('setQcmdLoop').match(/qcmdLog[^\n]*/) || '');
+      // 只看"不等回话"那一支（`for (var attempt` 之前）—— 等回话那一支照旧有"已发出，等回话"
+      check(!/条已发出/.test(runOneSrc.split('for (var attempt')[0]),
+        '★ 不等回话那条路不再写"已发出"流水（原来那行整条删了）');
+      // 配了却不会生效的等待参数（重试 / 跳转 / 期望）要在导入时被数出来 → 提示一次
+      const dw = sbSide.qcmdParseText([
+        '| 顺序号 | 指令 | 超时(ms) | 期望 | 重试 |',
+        '|---|---|---|---|---|',
+        '| 1 | AT | 3000 |  | 3 |',        // 有重试、没期望 → 配了不生效
+        '| 2 | AT+X | 3000 | OK | 3 |',     // 正常：等回话
+        '| 3 | AT+Y | 0 | OK | 3 |',        // 超时 0 → 期望也白配
+      ].join('\r\n'));
+      check(dw.deadWaitCount === 2,
+        '★ "配了却不生效"的等待参数被计数（导入时提示一次，不做静默 no-op）',
+        String(dw.deadWaitCount));
       // 跳转（分支与循环）：取值归一化 —— '' = 下一条 / 'end' = 结束 / '数字' = 顺序号
       check(sbSide.qcmdGotoNorm('') === '' && sbSide.qcmdGotoNorm('下一条') === ''
         && sbSide.qcmdGotoNorm('next') === '' && sbSide.qcmdGotoNorm('-') === '',
@@ -5507,6 +5557,29 @@ console.log('preview ->', out);
       // 它是**整行完全相等**、不是包含 —— 不写清，用户会以为填 `ERROR:5` 能匹配 `+CME ERROR:5`。
       check(/整行完全相等/.test(doc) && /string_contains/.test(doc),
         '★ 文档写明「期望」是**整行完全相等**（不是包含），并指向工作流规则的 `string_contains`');
+      // ★ 2026-10 的口径：「期望」同时是"要不要等回话"的开关 —— 面向使用者的文档里必须写清，
+      // 否则用户会照着老文档以为"留空 = 只用内置的 OK"，然后困惑于"为什么它不等回话/只发一次"
+      check(/「期望」留空 = 不校验回话/.test(doc) && /超时 > 0/.test(doc),
+        '★ 文档写明「期望」留空 = 这条不等回话（等回话 ⇔ 期望非空 且 超时 > 0）');
+      check(/配了[\s\S]{0,40}不会生效|不会生效[\s\S]{0,40}配了/.test(doc),
+        '★ 文档写明"配了却不生效"的等待参数（静默 no-op 比报错更坑）');
+      // 导出物是"打开就能看懂的模板"：这条新口径也得写在里面（它同时是最常被打开的那份说明）
+      const helpSrc = extractFunction('qcmdHelpComment');
+      check(/留空 = 不校验回话/.test(helpSrc) && /没写「期望」= 不校验回话，它就是/.test(helpSrc),
+        '★ 导出物的注释说明里也写明"「期望」留空 = 不校验回话，赶「超时」当间隔"');
+    }
+    // ---- 跨端：AI 只认协议里传过去的那四个通道，工具描述必须把新口径说出来 ----
+    {
+      const proto = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'protocol.rs'), 'utf8');
+      const quickDef = /"name": "serial_quick_cmd"[\s\S]*?"additionalProperties": false/.exec(proto);
+      const def = quickDef ? quickDef[0] : '';
+      check(/没写成功词的条目不等回应，此时 `timeoutMs` 就是/.test(def),
+        '★ MCP 主描述写明"没写成功词 → 不等回应，`timeoutMs` 变成间隔"（AI 看不到 doc/ 下的文档）',
+        def.length ? '' : '没抓到 serial_quick_cmd 的定义');
+      check(/留空 = 这条\*\*不等回应\*\*/.test(def),
+        '★ `expect` 字段描述写明了"留空 = 这条不等回应"');
+      check(/没写 `expect` 时[\s\S]{0,40}?间隔/.test(def),
+        '★ `timeoutMs` 字段描述写明了"没写 expect 时它就是间隔"');
     }
     // ---- YAML / TOML 文件头（front matter）：原样保留，且**不能**被当成指令 ----
     const fmText = [
@@ -7451,8 +7524,10 @@ console.log('preview ->', out);
     };
 
     // ① 正常：发一条 → OK → 下一条
-    setItems([{ label: '', value: 'AT+RST', seq: 1, timeout: 2000 },
-              { label: '', value: 'AT+GMR', seq: 2, timeout: 2000 }]);
+    // ⚠️ 这些用例测的是"等回话"这条路，所以**必须带「期望」**（2026-10 起：没写期望的条目
+    // 根本不 arm、改由「超时」当间隔 —— 见 ⑥b）。少了它下面几条会全变成"不等回话"，测的东西就变了。
+    setItems([{ label: '', value: 'AT+RST', seq: 1, timeout: 2000, expect: 'OK' },
+              { label: '', value: 'AT+GMR', seq: 2, timeout: 2000, expect: 'OK' }]);
     script = [{ state: 'ok' }, { state: 'ok' }];
     sb.setQcmdLoop('main', true);
     check(await waitFor(() => sent.length >= 2, 1500),
@@ -7469,7 +7544,7 @@ console.log('preview ->', out);
     sb.stopQcmdLoop('main');
 
     // ② ERROR → 重发本条，重试成功就继续跑
-    setItems([{ label: '', value: 'AT+CWJAP', seq: 1, timeout: 2000, retry: 2 }]);
+    setItems([{ label: '', value: 'AT+CWJAP', seq: 1, timeout: 2000, expect: 'OK', retry: 2 }]);
     script = [{ state: 'err' }, { state: 'err' }, { state: 'ok' }];
     sb.setQcmdLoop('main', true);
     check(await waitFor(() => sent.length >= 3, 1500),
@@ -7481,7 +7556,7 @@ console.log('preview ->', out);
     sb.stopQcmdLoop('main');
 
     // ③ ERROR 用尽 → 终止整条链
-    setItems([{ label: '', value: 'AT+CWJAP', seq: 1, timeout: 2000, retry: 1 }]);
+    setItems([{ label: '', value: 'AT+CWJAP', seq: 1, timeout: 2000, expect: 'OK', retry: 1 }]);
     script = [{ state: 'err' }, { state: 'err' }];
     sb.setQcmdLoop('main', true);
     check(await waitFor(() => !sb.qcmdLoopRunning('main'), 1500), 'ERROR 重试用尽 → 终止整条链');
@@ -7489,7 +7564,7 @@ console.log('preview ->', out);
     check(/连续 2 次收到 ERROR/.test(toasts.join(' | ')), '终止原因写清"连续几次 ERROR"', toasts.join(' | '));
 
     // ④ 等满超时（Rust 一直说"还没结论"）→ 终止整条链
-    setItems([{ label: '', value: 'AT+RST', seq: 1, timeout: 60 }]);
+    setItems([{ label: '', value: 'AT+RST', seq: 1, timeout: 60, expect: 'OK' }]);
     script = []; stateDefault = 'waiting';
     sb.setQcmdLoop('main', true);
     check(await waitFor(() => !sb.qcmdLoopRunning('main'), 3000), '等满超时 → 终止整条链');
@@ -7497,7 +7572,7 @@ console.log('preview ->', out);
       '终止原因写清"哪一条 + 等多久"', toasts.join(' | '));
 
     // ⑤ busy 只算"继续等"：不算结论、也不重发
-    setItems([{ label: '', value: 'AT+CWJAP', seq: 1, timeout: 2000 }]);
+    setItems([{ label: '', value: 'AT+CWJAP', seq: 1, timeout: 2000, expect: 'OK' }]);
     script = [{ state: 'waiting', busy: true }, { state: 'ok' }]; stateDefault = 'waiting';
     sb.setQcmdLoop('main', true);
     check(await waitFor(() => logs.some(t => /设备回 busy/.test(t)), 1500),
@@ -7505,18 +7580,45 @@ console.log('preview ->', out);
     check(sent.length === 1, 'busy 期间不重发（还是那一条）', JSON.stringify(sent.map(x => x.idx)));
     sb.stopQcmdLoop('main');
 
-    // ⑥ 超时填 0 = 这条不等回话（连续 HEX 帧）
+    // ⑥ 超时填 0 = 这条不等回话，按 20ms 兜底连发（连续 HEX 帧），且**逐条不写日志**
     setItems([{ label: '', value: '01 02', seq: 1, timeout: 0, hex: true },
               { label: '', value: '03 04', seq: 2, timeout: 0, hex: true }]);
     sb.setQcmdLoop('main', true);
     check(await waitFor(() => sent.length >= 2, 1500),
-      '超时填 0 的条目发完就走，不等回话', JSON.stringify(sent.map(x => x.idx)));
+      '超时填 0 的条目按最小间隔连发，不等回话', JSON.stringify(sent.map(x => x.idx)));
     check(calls.filter(c => c.cmd === 'qcmd_hs_arm').length === 0,
       '填 0 的条目根本不会 arm（不去问"回话了吗"）');
+    // ★ 不等回话的条目**一句提示都不给**（用户 2026-10 要求："直接发送，不做任何提示" ——
+    //   逐条那行和开循环那行总结都删了）。日志里不该出现任何"已发出"/"本次循环有"。
+    check(sent.length >= 2 && !logs.some(t => /条已发出|本次循环有/.test(t)),
+      '★ 不等回话的条目只发不说：日志里没有"已发出"、也没有开循环的总结',
+      logs.join(' | ') || '(一个字都没有)');
+    sb.stopQcmdLoop('main');
+
+    // ⑥b ★ 没写「期望」= 不校验回话，但**节奏仍按这条自己的「超时」**（2026-10 用户报的 bug：
+    //     文件里没写期望却仍按内置 OK 判，设备不回 OK 的指令全被判超时 → 整条链停在第一条上，
+    //     表现就是"只能发送一次"。第一版修完又把它写死成 20ms 连发 —— 用户当场问
+    //     "为什么是固定 20ms？不是通过超时来配置？"）
+    setItems([{ label: '', value: '121351564', seq: 1, timeout: 300 },   // 超时 300、但没写期望
+              { label: '', value: 'AT+X', seq: 2, timeout: 300 }]);
+    script = []; stateDefault = 'waiting';        // 就算假 Rust 永远说"还没结论"
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => sent.length >= 1, 800), '（前置）第一条发出去了');
+    check(calls.filter(c => c.cmd === 'qcmd_hs_arm').length === 0,
+      '★ 没写期望的条目根本不 arm（不摆 Rust 状态、也不轮询 qcmd_hs_state）');
+    check(sb.qcmdLoopRunning('main') && !logs.some(t => /超时终止/.test(t)),
+      '★ 不会因为"设备没回 OK"就终止整条链（旧行为：发一次就停）', logs.join(' | '));
+    check(sent.length === 1,
+      '★ 节奏 = 这条自己的「超时」：不是立刻发下一条（那会被写死成 20ms）',
+      JSON.stringify(sent.map(x => x.idx)));
+    check(await waitFor(() => sent.length >= 2, 1500), '等满「超时」（300ms）才发下一条');
+    check(!logs.some(t => /本次循环有|条已发出/.test(t)),
+      '★ 开循环也不提示（"直接发送，不做任何提示"）：日志里一个字都没有',
+      logs.join(' | ') || '(一个字都没有)');
     sb.stopQcmdLoop('main');
 
     // ⑦ 跑着的时候掉线 → 自愈停止（断开路径就是这么调的：updateMonitorUI(false) → stopQcmdLoop）
-    setItems([{ label: '', value: 'AT+RST', seq: 1, timeout: 60000 }]);
+    setItems([{ label: '', value: 'AT+RST', seq: 1, timeout: 60000, expect: 'OK' }]);
     script = []; stateDefault = 'waiting';
     m.isConnected = true;
     sb.setQcmdLoop('main', true);
@@ -7538,9 +7640,9 @@ console.log('preview ->', out);
     check(!sb.qcmdLoopRunning('main'), '停掉之后不会自己又跑起来');
 
     // ⑨ 跳转（分支与循环）：成功跳 / 失败跳（超时也算失败）/ 结束 / 目标不存在降级 / 连续跳转上限
-    setItems([{ label: '', value: 'A', seq: 1, timeout: 2000, okgoto: '3' },
-              { label: '', value: 'B', seq: 2, timeout: 2000 },
-              { label: '', value: 'C', seq: 3, timeout: 2000 }]);
+    setItems([{ label: '', value: 'A', seq: 1, timeout: 2000, expect: 'OK', okgoto: '3' },
+              { label: '', value: 'B', seq: 2, timeout: 2000, expect: 'OK' },
+              { label: '', value: 'C', seq: 3, timeout: 2000, expect: 'OK' }]);
     script = [{ state: 'ok' }, { state: 'ok' }];
     sb.setQcmdLoop('main', true);
     check(await waitFor(() => sent.length >= 2, 1500),
@@ -7549,9 +7651,9 @@ console.log('preview ->', out);
     check(logs.some(t => /跳转到顺序号 3/.test(t)), '跳转写进输出区（用户看得到它为什么跳）', logs.join(' | '));
     sb.stopQcmdLoop('main');
 
-    setItems([{ label: '', value: 'A', seq: 1, timeout: 60, errgoto: '3' },   // 第 1 条必超时
-              { label: '', value: 'B', seq: 2, timeout: 2000 },
-              { label: '', value: 'C', seq: 3, timeout: 2000 }]);
+    setItems([{ label: '', value: 'A', seq: 1, timeout: 60, expect: 'OK', errgoto: '3' },   // 第 1 条必超时
+              { label: '', value: 'B', seq: 2, timeout: 2000, expect: 'OK' },
+              { label: '', value: 'C', seq: 3, timeout: 2000, expect: 'OK' }]);
     script = []; stateDefault = 'waiting';
     sb.setQcmdLoop('main', true);
     check(await waitFor(() => sent.length >= 2, 3000),
@@ -7560,7 +7662,7 @@ console.log('preview ->', out);
     check(sent[1] && sent[1].idx === 2, '超时后跳到顺序号 3', JSON.stringify(sent.map(x => x.idx)));
     sb.stopQcmdLoop('main');
 
-    setItems([{ label: '', value: 'A', seq: 1, timeout: 2000, okgoto: 'end' }]);
+    setItems([{ label: '', value: 'A', seq: 1, timeout: 2000, expect: 'OK', okgoto: 'end' }]);
     script = [{ state: 'ok' }];
     sb.setQcmdLoop('main', true);
     check(await waitFor(() => !sb.qcmdLoopRunning('main'), 1500),
@@ -7568,8 +7670,8 @@ console.log('preview ->', out);
     check(toasts.length === 0, '正常收尾不弹错误 toast（它不是失败）', toasts.join(' | '));
     check(logs.some(t => /按「成功跳转 = 结束」收尾/.test(t)), '收尾原因写进输出区', logs.join(' | '));
 
-    setItems([{ label: '', value: 'A', seq: 1, timeout: 2000, okgoto: '9' },   // 没有顺序号 9
-              { label: '', value: 'B', seq: 2, timeout: 2000 }]);
+    setItems([{ label: '', value: 'A', seq: 1, timeout: 2000, expect: 'OK', okgoto: '9' },   // 没有顺序号 9
+              { label: '', value: 'B', seq: 2, timeout: 2000, expect: 'OK' }]);
     script = [{ state: 'ok' }, { state: 'ok' }];
     sb.setQcmdLoop('main', true);
     check(await waitFor(() => sent.length >= 2, 1500),
@@ -7584,6 +7686,22 @@ console.log('preview ->', out);
     check(await waitFor(() => !sb.qcmdLoopRunning('main'), 12000),
       '连续跳转超过上限 → 自愈停止（防死循环）');
     check(/跳转次数超过上限/.test(toasts.join(' | ')), '停止原因写明是跳转上限', toasts.join(' | '));
+
+    // ⑩ ★ 停掉又立刻重开：旧那一拍还在"等间隔"里，醒过来时**不许**删新一轮的重入闸、也不许替它发指令
+    //    （2026-10 由 ⑨ 的"失败跳转"用例当场抓出来的真 bug：它把 pos 推进成"下一条"、
+    //     终值从 [0,2] 变成 [0,1]。修法是给每一轮一个 `_qcmdLoopRun`，停/开都 +1，跨轮的那一拍直接作废）
+    setItems([{ label: '', value: 'A', seq: 1, timeout: 300 }]);       // 旧一轮：发完睡 300ms
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => sent.length === 1, 800), '（前置）旧一轮发了 A，随后它在等自己的间隔');
+    sb.stopQcmdLoop('main');
+    setItems([{ label: '', value: 'B', seq: 1, timeout: 1500 }]);      // 新一轮：发完睡 1500ms
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => sent.length === 1, 800), '（前置）新一轮发了 B（setItems 会把 sent 清零）');
+    await new Promise(r => setTimeout(r, 700));                        // 旧那一拍（t≈300ms）早该醒了
+    check(sent.length === 1,
+      '★ 旧那一拍醒过来后没有插进来多发一条（"关一下再开"不该多打一拍）',
+      JSON.stringify(sent.map(x => x.idx)));
+    sb.stopQcmdLoop('main');
   }
 
   // ---- 设备名来源：广播名 vs 系统/GAP 名（2026-09 用户报"左侧设备名出错了"）----

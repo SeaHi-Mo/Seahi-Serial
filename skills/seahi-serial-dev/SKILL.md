@@ -26,6 +26,10 @@ npm run build      # 发布构建
 项目**无** lint、类型检查与格式化工具；测试见下（前端无头断言集 + 后端单元测试 + 对着运行中应用的 MCP 工具自检，
 命令与纪律以仓库根目录的 `AGENTS.md` 为准）。
 
+> ⚠️ **`npm run dev` 跑完没有窗口时，先看构建输出有没有 `error` / `OS Error 5`（拒绝访问）**，别先怀疑应用逻辑：
+> 这是 Windows 上的环境问题（NTFS 完整性标签 / 目录安全描述符被沙箱类工具污染），排查与修复流程见
+> **[`skills/win-build-access-denied/SKILL.md`](../win-build-access-denied/SKILL.md)**。
+
 ---
 
 ## 3. 项目结构

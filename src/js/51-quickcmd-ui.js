@@ -323,8 +323,10 @@ function makeQcmdItem(mid, gid, idx, label, value) {
         if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); sendQcmdItem(mid, gid, idx); }
     });
 
-    // 超时（毫秒）：这条发出去最多等多久 —— 等到 OK 发下一条 / 等到 ERROR 重发本条 / 等满就终止整条循环。
-    // 填 0 = 这条不等响应（连续 HEX 帧、设备本来就不回 OK 的指令）。
+    // 超时（毫秒）：**这一条占用的时间** —— 写了「期望」时是等回话的上限（等到 OK 提前走、等满就终止/跳转），
+    // 没写「期望」时没有回话可等，它就直接是"隔多久发下一条"的间隔；填 0 = 按最小间隔连发。
+    // ⚠️ 判据是 `qcmdItemWaits`，所以这一格的 title（qcmdTimeoutTitle）会按条目把
+    // "本条会等回话 / 这一格是间隔"直接说出来，别让用户看着数字猜。
     // ⚠️ 类名与 id 后缀仍然是 `delay`：CSS 的 grid 轨道、MCP 的 domIds 都按它认门，
     // 换名字要连带改一堆断言与 AI 侧的 domIds，而这一格的含义由列标题与 title 说清楚就够了。
     var timeoutInp = document.createElement('input');
@@ -391,11 +393,22 @@ function makeQcmdItem(mid, gid, idx, label, value) {
     return item;
 }
 
-/// 超时那一格的悬停说明：把"这条还有文件里才有的自定义条件"也说出去（面板上没有它们的入口）
+/// 超时那一格的悬停说明：把"这条还有文件里才有的自定义条件"也说出去（面板上没有它们的入口），
+/// 并**明确说清这一格到底生不生效、不生效时它是什么** —— 没写「期望」的条目不等回话，
+/// 此时这一格是"发下一条前的间隔"（填 0 才是 20ms 兜底），只看数字很容易误解成"它在等回话"
 function qcmdTimeoutTitle(it) {
-    var base = '超时（毫秒）：这条发出去最多等多久。等到 OK 就发下一条；等到 ERROR 就重发本条（默认最多 '
-             + QCMD_RETRY_DEFAULT + ' 次）；等满这个时间还没等到 OK 就走「失败跳转」（没配就终止整条循环）。'
-             + '填 0 = 这条不等响应';
+    var base = '超时（毫秒）：这一条占用的时间。等到 OK 就发下一条；等到 ERROR 就重发本条（默认最多 '
+             + QCMD_RETRY_DEFAULT + ' 次）；等满这个时间还没等到 OK 就走「失败跳转」（没配就终止整条循环）。';
+    if (qcmdItemWaits(it)) {
+        base += '本条写了「期望」→ 会等回话，这一格是等待上限。';
+    } else if (qcmdItemExpect(it)) {
+        base += '⚠️ 本条超时是 0 → 不等回话，按 ' + QCMD_LOOP_MIN_GAP_MS
+              + 'ms 最小间隔连发（填个大于 0 的数才会等回话）。';
+    } else {
+        base += '⚠️ 本条没写「期望」→ 不校验回话，这一格就是"发下一条前的间隔"'
+              + '（填 0 = 按 ' + QCMD_LOOP_MIN_GAP_MS + 'ms 最小间隔连发）；要等回话请在文件的「期望」列'
+              + '写成功词（写 OK 就是等内置的 OK）。';
+    }
     var extra = [];
     if (qcmdItemExpect(it)) extra.push('期望 = ' + qcmdItemExpect(it));
     if (qcmdItemRetry(it) !== QCMD_RETRY_DEFAULT) extra.push('重试 = ' + qcmdItemRetry(it));
@@ -490,10 +503,19 @@ async function sendQcmdItem(mid, gid, idx) {
 /* ===== 循环发送（一条链：组从上到下 → 组内顺序号从小到大，**一条一条来、等它回话**） =====
    参与条件：顺序号 > 0。开启前置条件：串口已连接 + 整条链上至少有一条可发 ——
    不满足就当场拒绝并说明原因，绝不"悄悄开着但什么都不发"。
-   每条的节奏由**超时**那一格说了算：
-     超时 > 0 → 发出去后等回话：busy 继续等（不重发）/ 收到 OK 发下一条 /
-                收到 ERROR 重发本条（默认最多 3 次）/ 等满超时还没等到 OK → **终止整条链**
-     超时 = 0 → 不等回话，发完就过（连续 HEX 帧、或设备本来就不回 OK 的指令）
+   **这条要不要等回话，看它自己的「期望」和「超时」**（判据集中在 `qcmdItemWaits`）：
+     期望非空 且 超时 > 0 → 发出去后等回话：busy 继续等（不重发）/ 收到 OK 发下一条 /
+                收到 ERROR 重发本条（默认最多 3 次）/ 等满超时就**终止整条链**
+     **期望留空** → 不校验回话；此时**「超时」就是"隔多久发下一条"的间隔**（填 0 → 按
+                QCMD_LOOP_MIN_GAP_MS=20ms 的兜底下限连发）
+     期望非空 但 超时 = 0 → 明说"不等响应"，同样按 20ms 兜底连发
+   ⚠️ **「期望」留空 = 不校验回话**（2026-10 用户报的 bug）：早先留空仍按内置 `OK` 判定，
+     于是"设备不回 OK 的指令"全被判超时，整条链停在第一条上 —— 看起来就是"没设期望的指令
+     只能发一次"。要等内置的 `OK`，请在「期望」列把它写出来（写 `OK` 即可）。
+   ⚠️ **不等回话的条目一句提示都不给**（用户 2026-10 明确要求："直接发送，不做任何提示"）：
+     逐条的"已发出"与开循环时那行总结都删了。可见性只有面板 —— 开关亮着 + 折叠条那颗小点；
+     想知道某一条等不等回话看超时那一格的悬停说明。**自愈停止**（掉线 / 没条目 / 跳转死循环）
+     那几行仍然保留：那是出错，不是流水。
    判定放在 **Rust 侧**（`qcmd_hs_*` 四个命令）：普通串口由读线程直接喂数据，
    WSL 由前端把轮询拉到的数据喂进去 —— 两边共用同一份判定，绝不在 JS 里再写一套（那必然漂移）。
    自愈：跑的过程中断开连接 / 链上再没有可发的条目 → 自动停止并说明（不留还在跑的定时器）。 */
@@ -504,7 +526,8 @@ var _qcmdHsPoll = {};       // mid → 等回话时的轮询 interval id
 var QCMD_HS_POLL_MS = 60;        // 问 Rust "这条回话了吗"的间隔
 var QCMD_HS_GRACE_MS = 400;      // 在 Rust 的超时之上再宽限一点（网络/定时器抖动，别抢答）
 var QCMD_RETRY_GAP_MS = 300;     // 收到 ERROR 后隔多久重发
-var QCMD_LOOP_MIN_GAP_MS = 20;   // 不等回话的条目之间的最小间隔（防"0 超时"连成紧凑死循环刷爆串口）
+var QCMD_LOOP_MIN_GAP_MS = 20;   // **超时填 0** 时的最小间隔兜底（防"0 超时"连成紧凑死循环刷爆串口）；
+                                 // ⚠️ 它**不是**不等回话条目的固定节奏 —— 那种条目的节奏 = 它自己的「超时」
 
 /// 循环过程的每一步都写进输出区 —— 面板上没有为它新增任何控件，用户就是靠这几行看它在干什么
 function qcmdLog(mid, text, cls) {
@@ -543,7 +566,11 @@ function stopQcmdLoop(mid, reason) {
     if (_qcmdHsPoll[mid]) { clearInterval(_qcmdHsPoll[mid]); delete _qcmdHsPoll[mid]; }
     delete _qcmdLoopBusy[mid];
     var m = monitors[mid];
-    if (m) { m.qcmdLoop = false; m._qcmdLoopPos = 0; m._qcmdGotoRun = 0; }
+    if (m) {
+        m.qcmdLoop = false; m._qcmdLoopPos = 0; m._qcmdGotoRun = 0;
+        // 轮次 +1：让"还在等回话 / 还在等间隔"的那一拍作废（它醒过来时已经不属于这一轮了）
+        m._qcmdLoopRun = (m._qcmdLoopRun || 0) + 1;
+    }
     // 让 Rust 把"正在等回话"的状态也清掉：下一次 arm 会重置，但留着就是一处悬挂状态
     invoke('qcmd_hs_stop', { monitorId: mid }).catch(function() {});
     syncQcmdLoopBtn(mid);
@@ -628,15 +655,26 @@ function qcmdWaitVerdict(mid, timeoutMs, label) {
 /// 送一条并等它的回话。返回 'ok' | 'skip' | 'timeout' | 'err-exhausted' | 'stopped'
 async function qcmdRunOne(mid, step, it, label) {
     var timeoutMs = qcmdItemTimeout(it), expect = qcmdItemExpect(it), maxRetry = qcmdItemRetry(it);
-    // 超时填 0 = 这条不等回话：发完就走
-    if (!timeoutMs) {
+    // ⚠️ **不等回话的判据只有一处**：`qcmdItemWaits`（超时 > 0 **且**「期望」非空）。
+    // "超时填 0" 与 "没写「期望」" 都走这一条路 —— 后者是 2026-10 用户报的 bug：
+    // 文件里没写期望却仍按内置 OK 判定，设备不回 OK 的指令全被判超时，整条链停在第一条上。
+    if (!qcmdItemWaits(it)) {
         var ok0 = await sendQcmdItem(mid, step.gid, step.ii);
         if (!ok0) {
             if (monitors[mid] && monitors[mid].isConnected) { qcmdLog(mid, '第 ' + label + ' 条没内容可发，已跳过', 'err'); return 'skip'; }
             return 'stopped';
         }
-        qcmdLog(mid, '第 ' + label + ' 条已发出（这条填了超时 0 = 不等回话）');
-        await qcmdSleep(QCMD_LOOP_MIN_GAP_MS);
+        // ⚠️ **不等回话的条目一句提示都不给**（用户 2026-10 明确要求："直接发送，不做任何提示"：
+        // 逐条的"已发出（…隔 3000ms…）"多余，开循环时那行总结也多余）。这一档的可见性只有面板：
+        // 亮着的开关 + 折叠条那颗一闪一闪的小点（`.qcmd-side-tab.loop`）；想知道某一条到底等不等
+        // 回话，看超时那一格的悬停说明（`qcmdTimeoutTitle`）。**等回话**的条目照旧逐条写
+        // （一条回话一行，天然一拍一行：已发出 / 收到 OK / 重发（第 n/N 次）/ 终止原因）。
+        // 例外只有"自愈停止"那几行（掉线 / 没条目了 / 跳转死循环）—— 那是**出错**，不是流水，必须说。
+        // 节奏由**「超时」**说了算：它是"这一条占用的时间" —— 有回话可等时是等待上限
+        // （等到结论就提前走），没写「期望」时没有回话可等，它就直接变成"隔多久发下一条"。
+        // ⚠️ 别把这一档写死成常数：20ms 只是"填了 0"时的兜底（防紧凑死循环刷爆串口），
+        // 拿它当所有不等回话条目的节奏，就等于让用户没法调快慢（2026-10 用户就是这么问的）。
+        await qcmdSleep(timeoutMs > 0 ? timeoutMs : QCMD_LOOP_MIN_GAP_MS);
         return 'ok';
     }
     for (var attempt = 0; attempt <= maxRetry; attempt++) {
@@ -655,8 +693,7 @@ async function qcmdRunOne(mid, step, it, label) {
             qcmdLog(mid, '第 ' + label + ' 条发送失败（连接已断），循环已停止', 'err');
             return 'stopped';
         }
-        qcmdLog(mid, '第 ' + label + ' 条已发出，等 OK（最多 ' + timeoutMs + 'ms'
-                    + (expect ? '，认 ' + expect : '') + '）');
+        qcmdLog(mid, '第 ' + label + ' 条已发出，等回话（最多 ' + timeoutMs + 'ms，认 ' + expect + '）');
         var v = await qcmdWaitVerdict(mid, timeoutMs, label);
         if (v === 'ok') { qcmdLog(mid, '第 ' + label + ' 条收到 OK'); return 'ok'; }
         if (v === 'stopped') return 'stopped';
@@ -673,12 +710,17 @@ async function qcmdRunOne(mid, step, it, label) {
     return 'timeout';
 }
 
-/// 一步：发当前这条，然后按它的**超时**等回话；再按「成功跳转 / 失败跳转」决定下一步去哪。
-/// 每步都重新取一遍计划 —— 用户中途改顺序号 / 拖组 / 删条目 / 改超时/跳转会立刻生效，不用重启循环。
+/// 一步：发当前这条，然后按**它自己的判据**（`qcmdItemWaits`）决定是等回话还是发完就走；
+/// 再按「成功跳转 / 失败跳转」决定下一步去哪。
+/// 每步都重新取一遍计划 —— 用户中途改顺序号 / 拖组 / 删条目 / 改超时/期望/跳转会立刻生效，不用重启循环。
 /// ⚠️ 这是 async，`_qcmdLoopBusy` 是重入闸（一次只跑一条）：**每条退出路径都要放闸**。
+/// ⚠️ **还有一道"轮次"（`_qcmdLoopRun`）**：`await` 期间用户可能把循环停掉、甚至立刻又开一次 ——
+/// 那一拍醒过来时已经不属于当前轮次了，**既不许放闸（会删掉新一轮的闸）也不许排下一步/做跳转**，
+/// 否则旧那一拍会替新一轮发指令、把它的跳转改掉（2026-10 被"停掉又立刻重开"的断言当场抓出来）。
 async function qcmdLoopStep(mid) {
     var m = monitors[mid];
     if (!m || !m.qcmdLoop || _qcmdLoopBusy[mid]) return;
+    var run = m._qcmdLoopRun || 0;                 // 这一拍的轮次（停/开都会 +1）
     if (!m.isConnected) { stopQcmdLoop(mid, '监控已断开，循环发送已停止'); return; }
     var plan = qcmdLoopPlan(mid);
     if (!plan.length) { stopQcmdLoop(mid, '已经没有顺序号大于 0 的指令，循环发送已停止'); return; }
@@ -697,8 +739,12 @@ async function qcmdLoopStep(mid) {
         verdict = 'stopped';
         qcmdLog(mid, '第 ' + label + ' 条执行异常：' + e, 'err');
     }
+    // 等回话 / 等间隔期间被停掉（或停了又开过）→ 这一拍作废：**别放闸、别排下一步**
+    // （新一轮自己会放闸；放错了就把新一轮的闸删掉，等于放它乱跑）
+    // ⚠️ 反向自证过：把这一行去掉，断言集里"超时后跳到顺序号 3"（[0,2] 变成 [0,1]）与
+    //    "关一下再开不该多打一拍"（多发一条）两条会当场 fail。
+    if (!monitors[mid] || !monitors[mid].qcmdLoop || (monitors[mid]._qcmdLoopRun || 0) !== run) return;
     delete _qcmdLoopBusy[mid];
-    if (!monitors[mid] || !monitors[mid].qcmdLoop) return;      // 等回话的过程里被停掉了
     if (verdict === 'stopped') return;
 
     // ---- 跳转：成功走「成功跳转」；**超时或 ERROR 用尽**都算失败，走「失败跳转」----
@@ -765,6 +811,10 @@ function setQcmdLoop(mid, on) {
     m.qcmdLoop = true;
     m._qcmdLoopPos = 0;
     m._qcmdGotoRun = 0;      // 连续跳转计数：新开一轮必须从零开始
+    m._qcmdLoopRun = (m._qcmdLoopRun || 0) + 1;    // 新一轮的轮次（上一条链还在 sleep 的那一拍就此作废）
+    // ⚠️ **开循环不写任何日志**（用户 2026-10 的原话："也要删除。直接发送，不做任何提示"）：
+    // 不等回话的条目就是"安静地按节奏发"，开关亮着 + 折叠条那颗小点就是全部可见性；
+    // 想确认某一条到底等不等回话，看超时那一格的悬停说明（qcmdTimeoutTitle）。
     syncQcmdLoopBtn(mid);
     qcmdLoopStep(mid);
     return true;

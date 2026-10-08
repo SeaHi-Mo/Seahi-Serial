@@ -15,6 +15,14 @@ npm run build      # 发布构建 → src-tauri/target/release/seahi-serial.exe
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（广播解析/设备类型/busid 白名单/MCP 协议与日志中心）
 ```
 
+> ⚠️ **`npm run dev` 跑完没有窗口 → 先看构建输出里有没有 `error` / `OS Error 5`（拒绝访问），别先怀疑应用逻辑。**
+> 这类"拒绝访问"故障（NTFS 完整性标签 / 目录安全描述符被沙箱类工具污染）有专门的排查与修复流程：
+> **[`skills/win-build-access-denied/SKILL.md`](./skills/win-build-access-denied/SKILL.md)** ——
+> 含本项目对照（产物路径 / 进程名 `seahi-serial` / 主窗口 `visible:false` 本来就是设计、**4 秒兜底没显示才算故障**）
+> 与"低完整性进程写不了中完整性目录"这个反向坑。
+> 铁律两条：**① 先确认编译是否失败**（错误混在一屏日志里最容易被当成"还在编译"）；
+> **② 别急着改代码** —— 同一份代码换台机器就好，几乎必然是环境差异。
+
 无 lint 与类型检查；后端有单测（`main.rs` + `src/mcp/` 里的 `#[cfg(test)]` 模块，**272 条 + 1 条 `#[ignore]`**：
 那条 ignore 是手工联调用的 `mcp_serve_for_manual_check`，要跑 60 秒）。
 
@@ -374,7 +382,7 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
 - `installer.iss` — Inno Setup 安装脚本（包含 usbipd-win.msi 打包）
 - `doc/FRONTEND_LAYOUT.md` — **前端目录结构**（4 个 CSS + 16 个 JS + 骨架的加载顺序、生成文件 `81-ble-uuids.js` 的来源与纪律、拆分后新增的 `84-ble-ota.js`、原单文件行号映射、拆分校验记录）
 - `doc/` — 架构、交接、代码评估（`CODE_REVIEW_FULL_2026-09.md`）、BLE 真机验证（`BLE_VERIFICATION.md`，主机方向）、**BLE 从机（`BLE_PERIPHERAL.md`，已归档：确认做不出来、代码已删）** 等
-- `skills/seahi-serial-dev/SKILL.md` — AI 开发技能指南
+- `skills/seahi-serial-dev/SKILL.md` — AI 开发技能指南｜**`skills/win-build-access-denied/SKILL.md`** — Windows 构建期「拒绝访问 / OS Error 5」导致 `npm run dev` 起不来窗口的排查与修复（先看编译是否失败 → `icacls` 看完整性标签 → 修 → 复验进程；含**本项目对照**与"低完整性进程写不了中完整性目录"这个反向坑）
 
 ## 版本号同步
 
@@ -401,6 +409,15 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
 - 串口友好名称直接调用 Win32 SetupAPI（UTF-16），避免 `serialport` crate 读取中文设备名时乱码（U+FFFD）
 - 前端通过 `withGlobalTauri: true` 与 Rust 通信，无 npm 桥接包
 - CSP 设为 `null`，无内容安全限制
+- ⚠️ **沙箱里跑的子进程可能是 Low 完整性 → 写不了这个仓库（Medium）**（2026-10 实测，别误判成"文件坏了"）：
+  `whoami /groups` 显示 `Mandatory Label\Low Mandatory Level`，而仓库目录是 `Medium Mandatory Level:(NW)`；
+  Windows 的 **no-write-up** 规则下，**`pwsh` / `npm` / `node` 这类子进程在本仓库里建目录、建文件、
+  写回一律 `Access to the path '…' is denied.`**，而 `icacls` 上看 ACL 完全正常
+  （`DESKTOP-…\Seahi` 有 FullControl）。**判别方法**：比较 `whoami /groups` 的完整性级别与
+  `icacls <目录>` 的 `Mandatory Label` —— **进程 Low + 目录 Medium = 这个进程被沙箱降级了**，
+  该改的是沙箱/提权方式，**不是**去 `icacls /setintegritylevel L`（那是把整个项目往下拉，正是
+  `skills/win-build-access-denied` 要治的病）。这种情况下文件改动走**编辑/写入工具**
+  （它们不经那个被降级的子进程），**别反复重试同一条 shell 命令**。
 - **每个"会滚动"的区域都必须有滚动条样式**（2026-09 用户要求"确认所有的滚动条都已经做了美化"）。
   改 CSS 时新加 `overflow:auto/scroll` 就得同时写 `::-webkit-scrollbar` 那一套
   （尺寸 + track + **corner** + thumb + thumb:hover）；`corner` 最容易漏，漏一个就是横竖交汇处
@@ -455,6 +472,24 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
   掉线/关监视器/列表里再无可发条目时必须**自愈停止**并提示。
   ⚠️ 循环发送自 2026-09 起是**发一条等它回话**：`busy` 继续等（不算结论）/ OK 下一条 /
   ERROR 重发本条（默认 3 次）/ 等满「超时」就**终止整条链**（填 `0` = 这条不等响应）。
+  ⚠️ 但**要不要等，看这条有没有写「期望」**（2026-10 用户报 bug 后定的口径，判据集中在
+  `qcmdItemWaits`）：**等回话 ⇔ 超时 > 0 且「期望」非空** —— 没写成功词就没有"什么算成功"，
+  条目不校验回话（要等内置的 `OK` 就得把 `OK` 写进「期望」，它仍是追加的成功词）。
+  早先留空仍按内置 OK 判定 → 设备不回 OK 的指令全被判超时 → 整条链停在第一条上（"只能发一次"）。
+  ⚠️ **但「超时」永远是这条的节奏**（别把它当成"只跟等回话有关"）：写了期望 = 等回话的上限，
+  没写期望 = **发下一条前的间隔**（`3000` 就是每 3 秒一条），**填 0 才**落回 20ms 兜底
+  （`QCMD_LOOP_MIN_GAP_MS` 只是个下限，**不是**不等回话条目的固定节奏 —— 第一版写死成 20ms，
+  用户当场问"为什么是固定 20ms？不是通过超时来配置？"，写死等于让用户没法调快慢）。
+  四条配套别改回去：① 不等回话的条目**根本不 arm**（不摆 Rust 状态、不轮询 `qcmd_hs_state`）；
+  ② **不等回话的条目一句提示都不给**（用户 2026-10 的两条要求："那行已发出完全多余" →
+  "开循环那行也要删，直接发送，不做任何提示"）：`qcmdRunOne` 的不等回话分支与 `setQcmdLoop`
+  里**都不许出现 `qcmdLog`**（断言守着），`qcmdLogFire` / `qcmdLoopNoWaitCount` 已删干净；
+  可见性只剩面板（亮着的开关 + 折叠条小点），某条等不等回话看超时那一格的悬停说明；
+  只有**自愈停止**（掉线 / 没条目 / 跳转死循环）那几行保留 —— 那是出错不是流水；
+  ③ 跨轮的那一拍必须作废（`m._qcmdLoopRun`，停/开都 +1）：否则"关一下再开"会多打一拍、
+  旧那一拍还会删掉新一轮的重入闸、替它做跳转（断言集里有两条守着）；
+  ④ "配了却不生效"的 期望/重试/跳转 在**导入时提示一次**（`deadWaitCount`）
+  + 超时那一格的悬停说明按条目写明"本条会等回话 / 这一格是间隔"（别做静默 no-op）。
   判定**只在 Rust 做一份**（`QcmdHs` + `qcmd_hs_arm/state/feed/stop`：串口由读线程喂、WSL 由前端
   `qcmd_hs_feed` 喂），而且**arm 必须早于 send**（反了就会把回话当上一条的迟到数据丢掉、白等到超时）。
   MCP 侧对应 `serial_quick_cmd` 的 `timeoutMs`/`expect`/`retry`（`delayMs` 是旧拼写，继续认）。

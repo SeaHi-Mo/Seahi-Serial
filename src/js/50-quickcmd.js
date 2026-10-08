@@ -18,7 +18,7 @@ var QCMD_LOOP_TITLE_ON  = '循环发送进行中：点击停止';
 function qcmdColsInnerHtml() {
     return '<span class="qcmd-col-seq">顺序</span>' +
         '<span class="qcmd-col-val">指令</span>' +
-        '<span class="qcmd-col-delay" title="超时（毫秒）：这条发出去最多等多久 —— 等到 OK 发下一条；等到 ERROR 重发本条（默认最多 3 次）；等满这个时间还没等到 OK 就终止整条循环。填 0 = 这条不等响应（连续 HEX 帧等）">超时' +
+        '<span class="qcmd-col-delay" title="超时（毫秒）：这一条占用的时间。写了「期望」= 等回话的上限（等到 OK 就发下一条；等到 ERROR 就重发本条（默认最多 3 次）；等满还没等到 OK 就终止整条循环 / 走失败跳转）；没写「期望」= 不校验回话，这一格就是发下一条前的间隔。填 0 = 按 20ms 最小间隔连发">超时' +
             '<span class="qcmd-col-unit">(ms)</span></span>' +
         '<span class="qcmd-col-hex" title="本条按 HEX 格式发送（默认关闭）">HEX</span>';
 }
@@ -514,6 +514,7 @@ function qcmdParseText(text) {
     var curGroup = 0;
     var legacyTimeoutCol = false;    // 文件里那一列用的是旧名「延时」→ 导入时提示一次
     var customCondCount = 0;         // 有自定义「期望 / 重试」的条数（面板不显示它们 → 也要说一声）
+    var deadWaitCount = 0;           // 配了等待参数却不会生效的条数（没期望 / 超时 0 → 不等回话）
     var gotoUnknown = 0;             // 跳转列里写了认不出来的值的次数（同样要提示一次）
     var gotoCount = 0;               // 写了跳转（成功/失败任一）的条数
     // 文件头（YAML / TOML 风格的 front matter）：首行是 --- 或 +++ 时，直到配对收尾行都原样保留。
@@ -642,6 +643,11 @@ function qcmdParseText(text) {
         }
         if (qcmdItemExpect(item) || item.retry !== undefined) customCondCount++;
         if (item.okgoto !== undefined || item.errgoto !== undefined) gotoCount++;
+        // "配了却不会生效"的等待参数（导入时说一次，别让它静默 no-op）：
+        // 等回话 = 期望非空 **且** 超时 > 0（见 `qcmdItemWaits`）—— 缺哪一头，
+        // 期望/重试/跳转就都白配了（期望 + 超时 0，或 重试/跳转 + 没写期望）
+        if (!qcmdItemWaits(item) && (item.expect !== undefined || item.retry !== undefined
+            || item.okgoto !== undefined || item.errgoto !== undefined)) deadWaitCount++;
         items.push(item);
         if (groups[curGroup]) groups[curGroup].items.push(item);
         // 原始单元格 + 读进来时的参数值：写回时"没动过的格子原样回吐"就靠这两样
@@ -654,6 +660,7 @@ function qcmdParseText(text) {
     return { blocks: blocks, items: items, groups: groups, skipped: skipped, style: style || 'md', cols: colMap,
              frontKeys: frontKeys, frontUnclosed: frontUnclosed,
              legacyTimeoutCol: legacyTimeoutCol, customCondCount: customCondCount,
+             deadWaitCount: deadWaitCount,
              gotoUnknown: gotoUnknown, gotoCount: gotoCount };
 }
 
@@ -805,6 +812,12 @@ function qcmdApplyParsed(mid, parsed, res, quiet) {
     // 「期望 / 重试」面板上没有入口：文件里有它们就必须告诉用户去哪改
     if (parsed.customCondCount) {
         showToast('这个文件里有 ' + parsed.customCondCount + ' 条写了 期望 / 重试（面板不显示这两项，改它请直接编辑文件）', 'info');
+    }
+    // 配了却不会生效的等待参数：**等回话 = 期望非空 且 超时 > 0**，缺一头这些配置就白写了。
+    // 不提示的话用户会以为"它还在等 OK / 还会重试"（静默 no-op 比报错更坑）
+    if (parsed.deadWaitCount) {
+        showToast('有 ' + parsed.deadWaitCount + ' 条配了 期望/重试/跳转 但不会生效：要等回话必须同时有「期望」'
+            + '（成功词，写 OK 就是等内置的 OK）和「超时 > 0」—— 否则这条发完就走', 'error');
     }
     // 跳转（分支与循环）：面板上同样没有入口 —— 有就提示在哪改、以及哪里没被理解
     if (parsed.gotoCount && !quiet) {
@@ -971,6 +984,8 @@ function qcmdHelpComment(style) {
         '#   | 2 | AT+CWMODE=1 | 2000 | false | OK | 3 |  |  |',
         '#   | 3 | AT+CWJAP="ssid","pwd" | 15000 | false | WIFI GOT IP\\|OK | 2 | 结束 | 10 |',
         '#   | 10 | AT+RST | 1000 | false | ready | 3 | 结束 | 结束 |',
+        '#   读法：1 号没写「期望」→ 不校验回话，隔「超时」3000ms 发下一条；2/3/10 号写了成功词',
+        '#   （2 号填 `OK` = 等内置的 OK），发出去之后等它回话（最多等各自的超时）。',
         '#',
         '# 【判断与分支案例】「期望」是**条件**，「成功跳转 / 失败跳转」就是**分支出口** ——',
         '#   一张表就能表达"识别到什么就往哪走"，不必另学一套语法：',
@@ -978,11 +993,13 @@ function qcmdHelpComment(style) {
         '#   | 顺序号 | 指令 | 超时(ms) | HEX | 期望 | 重试 | 成功跳转 | 失败跳转 |',
         '#   |---|---|---|---|---|---|---|---|',
         '#   | 1 | AT+CWJAP="ssid","pwd" | 15000 | false | WIFI GOT IP | 2 | 5 | 8 |',
-        '#   | 5 | AT+CIFSR | 1000 | false |  | 3 | 结束 | 结束 |',
+        '#   | 5 | AT+CIFSR | 1000 | false | OK | 3 | 结束 | 结束 |',
         '#   | 8 | AT+RST | 1000 | false | ready | 3 | 结束 | 结束 |',
         '#   读法：整行收到 `WIFI GOT IP` → 跳到顺序号 5；超时或用完重试 → 跳到 8。',
         '#   跳转列可填顺序号（跨组也行），或「结束」= 收尾停下；留空 = 成功走"下一条"、失败"终止整条链"。',
         '#   内置判定：整行 `OK`（或以 " OK" 结尾）= 成功；含 `error` = 失败；含 `busy` = 继续等。',
+        '#   ⚠️ 这些判断只在**写了「期望」的条目**上做（留空 = 这条不校验回话，按「超时」当间隔发下一条；',
+        '#      重试 / 跳转也就无从生效）—— 想等内置的 `OK` 也要把它写出来（「期望」填 `OK` 即可）。',
         '#   ⚠️ 自定义「期望」是**整行完全相等**，不是包含 —— 设备若回 `+CWJAP:WIFI GOT IP` 就匹配不上。',
         '#      要"包含某个词就算成功"，请用**工作流规则**（面板「更多设置 → 工作流」，条件选 `string_contains`）。',
         '#   跳转可以成环（成功回到自己就是轮询），但有**跳转次数上限**保护，超了会自愈停止。',
@@ -998,9 +1015,12 @@ function qcmdHelpComment(style) {
         '#   | 1 | 01 03 00 00 00 02 | 0 | true |',
         '#',
         '# 【各列】顺序号：0 = 不参与循环，>0 在组内按它升序发；',
-        '#   超时(ms)：发出去后最多等多久，填 0 = 这条不等响应（连续 HEX 帧）；',
-        '#   期望：自定义成功词，多个用 \\| 分隔（留空则只用内置的 OK / ERROR / busy）；',
+        '#   超时(ms)：这一条占用的时间。写了「期望」= 等回话的上限（等满就终止 / 走失败跳转）；',
+        '#      没写「期望」= 不校验回话，它就是"隔多久发下一条"的间隔；填 0 = 按 20ms 最小间隔连发。',
+        '#   期望：成功词，多个用 \\| 分隔。⚠️ **它同时是"要不要等回话"的开关**：',
+        '#      留空 = 不校验回话（发完按「超时」隔一会儿发下一条）；要等内置的 OK 也要写出来（写 OK 即可）。',
         '#   重试：收到 ERROR 后最多重发几次；成功跳转 / 失败跳转：填顺序号，「结束」= 收尾 / 终止整条链。',
+        '#   ⚠️ 重试 / 跳转只在「期望」非空 且「超时」> 0 的条目上生效（不等回话就没有失败可判）。',
         '#   注：面板上没有「期望 / 重试 / 跳转」的入口 —— 它们只从文件读。',
         '# ══ 说明结束，下面是你的指令 ══'
         // ⚠️ 行尾必须是 `\r\n`：`qcmdBuildText` 最后是 `out.join('\r\n')`，而 raw 块是**原样回吐**的。
@@ -1310,9 +1330,11 @@ function qcmdItemSeq(it) {
     return Math.min(n, QCMD_SEQ_MAX);
 }
 
-/// 某条的**超时**（毫秒）：发出去之后最多等多久 —— 等到 OK 发下一条、等到 ERROR 重发本条、
-/// 等满这个时间还没等到 OK 就终止整条循环。`0` = 这条不等响应（发完就过，用于连续 HEX 帧、
-/// 或设备本来就不回 OK 的指令）。
+/// 某条的**超时**（毫秒）= **这一条占用的时间**，两种用法由「期望」决定（判据 `qcmdItemWaits`）：
+///   · 写了「期望」→ 它是**等回话的上限**：等到 OK 发下一条、等到 ERROR 重发本条、
+///     等满这个时间还没等到 OK 就终止整条循环；
+///   · 没写「期望」→ 没有回话可等，它直接就是**发下一条前的间隔**。
+/// `0` = 不等（有期望时 = 不等响应；没期望时 = 不等间隔）→ 按 20ms 的兜底下限连发。
 /// ⚠️ 兼容老配置/老文件：早期这一项叫「延时」（字段 `delay`）。语义已经变了，但**按超时读回来**
 /// —— 只改含义、不改数值，同时在导入时明确提示一次（不做静默语义变更）。
 function qcmdItemTimeout(it) {
@@ -1325,9 +1347,24 @@ function qcmdItemTimeout(it) {
 
 /// 某条的**自定义成功词**（`|` 分隔多个）。面板不显示它 —— 它写在外部文件表头声明的「期望」列里：
 /// 通用的 AT 设备只回 `OK`（内置认得），个别设备回 `WIFI GOT IP` / `ready` 这类词时才需要它。
+/// ⚠️ 它同时是"这条**要不要等回话**"的开关：**留空 = 不等回话**（发完就发下一条）。要等内置的
+/// `OK` 也得把它写出来（写 `OK` 即可）—— 判据见 `qcmdItemWaits`。
 function qcmdItemExpect(it) {
     var s = (it && it.expect !== undefined && it.expect !== null) ? String(it.expect).trim() : '';
     return s.length > QCMD_EXPECT_MAX ? s.slice(0, QCMD_EXPECT_MAX) : s;
+}
+
+/// 这条循环发送时**要不要等回话**：必须**同时**满足
+///   ① 超时 > 0（填 `0` = 明说"这条不等响应"）
+///   ② 「期望」非空（有成功词才有判定依据）
+/// ⚠️ 把「期望」当开关是 2026-10 用户报的 bug 修出来的：文件里没写期望，却仍按内置 `OK` 判定
+/// —— 设备不回 `OK` 的指令（比如那种"发个裸串就行"的调试指令）全被判超时，整条链停在第一条上，
+/// 表现就是"未设置期望的指令只能发送一次"。所以：**没写成功词 = 不校验回话**。
+/// 但"不校验"不等于"挤在一起连发"：不等回话时**「超时」就是发下一条前的间隔**（见 `qcmdItemTimeout`），
+/// 只有填 `0` 才落回 QCMD_LOOP_MIN_GAP_MS 那个兜底下限。
+/// 判定本身仍在 Rust 侧（见 `qcmd_hs_*`），这里只决定"要不要 arm"。
+function qcmdItemWaits(it) {
+    return qcmdItemTimeout(it) > 0 && !!qcmdItemExpect(it);
 }
 
 /// 收到 ERROR 之后最多重发几次（`0` = 不重发，直接终止）。同样写在文件的「重试」列里。

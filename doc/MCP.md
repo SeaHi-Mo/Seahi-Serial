@@ -197,8 +197,8 @@ WSL 侧是 WSL 里的设备（`get_wsl_serial_devices` / `open_wsl_serial`）。
 |---|---|---|
 | **列出来** | 什么都不传 | 每条含 `index`（按"组→组内"摊平的下标）、`group`/`groupIndex`/`itemIndex`、`value`、`seq`/`timeoutMs`/`expect`/`retry`/`hex`，以及可直接交给 `ui_set` 的 `domIds`；另给 `groups[]`（组名/条数/`on` 是否参与循环/`folded`）与 `loop`{on, planLength} |
 | **执行一条** | `index` | 按**该条自己的 `hex`** 决定发文本还是 HEX（与主发送栏的模式无关） |
-| **开关循环** | `action: "loop"`，`on` 可省（省=取反） | 循环顺序 = **组从上到下 → 组内顺序号**；**发一条等它回话**（busy 继续等 / OK 下一条 / ERROR 重发 / 等满超时终止整链）；没连串口、或整条链上没有 `seq>0` 的条目就**拒绝**并说明原因 |
-| **加一条** | `action: "add"`，`group`（组序号/组名，可省=最后那组）、`value`、`seq`、`timeoutMs`、`expect`、`retry`、`okGoto`、`errGoto`、`hex` | 加完报告它落在 `index`、所属组与 `applied`。`delayMs` 是**旧拼写**（与 `timeoutMs` 同值）；`expect`/`retry`/`okGoto`/`errGoto` 面板上没有入口（写在文件的同名列里）；`okGoto`/`errGoto` = 跳到哪个**顺序号**（留空 = 下一条、`结束` = 收尾） |
+| **开关循环** | `action: "loop"`，`on` 可省（省=取反） | 循环顺序 = **组从上到下 → 组内顺序号**；⚠️ **只有同时配了 `expect`（成功词）和 `timeoutMs > 0` 的条目才等它回话**（`expect` 留空 = 这条不校验回话，**`timeoutMs` 这时就是"隔多久发下一条"的间隔**；要等内置的 `OK` 也得显式写 `OK`）；等回话的那些：busy 继续等 / OK 下一条 / ERROR 重发 / 等满超时按失败跳转（默认终止整链）。没连串口、或整条链上没有 `seq>0` 的条目就**拒绝**并说明原因 |
+| **加一条** | `action: "add"`，`group`（组序号/组名，可省=最后那组）、`value`、`seq`、`timeoutMs`、`expect`、`retry`、`okGoto`、`errGoto`、`hex` | 加完报告它落在 `index`、所属组与 `applied`。`delayMs` 是**旧拼写**（与 `timeoutMs` 同值）；`expect`/`retry`/`okGoto`/`errGoto` 面板上没有入口（写在文件的同名列里）；`timeoutMs` = **这一条占用的时间**（配了 `expect` = 等回话上限；没配 = 发送间隔；`0` = 20ms 最小间隔连发）；`expect` 是成功词**兼"要不要等回话"的开关**（留空 = 不等），`retry`/`okGoto`/`errGoto` 只在等回话的条目上生效；`okGoto`/`errGoto` = 跳到哪个**顺序号**（留空 = 下一条、`结束` = 收尾） |
 | **改一条** | `action: "update"`，`index` + 要改的字段 | 至少给一个字段；`applied` 列出真正改动的项 |
 | **删一条** | `action: "remove"`，`index` | 返回被删那条的组/内容/顺序号与剩余条数 |
 | **组操作** | `action: "group"`，`op: "add"｜"remove"｜"rename"｜"move"｜"on"｜"fold"` | `group` 指定哪一组（序号/组名/组 id）；`rename` 给 `name`；`move` 给 `toIndex`（**组的上下顺序就是循环顺序**）；`on`/`fold` 给 `on` |
