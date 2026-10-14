@@ -1911,6 +1911,43 @@ fn run_usbipd_list_elevated() -> Option<String> {
     result
 }
 
+/// WSL 映射列表的**设备名过滤词**（全部小写、不含空格 —— 比较前设备名会被折叠成同样形式）。
+///
+/// 为什么要有这份表：`usbipd list` 会把**本机所有 USB 设备**都列出来，而状态判定把
+/// `Not shared` 里的 "shared" 也算成 connected（见 `list_wsl_devices_blocking`），
+/// 于是机内一堆固定外设都会挤进映射列表。串口/蓝牙/网卡走各自的面板，指纹与摄像头
+/// 映射进 WSL 既没有用途、又会占着设备（指纹映射走会让 Windows Hello 登录失效）。
+///
+/// ⚠️ 加词只加**功能词**（这东西是什么设备），**别加厂商词**（`goodix`、`realtek` 这类）：
+/// 同一家厂商既做指纹也做 BLE、既做网卡也做串口桥，按厂商过滤会连带隐藏用户真想映射的设备。
+/// 2026-10 用户报的 "Goodix fingerprint" / "Integrated Camera" 就是下面这两组补的，
+/// 它们靠 `fingerprint` / `camera` 命中，不需要写厂商名。
+///
+/// 折叠空格后再比，所以 `USB 输入设备` 这种带空格的词一律写成没有空格的形式。
+const WSL_USB_NAME_FILTERS: &[&str] = &[
+    // 串口（该在「串口」面板里选，不是拿来映射的）
+    "通信端口", "通讯端口", "communicationsport",
+    // 蓝牙（走 BLE 面板）
+    "蓝牙", "bluetooth",
+    // Windows 内置 HID / DSL 设备
+    "usb输入设备", "usb-baseddslinstrument",
+    // 网卡（映射进 WSL 会顶掉 WSL 自己的网络）
+    "ethernet", "网络适配器", "networkadapter", "lan",
+    // 指纹 / 生物识别（Windows Hello 专用；映射走 = 本机登录设备被 WSL 抢走）
+    "fingerprint", "指纹", "biometric", "生物识别",
+    // 摄像头 / 采集类（内置摄像头映射进 WSL 没有用途）
+    "camera", "webcam", "摄像头", "摄像", "相机",
+];
+
+/// 设备名是否命中 [`WSL_USB_NAME_FILTERS`]（命中 = 不出现在 WSL 映射列表里）。
+///
+/// 比较前统一小写 + 去掉所有空格：usbipd 报出来的名字里有 `Integrated Camera` 这种
+/// 带空格、大小写不定的形式，不折叠就会漏掉一半写法。
+fn wsl_usb_name_is_filtered(name: &str) -> bool {
+    let normalized = name.to_lowercase().replace(' ', "");
+    WSL_USB_NAME_FILTERS.iter().any(|f| normalized.contains(f))
+}
+
 /// 阻塞式实现：在 spawn_blocking 中执行，避免同步命令占用主线程卡住整个 UI。
 /// 取消映射后前端会密集重扫本命令（device-changed + 重试），并发时靠 WSL_SHELL_CMD_LOCK 串行。
 fn list_wsl_devices_blocking() -> Result<Vec<serde_json::Value>, String> {
@@ -1981,14 +2018,8 @@ fn list_wsl_devices_blocking() -> Result<Vec<serde_json::Value>, String> {
                     // 去掉 usbipd 名称末尾的 Windows 侧 COM 后缀，如 "USB 串行设备 (COM38)" -> "USB 串行设备"
                     let name = strip_windows_com_suffix(&name);
 
-                    static FILTERS: &[&str] = &[
-                        "通信端口", "通讯端口", "communicationsport",
-                        "蓝牙", "bluetooth",
-                        "usb输入设备", "usb-baseddslinstrument",
-                        "ethernet", "网络适配器", "networkadapter", "lan",
-                    ];
-                    let name_lower = name.to_lowercase().replace(" ", "");
-                    if FILTERS.iter().any(|f| name_lower.contains(f)) {
+                    // 机内固定外设（指纹 / 摄像头 / 蓝牙 / 网卡 …）不进映射列表，见 WSL_USB_NAME_FILTERS
+                    if wsl_usb_name_is_filtered(&name) {
                         continue;
                     }
 
@@ -4945,6 +4976,32 @@ mod util_tests {
         assert_eq!(super::strip_windows_com_suffix("COM3"), "COM3");
         // 含 "(COM" + 数字 后缀会被剥离
         assert_eq!(super::strip_windows_com_suffix("COM xx (COM28)"), "COM xx");
+    }
+
+    #[test]
+    fn wsl_usb_name_filter_hides_builtin_peripherals() {
+        // 2026-10 用户报的两类：指纹与内置摄像头不该出现在 WSL 映射列表里
+        assert!(super::wsl_usb_name_is_filtered("Goodix fingerprint"));
+        assert!(super::wsl_usb_name_is_filtered("Goodix Fingerprint USB Device"));
+        assert!(super::wsl_usb_name_is_filtered("Integrated Camera"));
+        assert!(super::wsl_usb_name_is_filtered("Integrated Webcam"));
+        assert!(super::wsl_usb_name_is_filtered("USB 摄像头"));
+        // 大小写 / 空格不影响判定（usbipd 报出来的写法不固定）
+        assert!(super::wsl_usb_name_is_filtered("integratedcamera"));
+        assert!(super::wsl_usb_name_is_filtered("  Integrated   Camera  "));
+        // 原有几类不能因为这次重写而失效
+        assert!(super::wsl_usb_name_is_filtered("通信端口 (COM1)"));
+        assert!(super::wsl_usb_name_is_filtered("Bluetooth Adapter"));
+        assert!(super::wsl_usb_name_is_filtered("USB 输入设备"));
+        assert!(super::wsl_usb_name_is_filtered("Realtek USB Ethernet Adapter"));
+
+        // 真要映射的串口设备一个都不许被误伤
+        assert!(!super::wsl_usb_name_is_filtered("USB-SERIAL CH340 (COM3)"));
+        assert!(!super::wsl_usb_name_is_filtered("Silicon Labs CP210x USB to UART Bridge"));
+        assert!(!super::wsl_usb_name_is_filtered("USB 串行设备 (COM28)"));
+        assert!(!super::wsl_usb_name_is_filtered("FTDI FT232R USB UART"));
+        // ⚠️ 过滤词只认功能、不认厂商：Goodix 也做 BLE，按厂商过滤会连带隐藏真想映射的设备
+        assert!(!super::wsl_usb_name_is_filtered("Goodix BLE Dongle"));
     }
 
     #[test]
