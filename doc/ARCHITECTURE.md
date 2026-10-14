@@ -496,6 +496,34 @@ WSL 串口通过 Python bridge 脚本实现：
 - `bridge_stderr_hint` 里"**没有 sg**"必须排在"**sg 切组失败**"**前面** —— `sg: not found`
   也含 `sg:`，顺序颠倒就会被后者吞掉，用户拿到的是**错**的原因（"你不在 dialout 组里"）。
 
+#### 发行版名只认 `wsl -l -v`，`wt` 必须显式给命令行（别改回去）
+
+2026-10-14 事故（用户："升级 WSL 3.0.3 之后，快捷启动按钮打不开 WSL，打开的是 PowerShell"）：
+
+1. 升级后某次 `wsl --list --verbose` 回的是 WSL 自己的报错文本
+   （`错误代码: 0` / `拒绝访问 Wsl/E_ACCESSDENIED` / `请打开 https://github.com/microsoft/WSL/issues 反馈`）；
+2. 旧 `get_wsl_distributions_blocking` **逐行取第一个 token 当发行版名**，于是界面上多出一张
+   名字叫「错误代码:」的卡片（`CACHED_DISTRO` 那条路径也一样会把这个名字缓存起来，之后 WSL 串口全跟着错）；
+3. 点它的「启动」→ `wt.exe -p 错误代码:`。**Windows Terminal 找不到同名 profile 时不会报错，
+   而是静默改用别的 profile** —— 没有额外命令行时用的是默认 profile（本机 = Windows PowerShell），
+   于是一个"启动 WSL"的按钮开出了 PowerShell。
+
+两条纪律：
+
+- **解析不出任何发行版时必须报错**（`parse_wsl_list_verbose` 返回 `Err`，把 WSL 报错原文带回界面），
+  **绝不"挑一个 token 当名字"**。一行的判据是「STATE 是已知状态词 **或** 第三列 VERSION 是纯数字」，
+  `错误代码: 0`（两列、"0" 不是状态词）与 `请打开 <url> 反馈`（第二列不是状态词、第三列不是数字）都进不来；
+  表头**不要求存在**（非中英文系统照样能用）。
+- **`launch_wsl` 只接受列表里真实存在的名字**（`resolve_launch_target`），并且**给 `wt` 显式命令行**
+  `wt.exe -p <发行版> [--startingDirectory <dir>] wsl.exe -d <发行版>`：
+  `-p` 只决定"长什么样"（图标/配色），`wsl.exe -d <发行版>` 决定"跑什么" ——
+  profile 名万一还是对不上，标签页里跑的依旧是这个发行版。
+  另：**别再把 `"Ubuntu-20.04"` 当兜底**（老代码 `dist.unwrap_or("Ubuntu-20.04")`），
+  没给名字时应当取默认发行版（`isDefault`）、其次第一个。
+
+前端配套：读不到列表时把 `Err` 的原文显示在发行版区域（不是清空），启动/关闭失败一律 `showToast` ——
+否则用户看到的是"点了没反应"，原因只留在 console 里。
+
 ---
 
 ## 6. 关键功能实现

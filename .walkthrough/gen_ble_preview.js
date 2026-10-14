@@ -8162,6 +8162,44 @@ try {
       '当前行仍在输出区内（没有被移出 DOM）');
   }
 
+  // ===== WSL 快捷启动：发行版名只能来自 WSL 自己报的列表（2026-10-14「点启动开出 PowerShell」事故） =====
+  // 事故链条：升级 WSL 3.0.3 后 `wsl -l -v` 回了一段 `错误代码: 0 / 拒绝访问 Wsl/E_ACCESSDENIED`，
+  // 后端把报错文本当成了发行版名 `错误代码:` → 界面多出一张卡片 → 点它的「启动」→
+  // `wt -p 错误代码:` 找不到同名 profile → Windows Terminal **静默改用默认 profile（Windows PowerShell）**。
+  const launchWsl = extractRustFn('fn launch_wsl(dist: Option<String>)');
+  check(/let dist_name = resolve_launch_target\(&rows, dist\.as_deref\(\)\)/.test(launchWsl),
+    'launch_wsl 的发行版名必须经 resolve_launch_target 核对过');
+  check(!/Ubuntu-20\.04/.test(launchWsl),
+    'launch_wsl 不再硬编码 "Ubuntu-20.04" 兜底（本机没这个发行版时会开出一个莫名的窗口）');
+  check(/c\.arg\("wsl\.exe"\)\.args\(\["-d", &dist_name\]\);/.test(launchWsl),
+    '★ wt 必须显式给出 `wsl.exe -d <发行版>`：只写 -p 时，profile 名对不上会被 WT 静默换成别的 profile');
+  check(/c\.args\(\["wsl\.exe", "-d", &dist_name\]\);/.test(launchWsl),
+    'conhost 回退分支同样显式 -d <发行版>（不靠"默认发行版"撞运气）');
+
+  const parseWslList = extractRustFn('fn parse_wsl_list_verbose(text: &str)');
+  check(/if rows\.is_empty\(\) \{\s*return Err\(wsl_output_excerpt\(text\)\)/.test(parseWslList),
+    '★ 一行发行版都解析不出来时必须 Err（把 WSL 报错原文带回界面），绝不挑一个 token 当名字');
+  const distroLine = extractRustFn('fn wsl_distro_row_from_line(line: &str) -> Option<WslDistroRow>');
+  check(/for i in 1\.\.parts\.len\(\)[\s\S]{0,220}wsl_state_is_known\(parts\[i\]\)/.test(distroLine),
+    '以「整段状态词」为锚点认列：名字里带空格（`wsl --import "My Distro"`）也不会被切断');
+  check(/last_is_version && parts\.len\(\) >= 3/.test(distroLine),
+    '状态词不认识时按「最右一段是数字」兜底 —— 老版本/异体措辞别让发行版从面板上消失');
+  const stateKnown = extractRustFn('fn wsl_state_is_known(state: &str) -> bool');
+  check(!/\.contains\(/.test(stateKnown) && /starts_with/.test(stateKnown),
+    '★ 状态词必须按整段前缀判、不能用 contains：`…没有已安装的分发版。` 里的「安装」一旦命中，整句说明会被当成发行版行');
+  const distroRows = extractRustFn('fn get_or_start_wsl_distro() -> Result<String, String>');
+  check(/let rows = wsl_distro_rows\(\)\?;/.test(distroRows),
+    'WSL 串口挑发行版也走同一份解析（旧实现会把 `错误代码:` 缓存成发行版名，之后全盘跟着错）');
+  check(/读取 WSL 发行版列表失败：\{/.test(mainRs),
+    '后端把 WSL 的原始报错摘要带进错误信息（界面与 AI 都能直接看到原因）');
+
+  check(/main-wslDistroList'\);[\s\S]{0,300}escapeHtml\(String\(e\)\)/.test(html),
+    '前端读不到发行版列表时把原因显示在面板里（不再只是把区域清空）');
+  check(/showToast\('打开 WSL 终端失败: ' \+ e, 'error'\)/.test(html),
+    '「打开终端」失败有 toast 提示（以前只有 console）');
+  check(/showToast\('WSL 操作失败: ' \+ e, 'error'\)/.test(html),
+    '发行版「启动/关闭」失败有 toast 提示（以前只回退按钮文字，观感是"点了没反应"）');
+
   runQcmdLoopAsyncTests().then(function () {
     console.log(`\n结果: ${pass} passed, ${fail} failed`);
     process.exit(fail ? 1 : 0);

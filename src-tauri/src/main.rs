@@ -2110,6 +2110,144 @@ fn decode_wsl_output(raw: &[u8]) -> String {
     String::from_utf8_lossy(raw).to_string()
 }
 
+/// `wsl --list --verbose` 里的一行发行版（解析产物；**不猜、不补默认值**）
+#[derive(Debug, Clone)]
+struct WslDistroRow {
+    name: String,
+    is_default: bool,
+    running: bool,
+}
+
+/// STATE 列是否表示"运行中"（英文 / 中文都认）
+fn wsl_state_is_running(state: &str) -> bool {
+    let s = state.to_lowercase();
+    s.contains("running") || s.contains("运行")
+}
+
+/// STATE 列是否是 WSL 已知的状态词。
+/// ⚠️ 必须按**整段 token** 判（前缀匹配），**不能用 `contains`**：
+/// `适用于 Linux 的 Windows 子系统没有已**安装**的分发版。` 这种说明句里的「安装」二字
+/// 一旦被 `contains` 命中，整句话就会被当成一条"状态是安装/名字是前半句"的发行版行。
+fn wsl_state_is_known(state: &str) -> bool {
+    let s = state.to_lowercase();
+    const EN: [&str; 8] = ["running", "stopped", "installing", "uninstalling", "converting", "exporting", "starting", "stopping"];
+    const ZH: [&str; 9] = ["运行", "停止", "安装", "卸载", "转换", "导出", "启动", "正在", "已"];
+    EN.iter().any(|k| s.starts_with(k)) || ZH.iter().any(|k| s.starts_with(k))
+}
+
+/// 取 WSL 原始输出里最要紧的几行，用于报错文案（**只做展示，绝不拿来当发行版名**）
+fn wsl_output_excerpt(text: &str) -> String {
+    let mut lines: Vec<&str> = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    lines.truncate(3);
+    lines.join(" / ")
+}
+
+/// 解析 `wsl --list --verbose`。
+///
+/// ⚠️ **解析不出来时必须返回 Err，绝不能"挑一个 token 当发行版名"。**
+/// 2026-10-14 的事故就出在这里：升级 WSL 3.0.3 之后 `wsl -l -v` 回了一段
+/// `错误代码: 0 / 拒绝访问 Wsl/E_ACCESSDENIED / 请打开 https://github.com/microsoft/WSL/issues 反馈`，
+/// 老解析把首行的 `错误代码:` 当成了发行版名 —— 界面上因此多出一张「错误代码:」卡片；
+/// 点它的「启动」→ `wt -p 错误代码:` 找不到同名 profile → Windows Terminal **静默改用默认 profile**
+/// （Windows PowerShell），用户看到的就是"打不开 WSL、打开的是 PowerShell"。
+///
+/// 判据（**以"整段状态词"为锚点**，两种切法都不会把名字切坏）：
+/// ① 找到第一个**整段**就是已知状态词的 token → 名字在它左边（**含空格的名字照样完整**）、
+///    VERSION 在它右边（有内容就必须是纯数字，否则不算这一列）；
+/// ② 状态词一个都不认识时兜底：最右一段是纯数字（= 有 VERSION 列）且左边还有两段以上 →
+///    仍按列表行收下、名字取第一段（老版本 / 异体措辞不该让发行版从面板上消失）。
+/// 报错文本两条都进不来：`错误代码: 0` 只有两段、没有状态词；`请打开 <url> 反馈` 也一样；
+/// `适用于 Linux 的 Windows 子系统没有已安装的分发版。` 的「安装」在整段里不是开头，命中不了。
+/// 表头按 NAME/名称/VERSION/版本 跳过，且**不要求表头存在**（非中英文系统照样能用）。
+fn parse_wsl_list_verbose(text: &str) -> Result<Vec<WslDistroRow>, String> {
+    let mut rows: Vec<WslDistroRow> = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() { continue; }
+        let lower = line.to_lowercase();
+        if lower.starts_with("name") || lower.starts_with("名称")
+            || lower.starts_with("version") || lower.starts_with("版本") { continue; }
+        if let Some(row) = wsl_distro_row_from_line(line) {
+            rows.push(row);
+        }
+    }
+    if rows.is_empty() {
+        return Err(wsl_output_excerpt(text));
+    }
+    Ok(rows)
+}
+
+/// 把一行解析成发行版；不是列表行就 None（**绝不硬凑名字**）
+fn wsl_distro_row_from_line(line: &str) -> Option<WslDistroRow> {
+    let is_default = line.starts_with('*');
+    let rest = if is_default { line[1..].trim_start() } else { line };
+    let parts: Vec<&str> = rest.split_whitespace().collect();
+    if parts.len() < 2 { return None; }
+
+    // ① 以整段状态词为锚点
+    for i in 1..parts.len() {
+        if !wsl_state_is_known(parts[i]) { continue; }
+        // 状态词右边若还有内容，它只能是 VERSION（纯数字）；否则说明这个 token 是名字的一部分
+        if let Some(v) = parts.get(i + 1) {
+            if !(!v.is_empty() && v.chars().all(|c| c.is_ascii_digit())) { continue; }
+        }
+        return Some(WslDistroRow {
+            name: parts[..i].join(" "),
+            is_default,
+            running: wsl_state_is_running(parts[i]),
+        });
+    }
+
+    // ② 状态词不认识时的兜底：最右一段是纯数字 = 有 VERSION 列（老版本 / 别的措辞）
+    let last = parts[parts.len() - 1];
+    let last_is_version = !last.is_empty() && last.chars().all(|c| c.is_ascii_digit());
+    if last_is_version && parts.len() >= 3 {
+        return Some(WslDistroRow {
+            name: parts[0].to_string(),
+            is_default,
+            running: wsl_state_is_running(parts[1]),
+        });
+    }
+    None
+}
+
+/// 读一次 WSL 发行版列表；失败时带回 WSL 的原始报错摘要（供界面/日志如实显示）
+fn wsl_distro_rows() -> Result<Vec<WslDistroRow>, String> {
+    let output = run_output_timeout(hidden_command("wsl").args(["--list", "--verbose"]), 5000)
+        .ok_or_else(|| "读取 WSL 发行版列表超时（wsl --list --verbose）".to_string())?;
+    let text = decode_wsl_output(&output.stdout);
+    parse_wsl_list_verbose(&text).map_err(|detail| {
+        if detail.is_empty() {
+            "读取 WSL 发行版列表失败：wsl --list --verbose 没有任何输出".to_string()
+        } else {
+            format!("读取 WSL 发行版列表失败：{}", detail)
+        }
+    })
+}
+
+/// 这次「启动」到底该开哪个发行版（纯函数，便于单测）：
+/// 调用方给了名字就**必须**在列表里找得到（挡住 2026-10-14 那种把报错文本传下来的情况），
+/// 没给就取默认发行版、其次第一个。
+fn resolve_launch_target(rows: &[WslDistroRow], requested: Option<&str>) -> Result<String, String> {
+    let available = || rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join("、");
+    match requested.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        Some(name) => {
+            if rows.iter().any(|r| r.name == name) {
+                Ok(name.to_string())
+            } else {
+                Err(format!("WSL 里没有名为「{}」的发行版（当前可用：{}）", name, available()))
+            }
+        }
+        // 以前这里硬编码兜底 "Ubuntu-20.04"：本机没这个发行版时就会开出一个莫名的窗口
+        None => rows
+            .iter()
+            .find(|r| r.is_default)
+            .or_else(|| rows.first())
+            .map(|r| r.name.clone())
+            .ok_or_else(|| "没有可用的 WSL 发行版".to_string()),
+    }
+}
+
 /// 检查 WSL 运行状态，返回正在运行的发行版列表
 #[tauri::command]
 async fn check_wsl_status() -> Vec<String> {
@@ -2143,31 +2281,15 @@ fn check_wsl_running() -> Option<Vec<String>> {
     // 缩短超时（3s），避免 WSL 面板加载被 `wsl --list --verbose` 卡住拖垮
     let output = run_output_timeout(&mut cmd, 3000)?;
     let text = decode_wsl_output(&output.stdout);
-    let dists: Vec<String> = text.lines()
-        .map(|l| l.trim())
-        .filter(|l| {
-            if l.is_empty() { return false; }
-            let lower = l.to_lowercase();
-            if lower.starts_with("name") || lower.starts_with("名称") { return false; }
-            if lower.starts_with("version") || lower.starts_with("版本") { return false; }
-            true
-        })
-        .filter_map(|l| {
-            let clean = l.trim_start_matches('*').trim();
-            let parts: Vec<&str> = clean.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let state = parts[1].to_lowercase();
-                if state.contains("running") || state.contains("运行") {
-                    Some(parts[0].to_string())
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-        .collect();
-    Some(dists)
+    // 解析不出来 = "状态未知"（None），既不当成空列表、更不猜发行版名
+    // —— 猜名字的代价见 parse_wsl_list_verbose 的注释（2026-10-14 开成 PowerShell 那次）
+    let rows = parse_wsl_list_verbose(&text).ok()?;
+    Some(
+        rows.into_iter()
+            .filter(|r| r.running)
+            .map(|r| r.name)
+            .collect(),
+    )
 }
 
 fn is_process_alive(pid: u32) -> bool {
@@ -2233,10 +2355,24 @@ fn wsl_path_to_win(wsl_path: &str, dist_name: &str) -> Option<String> {
 }
 
 /// 启动 WSL 终端（可指定分发版）
-/// 直接启动 wsl.exe 并分配独立控制台窗口，避免 PowerShell 参数传递问题
 #[tauri::command]
 fn launch_wsl(dist: Option<String>) -> Result<(), String> {
     dbg_log(&format!("launch_wsl: dist={:?}", dist));
+
+    // ① **名字必须来自 WSL 自己报出来的发行版列表**。
+    //    ⚠️ 绝不能把没核对过的字符串直接交给 `wt -p`：profile 名一旦对不上，
+    //    Windows Terminal 会**静默改用别的 profile**（默认那个是 Windows PowerShell），
+    //    于是"点启动"变成开一个 PowerShell —— 2026-10-14 事故（传进来的是把 WSL 报错文本
+    //    当名字解析出来的 `错误代码:`）。宁可报错，也不开错窗口。
+    let rows = wsl_distro_rows().map_err(|e| {
+        dbg_log(&format!("launch_wsl: {}", e));
+        e
+    })?;
+    let dist_name = resolve_launch_target(&rows, dist.as_deref()).map_err(|e| {
+        dbg_log(&format!("launch_wsl: {}", e));
+        e
+    })?;
+
     // 通过 Windows Terminal (wt.exe) 启动，支持多标签。
     // 仅首次调用时检测 wt.exe 是否存在，后续复用缓存结果。
     static USE_WT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -2250,11 +2386,10 @@ fn launch_wsl(dist: Option<String>) -> Result<(), String> {
             .unwrap_or(false)
     });
     let mut cmd = if use_wt {
-        let dist_name = dist.as_deref().unwrap_or("Ubuntu-20.04");
         // 获取 WSL 用户主目录，用于设置终端启动路径（带超时，避免 WSL 无响应时卡住）
         let home = run_output_timeout(
             std::process::Command::new("wsl.exe")
-                .args(["-d", dist_name, "--", "printenv", "HOME"])
+                .args(["-d", &dist_name, "--", "printenv", "HOME"])
                 .creation_flags(CREATE_NO_WINDOW),
             5000,
         )
@@ -2267,27 +2402,25 @@ fn launch_wsl(dist: Option<String>) -> Result<(), String> {
         });
         let mut c = std::process::Command::new("wt.exe");
         // 使用 Windows Terminal 的 WSL 配置文件（带图标和正确配色）
-        c.args(["-p", dist_name]);
+        c.args(["-p", &dist_name]);
         // 设置启动目录为 WSL 主目录（转换为 Windows 可识别的路径）
         if let Some(ref h) = home {
-            if let Some(win_path) = wsl_path_to_win(h, dist_name) {
+            if let Some(win_path) = wsl_path_to_win(h, &dist_name) {
                 dbg_log(&format!("launch_wsl: converting {} -> {}", h, win_path));
                 c.args(["--startingDirectory", &win_path]);
             } else {
                 dbg_log(&format!("launch_wsl: failed to convert WSL path: {}", h));
             }
         }
+        // ② **显式给出要跑的命令行**：`-p` 只决定"长什么样"（图标/配色），这一句决定"跑什么"。
+        //    万一 profile 名还是对不上（用户改过 profile 名、profile 被删……），
+        //    标签页里跑的依旧是这个发行版，不会再变成 PowerShell。
+        c.arg("wsl.exe").args(["-d", &dist_name]);
         c
     } else {
         // conhost.exe 回退：确保控制台窗口正确初始化
-        let mut args: Vec<String> = Vec::new();
-        args.push("wsl.exe".to_string());
-        if let Some(ref d) = dist {
-            args.push("-d".to_string());
-            args.push(d.clone());
-        }
         let mut c = std::process::Command::new("conhost.exe");
-        c.args(&args);
+        c.args(["wsl.exe", "-d", &dist_name]);
         c
     };
     #[cfg(windows)]
@@ -2336,28 +2469,22 @@ fn get_wsl_distributions_blocking() -> Result<Vec<serde_json::Value>, String> {
     };
 
     // 所有 wsl 子进程调用都带超时，避免 WSL 无响应时永久阻塞
-    let output = run_output_timeout(hidden_command("wsl").args(["--list", "--verbose"]), 5000)
-        .ok_or_else(|| "获取 WSL 列表超时或失败".to_string())?;
+    // ⚠️ 解析失败必须报错返回：以前这里会把 WSL 的报错文本当成发行版，
+    // 界面上就多出一张「错误代码:」卡片（点它的「启动」会开出 PowerShell，2026-10-14 事故）
+    let rows = match wsl_distro_rows() {
+        Ok(rows) => rows,
+        Err(msg) => {
+            report_error(&msg, "get_wsl_distributions");
+            return Err(msg);
+        }
+    };
 
-    let text = decode_wsl_output(&output.stdout);
     let mut distros: Vec<serde_json::Value> = Vec::new();
 
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() { continue; }
-        let lower = line.to_lowercase();
-        if lower.starts_with("name") || lower.starts_with("名称") || lower.starts_with("version") || lower.starts_with("版本") {
-            continue;
-        }
-
-        let is_default = line.starts_with('*');
-        let trimmed = if is_default { line[1..].trim_start() } else { line };
-        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        if parts.len() < 2 { continue; }
-
-        let name = parts[0].to_string();
-        let state_str = parts[1].to_lowercase();
-        let wsl_says_running = state_str.contains("running") || state_str.contains("运行");
+    for row in rows {
+        let name = row.name;
+        let is_default = row.is_default;
+        let wsl_says_running = row.running;
         // 终端窗口已关闭时，即使 WSL 发行版仍在后台运行，也视为未启动
         let running = wsl_says_running && terminal_alive;
 
@@ -2460,37 +2587,18 @@ fn get_or_start_wsl_distro() -> Result<String, String> {
         }
     }
     // 优先选择已在运行的发行版
-    let running = check_wsl_running().unwrap_or_default();
-    if let Some(name) = running.first() {
-        *CACHED_DISTRO.lock().unwrap_or_else(|e| e.into_inner()) = Some(name.clone());
-        return Ok(name.clone());
+    // ⚠️ 这里以前是"逐行取第一个 token 当发行版"：`wsl -l -v` 一旦回的是报错文本，
+    // `错误代码:` 就会被当成发行版名**缓存进 CACHED_DISTRO**，之后所有 WSL 串口操作都跟着错。
+    let rows = wsl_distro_rows()?;
+    if let Some(r) = rows.iter().find(|r| r.running) {
+        *CACHED_DISTRO.lock().unwrap_or_else(|e| e.into_inner()) = Some(r.name.clone());
+        return Ok(r.name.clone());
     }
-    // 没有运行中的，选择默认发行版并启动（所有调用带超时，避免 WSL 无响应时阻塞）
-    let out = run_output_timeout(hidden_command("wsl").args(["--list", "--verbose"]), 5000)
-        .ok_or_else(|| "获取 WSL 列表超时".to_string())?;
-    let text = decode_wsl_output(&out.stdout);
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with('*') {
-            let name = line[1..].trim().split_whitespace().next()
-                .ok_or("无法解析默认发行版名称")?;
-            let _ = run_output_timeout(hidden_command("wsl").args(["-d", name, "-e", "echo", "ok"]), 5000);
-            *CACHED_DISTRO.lock().unwrap_or_else(|e| e.into_inner()) = Some(name.to_string());
-            return Ok(name.to_string());
-        }
-    }
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() { continue; }
-        let lower = line.to_lowercase();
-        if lower.starts_with("name") || lower.starts_with("version") { continue; }
-        let name = line.split_whitespace().next()
-            .ok_or("无法解析发行版名称")?;
-        let _ = run_output_timeout(hidden_command("wsl").args(["-d", name, "-e", "echo", "ok"]), 5000);
-        *CACHED_DISTRO.lock().unwrap_or_else(|e| e.into_inner()) = Some(name.to_string());
-        return Ok(name.to_string());
-    }
-    Err("没有可用的 WSL 发行版".into())
+    // 没有运行中的，选择默认发行版（其次第一个）并启动
+    let name = resolve_launch_target(&rows, None)?;
+    let _ = run_output_timeout(hidden_command("wsl").args(["-d", &name, "-e", "echo", "ok"]), 5000);
+    *CACHED_DISTRO.lock().unwrap_or_else(|e| e.into_inner()) = Some(name.clone());
+    Ok(name)
 }
 
 /// 将路径用 bash 单引号包裹并转义，避免路径含空格/特殊字符时被 shell 拆分或注入
@@ -4854,6 +4962,103 @@ mod util_tests {
         // 没有 BOM，当作 UTF-8 处理
         let raw = b"NAME          STATE";
         assert_eq!(super::decode_wsl_output(raw), "NAME          STATE");
+    }
+
+    #[test]
+    fn parse_wsl_list_reads_real_output() {
+        // 真机输出（WSL 3.0.3）：默认发行版带 `*`，两列/三列都要认
+        let text = "  NAME            STATE           VERSION\n\
+                    * Ubuntu-24.04    Stopped         2\n\
+                    \x20 Ubuntu-20.04    Running         2\n";
+        let rows = super::parse_wsl_list_verbose(text).expect("真机输出必须能解析");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "Ubuntu-24.04");
+        assert!(rows[0].is_default && !rows[0].running);
+        assert_eq!(rows[1].name, "Ubuntu-20.04");
+        assert!(!rows[1].is_default && rows[1].running);
+    }
+
+    #[test]
+    fn parse_wsl_list_rejects_error_text() {
+        // 2026-10-14 事故原文：升级 WSL 3.0.3 之后 `wsl -l -v` 回的就是这个。
+        // 老解析把首行当成了发行版 `错误代码:` → 点「启动」开出了 Windows PowerShell。
+        let text = "错误代码: 0 \n\
+                    拒绝访问 Wsl/E_ACCESSDENIED\n\
+                    请打开 https://github.com/microsoft/WSL/issues 反馈\n";
+        let err = super::parse_wsl_list_verbose(text).expect_err("报错文本绝不能解析出发行版");
+        assert!(err.contains("错误代码"), "报错原文要带回去显示，实际: {}", err);
+        assert!(
+            !err.contains("拒绝访问 Wsl/E_ACCESSDENIED\n"),
+            "摘要只取头几行、按一行拼：{}", err
+        );
+
+        // "没有已安装的分发版"这类说明同样不许变成发行版
+        assert!(super::parse_wsl_list_verbose("适用于 Linux 的 Windows 子系统没有已安装的分发版。").is_err());
+        // 空输出也要报错，而不是当成"零个发行版"
+        assert!(super::parse_wsl_list_verbose("").is_err());
+        // 只有表头、没有任何数据行 → 报错（不是"列表为空"）
+        assert!(super::parse_wsl_list_verbose("  NAME   STATE   VERSION\n").is_err());
+    }
+
+    #[test]
+    fn parse_wsl_list_accepts_missing_version_and_localized_state() {
+        // 正在安装时 VERSION 可能还空着 —— 靠"STATE 是已知状态词"兜住，别把发行版弄丢
+        let rows = super::parse_wsl_list_verbose("  NAME      STATE        VERSION\n* Ubuntu    Installing\n")
+            .expect("安装中的发行版也要在列表里");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "Ubuntu");
+        assert!(rows[0].is_default && !rows[0].running);
+
+        // 中文表头 + 中文状态
+        let zh = super::parse_wsl_list_verbose("  名称      状态        版本\n  Ubuntu    运行中      2\n")
+            .expect("中文输出也要能解析");
+        assert_eq!(zh[0].name, "Ubuntu");
+        assert!(zh[0].running);
+    }
+
+    #[test]
+    fn parse_wsl_list_keeps_names_with_spaces_and_unknown_states() {
+        // 名字里带空格的发行版（`wsl --import "My Distro" ...`）：从左边切会切成 "My"（老实现就是这样），
+        // 必须从右往左认列，名字整段保留
+        let rows = super::parse_wsl_list_verbose("  NAME        STATE     VERSION\n* My Distro   Running   2\n")
+            .expect("含空格的发行版名要能解析");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "My Distro");
+        assert!(rows[0].is_default && rows[0].running);
+
+        // 有 VERSION 列时，状态词我没登记也认（老版本 / 别的措辞不该让发行版从面板上消失）
+        let odd = super::parse_wsl_list_verbose("  Ubuntu-20.04   Wird ausgeführt   2\n")
+            .expect("有 VERSION 列就是列表行");
+        assert_eq!(odd[0].name, "Ubuntu-20.04", "兜底分支也别把名字切坏");
+        assert!(!odd[0].running, "状态词不认识时按「没在跑」处理，但行不能丢");
+
+        // 名字里**恰好含状态词**时，锚点要选右边那个（`Running Test` 是名字、`Stopped` 才是状态）
+        let tricky = super::parse_wsl_list_verbose("  Running Test   Stopped   2\n").expect("含状态词的名字");
+        assert_eq!(tricky[0].name, "Running Test");
+
+        // WSL 1 的发行版（VERSION=1）同样要认
+        let wsl1 = super::parse_wsl_list_verbose("  Ubuntu-18.04   Stopped   1\n").expect("WSL1 发行版");
+        assert_eq!(wsl1[0].name, "Ubuntu-18.04");
+    }
+
+    #[test]
+    fn resolve_launch_target_only_accepts_known_distros() {
+        let rows = vec![
+            super::WslDistroRow { name: "Ubuntu-24.04".into(), is_default: true, running: false },
+            super::WslDistroRow { name: "Ubuntu-20.04".into(), is_default: false, running: true },
+        ];
+        // 不给名字 → 默认发行版
+        assert_eq!(super::resolve_launch_target(&rows, None).unwrap(), "Ubuntu-24.04");
+        // 给的名字在列表里（大小写/前后空格不算错）→ 放行
+        assert_eq!(super::resolve_launch_target(&rows, Some("Ubuntu-20.04")).unwrap(), "Ubuntu-20.04");
+        assert_eq!(super::resolve_launch_target(&rows, Some("  Ubuntu-20.04  ")).unwrap(), "Ubuntu-20.04");
+        // 空串当"没给"
+        assert_eq!(super::resolve_launch_target(&rows, Some("   ")).unwrap(), "Ubuntu-24.04");
+        // ⚠️ 事故名字：**必须拒绝**，而且要把可用列表说出来
+        let err = super::resolve_launch_target(&rows, Some("错误代码:")).expect_err("不该放行");
+        assert!(err.contains("错误代码:") && err.contains("Ubuntu-20.04"), "{}", err);
+        // 列表为空 → 明确报"没有可用的 WSL 发行版"
+        assert!(super::resolve_launch_target(&[], None).is_err());
     }
 
     #[test]

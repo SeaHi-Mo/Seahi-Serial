@@ -384,6 +384,9 @@ function wslDistAction(cmd, dist) {
         }, 1500);
     }).catch(function(e) {
         console.error('[WSL] 操作失败:', cmd, dist, e);
+        // 失败必须说出来。**别只是把按钮文字换回去**：那样用户看到的是"点了没反应"，
+        // 而真实的失败原因（比如"WSL 里没有名为「错误代码:」的发行版"）就只留在控制台里了。
+        if (typeof showToast === 'function') showToast('WSL 操作失败: ' + e, 'error');
         if (btn) {
             btn.disabled = false;
             btn.textContent = btn._origText || dist;

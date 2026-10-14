@@ -255,9 +255,15 @@ function openWslMapping() {
     function loadWslDistros() {
         invokeTimeout('get_wsl_distributions', null, 6000).then(function(distros) {
             renderWslDistroCards('main', distros);
-        }).catch(function() {
+        }).catch(function(e) {
+            // 读不到列表时**如实说出原因**，别只是清空区域：清空等于"什么都不知道"，
+            // 用户既看不到 WSL 的原始报错，也无从下手（以前还会把报错文本画成一张发行版卡片，
+            // 点它的「启动」会开出 PowerShell —— 2026-10-14 事故）。
             var container = document.getElementById('main-wslDistroList');
-            if (container) container.innerHTML = '';
+            if (container) {
+                container.innerHTML = '<div style="color:var(--accent-red);font-size:12px;line-height:1.5;word-break:break-all;">'
+                    + escapeHtml(String(e)) + '</div>';
+            }
         });
     }
     function updateWslStatusUI(running) {
@@ -860,6 +866,8 @@ function renderWslDistroCards(mid, distros) {
 function openWslTerminal(dist) {
     invoke('launch_wsl', { dist: dist }).catch(function(e) {
         console.error('[WSL] 打开终端失败:', e);
+        // 失败要说出来（以前只写 console，用户看到的是"点了没反应"）
+        if (typeof showToast === 'function') showToast('打开 WSL 终端失败: ' + e, 'error');
     });
 }
 

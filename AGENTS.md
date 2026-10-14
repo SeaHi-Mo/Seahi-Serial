@@ -494,6 +494,16 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
   `qcmd_hs_feed` 喂），而且**arm 必须早于 send**（反了就会把回话当上一条的迟到数据丢掉、白等到超时）。
   MCP 侧对应 `serial_quick_cmd` 的 `timeoutMs`/`expect`/`retry`（`delayMs` 是旧拼写，继续认）。
 - WSL 串口转发通过 Python bridge 脚本实现，使用持久化 shell 避免 fork 延迟。⚠️ **bridge 的启动方式别改回硬写 `-e sg dialout`**：能**非交互**切组时才用 `sg`，否则直接跑 `python3` —— 没装 `sg` 的发行版会 `execvpe(sg) failed`（issue #21），不在 `dialout` 组里时 `sg` 会**卡在密码提示**上。三条细节（探测用"真试一次"而不是查 `id -nG`、拿不准时不用、提示里"没有 sg"要排在"切组失败"前面）见 `doc/ARCHITECTURE.md` §5.8
+- ⚠️ **WSL 发行版名只认 `wsl --list --verbose` 解出来的，`wt` 必须显式给命令行**（2026-10-14 用户报"升级 WSL 3.0.3 后快捷启动按钮打开的是 PowerShell"）：
+  那次 `wsl -l -v` 回的是 WSL 自己的报错文本（`错误代码: 0` / `拒绝访问 Wsl/E_ACCESSDENIED`），
+  而老代码**逐行取第一个 token 当发行版名** → 界面多出一张「错误代码:」卡片 → 点「启动」→
+  `wt -p 错误代码:` → **Windows Terminal 找不到同名 profile 时不报错，直接改用默认 profile（本机 = Windows PowerShell）**。
+  三条别改回去：① `parse_wsl_list_verbose` **一行都解析不出来时必须 `Err`**（把 WSL 报错原文带回界面），
+  绝不挑 token 当名字；行的判据是「STATE 是已知状态词 **或** 第三列 VERSION 是纯数字」；② `launch_wsl` 的名字必须
+  经 `resolve_launch_target` 在列表里核对过，**且必须给 `wt` 显式命令行**（`wt -p <发行版> … wsl.exe -d <发行版>`，
+  `-p` 只管外观、`wsl.exe -d` 决定跑什么），另外**别再拿 `"Ubuntu-20.04"` 当兜底**；③ `get_or_start_wsl_distro`
+  走同一份解析（老实现会把 `错误代码:` 缓存进 `CACHED_DISTRO`，之后 WSL 串口全跟着错）。
+  前端配套：读不到列表时把原文显示在面板里（不是清空），启动/关闭失败一律 `showToast`。细节见 `doc/ARCHITECTURE.md` §5.8
 - USB 设备映射到 WSL 依赖 `usbipd-win` 工具，需管理员权限
 
 ## CI/CD
