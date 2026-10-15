@@ -75,8 +75,8 @@
 | [`adb_close_shell`](#adb-close-shell) | **写** | 关掉当前 ADB shell 会话（等价于点面板上会话的关闭：杀掉 adb shell 子进程 + 移除终端）。本来就没开会话时是幂等的（closed:false + note），不是错误。写操作。 |
 | [`mcp_danger`](#mcp-danger) | 读 | 列出**需要二次确认**的危险工具（会对外产生不可撤销影响的那些）与各自的后果。调用它们时必须带 confirm:true，否则不会执行。只读。 |
 | [`app_info`](#app-info) | 读 | 本机 SeaHi Serial 应用的基本信息（版本、平台、进程、运行时长）。只读，无副作用。 |
-| [`mcp_status`](#mcp-status) | 读 | MCP 服务器自身状态：是否运行、监听端点、会话数、请求数与限流/丢弃计数。只读。 |
-| [`mcp_limits`](#mcp-limits) | 读 | MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。 |
+| [`mcp_status`](#mcp-status) | 读 | **不确定从我这儿怎么下手就先调它**：MCP 服务器自身状态（是否运行、监听端点、会话数、请求数与限流/丢弃计数），外加一份 `nextSteps` —— 按「有没有界面 / 用户是不是开了只读模式」给出下一步该调什么。只读。 |
+| [`mcp_limits`](#mcp-limits) | 读 | MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。⚠️ `toolsPage` **只对控件工具（名字以 ctl 开头的那批）生效** —— 内置工具一律在 `tools/list` 第一页给全，不会把你分页切走。 |
 | [`serial_list_ports`](#serial-list-ports) | 读 | 枚举本机可用串口（端口名 / 友好名称 / 产品名）。只读，不会打开端口。⚠️ **只有 Windows 侧的 COM 口** —— WSL 分栏的端口是 WSL 内部的 `/dev/...`，不在这里（用 serial_get_state 的 `portOptions` 看那个分栏能选什么）。返回 {count, ports:[…]}。 |
 | [`ui_list`](#ui-list) | 读 | 列出界面上的可操控控件（按钮/输入框/下拉/开关）。每条给出 path、类型、面板、当前值、是否可用与不可用的原因。建议先用它枚举，再决定操作哪个。 |
 | [`ui_describe`](#ui-describe) | 读 | 看某个控件的完整信息与它的输入格式（inputSchema）：可选值有哪些、要传数字还是布尔。 |
@@ -626,7 +626,7 @@
 
 #### `mcp_status`
 
-- **作用**：MCP 服务器自身状态：是否运行、监听端点、会话数、请求数与限流/丢弃计数。只读。
+- **作用**：**不确定从我这儿怎么下手就先调它**：MCP 服务器自身状态（是否运行、监听端点、会话数、请求数与限流/丢弃计数），外加一份 `nextSteps` —— 按「有没有界面 / 用户是不是开了只读模式」给出下一步该调什么。只读。
 - **读/写**：只读，无副作用
 - **返回**：打码后的服务器状态：`running/enabled/host/port/streamableHttp/tokenMasked/sessions/statusEmits/readOnly/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`
 - **注意**：**不含 token 与完整 URL**（`urlMasked` 与 `streamableUrlMasked` 只在服务器通过界面启动、确实绑定了端口时出现；**两条 URL 都打码**）；`streamableHttp` 为 false 时 `/mcp` 返回 404、只剩遗留 SSE；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新；**`readOnly` 必须先看** —— 为 true 时所有写操作会被拒（-32007）
@@ -637,7 +637,7 @@
 
 #### `mcp_limits`
 
-- **作用**：MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。
+- **作用**：MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。⚠️ `toolsPage` **只对控件工具（名字以 ctl 开头的那批）生效** —— 内置工具一律在 `tools/list` 第一页给全，不会把你分页切走。
 - **读/写**：只读，无副作用
 - **返回**：`{maxSessions, sessionQueue, heartbeatSecs, maxBodyBytes, maxUiSetItems, maxSendChars, toolsPage, idleTimeoutSecs, rateLimitPerMin, protocolVersion, protocolFallback, logMaxLineBytes, logTotalCapBytes, logMaxChannels, maxQuickCmdItems, maxQuickCmdLabelChars, maxQuickCmdValueChars, maxQuickCmdFileBytes, maxQuickCmdTimeoutMs, maxQuickCmdRetry, maxQuickCmdExpectChars, maxBleWriteChars, maxAdbWriteChars, maxAdbCols, maxAdbRows, maxAdbReadLines}`
 - **注意**：用来判断会不会被限流/丢弃；**加新工具时这里也该有对应的一条上限**。注意"报出来"≠"被执行"：这几个数各自都有代码里真的拦一道（快速指令的 `maxQuickCmdTimeoutMs`/`maxQuickCmdRetry`/`maxQuickCmdExpectChars` 就是在碰界面之前校验的）

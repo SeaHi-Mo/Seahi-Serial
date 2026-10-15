@@ -255,6 +255,7 @@ impl McpCore {
         } else {
             None
         };
+        let has_ui = self.app.lock().unwrap_or_else(|e| e.into_inner()).is_some();
         json!({
             "enabled": cfg.server.enabled,
             "running": running,
@@ -278,7 +279,10 @@ impl McpCore {
             "dropped": self.dropped.load(Ordering::Relaxed),
             "uiInFlight": self.bridge.in_flight(),
             "stateChanges": self.state_changes.load(Ordering::Relaxed),
-            "hasUi": self.app.lock().unwrap_or_else(|e| e.into_inner()).is_some(),
+            "hasUi": has_ui,
+            // 给 Agent 的"下一步"（见 next_steps 的注释：instructions 是规范里的 SHOULD，
+            // 押在它身上等于把"能不能用起来"交给客户端实现）
+            "nextSteps": next_steps(has_ui, cfg.expose.read_only),
             "logHub": {
                 "enabled": loghub::hub().is_enabled(),
                 "channels": loghub::hub().channel_count(),
@@ -344,6 +348,51 @@ impl Default for McpCore {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// 给 Agent 的**下一步**建议 —— 按"能不能动界面 / 用户是不是开了只读模式"分档。
+///
+/// 为什么放在 `mcp_status` 的返回值里，而不是只写在 `initialize.instructions`：
+/// `instructions` 在 MCP 规范里只是 **SHOULD**，相当一部分客户端不把它交给模型。
+/// 模型只要**随手调一个工具**（`mcp_status` 是最自然的那个，它的 description 首句就写着
+/// "不确定从我这儿怎么下手就先调它"）就能重新拿到"下一步干什么"，这条链才不会因为
+/// 客户端实现差异而断掉。
+///
+/// 内容只写"能直接省掉一次失败"的东西：没有界面时别去调界面工具、只读模式下别重试写操作。
+/// 参数细节一律不在这里重复（那是各工具自己 description 的活，抄一份必然漂移）。
+fn next_steps(has_ui: bool, read_only: bool) -> Vec<String> {
+    let mut steps: Vec<String> = Vec::new();
+    if read_only {
+        steps.push(
+            "用户开着**只读模式**：所有写操作会被拒（-32007，且没有执行）。\
+             这不是参数问题，别重试、也别绕路 —— 要动手先请用户在 MCP 弹窗里关掉只读模式。"
+                .to_string(),
+        );
+    }
+    if !has_ui {
+        steps.push(
+            "本机现在**没有界面**（无 GUI / 沙箱）：ui_ 开头的工具都会失败（-32006），别去调它们。"
+                .to_string(),
+        );
+        steps.push(
+            "这个状态下能用的：日志（先 log_channels 看有哪些通道，再 log_tail / log_search）、\
+             serial_list_ports、以及蓝牙与 ADB 的只读查询。"
+                .to_string(),
+        );
+    } else {
+        steps.push(
+            "**动手操作串口前先调 serial_get_state**（看端口 / 波特率 / 是否正在监控，\
+             以及这个分栏的 portOptions），再决定是开监控还是发数据；\
+             要知道设备回了什么用 serial_get_output。"
+                .to_string(),
+        );
+        steps.push(
+            "不确定该走哪条任务链时，先看 prompts —— 客户端界面上可直接选（Windows 串口 / \
+             蓝牙通知 / ADB / 跨通道找日志），或调 prompts/get 取那一段。"
+                .to_string(),
+        );
+    }
+    steps
 }
 
 /// Tauri 托管的 MCP 状态
@@ -1105,7 +1154,9 @@ pub fn mcp_client_config(state: tauri::State<'_, McpState>) -> Value {
         .join(" / ");
     let tail = format!(
         "\n它是本机 \"SeaHi Serial\" 串口/蓝牙调试器暴露的工具集，当前可用工具：{}。\n\
-         连上后请先用 tools/list 看一眼可用工具再操作。",
+         连上后**先调 mcp_status** —— 它的 nextSteps 会按当前状态（有没有界面 / 是不是只读模式）\
+         告诉你下一步该调什么；客户端界面上还会列出 prompts（Windows 串口 / 蓝牙通知 / ADB / \
+         跨通道找日志四条任务链），可以直接选。",
         tools
     );
     let prompt = if url.is_empty() {
@@ -1139,6 +1190,11 @@ pub fn mcp_client_config(state: tauri::State<'_, McpState>) -> Value {
             tail
         )
     };
+    // ⛔ 这里**故意不给**"可复制的工作指引"（曾经有过一块，2026-10 删掉）：
+    // 让用户把它贴进客户端的「自定义指令 / Rules」是三条兜底里**最贵**的一条 ——
+    // 那段文字每次请求都会进上下文，而 `initialize.instructions` 只在握手时发一次、
+    // `prompts` 是按需取、"客户端不显示 prompts" 时还有 `mcp_status.nextSteps` 让模型自己问到。
+    // 加回来之前先读 `doc/MCP.md` 里那段说明。
     json!({
         "ok": true,
         "transport": transport,
@@ -1167,6 +1223,58 @@ mod tests {
         let mut cfg = aiconfig::AiConfig::default();
         cfg.server.token = "testtoken".to_string();
         Arc::new(McpCore::from_cfg(cfg))
+    }
+
+    /// `mcp_status.nextSteps` —— `instructions` 被客户端吞掉时的兜底发现渠道。
+    ///
+    /// 三档各自要**指出一件能立刻省掉失败的事**：没有界面时别去调界面工具、
+    /// 只读模式下别重试写操作、正常情况下先看串口状态。空数组等于这个字段白给。
+    #[test]
+    fn status_next_steps_cover_ui_and_read_only_cases() {
+        let normal = next_steps(true, false);
+        assert!(
+            normal.iter().any(|s| s.contains("serial_get_state")),
+            "有界面时该先让人看串口状态: {:?}",
+            normal
+        );
+        assert!(
+            normal.iter().any(|s| s.contains("prompts")),
+            "该指出 prompts 这条任务链（客户端界面上可直接选）: {:?}",
+            normal
+        );
+
+        let headless = next_steps(false, false);
+        assert!(
+            headless.iter().any(|s| s.contains("ui_")),
+            "没有界面时必须说清界面工具会失败: {:?}",
+            headless
+        );
+        assert!(
+            !headless.iter().any(|s| s.contains("serial_get_state")),
+            "没有界面时不该让人先去点界面（那正是会白撞的那一下）: {:?}",
+            headless
+        );
+        assert!(
+            headless.iter().any(|s| s.contains("log_channels")),
+            "没有界面时要给出这个状态下真正能用的东西: {:?}",
+            headless
+        );
+
+        let ro = next_steps(true, true);
+        assert!(
+            ro.iter().any(|s| s.contains("-32007")),
+            "只读模式必须说清「不是参数问题、别重试」: {:?}",
+            ro
+        );
+
+        for (has_ui, read_only) in [(true, false), (false, false), (true, true), (false, true)] {
+            assert!(
+                !next_steps(has_ui, read_only).is_empty(),
+                "has_ui={} read_only={} 时没给出任何下一步",
+                has_ui,
+                read_only
+            );
+        }
     }
 
     /// 前端回灌：**收不下的部分必须记账**，前端报上来的丢弃数也要落到通道上。

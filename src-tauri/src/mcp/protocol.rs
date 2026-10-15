@@ -105,6 +105,119 @@ SeaHi Serial 的串口/蓝牙调试接口（本机的一个桌面调试工具，
 13) 没有语义工具可用时，才用通用界面桥：ui_list（枚举控件）→ ui_describe（看输入格式与可选值）→ ui_get（读值）→ ui_set / ui_click（改值，走的就是用户点击的同一条路）。ui_get_state 读的是持久化的界面配置快照。
 14) 若 mcp_status 的 readOnly 为 true，说明用户开了**只读（沙箱）模式**：所有写操作会被拒（错误码 -32007，且**没有执行**）。这不是参数问题，别重试、也别绕路，直接告诉用户「请到 MCP 弹窗里关掉只读模式」即可。";
 
+/// MCP `prompts`：把"怎么用我"做成客户端界面上**看得见、点得到**的任务链。
+///
+/// 为什么值得做（2026-10 用户问"Agent 连上了但不知道怎么用这个 MCP"）：
+/// `instructions` 在规范里只是 **SHOULD**，不少客户端根本不把它交给模型 —— 把工作指引
+/// 全押在那一个字段上，等于把"能不能用起来"交给客户端实现。而 `prompts` 是 MCP 里
+/// **唯一"双方都能发现"**的通道：客户端会把它们列成斜杠命令/菜单项，**用户**点一下就能
+/// 让模型拿到一段现成的任务链，模型也不需要自己在那 54 个工具里挑。
+///
+/// 与 `instructions` 的分工：`instructions` 讲**通用纪律**（错误码语义、上限、先看状态），
+/// 这里讲**一条具体活怎么干**（点一下就走完整条链）。两边都不许抄工具的参数细节 —— 那是
+/// 各工具自己 `description` 的活，抄一份必然漂移。
+///
+/// ⛔ **正文里点到的工具名必须真实存在**，否则就是把 AI 递向幽灵工具。这条由
+/// `descriptions_only_reference_real_tools` 一并守着（它把这里的正文也收进扫描语料）。
+/// 同理**不许写 `serial_*` 这种带通配的写法** —— 扫描器会把它当成一个不存在的工具名。
+///
+/// 每项是 `(name, title, description, body)`；`name` 用 kebab-case（客户端拿它当命令名）。
+pub const SERVER_PROMPTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "windows-serial",
+        "调一次 Windows 串口会话",
+        "选口 → 开监控 → 收发 → 读回话的完整顺序（含「动手前先看状态」这条纪律）",
+        "用 SeaHi Serial 的串口工具跑一次 Windows 串口会话，按这个顺序来：\n\
+         1) serial_list_ports 看本机有哪些 COM 口（**只有 Windows 侧**；WSL 分栏的 /dev/... 不在这里）\n\
+         2) serial_get_state 读分栏当前状态与 portOptions —— **动手前先调它**；省略 pane 就是 main\n\
+         3) serial_select_port → serial_set_baud → serial_open（开始监控）\n\
+         4) serial_send 发数据，serial_get_output 读设备回了什么；发送上限见 mcp_limits 的 maxSendChars\n\
+         5) 收工调 serial_close\n\
+         多分栏用 pane 参数（main / extra-1 / …；WSL 分栏是 wsl / wsl-x1）。\
+         不确定某段输出在哪个通道时，先调 log_channels。",
+    ),
+    (
+        "ble-notify",
+        "抓一段蓝牙通知",
+        "扫描 → 连接 → 订阅 → 读通知（含「不广播就搜不到」的直连兜底）",
+        "用蓝牙（只有主机方向）抓一段通知：\n\
+         1) ble_start_scan → ble_list_devices 看扫到哪些设备\n\
+         2) ble_connect 连接。**设备不广播就搜不到** —— 被 Windows 配对过、或被别的主机连走时\
+         列表是空的，这时用 ble_connect 带上 addr 按 MAC 直连\n\
+         3) ble_get_services 看服务树，ble_subscribe 订阅通知特征；需要写配置时先 ble_write\n\
+         4) ble_get_output 读收到的通知；要信号强度用 ble_refresh_rssi\n\
+         连上会自动停扫描（scanning 变 false），这是正常现象，别再去调 ble_start_scan。",
+    ),
+    (
+        "adb-shell",
+        "在一台 Android 设备上执行命令",
+        "开 shell → 发命令 → 读输出（含两个危险工具的 confirm 要求）",
+        "用 ADB 在 Android 设备上执行命令：\n\
+         1) adb_list_devices（只有 state=device 的那台能用）\n\
+         2) adb_open_shell —— **危险动作，必须带 confirm:true**；它会等到 PTY 真的建出来才返回\n\
+         3) adb_shell_write 发命令 —— 内容里**要自带换行**才会执行，同样是危险动作、要 confirm:true\n\
+         4) adb_shell_read 读输出（不需要界面）\n\
+         5) 收工调 adb_close_shell",
+    ),
+    (
+        "find-log",
+        "跨通道找一段日志",
+        "不知道内容在哪个通道时怎么找（含省 token 的读法）",
+        "不知道某段内容在哪个通道、或者该怎么读时，按这个顺序：\n\
+         1) log_channels —— **不确定就去哪找时先调它**（列出所有通道：条数 / 字节 / 被丢弃条数）\n\
+         2) log_tail 读某个通道的尾部：**优先用 format:\"text\"**，同样内容比默认的 json 省一半以上\
+         token；增量跟用 sinceSeq + 返回的 nextSinceSeq，别反复拉全量\n\
+         3) log_search 按关键字检索：只想知道「出现过几次」就用 mode:\"count\"，别把条目全拉回来\n\
+         对照：确定内容在哪时用 serial_get_output（串口收发）、ble_get_output（蓝牙通知）、\
+         adb_shell_read（ADB 输出）；log_channels 这条链是「跨通道找历史」。",
+    ),
+];
+
+/// `prompts/list` 的载荷（客户端据此列出斜杠命令）。
+pub fn prompts_list_json() -> Value {
+    let list: Vec<Value> = SERVER_PROMPTS
+        .iter()
+        .map(|(name, title, desc, _)| {
+            json!({
+                "name": name,
+                "title": title,
+                "description": desc,
+                // 这几条提示词**不取参数** —— 参数该传什么由工具自己的 description 讲，
+                // 在提示词里再开一套参数必然两头漂移。
+                "arguments": [],
+            })
+        })
+        .collect();
+    json!({ "prompts": list })
+}
+
+/// `prompts/get` 的载荷。名字不认识时回 `-32602`（**参数不对那一类**：改名重试），
+/// 并把可选值一并说出来 —— 与全项目的错误文案口径一致（别让调用方靠猜）。
+pub fn prompt_get_json(name: &str) -> Result<Value, RpcError> {
+    let found = SERVER_PROMPTS.iter().find(|(n, _, _, _)| *n == name);
+    let (_, title, desc, body) = match found {
+        Some(p) => *p,
+        None => {
+            let names: Vec<&str> = SERVER_PROMPTS.iter().map(|(n, _, _, _)| *n).collect();
+            return Err(RpcError::new(
+                E_INVALID_PARAMS,
+                format!(
+                    "没有这个提示词: {}（可选值只有: {}）",
+                    name,
+                    names.join(" / ")
+                ),
+            ));
+        }
+    };
+    Ok(json!({
+        "description": format!("{} —— {}", title, desc),
+        "messages": [{
+            "role": "user",
+            "content": { "type": "text", "text": body }
+        }]
+    }))
+}
+
 /// 会被**只读（沙箱）模式**拦下的写工具。
 ///
 /// 这里是**唯一来源** —— `.walkthrough` 里有一条断言拿它去和 `doc/MCP_TOOLS.md` 的「读/写」列
@@ -227,6 +340,82 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "log_stats",
 ];
 
+/// 每个工具的**人读短名** —— `tools/list` 里的 `title` 字段（MCP 2025-06-18 起有）。
+///
+/// 为什么值得给：`title` 是给**人**看的，客户端会在"允许/拒绝这个工具"的授权 UI 与工具
+/// 列表里显示它。没有它时，用户面对的是 54 个裸工具名（`serial_set_frame`、`ble_cts_time`…），
+/// 只能一路"全部允许"或者干脆关掉服务器 —— 这是**用户层面**的"不知道这个 MCP 能干什么"。
+/// 对模型侧几乎没有成本（不占 description 的注意力）。
+///
+/// 三条纪律：
+/// ① **集中一张表 + 在 `annotate_tools` 里统一注入**，绝不在 54 个 `json!` 里逐个手写
+///    （那样加/删工具时必然漏改，和 `annotations` 是同一个理由）；
+/// ② **`ctl_*` 的 title 由注册表自己给**（`registry.rs` 用控件标签），这里不掺和 ——
+///    注入时"已有 title 就不覆盖"；
+/// ③ **表里不许留过期条目**：`every_tool_has_a_human_title` 会拿它和 `tool_defs()` 对账
+///    （漏一个 / 多一个都 fail）。
+pub const TOOL_TITLES: &[(&str, &str)] = &[
+    ("app_info", "应用信息"),
+    ("mcp_status", "MCP 状态与下一步"),
+    ("mcp_limits", "MCP 上限"),
+    ("mcp_danger", "危险工具清单"),
+    ("mcp_calls", "AI 调用记录"),
+    ("mcp_stats", "MCP 调用统计"),
+    ("mcp_config_get", "读 MCP 配置"),
+    ("mcp_config_set", "改 MCP 配置"),
+    ("serial_list_ports", "串口列表"),
+    ("serial_get_state", "串口状态"),
+    ("serial_select_port", "选择串口"),
+    ("serial_set_baud", "设置波特率"),
+    ("serial_set_frame", "设置帧格式"),
+    ("serial_set_lines", "设置 DTR/RTS"),
+    ("serial_set_display", "设置显示与行为"),
+    ("serial_open", "开始监控"),
+    ("serial_close", "停止监控"),
+    ("serial_send", "发送数据"),
+    ("serial_clear", "清空输出"),
+    ("serial_get_history", "发送历史"),
+    ("serial_get_output", "读串口输出"),
+    ("serial_quick_cmd", "快速指令"),
+    ("serial_workflow", "工作流规则"),
+    ("serial_workflow_run", "运行工作流"),
+    ("ble_get_state", "蓝牙状态"),
+    ("ble_list_devices", "蓝牙设备列表"),
+    ("ble_start_scan", "开始扫描"),
+    ("ble_stop_scan", "停止扫描"),
+    ("ble_connect", "连接设备"),
+    ("ble_disconnect", "断开设备"),
+    ("ble_get_services", "蓝牙服务树"),
+    ("ble_read", "读特征值"),
+    ("ble_write", "写特征值"),
+    ("ble_subscribe", "订阅通知"),
+    ("ble_get_output", "读蓝牙通知"),
+    ("ble_refresh_rssi", "刷新信号强度"),
+    ("ble_cts_time", "解析 CTS 时间"),
+    ("adb_list_devices", "ADB 设备列表"),
+    ("adb_open_shell", "打开 ADB shell"),
+    ("adb_shell_write", "执行 ADB 命令"),
+    ("adb_shell_read", "读 ADB 输出"),
+    ("adb_shell_resize", "调整终端尺寸"),
+    ("adb_close_shell", "关闭 ADB shell"),
+    ("ui_list", "枚举界面控件"),
+    ("ui_describe", "控件输入格式"),
+    ("ui_get", "读控件值"),
+    ("ui_set", "设置控件值"),
+    ("ui_click", "点击控件"),
+    ("ui_get_state", "读界面状态"),
+    ("log_channels", "日志通道列表"),
+    ("log_tail", "读日志尾部"),
+    ("log_search", "检索日志"),
+    ("log_stats", "日志统计"),
+    ("log_clear", "清空日志"),
+];
+
+/// 查一个人读短名（`ctl_*` 不在这张表里，它们的 title 由注册表给，见 [`TOOL_TITLES`]）。
+pub fn tool_title(name: &str) -> Option<&'static str> {
+    TOOL_TITLES.iter().find(|(n, _)| *n == name).map(|(_, t)| *t)
+}
+
 /// 给一个工具算它的 MCP `annotations`（规范里的**安全提示**字段）。
 ///
 /// 为什么值得给：规范给这几个字段的**默认值是反的** —— 不写 `readOnlyHint` 就当"非只读"，
@@ -248,10 +437,13 @@ pub fn annotations_for(name: &str) -> Value {
     })
 }
 
-/// 给整份工具表补上 `annotations`（`tool_defs()` 与 `exposed_tools()` 共用一处）。
+/// 给整份工具表补上 `annotations` 与 `title`（`tool_defs()` 与 `exposed_tools()` 共用一处）。
 ///
 /// 放在**返回前统一注入**、而不是逐个 `json!` 手写：内置工具与最多 400 个 `ctl_*`
-/// 全都由 `WRITE_TOOLS` / `DANGER_TOOLS` 派生，改那两张表时这里自动跟着变。
+/// 全都由 `WRITE_TOOLS` / `DANGER_TOOLS` / `TOOL_TITLES` 派生，改那几张表时这里自动跟着变。
+///
+/// `title` 是**已有就不覆盖**：`ctl_*` 的人读短名只有注册表知道（控件标签），
+/// 一刀切覆盖会把它们全变成"控件"两个字。
 pub fn annotate_tools(tools: &mut [Value]) {
     for t in tools.iter_mut() {
         let name = match t.get("name").and_then(|n| n.as_str()) {
@@ -260,6 +452,11 @@ pub fn annotate_tools(tools: &mut [Value]) {
         };
         if let Some(obj) = t.as_object_mut() {
             obj.insert("annotations".to_string(), annotations_for(&name));
+            if !obj.contains_key("title") {
+                if let Some(title) = tool_title(&name) {
+                    obj.insert("title".to_string(), json!(title));
+                }
+            }
         }
     }
 }
@@ -309,12 +506,12 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "mcp_status",
-            "description": "MCP 服务器自身状态：是否运行、监听端点、会话数、请求数与限流/丢弃计数。只读。",
+            "description": "**不确定从我这儿怎么下手就先调它**：MCP 服务器自身状态（是否运行、监听端点、会话数、请求数与限流/丢弃计数），外加一份 `nextSteps` —— 按「有没有界面 / 用户是不是开了只读模式」给出下一步该调什么。只读。",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
         json!({
             "name": "mcp_limits",
-            "description": "MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。",
+            "description": "MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。⚠️ `toolsPage` **只对控件工具（名字以 ctl 开头的那批）生效** —— 内置工具一律在 `tools/list` 第一页给全，不会把你分页切走。",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
         json!({
@@ -3029,6 +3226,22 @@ fn summarize_for_tool(tool: &str, v: &Value) -> String {
     if looks_like_wsl_device_list {
         return summarize_wsl_devices(v);
     }
+    if tool == "mcp_status" {
+        // `nextSteps` 的**位置**和它的存在一样重要：通用渲染按字母序铺键，600 字预算在它
+        // 之前就用完了 —— 只读 `content[].text` 的客户端会一个字都看不到（契约测试当场抓到），
+        // 而这个字段本来就是"instructions 被客户端吞掉"时的兜底，看不见等于没做。
+        let steps: Vec<String> = v["nextSteps"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        if !steps.is_empty() {
+            return cap_text_summary(format!(
+                "nextSteps: {} · {}",
+                steps.join(" | "),
+                summarize_for_text(v)
+            ));
+        }
+    }
     summarize_for_text(v)
 }
 
@@ -3328,6 +3541,10 @@ pub async fn handle_raw_with_session(
                 "capabilities": {
                     "tools": { "listChanged": true },
                     "resources": { "subscribe": false, "listChanged": false },
+                    // prompts 不是"锦上添花"：客户端会把它列成斜杠命令，用户点一下就能把
+                    // 一整条任务链塞给模型 —— 这是 instructions 被客户端吞掉时唯一还能用的
+                    // 发现渠道（理由见 SERVER_PROMPTS 的注释）。
+                    "prompts": { "listChanged": false },
                     "logging": {}
                 },
                 "serverInfo": {
@@ -3352,7 +3569,17 @@ pub async fn handle_raw_with_session(
             // release 会回绕成小数字 → `cursor >= all.len()` 成立 → 返回空工具表**且不给 nextCursor**，
             // 客户端据此认为"这个服务器没有工具"。夹到 all.len() 之后，"越界 = 空页"才是确定行为。
             let cursor = cursor.min(all.len());
-            let end = cursor.saturating_add(page).min(all.len());
+            // 分页**只该用来挡住几百个控件工具（ctl_ 前缀那些）把上下文撑爆**，
+            // 不该把内置工具切走一半：内置工具是"这个服务器是什么"的全部答案，第一页必须给全。
+            // 2026-10 实测内置 54 个 > TOOLS_PAGE(50)，而**不跟 nextCursor 的客户端只能看到
+            // 第一页** —— 被藏起来的正好是最能自我描述的那四个（mcp_calls / mcp_stats /
+            // mcp_config_get / mcp_config_set），于是"接了却不知道怎么用"又多一个成因。
+            let builtin = tool_defs().len().min(all.len());
+            let end = if cursor < builtin {
+                builtin
+            } else {
+                cursor.saturating_add(page).min(all.len())
+            };
             let slice: Vec<Value> = if cursor >= all.len() {
                 Vec::new()
             } else {
@@ -3413,6 +3640,22 @@ pub async fn handle_raw_with_session(
             }
         }
         "resources/list" => Ok(json!({ "resources": [] })),
+        // 提示词（prompts）：客户端界面上会列成斜杠命令 —— 用户点一下，模型拿到一整条任务链。
+        // 见 SERVER_PROMPTS：这是"instructions 被客户端吞掉"时的兜底发现渠道。
+        "prompts/list" => Ok(prompts_list_json()),
+        "prompts/get" => match params.get("name").and_then(|v| v.as_str()) {
+            Some(n) if !n.is_empty() => prompt_get_json(n),
+            _ => {
+                let names: Vec<&str> = SERVER_PROMPTS.iter().map(|(n, _, _, _)| *n).collect();
+                Err(RpcError::new(
+                    E_INVALID_PARAMS,
+                    format!(
+                        "prompts/get 需要 name（可选值只有: {}）",
+                        names.join(" / ")
+                    ),
+                ))
+            }
+        },
         "logging/setLevel" => Ok(json!({})),
         other => Err(RpcError::new(
             E_METHOD_NOT_FOUND,
@@ -3446,8 +3689,9 @@ mod tests {
 
     /// 翻完 `tools/list` 的**所有页**取工具名。
     ///
-    /// 为什么需要：内置工具已经超过一页（`TOOLS_PAGE = 50`，2026-09 加上 ADB 后是 55 个），
-    /// 而 `ctl_*` 排在它们**后面** —— 只读第一页的断言会以为"工具不见了"，实际上只是没翻页。
+    /// 为什么还要翻页：内置工具现在**固定在第一页给全**（见 `builtin_tools_all_arrive_in_the_first_page`），
+    /// 但 `ctl_*`（几百个控件）仍然按 `TOOLS_PAGE` 分页、排在它们**后面** ——
+    /// 只读第一页的断言会以为"控件工具不见了"，实际上只是没翻页。
     async fn all_tool_names(c: &Arc<McpCore>) -> Vec<String> {
         let mut names: Vec<String> = Vec::new();
         let mut cursor: Option<String> = None;
@@ -3560,8 +3804,8 @@ mod tests {
     fn tools_list_exposes_expected_names() {
         block_on(async {
             let c = core();
-            // 内置工具已经超过一页（TOOLS_PAGE=50），所以必须**顺着游标翻完**再断言 ——
-            // 只看第一页会漏掉后半页的工具（ADB 那 6 个就全在后半页）。
+            // 照旧**顺着游标翻完**再断言（`ctl_*` 仍会分页）；不过内置工具现在第一页就给全，
+            // "只读第一页也能拿到全部内置工具"这件事由 builtin_tools_all_arrive_in_the_first_page 单独守。
             let names = all_tool_names(&c).await;
             assert_eq!(
                 names.len(),
@@ -3846,6 +4090,215 @@ mod tests {
         });
     }
 
+    /// 每个内置工具都必须有**人读短名**（`title`），且表里不许留过期条目。
+    ///
+    /// 为什么必须有：`title` 是给人看的（客户端授权 UI / 工具列表）。没有它，用户面对的是
+    /// 54 个裸工具名，只能一路"全部允许" —— 这是**用户层面**的"不知道这个 MCP 能干什么"。
+    #[test]
+    fn every_builtin_tool_has_a_human_title() {
+        let defs = tool_defs();
+        let names: Vec<String> = defs
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        for t in &defs {
+            let name = t["name"].as_str().unwrap_or("");
+            let title = t["title"].as_str().unwrap_or("");
+            assert!(
+                !title.trim().is_empty(),
+                "{} 缺 title（客户端授权 UI 里只能显示裸工具名）",
+                name
+            );
+        }
+        // 表里不许留过期条目（漏登记 / 改名后忘清理，两种都要 fail）
+        for (n, _) in TOOL_TITLES {
+            assert!(
+                names.iter().any(|x| x == n),
+                "TOOL_TITLES 里的 {} 不在 tool_defs() 里（表已过期）",
+                n
+            );
+        }
+        assert_eq!(
+            TOOL_TITLES.len(),
+            defs.len(),
+            "TOOL_TITLES 与内置工具数不等 —— 有工具没起短名（上面那条只查了「表里的都在」，这条查「工具都有」）"
+        );
+        // 短名不许重复：客户端列表里两条同名 = 用户分不清谁是谁
+        let mut titles: Vec<&str> = TOOL_TITLES.iter().map(|(_, t)| *t).collect();
+        let total = titles.len();
+        titles.sort();
+        titles.dedup();
+        assert_eq!(total, titles.len(), "TOOL_TITLES 里有重复的短名");
+    }
+
+    /// `tools/list` 的**响应**里必须真的有 `title`（同 annotations：真实出口那一侧验一次）。
+    #[test]
+    fn tools_list_carries_human_titles() {
+        block_on(async {
+            let c = core();
+            let r = call(&c, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await;
+            let tools = r["result"]["tools"].as_array().expect("tools/list 应当返回 tools");
+            for t in tools {
+                let name = t["name"].as_str().unwrap_or("");
+                let title = t["title"].as_str().unwrap_or("");
+                assert!(!title.trim().is_empty(), "tools/list 里 {} 缺 title: {}", name, t);
+            }
+        });
+    }
+
+    /// **内置工具必须全部出现在第一页** —— 不跟 `nextCursor` 的客户端不能少工具。
+    ///
+    /// 2026-10 实测：内置 54 个 > `TOOLS_PAGE`(50)，被切到第二页的正好是
+    /// `mcp_calls` / `mcp_stats` / `mcp_config_get` / `mcp_config_set` ——
+    /// 最能自我描述的那一组，于是"接了却不知道怎么用"又多一个成因。
+    /// 分页只该用来挡住几百个控件工具。
+    #[test]
+    fn builtin_tools_all_arrive_in_the_first_page() {
+        use crate::mcp::registry::RegistryEntry;
+        block_on(async {
+            let c = core();
+            // ① 没有控件工具时：内置工具恰好一页，**不该再要求翻页**
+            let r = call(&c, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await;
+            let got: Vec<String> = r["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|t| t["name"].as_str().map(str::to_string))
+                .collect();
+            for t in tool_defs() {
+                let n = t["name"].as_str().unwrap_or("");
+                assert!(
+                    got.iter().any(|g| g == n),
+                    "内置工具 {} 不在 tools/list 第一页（客户端不翻页就永远看不到它）",
+                    n
+                );
+            }
+            assert!(
+                r["result"]["nextCursor"].is_null(),
+                "没有控件工具时不该再要求翻页: {}",
+                r
+            );
+
+            // ② 有控件工具时：内置仍在一页里，控件工具才分页
+            c.cfg
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .expose
+                .auto_control_tools = true;
+            let entries: Vec<RegistryEntry> = (0..120)
+                .map(|i| RegistryEntry {
+                    path: format!("serial.conn.ctrl{}", i),
+                    kind: "toggle".into(),
+                    label: format!("控件{}", i),
+                    panel: "serial".into(),
+                    group: "conn".into(),
+                    enabled: true,
+                    disabled_reason: None,
+                    options: vec![],
+                })
+                .collect();
+            c.registry.replace(entries);
+
+            let r1 = call(&c, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).await;
+            let page1: Vec<String> = r1["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|t| t["name"].as_str().map(str::to_string))
+                .collect();
+            assert_eq!(
+                page1.len(),
+                tool_defs().len(),
+                "第一页应当正好是全部内置工具（控件工具从第二页开始）"
+            );
+            for t in tool_defs() {
+                let n = t["name"].as_str().unwrap_or("");
+                assert!(page1.iter().any(|g| g == n), "有控件工具时内置工具 {} 被挤出了第一页", n);
+            }
+            let cursor = r1["result"]["nextCursor"].as_str().expect("还有控件工具，应当给游标");
+            assert_eq!(cursor, tool_defs().len().to_string());
+
+            let r2 = call(
+                &c,
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{{"cursor":"{}"}}}}"#,
+                    cursor
+                ),
+            )
+            .await;
+            let page2: Vec<String> = r2["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|t| t["name"].as_str().map(str::to_string))
+                .collect();
+            assert!(!page2.is_empty(), "第二页应当是控件工具: {}", r2);
+            assert!(
+                page2.iter().all(|n| n.starts_with("ctl_")),
+                "第二页不该再混进内置工具（那说明分页边界算错了）: {:?}",
+                page2
+            );
+        });
+    }
+
+    /// prompts：客户端界面上列得出的那条发现渠道 —— 列表、单取、以及**错误里要说清可选值**。
+    ///
+    /// 为什么值得一层断言：`instructions` 在规范里只是 SHOULD，客户端可以不把它交给模型；
+    /// prompts 是"用户点得到 + 模型拿得到"的那条兜底链。它一旦静默坏掉（比如名字写错、
+    /// 正文空掉），表现恰好就是用户那句"连上了但不知道该怎么用"。
+    #[test]
+    fn prompts_are_listed_and_fetched() {
+        block_on(async {
+            let c = core();
+            let l = call(&c, r#"{"jsonrpc":"2.0","id":1,"method":"prompts/list"}"#).await;
+            let list = l["result"]["prompts"].as_array().expect("prompts/list 应当返回 prompts");
+            assert_eq!(list.len(), SERVER_PROMPTS.len(), "列表条数与常量不一致: {}", l);
+            for p in list {
+                let name = p["name"].as_str().unwrap_or("");
+                assert!(!name.is_empty(), "提示词缺 name: {}", p);
+                assert!(
+                    !p["title"].as_str().unwrap_or("").trim().is_empty(),
+                    "{} 缺 title（客户端菜单里显示的就是它）",
+                    name
+                );
+                assert!(
+                    !p["description"].as_str().unwrap_or("").trim().is_empty(),
+                    "{} 缺 description（用户得先知道这条是干什么的才敢点）",
+                    name
+                );
+                assert_eq!(p["arguments"], json!([]), "{} 不该声明参数", name);
+            }
+
+            // 单取：正文要真的在 messages 里（别回一个空壳）
+            let one = call(
+                &c,
+                r#"{"jsonrpc":"2.0","id":2,"method":"prompts/get","params":{"name":"find-log"}}"#,
+            )
+            .await;
+            assert_eq!(one["result"]["messages"][0]["role"], json!("user"), "{}", one);
+            let text = one["result"]["messages"][0]["content"]["text"]
+                .as_str()
+                .unwrap_or("");
+            assert!(text.contains("log_channels"), "正文没带上任务链: {}", one);
+            assert_eq!(one["result"]["messages"][0]["content"]["type"], json!("text"));
+
+            // 名字不认识 / 根本没给名字：都是 -32602（参数不对那一类，改名重试），
+            // 并且**必须把可选值说出来** —— 全项目的错误文案口径（别让调用方靠猜）
+            for bad in [
+                r#"{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"nope"}}"#,
+                r#"{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{}}"#,
+            ] {
+                let e = call(&c, bad).await;
+                assert_eq!(e["error"]["code"], json!(E_INVALID_PARAMS), "{}", e);
+                assert!(
+                    e["error"]["message"].as_str().unwrap_or("").contains("windows-serial"),
+                    "错误里必须列可选值: {}",
+                    e
+                );
+            }
+        });
+    }
+
     /// 「描述里提到的工具名必须真实存在」—— 扫**幽灵工具**引用。
     ///
     /// 为什么要有这条：工具描述**大量**跨工具指路（"见 `ble_get_services` 的 …"、
@@ -3912,6 +4365,11 @@ mod tests {
             collect(&t["inputSchema"], name, &mut corpus);
         }
         corpus.push(("initialize 的 instructions".to_string(), SERVER_INSTRUCTIONS.to_string()));
+        // prompts 的正文同样会点工具名（而且它就是"照着这个顺序调"的清单）——
+        // 不纳入扫描的话，工具改名后提示词会把 AI 引向一个不存在的工具，而这里全绿。
+        for (name, _title, _desc, body) in SERVER_PROMPTS {
+            corpus.push((format!("prompts/{} 的正文", name), body.to_string()));
+        }
 
         let mut ghosts: Vec<String> = Vec::new();
         for (owner, text) in &corpus {
@@ -4591,6 +5049,7 @@ mod tests {
                 ("mcp_status", json!({}), Backend(&[
                     "builtinToolCount", "callLog", "configFile", "dropped", "enabled", "endpointFile",
                     "errorReports", "hasUi", "host", "lastError", "limits", "logHub", "maxSessions",
+                    "nextSteps",
                     "port", "readOnly", "registry", "requests", "running", "sessions", "stateChanges",
                     "statusEmits", "streamableHttp", "tokenMasked", "toolCalls", "toolCount", "transport",
                     "uiInFlight", "uptimeSecs", "version",
@@ -5765,6 +6224,21 @@ mod tests {
             ] {
                 assert!(ins.contains(key), "任务链里应提到 {}: {}", key, ins);
             }
+            // ⚠️ 但**不能把"怎么用"全押在这一段文字上**：`instructions` 在规范里只是 SHOULD，
+            // 客户端可以不把它交给模型。所以这里同时钉住两条兜底一律要宣布出来 ——
+            // ① prompts 能力（客户端会把它列成斜杠命令：用户点得到、模型拿得到）
+            // ② mcp_status 的 nextSteps（模型随手调一个工具就能重新拿到"下一步"）
+            assert_eq!(
+                r["result"]["capabilities"]["prompts"]["listChanged"],
+                json!(false),
+                "initialize 必须宣布 prompts 能力，否则客户端不会去列它们: {}",
+                r
+            );
+            assert!(
+                ins.contains("mcp_status"),
+                "指引里应指出 mcp_status 是入口（nextSteps 就挂在它身上）: {}",
+                ins
+            );
         });
     }
 
@@ -6895,7 +7369,7 @@ mod tests {
             c.registry
                 .replace(vec![reg_entry("serial.conn.portSelect", "select", "serial")]);
 
-            // 内置工具超过一页，`ctl_*` 排在它们后面 —— 必须翻完所有页再看
+            // `ctl_*` 排在全部内置工具**后面**（内置占满第一页）—— 必须翻完所有页再看
             let names = all_tool_names(&c).await;
             assert!(
                 !names.iter().any(|n| n.starts_with("ctl_")),
@@ -6924,11 +7398,22 @@ mod tests {
 
             let r = call(&c, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await;
             let page1 = r["result"]["tools"].as_array().unwrap();
-            assert_eq!(page1.len(), crate::mcp::TOOLS_PAGE, "每页应为一页的容量");
+            // 第一页 = **全部内置工具**（不是 TOOLS_PAGE）：内置工具不许被分页切走，
+            // 见 builtin_tools_all_arrive_in_the_first_page。控件工具从第二页起才按 TOOLS_PAGE 分。
+            assert_eq!(
+                page1.len(),
+                tool_defs().len(),
+                "第一页应当正好是全部内置工具"
+            );
+            assert!(
+                page1.iter().all(|t| !t["name"].as_str().unwrap_or("").starts_with("ctl_")),
+                "第一页不该混进控件工具"
+            );
             let cursor = r["result"]["nextCursor"]
                 .as_str()
                 .expect("还有下一页时必须给游标")
                 .to_string();
+            assert_eq!(cursor, tool_defs().len().to_string());
 
             let raw = format!(
                 r#"{{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{{"cursor":"{}"}}}}"#,
@@ -6936,7 +7421,8 @@ mod tests {
             );
             let r2 = call(&c, &raw).await;
             let page2 = r2["result"]["tools"].as_array().unwrap();
-            assert!(!page2.is_empty());
+            // 控件工具这一侧才按 TOOLS_PAGE 分页（这才是分页存在的理由：几百个控件工具）
+            assert_eq!(page2.len(), crate::mcp::TOOLS_PAGE, "控件工具每页应为一页的容量");
             assert_ne!(page1[0]["name"], page2[0]["name"], "第二页不能与第一页重复");
         });
     }

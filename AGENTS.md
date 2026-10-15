@@ -318,6 +318,26 @@ node .walkthrough/mcp_smoke.js --transport http   # 走 Streamable HTTP（POST /
     `annotations_agree_with_write_and_danger_tables`（标注必须与真正的拦截逻辑一致），
     以及 `every_tool_is_explicitly_classified`（**每个工具都必须被显式分类**为读 / 写 / 按调用变，
     三张表不重、不漏、不过期 —— 新增工具忘了登记会 fail，不会静默落到只读那一侧）。
+    ⚠️ **2026-10 补：那四个通道里有一个不可靠，另有四条兜底**（起因：用户问"Agent 连上了却
+    不知道怎么用这个 MCP"）。`initialize.instructions` 在规范里只是 **SHOULD** —— 不少客户端
+    不把它交给模型，全押在它身上等于交给客户端实现。四条别改回去：
+    ① **`prompts` 是唯一"用户和 AI 双方都能发现"的通道**（客户端列成斜杠命令，用户点一下，
+    模型拿到整条任务链）：`SERVER_PROMPTS` 四条（Windows 串口 / 蓝牙通知 / ADB / 跨通道找日志），
+    `capabilities.prompts` 必须宣布，`prompts/get` 认不出名字回 `-32602` **并列出可选值**。
+    正文里的工具名**已进** `descriptions_only_reference_real_tools` 的语料；也**不许写 `serial_`
+    这类通配写法**（扫描器当成不存在的工具名，当场 fail）。
+    ② **`mcp_status` 必须带 `nextSteps`**（按"有没有界面 / 是不是只读"分档）—— instructions 被吞
+    时的重入点。⚠️ 它还必须在**文本摘要**里出现（通用渲染按字母序铺键，600 字预算在它之前就花完，
+    只读 `content[].text` 的客户端一个字都看不到；`summarize_for_tool` 里单独提前了）。
+    ③ **内置工具必须在 `tools/list` 第一页给全**，分页只挡几百个控件工具 —— 不跟 `nextCursor`
+    的客户端不能少工具（2026-10 实测 54 > `TOOLS_PAGE` 50，切走的正好是最能自我描述的那四个）。
+    ④ **每个工具都要有 `title`（人读短名）**：`TOOL_TITLES` 一张表 + `annotate_tools` 注入，
+    控件工具的由 `registry.rs` 用控件标签给（已有就不覆盖）。没有它，用户面对 54 个裸工具名
+    只能"全部允许"——那是**用户层面**的"不知道这 MCP 能干什么"。
+    ⑤ ⛔ **别在弹窗里再摆"可复制的工作指引"**（曾经有过一块「用法说明」，2026-10 当天就删了）：
+    让用户把它贴进客户端「自定义指令 / Rules」是三条路里**最贵**的一条 —— 那段文字**每次请求**
+    都进上下文，而 `instructions` 只在握手发一次、`prompts` 按需取、客户端不显示 prompts 时
+    还有 `mcp_status.nextSteps` 让模型自己问到。`.walkthrough` 里有一条地雷守着"别再摆回来"。
 12. **两种 MCP 传输并存，别拿一个换掉另一个**：`/mcp`（**Streamable HTTP**，2025-03-26+ 规范，新版客户端
     VS Code / Cline / 新版 Cursor / Claude Code 默认走它）与 `/sse` + `/messages`（遗留 SSE，只支持 SSE 的
     老客户端）**共用同一套工具、同一张会话表与同一份上限**。落地记录见 `doc/MCP_DESIGN.md` §17 的

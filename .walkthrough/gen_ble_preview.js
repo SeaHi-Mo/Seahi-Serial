@@ -2191,6 +2191,14 @@ try {
     '弹窗有 两种传输各自的「地址 + 客户端配置」+ 安装提示词，共五块');
   const copyBtns = (html.match(/onclick="mcpCopy\(/g) || []).length;
   check(copyBtns === 5, '五块各有一个复制按钮', copyBtns);
+  // ⛔ 弹窗里**不再**摆"可复制的工作指引"（曾经有过一块「用法说明」，2026-10 删掉）。
+  // 为什么删：那是三条兜底里最贵的一条 —— 贴进客户端「自定义指令 / Rules」的文字
+  // **每次请求都会进上下文**，而 initialize.instructions 只在握手发一次、prompts 按需取、
+  // 客户端不显示 prompts 时还有 mcp_status.nextSteps 让模型自己问到。
+  // 这条地雷守着"别再加回来"：前端源码里出现指引正文的特征句子就算 fail。
+  check(html.indexOf('按下面的顺序工作能省掉大部分来回') < 0
+    && !/id="mcpInstructions"/.test(html),
+    '弹窗里没有"可复制的工作指引"那块（更贵的那条路，别再摆回来）');
   // 用户要求删掉底部那行"版本 · 工具 · 请求 · 丢弃 · 发现文件"
   check(!/id="mcpMeta"/.test(html), '底部那行元信息已删除（界面不再占一行）');
   check(/stText\.title = parts\.join\(' · '\)/.test(html),

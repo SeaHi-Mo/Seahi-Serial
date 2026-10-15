@@ -244,6 +244,14 @@ impl RegistryCache {
             }
             out.push(json!({
                 "name": tool_name,
+                // 人读短名（`tools/list` 的 title）：客户端授权 UI 里显示的就是它。
+                // 内置工具的 title 由 `protocol::TOOL_TITLES` 统一注入，控件工具只有注册表
+                // 知道控件标签 —— 所以这一处必须自己给，`annotate_tools` 见到已有 title 不覆盖。
+                "title": if e.label.is_empty() {
+                    format!("控件 {}", e.path)
+                } else {
+                    format!("控件：{}", e.label)
+                },
                 "description": desc,
                 "inputSchema": schema_for(&e.kind, &e.options),
             }));
