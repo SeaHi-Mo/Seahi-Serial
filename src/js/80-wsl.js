@@ -5,6 +5,11 @@
 var _wslExtraCount = 0;
 var _wslTargetDist = ''; // “映射到”目标发行版（空 = 默认发行版）
 
+/// WSL 读轮询**连续**失败多少次就判掉线（设备被 usbipd detach / 拔线后，WSL 里的
+/// `/dev/ttyUSB*` 会消失，读会一直报 I/O error）。用"连续"而不是"一次"：读超时 3s，
+/// bridge 偶尔忙一下不该把整个监控停掉；连续 3 次 ≈ 至少 9s 都读不通，那就是真断了。
+var WSL_READ_FAIL_MAX = 3;
+
 function setWslTargetDist(name) {
     _wslTargetDist = name || '';
 }
@@ -536,12 +541,14 @@ function toggleWslRTS(level, wmid) {
 function startWslReading(mid) {
     stopReading(mid);
     monitors[mid]._pollMs = monitorPollMs(mid);   // 同上：WSL 读循环也用同一套可见性频率
+    monitors[mid]._wslReadFails = 0;              // 新一轮读取从零开始计失败
     var reading = false;
     monitors[mid].readTimer = setInterval(async function() {
         if (reading || !monitors[mid] || !monitors[mid].isConnected) { if (!monitors[mid] || !monitors[mid].isConnected) stopReading(mid); return; }
         reading = true;
         try {
             var data = await invokeTimeout('read_wsl_serial', { monitorId: mid }, 3000);
+            monitors[mid]._wslReadFails = 0;      // 拉到了就算这一轮正常（哪怕这次没数据）
             if (data && data.length > 0) {
                 // 渲染异常只记录日志，避免误触发断开/重连逻辑导致界面异常（#13）
                 try {
@@ -584,10 +591,32 @@ function startWslReading(mid) {
                 stopReading(mid);
                 updateMonitorUI(mid, false, true);
                 var savedPort = monitors[mid].portName;
-                appendOutput(mid, 'sys', '连接断开，3秒后自动重连...');
+                // ⚠️ 自动重连**全程不写日志**（用户 2026-10 要求："这些信息不应该出现在日志窗口"）：
+                // 重连是内部过程，逐次的"正在重连 (N/10)"与失败原因会把输出区刷满，而且经
+                // `bufferPush` 还会一并灌进 MCP 日志中心（AI 读的 `ui:sys`/`ui:err` 通道）。
+                // 可见性只走界面状态：`updateMonitorUI(mid,false,true)` → 按钮变「等待接入」+ 设备状态点。
                 setTimeout(function() { reconnectWslPort(mid, savedPort); }, 3000);
             } else {
-                console.error('[WSL] 读取失败:', e);
+                // ⚠️ **连续失败到阈值就判掉线**（2026-10 用户报的 bug：以前这里只 console.error，
+                // `isConnected` 一直是 true —— 界面上写着"已连接"、而循环发送的掉线自愈
+                // （`updateMonitorUI(mid,false)` → `stopQcmdLoop`，见 10-monitor.js）永远不触发，
+                // 于是"断开设备后循环发送不停刷屏"。设备被 detach / 拔线后 WSL 里的 /dev/tty* 没了，
+                // 读会一直报 I/O error —— 只写一行 console.error 就是自欺欺人：状态得跟着改）
+                if (!monitors[mid]) return;
+                var fails = (monitors[mid]._wslReadFails || 0) + 1;
+                monitors[mid]._wslReadFails = fails;
+                console.error('[WSL] 读取失败(' + fails + '/' + WSL_READ_FAIL_MAX + '):', e);
+                if (fails >= WSL_READ_FAIL_MAX) {
+                    try { await invoke('close_wsl_serial', { monitorId: mid }); } catch (_) {}
+                    monitors[mid].isConnected = false;
+                    stopReading(mid);
+                    logCacheEnd(mid);
+                    updateMonitorUI(mid, false);
+                    // ⚠️ **只弹窗、不写日志**（用户 2026-10：这条不要出现在日志窗口）—— 掉线收尾说明混进输出区
+                    // 会被当成设备数据（还会经 `bufferPush` 灌进 MCP 日志中心的 `ui:err` 通道）；
+                    // 技术详情留在上面那条 `console.error('[WSL] 读取失败(n/3)')` 里，排查时照样看得到。
+                    showToast('WSL 串口连续 ' + fails + ' 次读取失败（设备可能已断开），监控已停止', 'error');
+                }
             }
         } finally {
             reading = false;
@@ -603,7 +632,7 @@ async function reconnectWslPort(mid, portName, attempt) {
     }
     attempt = attempt || 1;
     if (attempt > 10) {
-        appendOutput(mid, 'err', '重连失败，已达到最大重试次数');
+        // 重试 10 次仍失败：恢复「开始监控」收尾，**不写日志**（自动重连全程静默）
         updateMonitorUI(mid, false, false);
         logCacheEnd(mid); // WSL 重连最终失败：结束会话缓存
         if (monitors[mid]) monitors[mid]._reconnectPending = false;
@@ -611,18 +640,16 @@ async function reconnectWslPort(mid, portName, attempt) {
     }
     var baud = parseInt(document.getElementById(mid + '-baudRate').value) || 115200;
     try {
-        appendOutput(mid, 'sys', '正在重连 (' + attempt + '/10): ' + portName);
         await invoke('open_wsl_serial', { monitorId: mid, devicePath: portName, baudRate: baud });
         monitors[mid].isConnected = true;
         monitors[mid].portName = portName;
         resetRecvStream(mid); // 新数据流：不继承上一次连接的未结束行
         updateMonitorUI(mid, true);
         startWslReading(mid);
-        appendOutput(mid, 'sys', '重连成功');
         renderWslDeviceList('main'); // 及时刷新 WSL 设备状态点
         if (monitors[mid]) monitors[mid]._reconnectPending = false;
-    } catch (e) {
-        appendOutput(mid, 'err', '重连失败: ' + e);
+    } catch (_) {
+        // 失败原因不写日志（自动重连全程静默）：要么继续下一轮重试，要么按上面的分支收尾
         var reconnectBtn = document.getElementById(mid + '-btnAutoReconnect');
         if (reconnectBtn && reconnectBtn.classList.contains('on')) {
             var delay = Math.min(3000 * attempt, 30000);

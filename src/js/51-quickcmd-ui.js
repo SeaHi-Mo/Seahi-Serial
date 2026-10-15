@@ -470,13 +470,21 @@ function qcmdItemText(mid, gid, idx) {
 
 /// 按文本/HEX 两种格式之一发一条 —— 手动点发、Enter、循环发送**共用这一条路径**
 /// （绝不为循环发送另写一套，否则两条路迟早漂移）
+///
+/// ⚠️ 返回值是**四态**，别退回 `true/false`（2026-10 用户报的 WSL 掉线刷屏事故）：
+/// 「这条没内容」与「这条发不出去」是**两件事**，合在一个 `false` 里，调用方就只能瞎猜 ——
+/// 猜错的后果是把"写设备失败"当成"这条空、跳过"，于是同一条被以 0ms 间隔无限重发。
+///   'ok'      发出去了
+///   'empty'   这条没内容（**正常的跳过**，循环继续走下一条）
+///   'offline' 监视器已不在连接态（压根没发，也不该继续循环）
+///   'failed'  真的发失败（写设备报错 / HEX 格式非法 → 同样不该继续循环）
 async function sendQcmdPayload(mid, text, hexMode) {
-    if (!monitors[mid] || !monitors[mid].isConnected) return false;
+    if (!monitors[mid] || !monitors[mid].isConnected) return 'offline';
     var bytes;
     try {
         if (hexMode) { bytes = hexToBytes(text); }
         else { text = parseEscapes(text); text += leStr(mid); bytes = new TextEncoder().encode(text); }
-    } catch (e) { appendOutput(mid, 'err', '格式错误: ' + e); return false; }
+    } catch (e) { appendOutput(mid, 'err', '格式错误: ' + e); return 'failed'; }
     try {
         // 先显示 echo，再发送数据
         var echoBtn = document.getElementById(mid + '-btnEcho');
@@ -488,14 +496,14 @@ async function sendQcmdPayload(mid, text, hexMode) {
         else { await invokeTimeout('send_data', { monitorId: mid, data: Array.from(bytes) }, 5000); }
         monitors[mid].histNavIdx = -1;
         scheduleConfigSave();
-        return true;
-    } catch (e) { appendOutput(mid, 'err', '发送失败: ' + e); return false; }
+        return 'ok';
+    } catch (e) { appendOutput(mid, 'err', '发送失败: ' + e); return 'failed'; }
 }
 
 async function sendQcmdItem(mid, gid, idx) {
-    if (!monitors[mid] || !monitors[mid].isConnected) return false;
+    if (!monitors[mid] || !monitors[mid].isConnected) return 'offline';
     var text = qcmdItemText(mid, gid, idx);
-    if (!text) return false;
+    if (!text) return 'empty';
     // 格式由**本条自己的 HEX 使能按钮**决定（见 makeQcmdItem 上方的说明）
     return sendQcmdPayload(mid, text, qcmdItemHex(qcmdItemAt(mid, gid, idx)));
 }
@@ -529,10 +537,11 @@ var QCMD_RETRY_GAP_MS = 300;     // 收到 ERROR 后隔多久重发
 var QCMD_LOOP_MIN_GAP_MS = 20;   // **超时填 0** 时的最小间隔兜底（防"0 超时"连成紧凑死循环刷爆串口）；
                                  // ⚠️ 它**不是**不等回话条目的固定节奏 —— 那种条目的节奏 = 它自己的「超时」
 
-/// 循环过程的每一步都写进输出区 —— 面板上没有为它新增任何控件，用户就是靠这几行看它在干什么
-function qcmdLog(mid, text, cls) {
-    try { appendOutput(mid, cls || 'sys', '[快速指令] ' + text); } catch (e) { /* 输出区没了就算了 */ }
-}
+// ⚠️ **循环发送全程不写监视窗口**（用户 2026-10："都需要删除"）：原来那个 `qcmdLog()`（把每一步写进输出区）
+// 已**整个删掉** —— 等回话流水（已发出 / 收到 OK / busy / 重发）、跳转流水、正常收尾、跳过与异常，
+// 一律不进输出区（也就不会经 `bufferPush` 灌进 MCP 日志中心）。可见性只剩面板本身：亮着的开关 +
+// 折叠条那颗一闪一闪的小点；**自愈停止**才弹一次 toast（见 `stopQcmdLoop`），异常详情走 `console.warn`。
+// 别再以"让用户看到循环在干什么"为由把日志加回来。
 
 function qcmdLoopRunning(mid) { return !!(monitors[mid] && monitors[mid].qcmdLoop); }
 
@@ -567,14 +576,17 @@ function stopQcmdLoop(mid, reason) {
     delete _qcmdLoopBusy[mid];
     var m = monitors[mid];
     if (m) {
-        m.qcmdLoop = false; m._qcmdLoopPos = 0; m._qcmdGotoRun = 0;
+        m.qcmdLoop = false; m._qcmdLoopPos = 0; m._qcmdGotoRun = 0; m._qcmdSkipRun = 0;
         // 轮次 +1：让"还在等回话 / 还在等间隔"的那一拍作废（它醒过来时已经不属于这一轮了）
         m._qcmdLoopRun = (m._qcmdLoopRun || 0) + 1;
     }
     // 让 Rust 把"正在等回话"的状态也清掉：下一次 arm 会重置，但留着就是一处悬挂状态
     invoke('qcmd_hs_stop', { monitorId: mid }).catch(function() {});
     syncQcmdLoopBtn(mid);
-    if (reason) { showToast(reason, 'error'); qcmdLog(mid, reason, 'err'); }
+    // ⚠️ 停止说明**只弹窗、不进监视窗口**（用户 2026-10："这种停止信息不要出现在监视窗口"）：
+    // 「监控已断开，循环发送已停止」这类是**程序自己的状态**，混进输出区会被当成设备数据
+    // （还会经 `bufferPush` 灌进 MCP 日志中心的 `ui:sys`/`ui:err`）。用户主动关循环（无 reason）不提示。
+    if (reason) showToast(reason, 'error');
 }
 
 /// 跑着的时候改了组序/加了组/删了条目：把轮次位置钳进新计划的长度里
@@ -625,10 +637,9 @@ function qcmdStopReasonOf(kind, label, timeoutMs, retry) {
 
 /// 等这一条的回话结论。**判定在 Rust 侧**（busy 继续等 / OK / ERROR / 超时），
 /// 这里只按节奏去问它 —— 前端轮询频率不影响判定本身，只影响"多快知道"。
-function qcmdWaitVerdict(mid, timeoutMs, label) {
+function qcmdWaitVerdict(mid, timeoutMs) {
     return new Promise(function(resolve) {
         var deadline = Date.now() + timeoutMs + QCMD_HS_GRACE_MS;
-        var busyLogged = false;
         var done = function(v) {
             if (_qcmdHsPoll[mid]) { clearInterval(_qcmdHsPoll[mid]); delete _qcmdHsPoll[mid]; }
             resolve(v);
@@ -636,10 +647,7 @@ function qcmdWaitVerdict(mid, timeoutMs, label) {
         var tick = function() {
             if (!monitors[mid] || !monitors[mid].qcmdLoop) { done('stopped'); return; }
             invoke('qcmd_hs_state', { monitorId: mid }).then(function(st) {
-                if (st && st.busy && !busyLogged) {
-                    busyLogged = true;
-                    qcmdLog(mid, '第 ' + label + ' 条设备回 busy → 继续等（不重发）');
-                }
+                // busy 只表示"还在处理"：不重发、也不算结论（这一步以前会写一行日志，现已按用户要求全删）
                 var v = qcmdVerdictOf(st && st.state);
                 if (v) done(v);
                 else if (Date.now() > deadline) done('timeout');   // Rust 自己也超时，这里只是兜底
@@ -652,24 +660,38 @@ function qcmdWaitVerdict(mid, timeoutMs, label) {
     });
 }
 
-/// 送一条并等它的回话。返回 'ok' | 'skip' | 'timeout' | 'err-exhausted' | 'stopped'
+/// 一条送不出去时的结论 —— **'skip' 与 'sendfail' 必须分开**：
+///   'empty'  → 'skip'：这一条没内容，跳过它继续走（正常的"空条目"语义）
+///   'offline' / 'failed' → 'sendfail'：这条真的发不出去（连接已断 / 写设备报错 / 格式非法）
+///     —— 设备都没了，跳转到别的条目也是白发，整条链自愈停止
+/// ⚠️ 2026-10 用户报的 bug：这里以前只看 `isConnected`，两个情形合用一个 `'skip'`。
+/// WSL 面板在设备被 detach 后 `isConnected` 仍是 true（前端没人改它），于是"写设备失败"
+/// 被当成"这条内容空、跳过"，qcmdLoopStep 立刻重排同一拍 → **0ms 间隔无限刷**
+/// 「发送失败: write failed: [Errno 5] Input/output error」+
+/// 「第 …条没内容可发，已跳过」，循环永不停止、日志被刷爆。
+function qcmdSendFailed(mid, r, label) {
+    if (r === 'empty') return 'skip';   // 空条目：正常的"跳过"，**不写监视窗口**（连这行提示已按用户要求删掉）
+    var why = (r === 'offline') ? '连接已断开' : '写入设备失败（设备可能已断开）';
+    // ⚠️ **不写监视窗口**（用户 2026-10）：这属于"停止说明"，一律走 `stopQcmdLoop` 的弹窗；
+    // 带条目身份的详情留给控制台（排查要看得到，但不该占用户看数据的窗口）。
+    console.warn('[快速指令] 第 ' + label + ' 条发送失败：' + why + '，循环发送已停止');
+    return 'sendfail';
+}
+
+/// 送一条并等它的回话。返回 'ok' | 'skip' | 'sendfail' | 'timeout' | 'err-exhausted' | 'stopped'
 async function qcmdRunOne(mid, step, it, label) {
     var timeoutMs = qcmdItemTimeout(it), expect = qcmdItemExpect(it), maxRetry = qcmdItemRetry(it);
     // ⚠️ **不等回话的判据只有一处**：`qcmdItemWaits`（超时 > 0 **且**「期望」非空）。
     // "超时填 0" 与 "没写「期望」" 都走这一条路 —— 后者是 2026-10 用户报的 bug：
     // 文件里没写期望却仍按内置 OK 判定，设备不回 OK 的指令全被判超时，整条链停在第一条上。
     if (!qcmdItemWaits(it)) {
-        var ok0 = await sendQcmdItem(mid, step.gid, step.ii);
-        if (!ok0) {
-            if (monitors[mid] && monitors[mid].isConnected) { qcmdLog(mid, '第 ' + label + ' 条没内容可发，已跳过', 'err'); return 'skip'; }
-            return 'stopped';
-        }
-        // ⚠️ **不等回话的条目一句提示都不给**（用户 2026-10 明确要求："直接发送，不做任何提示"：
-        // 逐条的"已发出（…隔 3000ms…）"多余，开循环时那行总结也多余）。这一档的可见性只有面板：
-        // 亮着的开关 + 折叠条那颗一闪一闪的小点（`.qcmd-side-tab.loop`）；想知道某一条到底等不等
-        // 回话，看超时那一格的悬停说明（`qcmdTimeoutTitle`）。**等回话**的条目照旧逐条写
-        // （一条回话一行，天然一拍一行：已发出 / 收到 OK / 重发（第 n/N 次）/ 终止原因）。
-        // 例外只有"自愈停止"那几行（掉线 / 没条目了 / 跳转死循环）—— 那是**出错**，不是流水，必须说。
+        var r0 = await sendQcmdItem(mid, step.gid, step.ii);
+        if (r0 !== 'ok') return qcmdSendFailed(mid, r0, label);
+        // ⚠️ **循环发送一句提示都不给**（用户 2026-10："直接发送，不做任何提示" → 后来连等回话/跳转/
+        // 收尾/跳过那几类也要求"都需要删除"）：可见性只有面板 —— 亮着的开关 + 折叠条那颗一闪一闪的小点
+        // （`.qcmd-side-tab.loop`）；想知道某一条到底等不等回话，看超时那一格的悬停说明
+        // （`qcmdTimeoutTitle`）。**唯一的例外是"自愈停止"**：那种弹一次 toast（`stopQcmdLoop`），
+        // 异常详情走 `console.warn` —— 它是**出错**，不是流水。
         // 节奏由**「超时」**说了算：它是"这一条占用的时间" —— 有回话可等时是等待上限
         // （等到结论就提前走），没写「期望」时没有回话可等，它就直接变成"隔多久发下一条"。
         // ⚠️ 别把这一档写死成常数：20ms 只是"填了 0"时的兜底（防紧凑死循环刷爆串口），
@@ -683,23 +705,19 @@ async function qcmdRunOne(mid, step, it, label) {
         try {
             await invokeTimeout('qcmd_hs_arm', { monitorId: mid, expect: expect, timeoutMs: timeoutMs }, 5000);
         } catch (e) {
-            qcmdLog(mid, '无法启动响应判定：' + e, 'err');
+            console.warn('[快速指令] 无法启动响应判定：' + e);
             return 'stopped';
         }
         var sent = await sendQcmdItem(mid, step.gid, step.ii);
-        if (!sent) {
+        if (sent !== 'ok') {
             await qcmdHsStop(mid);
-            if (monitors[mid] && monitors[mid].isConnected) { qcmdLog(mid, '第 ' + label + ' 条没内容可发，已跳过', 'err'); return 'skip'; }
-            qcmdLog(mid, '第 ' + label + ' 条发送失败（连接已断），循环已停止', 'err');
-            return 'stopped';
+            return qcmdSendFailed(mid, sent, label);
         }
-        qcmdLog(mid, '第 ' + label + ' 条已发出，等回话（最多 ' + timeoutMs + 'ms，认 ' + expect + '）');
-        var v = await qcmdWaitVerdict(mid, timeoutMs, label);
-        if (v === 'ok') { qcmdLog(mid, '第 ' + label + ' 条收到 OK'); return 'ok'; }
+        var v = await qcmdWaitVerdict(mid, timeoutMs);
+        if (v === 'ok') return 'ok';
         if (v === 'stopped') return 'stopped';
         if (v === 'err') {
             if (attempt < maxRetry) {
-                qcmdLog(mid, '第 ' + label + ' 条收到 ERROR → 重发（第 ' + (attempt + 1) + '/' + maxRetry + ' 次）', 'err');
                 await qcmdSleep(QCMD_RETRY_GAP_MS);
                 continue;
             }
@@ -737,7 +755,7 @@ async function qcmdLoopStep(mid) {
         verdict = await qcmdRunOne(mid, step, it, label);
     } catch (e) {
         verdict = 'stopped';
-        qcmdLog(mid, '第 ' + label + ' 条执行异常：' + e, 'err');
+        console.warn('[快速指令] 第 ' + label + ' 条执行异常：' + e);
     }
     // 等回话 / 等间隔期间被停掉（或停了又开过）→ 这一拍作废：**别放闸、别排下一步**
     // （新一轮自己会放闸；放错了就把新一轮的闸删掉，等于放它乱跑）
@@ -746,6 +764,25 @@ async function qcmdLoopStep(mid) {
     if (!monitors[mid] || !monitors[mid].qcmdLoop || (monitors[mid]._qcmdLoopRun || 0) !== run) return;
     delete _qcmdLoopBusy[mid];
     if (verdict === 'stopped') return;
+    // ---- 发送失败（连接已断 / 写设备报错 / HEX 非法）→ **整条链自愈停止** ----
+    // 设备都没了，走「失败跳转」跳到别的条目也是白发；更糟的是"跳过继续走"会让同一拍
+    // 立刻重排（`qcmdLoopSchedule(mid, 0)`），于是 0ms 间隔无限刷屏、循环永不停止
+    // （2026-10 用户报的 WSL 掉线事故）。
+    if (verdict === 'sendfail') {
+        stopQcmdLoop(mid, '发送失败：设备可能已断开，循环发送已停止');
+        return;
+    }
+    // ---- 空条目：跳过是正常的（用户可以留一条以后填），但**整轮一条都发不出去**时要停 ----
+    // 否则同样会 0ms 打转：`skip` 既不停止也不消耗条目（位置照常推进，可整轮都是空的）。
+    if (verdict === 'skip') {
+        m._qcmdSkipRun = (m._qcmdSkipRun || 0) + 1;
+        if (m._qcmdSkipRun >= Math.max(1, plan.length)) {
+            stopQcmdLoop(mid, '连续 ' + m._qcmdSkipRun + ' 条都没有内容可发，循环发送已停止');
+            return;
+        }
+    } else {
+        m._qcmdSkipRun = 0;          // 只要有一条真的发出去了，就不是"整轮空转"
+    }
 
     // ---- 跳转：成功走「成功跳转」；**超时或 ERROR 用尽**都算失败，走「失败跳转」----
     // （超时也走失败路径是有意的：配网失败多半是超时而不是 ERROR，只认 ERROR 的话这个功能没用）
@@ -756,8 +793,7 @@ async function qcmdLoopStep(mid) {
         if (failed) {
             stopQcmdLoop(mid, qcmdStopReasonOf(verdict, label, qcmdItemTimeout(it), qcmdItemRetry(it)));
         } else {
-            qcmdLog(mid, '第 ' + label + ' 条收到 OK，按「成功跳转 = 结束」收尾');
-            stopQcmdLoop(mid);                       // 正常收尾：不给 toast（这不是错误）
+            stopQcmdLoop(mid);                       // 正常收尾：**不写日志也不给 toast**（这不是错误）
         }
         return;
     }
@@ -770,16 +806,15 @@ async function qcmdLoopStep(mid) {
             jumped = true;
             // **连续**跳转计数：中间只要顺序推进一步就清零 —— 它抓的是"只在几条之间打转"的死循环
             m._qcmdGotoRun = (m._qcmdGotoRun || 0) + 1;
-            qcmdLog(mid, '第 ' + label + ' 条' + (failed ? '失败' : '收到 OK') + ' → 跳转到顺序号 ' + gotoSeq);
             if (m._qcmdGotoRun > QCMD_GOTO_MAX) {
                 stopQcmdLoop(mid, '跳转次数超过上限 ' + QCMD_GOTO_MAX + '（顺序号 ' + gotoSeq
                     + ' 附近形成了死循环）—— 循环已停止');
                 return;
             }
         } else {
-            // 目标不在计划里（被删了 / 顺序号改了）：**降级**并写清原因，绝不静默乱跳
-            qcmdLog(mid, '第 ' + label + ' 条的跳转目标「顺序号 ' + gotoSeq + '」已经不在计划里 → 按'
-                        + (failed ? '终止' : '下一条') + '处理', 'err');
+            // 目标不在计划里（被删了 / 顺序号改了）：**降级**（写清原因是给控制台，不是监视窗口），绝不静默乱跳
+            console.warn('[快速指令] 第 ' + label + ' 条的跳转目标「顺序号 ' + gotoSeq + '」已经不在计划里 → 按'
+                        + (failed ? '终止' : '下一条') + '处理');
             if (failed) {
                 stopQcmdLoop(mid, qcmdStopReasonOf(verdict, label, qcmdItemTimeout(it), qcmdItemRetry(it))
                     + '（失败跳转的目标不存在，已按终止处理）');
@@ -811,6 +846,7 @@ function setQcmdLoop(mid, on) {
     m.qcmdLoop = true;
     m._qcmdLoopPos = 0;
     m._qcmdGotoRun = 0;      // 连续跳转计数：新开一轮必须从零开始
+    m._qcmdSkipRun = 0;      // 连续"空条目"计数：同理，新开一轮从零开始
     m._qcmdLoopRun = (m._qcmdLoopRun || 0) + 1;    // 新一轮的轮次（上一条链还在 sleep 的那一拍就此作废）
     // ⚠️ **开循环不写任何日志**（用户 2026-10 的原话："也要删除。直接发送，不做任何提示"）：
     // 不等回话的条目就是"安静地按节奏发"，开关亮着 + 折叠条那颗小点就是全部可见性；

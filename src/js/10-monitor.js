@@ -1314,7 +1314,10 @@ function startReading(mid) {
                 stopReading(mid);
                 updateMonitorUI(mid, false, true);
                 var savedPort = monitors[mid].portName;
-                appendOutput(mid, 'sys', '连接断开，正在自动重连...');
+                // ⚠️ 自动重连**全程不写日志**（用户 2026-10 要求："这些信息不应该出现在日志窗口"）：
+                // 重连是内部过程，10 次尝试 + 每次的失败原因会把输出区刷满，而且经 `bufferPush`
+                // 还会一并灌进 MCP 日志中心（AI 读的 `ui:sys`/`ui:err` 通道）。可见性只走界面状态：
+                // `updateMonitorUI(mid,false,true)` → 按钮变「等待接入」+ WSL/端口状态点。
                 reconnectPort(mid, savedPort, 1);
             } else {
                 monitors[mid].isConnected = false;
@@ -1333,7 +1336,7 @@ async function reconnectPort(mid, portName, attempt) {
     if (monitors[mid]) monitors[mid]._reconnectPending = true;
     if (!portName || attempt > 10) {
         if (attempt > 10) {
-            appendOutput(mid, 'err', '重连失败，已达到最大重试次数');
+            // 重试 10 次仍失败：恢复「开始监控」收尾，**不写日志**（自动重连全程静默）
             updateMonitorUI(mid, false, false);
             logCacheEnd(mid); // 重连最终失败：结束会话缓存
         }
@@ -1358,7 +1361,6 @@ async function reconnectPort(mid, portName, attempt) {
         }
     }
     var delay = Math.min(2000 * attempt, 20000);
-    appendOutput(mid, 'sys', '重连失败，' + Math.round(delay/1000) + '秒后重试 (' + attempt + '/10)...');
     setTimeout(function() {
         // 用户已切换端口或手动断开时，中止残留重试
         if (!monitors[mid] || !monitors[mid]._reconnectPending) return;

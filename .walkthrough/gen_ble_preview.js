@@ -1717,6 +1717,46 @@ try {
   check(pollHook === 6, '6 个页面切换点都重设频率（进入/离开 WSL、蓝牙、ADB）', String(pollHook));
   check(/document\.addEventListener\('visibilitychange', function\(\) \{ refreshMonitorPollRates\(\); \}\);/.test(html),
     '窗口最小化/恢复时也重设');
+  // WSL 读轮询**连续失败必须判掉线**（2026-10 用户报的 bug：断开设备后循环发送刷屏不停）
+  // 起因：设备被 usbipd detach / 拔线后 WSL 里 /dev/tty* 消失，读一直报 I/O error，而 catch 里
+  // 当时**只写了 console.error** —— `isConnected` 一直是 true，于是 ① 界面上写着"已连接"；
+  // ② 循环发送的掉线自愈（updateMonitorUI(false) → stopQcmdLoop）永远不触发；
+  // ③ 手动发送一直失败但状态看着正常。这条守着"连续失败到阈值就要把状态改掉"。
+  check(/var WSL_READ_FAIL_MAX = [2-9]\d*;/.test(html),
+    '★ WSL 读失败阈值是个 >1 的常量（一次读超时可能只是 bridge 忙，不该当场停掉整个监控）',
+    (html.match(/var WSL_READ_FAIL_MAX = \d+;/) || [])[0]);
+  check(/monitors\[mid\]\._wslReadFails = fails;[\s\S]{0,1500}?monitors\[mid\]\.isConnected = false;/.test(html),
+    '★ 连续读失败达阈值 → 真的把 isConnected 置为断开（只 console.error 就是自欺欺人）');
+  check(/showToast\('WSL 串口连续 ' \+ fails \+ ' 次读取失败/.test(html),
+    '★ 判掉线时弹一次 toast 并写清"连续几次失败"（不静默断）');
+  // ⚠️ 用户 2026-10：这条掉线收尾说明**不要出现在日志窗口**（掉线说明混进输出区会被当成设备数据，
+  // 而且经 `bufferPush` 还会灌进 MCP 日志中心）—— 只弹窗，技术详情留在 `console.error` 里
+  const wslDropLog = html.match(/appendOutput\([^)]*WSL 串口连续[^)]*\)/g) || [];
+  check(wslDropLog.length === 0,
+    '★ 掉线说明不许写日志（改用弹窗）', wslDropLog.join(' | ') || '(没有)');
+  check((html.match(/monitors\[mid\]\._wslReadFails = 0;/g) || []).length >= 1,
+    '读成功时清零失败计数（一次抖动不该攒满阈值）');
+  // ---- 自动重连**全程不写日志**（用户 2026-10 的要求："这些信息不应该出现在日志窗口"）----
+  // 起因：断开设备后自动重连会逐次写「连接断开，3 秒后自动重连」/「正在重连 (N/10)」/
+  // 「重连失败: …」，10 次下来把输出区刷满；而且这些行经 `bufferPush` 会**同时**进 MCP
+  // 日志中心（`ui:sys`/`ui:err` 通道），AI 读日志时也被这批内部流水淹没。
+  // 两个面板（Windows COM 与 WSL）口径一致：重连过程只靠界面状态（「等待接入」+ 状态点）体现。
+  {
+    const fnPort = extractFunction('reconnectPort');
+    const fnWsl = extractFunction('reconnectWslPort');
+    check(fnPort && fnPort.indexOf('appendOutput') < 0,
+      '★ 普通串口自动重连不写日志（逐次尝试与失败原因都不进输出区/日志中心）',
+      fnPort ? String(fnPort.length) : '(没抽到 reconnectPort)');
+    check(fnWsl && fnWsl.indexOf('appendOutput') < 0,
+      '★ WSL 自动重连同样不写日志（含"正在重连 (N/10)"与"重连失败: …"）',
+      fnWsl ? String(fnWsl.length) : '(没抽到 reconnectWslPort)');
+    // 触发点那两行（断线处）也不许写回来 —— 它们是"文字在 reconnect 函数之外"的那一半
+    // （只扫 `appendOutput(...)` 的实参，不扫注释：注释里保留这些文案是刻意的说明）
+    const reconnectLogs = html.match(
+      /appendOutput\([^)]*'[^']*(?:连接断开，正在自动重连|连接断开，3秒后自动重连|正在重连 \(|重连成功|已达到最大重试次数|重连失败)/g) || [];
+    check(reconnectLogs.length === 0,
+      '★ 这些重连文案一条都不许再传给 appendOutput', reconnectLogs.join(' | ') || '(一条都没有)');
+  }
   // B：缓冲超限丢弃要记账并提示
   check(/dropped: std::sync::Arc<std::sync::atomic::AtomicU64>/.test(mainRs), '后端有丢弃计数');
   check(/let prev = dropped_clone\.fetch_add\(drain as u64/.test(mainRs), '缓冲裁剪时累计丢弃字节');
@@ -4491,8 +4531,8 @@ try {
        'qcmdTimeoutColIndex', 'qcmdTimeoutTitle', 'syncQcmdTimeoutMark',
        'qcmdLoopPlan', 'qcmdItemText',
        'qcmdLoopRunning', 'qcmdSideTabTitle', 'syncQcmdLoopBtn', 'stopQcmdLoop', 'qcmdLoopStep', 'setQcmdLoop', 'toggleQcmdLoop', 'qcmdLoopSyncPlan',
-       'qcmdLog', 'qcmdSleep', 'qcmdHsStop', 'qcmdLoopSchedule', 'qcmdStepLabel',
-       'qcmdVerdictOf', 'qcmdStopReasonOf', 'qcmdWaitVerdict', 'qcmdRunOne',
+       'qcmdSleep', 'qcmdHsStop', 'qcmdLoopSchedule', 'qcmdStepLabel',
+       'qcmdVerdictOf', 'qcmdStopReasonOf', 'qcmdWaitVerdict', 'qcmdSendFailed', 'qcmdRunOne',
        // 工作流规则（MCP 的 serial_workflow 走这些真函数）
        'mcpWfElId', 'wfDelayOf', 'mcpWfActionOut', 'mcpWfConds', 'mcpWfActs', 'mcpWfValidate',
        // 跳转（成功/失败跳转的两列 → 状态机的分支与循环）
@@ -5132,12 +5172,15 @@ try {
       check(!/qcmdLogFire|qcmdFireLogFlush|qcmdLoopNoWaitCount/.test(html),
         '★ 那两套"提示"连同它们的机器都删干净了（流水日志合并 / 不等回话计数），不留死代码',
         /qcmdLogFire|qcmdLoopNoWaitCount/.test(html) ? '还有残留' : '');
+      // ★★ 循环发送在监视窗口里**一行都不写**（用户 2026-10 逐轮收紧的最终口径：
+      //   "直接发送，不做任何提示" → "都需要删除"）：`qcmdLog` 已**整个删掉**，任何一处调用
+      //   回来都会被这里抓住（等回话流水 / busy / 重发 / 跳转 / 收尾 / 跳过 全在内）。
+      check(!/qcmdLog\(mid/.test(html),
+        '★ 循环发送一行日志都不写：`qcmdLog` 已整个删掉（调用回来就 fail）',
+        (html.match(/qcmdLog\(mid[^\n]*/g) || []).join(' | ') || '(一处都没有)');
       check(!/qcmdLog/.test(extractFunction('setQcmdLoop')),
         '★ `setQcmdLoop` 里一句日志都不写（开循环就是"直接发"，不提示）',
         extractFunction('setQcmdLoop').match(/qcmdLog[^\n]*/) || '');
-      // 只看"不等回话"那一支（`for (var attempt` 之前）—— 等回话那一支照旧有"已发出，等回话"
-      check(!/条已发出/.test(runOneSrc.split('for (var attempt')[0]),
-        '★ 不等回话那条路不再写"已发出"流水（原来那行整条删了）');
       // 配了却不会生效的等待参数（重试 / 跳转 / 期望）要在导入时被数出来 → 提示一次
       const dw = sbSide.qcmdParseText([
         '| 顺序号 | 指令 | 超时(ms) | 期望 | 重试 |',
@@ -5201,6 +5244,21 @@ try {
         '超时终止文案里写明"哪一条 + 等了多久"', sbSide.qcmdStopReasonOf('timeout', 'X', 3000, 3));
       check(/连续 4 次收到 ERROR/.test(sbSide.qcmdStopReasonOf('err-exhausted', 'X', 3000, 3)),
         'ERROR 用尽的文案里写清重发次数（上限 + 1 次尝试）', sbSide.qcmdStopReasonOf('err-exhausted', 'X', 3000, 3));
+      // ---- 循环的「停止说明」只弹窗、不进监视窗口（用户 2026-10："这种停止信息不要出现在监视窗口"）----
+      // 起因：「[快速指令] 监控已断开，循环发送已停止」这类是**程序自己的状态**，混进输出区会被当成设备数据，
+      // 而且经 `bufferPush` 还会灌进 MCP 日志中心。停止原因一律走 `stopQcmdLoop` 的弹窗。
+      {
+        const stopSrc = extractFunction('stopQcmdLoop');
+        check(stopSrc && stopSrc.indexOf('qcmdLog') < 0 && /showToast\(reason/.test(stopSrc),
+          '★ stopQcmdLoop 的停止说明只弹窗，不写监视窗口',
+          stopSrc ? '(qcmdLog: ' + (stopSrc.indexOf('qcmdLog') >= 0) + ')' : '(没抽到 stopQcmdLoop)');
+        // 那几种"自愈停止"的原因（掉线 / 发送失败 / 整轮空转 / 跳转死循环 / ERROR 用尽 / 超时）都不许再进日志
+        const stopLogs = html.match(
+          /qcmdLog\([^)]*'[^']*(?:循环发送已停止|循环已停止|已按终止处理|跳转次数超过上限|超时终止|错误终止)/g) || [];
+        check(stopLogs.length === 0,
+          '★ 自愈停止的几种原因都不许写进监视窗口（改由弹窗提示）',
+          stopLogs.join(' | ') || '(一条都没有)');
+      }
       check(sbSide.qcmdItemHex({}) === false && sbSide.qcmdItemHex({ hex: 1 }) === true, 'HEX 读法：非真值一律当关');
       check(sbSide.qcmdDigits('a01b2', 4) === '12' && sbSide.qcmdDigits('000') === '0' && sbSide.qcmdDigits(null) === '',
         '输入框只留数字（并去掉多余前导零，全 0 收敛成一个 0）');
@@ -5218,7 +5276,7 @@ try {
       sbSide.invoke = () => ({ catch() {} });
       sbSideRef = sbSide;   // 沙箱在块作用域里，文件末尾那段异步断言要隔着作用域用它
       // 组模型：发一条 = (mid, gid, 组内下标)。记 gid 是为了能证明"按组的上下顺序走"
-      sbSide.sendQcmdItem = (mid, gid, idx) => { sent.push(idx); sentGroups.push(gid); return { then() {} }; };
+      sbSide.sendQcmdItem = (mid, gid, idx) => { sent.push(idx); sentGroups.push(gid); return Promise.resolve('ok'); };
       sbSide.setTimeout = (fn, ms) => { const id = ++loopTimerSeq; loopTimers[id] = { fn, ms }; return id; };
       sbSide.clearTimeout = id => { delete loopTimers[id]; };
       // 等回话那一拍的轮询 interval：本段只验证"开关状态/清理"，假的就够了（真行为在末尾异步段）
@@ -6966,6 +7024,10 @@ try {
 
     // ---- 核心需求：点「＋ 添加」，新条目必须写进目标文件 ----
     invokeCalls.length = 0;
+    // ⚠️ 清掉前面用例留下的写回去抖定时器（本节的交互会触发 addQcmdItem → scheduleQcmdFileSave
+    // 的 600ms 去抖，没人跑它就一直躺在队列里）。不清的话下面"只登记一次写回"会把别人的也算进来 ——
+    // 数出 2 个而断言本意是"这一次添加登记了几次"（与实现无关的测试自身污染）。
+    Object.keys(timers).forEach(id => delete timers[id]);
     sbSide.addQcmdItem('main', g0id());
     check(pendingTimers() === 1, '添加后登记了一次"写回文件"（带 600ms 去抖）', String(pendingTimers()));
     runTimers();
@@ -7484,6 +7546,9 @@ try {
     const m = sb.monitors.main;
     const sent = [], toasts = [], logs = [], calls = [], diag = [];
     let script = [], stateDefault = 'waiting', armCount = 0;
+    // sendQcmdItem 的"四态"返回值由它驱动（'ok' / 'empty' / 'offline' / 'failed'）——
+    // 2026-10 的 WSL 掉线事故就是把"没内容"与"发不出去"混成一个 false 造成的
+    let sendResult = 'ok';
 
     // 一个可编程的"假 Rust"：arm 记一笔、state 按脚本逐次返回（脚本空了就用 stateDefault）
     sb.invoke = (cmd, args) => {
@@ -7499,7 +7564,8 @@ try {
     sb.invokeTimeout = (cmd, args) => sb.invoke(cmd, args);
     sb.sendQcmdItem = (mid, gid, idx) => {
       sent.push({ idx: idx, gid: gid, armBefore: armCount });
-      return Promise.resolve(true);
+      // 默认整段返回同一个结论；需要"按条目区分"时把 sendResult 设成函数
+      return Promise.resolve(typeof sendResult === 'function' ? sendResult(idx) : sendResult);
     };
     sb.appendOutput = (mid, cls, text) => logs.push(String(text));
     sb.showToast = msg => toasts.push(String(msg));
@@ -7546,9 +7612,9 @@ try {
       JSON.stringify(sent.map(x => x.armBefore)));
     check(calls.some(c => c.cmd === 'qcmd_hs_arm' && c.args && c.args.timeoutMs === 2000),
       'arm 带上了本条自己的超时', JSON.stringify(calls.filter(c => c.cmd === 'qcmd_hs_arm').map(c => c.args)));
-    check(logs.some(t => /收到 OK/.test(t)),
-      '输出区里写清"收到 OK"（面板上没有为它新增控件，用户就靠这几行看它在干什么）',
-      logs.join(' | '));
+    check(!logs.some(t => /收到 OK/.test(t)) && !logs.some(t => /条已发出/.test(t)),
+      '★ 等回话的流水（已发出 / 收到 OK）也不写监视窗口（用户 2026-10："都需要删除"）',
+      logs.join(' | ') || '(一个字都没有)');
     sb.stopQcmdLoop('main');
 
     // ② ERROR → 重发本条，重试成功就继续跑
@@ -7558,8 +7624,8 @@ try {
     check(await waitFor(() => sent.length >= 3, 1500),
       'ERROR 后重发本条（重试上限 2 → 一共发 3 次）', JSON.stringify(sent.map(x => x.idx)));
     check(sent.every(x => x.idx === 0), '重发的还是同一条', JSON.stringify(sent.map(x => x.idx)));
-    check(logs.some(t => /重发（第 1\/2 次）/.test(t)) && logs.some(t => /重发（第 2\/2 次）/.test(t)),
-      '日志里写清这是第几次重发', logs.join(' | '));
+    check(!logs.some(t => /重发（第/.test(t)),
+      '★ 重发次数也不写监视窗口（行为由上面的 sent 断言钉住）', logs.join(' | ') || '(一个字都没有)');
     check(sb.qcmdLoopRunning('main'), '第 3 次收到 OK → 循环继续跑（没有误终止）');
     sb.stopQcmdLoop('main');
 
@@ -7579,13 +7645,15 @@ try {
     check(/超时终止/.test(toasts.join(' | ')) && /60ms/.test(toasts.join(' | ')),
       '终止原因写清"哪一条 + 等多久"', toasts.join(' | '));
 
-    // ⑤ busy 只算"继续等"：不算结论、也不重发
+    // ⑤ busy 只算"继续等"：不算结论、也不重发（脚本永远回 busy，免得它中途收到 OK 又发下一条）
     setItems([{ label: '', value: 'AT+CWJAP', seq: 1, timeout: 2000, expect: 'OK' }]);
-    script = [{ state: 'waiting', busy: true }, { state: 'ok' }]; stateDefault = 'waiting';
+    script = []; stateDefault = 'busy';
     sb.setQcmdLoop('main', true);
-    check(await waitFor(() => logs.some(t => /设备回 busy/.test(t)), 1500),
-      'busy 记一行日志（用户能看出"它在等，不是卡死了"）', logs.join(' | '));
+    check(await waitFor(() => sent.length >= 1, 800), '（前置）busy 用例：已经发出去这一条');
+    await new Promise(r => setTimeout(r, 300));    // 在 busy 上多转几圈（轮询 60ms/次）
     check(sent.length === 1, 'busy 期间不重发（还是那一条）', JSON.stringify(sent.map(x => x.idx)));
+    check(!logs.some(t => /busy|收到 OK|已发出/.test(t)),
+      '★ busy 只是"继续等"，也不再写监视窗口', logs.join(' | ') || '(一个字都没有)');
     sb.stopQcmdLoop('main');
 
     // ⑥ 超时填 0 = 这条不等回话，按 20ms 兜底连发（连续 HEX 帧），且**逐条不写日志**
@@ -7639,6 +7707,59 @@ try {
       toasts.join(' | '));
     check(!sb._qcmdHsPoll['main'], '中断后轮询 interval 也收掉了');
 
+    // ⑦b ★★ 发送失败（写设备报 I/O error / 连接已断）→ **必须自愈停止整条链**。
+    //   2026-10 用户报的 WSL 事故：WSL 面板在设备被 usbipd detach 后 `isConnected` 仍是 true，
+    //   而 `sendQcmdItem` 当时把"没内容"和"发不出去"混成一个 false，于是"写设备失败"被当成
+    //   "这条空、跳过"，qcmdLoopStep 立刻重排同一拍 → **0ms 间隔无限刷**
+    //   「发送失败: write failed: [Errno 5] Input/output error」+
+    //   「第 …条没内容可发，已跳过」，循环永不停止、日志被刷爆，只能手动点停。
+    //   ⚠️ 用**三条**的链：旧行为下"跳过"会接着发第 2、3 条（而不是停在 1 条上），
+    //   所以 `sent.length === 1` 这条能真正抓住"失败后又重发"。
+    setItems([{ label: '', value: '1234567891021211', seq: 1, timeout: 0 },   // 不等回话的条目
+              { label: '', value: 'AT+TWO', seq: 2, timeout: 0 },
+              { label: '', value: 'AT+THREE', seq: 3, timeout: 0 }]);
+    sendResult = 'failed';
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => !sb.qcmdLoopRunning('main'), 1500),
+      '★ 发送失败 → 循环**自愈停止**（旧行为：永远不停，0ms 间隔刷屏）');
+    check(sent.length === 1, '★ 失败之后不再重发（不是"跳过继续走"）', String(sent.length));
+    check(/发送失败/.test(toasts.join(' | ')) && /已停止/.test(toasts.join(' | ')),
+      '★ 停止原因写清"发送失败"（自愈停止要给 toast，不能静默）', toasts.join(' | '));
+    check(!logs.some(t => /没内容可发/.test(t)),
+      '★ 发送失败**不许**说成"没内容可发"（文案说反 = 对用户说谎）', logs.join(' | '));
+    check(!sb._qcmdLoopTimers['main'] && !sb._qcmdLoopBusy['main'],
+      '★ 自愈停止之后不留还在跑的定时器与重入闸');
+    check(m.qcmdLoop === false, '★ 循环标记也清掉（不留"亮着但其实没跑"的僵尸态）');
+
+    // ⑦c 'offline'（监视器已不在连接态）同样要停 —— 这条兜住"状态更新晚了一拍"
+    setItems([{ label: '', value: 'AT', seq: 1, timeout: 0 }]);
+    sendResult = 'offline';
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => !sb.qcmdLoopRunning('main'), 1500),
+      '★ 发送时已不在连接态（offline）→ 同样自愈停止', toasts.join(' | '));
+    check(sent.length === 1, '★ offline 也不重发', String(sent.length));
+
+    // ⑦d 整轮都是**空条目** → 熔断停止（`skip` 既不停止也不消耗条目，照样会 0ms 空转刷屏）
+    setItems([{ label: '', value: '', seq: 1, timeout: 0 }]);
+    sendResult = 'empty';
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => !sb.qcmdLoopRunning('main'), 1500),
+      '★ 整轮没有可发送的内容 → 熔断停止（旧行为：0ms 空转刷「没内容可发，已跳过」）');
+    check(/没有内容可发/.test(toasts.join(' | ')), '熔断原因写清"没有内容可发"', toasts.join(' | '));
+    check(!sb._qcmdLoopTimers['main'], '熔断后不留定时器');
+
+    // ⑦e 只要链上**还有**能发的条目，空条目就只是"跳过"，**不许**误熔断
+    setItems([{ label: '', value: '', seq: 1, timeout: 0 },      // 空（桩按条目返回 empty）
+              { label: '', value: 'AT+OK', seq: 2, timeout: 0 }]);// 有内容
+    sendResult = idx => (idx === 0 ? 'empty' : 'ok');
+    sb.setQcmdLoop('main', true);
+    check(await waitFor(() => sent.length >= 3, 2000) && sb.qcmdLoopRunning('main'),
+      '★ 链上还有能发的条目时不熔断（空条目只是跳过，照旧继续走）',
+      JSON.stringify(sent.map(x => x.idx)));
+    check(!toasts.some(t => /没有内容可发/.test(t)), '不许误报"整轮空转"', toasts.join(' | '));
+    sb.stopQcmdLoop('main');
+    sendResult = 'ok';
+
     // ⑧ 反复停：幂等，不留悬挂状态
     m.isConnected = true;
     sb._qcmdLoopTimers['main'] = 333; sb._qcmdHsPoll['main'] = 444;
@@ -7656,7 +7777,8 @@ try {
     check(await waitFor(() => sent.length >= 2, 1500),
       '成功跳转：第 1 条收到 OK → 跳到顺序号 3', JSON.stringify(sent.map(x => x.idx)));
     check(sent[1] && sent[1].idx === 2, '中间那条（顺序号 2）被跳过', JSON.stringify(sent.map(x => x.idx)));
-    check(logs.some(t => /跳转到顺序号 3/.test(t)), '跳转写进输出区（用户看得到它为什么跳）', logs.join(' | '));
+    check(!logs.some(t => /跳转到顺序号 3/.test(t)),
+      '★ 跳转也不写监视窗口（用户 2026-10："都需要删除"）', logs.join(' | ') || '(一个字都没有)');
     sb.stopQcmdLoop('main');
 
     setItems([{ label: '', value: 'A', seq: 1, timeout: 60, expect: 'OK', errgoto: '3' },   // 第 1 条必超时
@@ -7676,7 +7798,8 @@ try {
     check(await waitFor(() => !sb.qcmdLoopRunning('main'), 1500),
       '「成功跳转 = 结束」→ 正常收尾（循环停下）');
     check(toasts.length === 0, '正常收尾不弹错误 toast（它不是失败）', toasts.join(' | '));
-    check(logs.some(t => /按「成功跳转 = 结束」收尾/.test(t)), '收尾原因写进输出区', logs.join(' | '));
+    check(!logs.some(t => /收尾/.test(t)),
+      '★ 正常收尾同样不写监视窗口（"成功跳转 = 结束"只熄开关）', logs.join(' | ') || '(一个字都没有)');
 
     setItems([{ label: '', value: 'A', seq: 1, timeout: 2000, expect: 'OK', okgoto: '9' },   // 没有顺序号 9
               { label: '', value: 'B', seq: 2, timeout: 2000, expect: 'OK' }]);
@@ -7685,7 +7808,8 @@ try {
     check(await waitFor(() => sent.length >= 2, 1500),
       '跳转目标不在计划里 → 降级按「下一条」走（绝不静默乱跳）', JSON.stringify(sent.map(x => x.idx)));
     check(sent[1] && sent[1].idx === 1, '降级后发的是下一条', JSON.stringify(sent.map(x => x.idx)));
-    check(logs.some(t => /已经不在计划里/.test(t)), '降级原因写进输出区', logs.join(' | '));
+    check(!logs.some(t => /已经不在计划里/.test(t)),
+      '★ 降级说明也不写监视窗口（细节留给 console.warn）', logs.join(' | ') || '(一个字都没有)');
     sb.stopQcmdLoop('main');
 
     // 自己跳自己：**连续**跳转上限必须兜住（这是"只会打转"的语法的唯一护栏）
