@@ -1931,8 +1931,24 @@ const WSL_USB_NAME_FILTERS: &[&str] = &[
     "蓝牙", "bluetooth",
     // Windows 内置 HID / DSL 设备
     "usb输入设备", "usb-baseddslinstrument",
-    // 网卡（映射进 WSL 会顶掉 WSL 自己的网络）
-    "ethernet", "网络适配器", "networkadapter", "lan",
+    // 网卡 —— **有线无线一律不映射**（2026-10 用户明确口径："网卡不进入映射"）。
+    // 理由：映射进 WSL 会顶掉 WSL 自己的网络；而且 USB 网卡映射走后本机也少一块网卡。
+    // ⚠️ 这组词是 2026-10 用户报「Realtek USB GbE Family Controller 还在待映射列表里」之后补全的：
+    // 当时只有 `ethernet / 网络适配器 / networkadapter / lan`，而 Realtek 网卡的设备名里
+    // **只有 `GbE`（Gigabit Ethernet）没有 `Ethernet`**，`lan` 也不是它的子串
+    // （折叠成 `realtekusbgbefamilycontroller`，里面没有 lan），于是它从词表底下漏了过去。
+    // 补的时候按**"这一类网卡会怎么自称"**成组补，不是只补那一个型号 —— 换个型号又漏一个最费事：
+    //   · 速率写法：`gbe` / `gigabit`（还有 `2.5GbE` / `10GbE`）—— `ethernet` 已覆盖带全拼的
+    //   · 系列写法：`familycontroller` 是 Windows 给 Realtek 网卡系列的命名（GbE / FE / 2.5GbE Family
+    //     Controller 都落在它上面）。它不含厂商名，且**没有别的设备类别用这个写法**，所以不算厂商词；
+    //     真有一天它误伤了谁，第一个该删的就是它。
+    //   · 无线：`wireless` / `wifi` / `wi-fi` / `无线`（USB 无线网卡同样是网卡）
+    //   · 中文：`网络适配器` / `以太网` / `网卡`（usbipd 报中文名时命中）
+    // ⛔ 两条别加：`realtek` 这类**厂商词**（Realtek 也做蓝牙/读卡器，按厂商过滤会连带隐藏真想映射的
+    // 设备，见本表开头的约定）；`fe` / `nic` 这类**两三个字母的词**（`fe` 会命中 Surface/… 一堆无关名字，
+    // `nic` 会命中 electro**nic** / tech**nic** —— 宁可用 `familycontroller` 兜住 Realtek 那一家）。
+    "ethernet", "网络适配器", "networkadapter", "lan", "gbe", "gigabit", "familycontroller",
+    "wireless", "wifi", "wi-fi", "无线", "以太网", "网卡",
     // 指纹 / 生物识别（Windows Hello 专用；映射走 = 本机登录设备被 WSL 抢走）
     "fingerprint", "指纹", "biometric", "生物识别",
     // 摄像头 / 采集类（内置摄像头映射进 WSL 没有用途）
@@ -4994,6 +5010,18 @@ mod util_tests {
         assert!(super::wsl_usb_name_is_filtered("Bluetooth Adapter"));
         assert!(super::wsl_usb_name_is_filtered("USB 输入设备"));
         assert!(super::wsl_usb_name_is_filtered("Realtek USB Ethernet Adapter"));
+        // 2026-10 用户报：这张网卡的设备名里只有 GbE、没有 Ethernet，靠 "gbe" 才命中
+        assert!(super::wsl_usb_name_is_filtered("Realtek USB GbE Family Controller"));
+        assert!(super::wsl_usb_name_is_filtered("Realtek USB 2.5GbE Family Controller"));
+        assert!(super::wsl_usb_name_is_filtered("Realtek USB GbE 系列网卡"));
+        // 口径（用户 2026-10 确认）：**网卡一律不进映射列表**，换个型号／换种自称都得拦住。
+        // 这一组是"网卡会怎么自称"的取样：速率写法 / 系列写法 / 无线 / 中文 —— 漏一个就是一次返工。
+        assert!(super::wsl_usb_name_is_filtered("Realtek USB FE Family Controller")); // 靠 familycontroller
+        assert!(super::wsl_usb_name_is_filtered("ASIX AX88179 USB 3.0 to Gigabit Ethernet Adapter"));
+        assert!(super::wsl_usb_name_is_filtered("Realtek USB 10/100 LAN Adapter")); // 靠 lan
+        assert!(super::wsl_usb_name_is_filtered("Realtek 8812AU Wireless LAN 802.11ac USB NIC"));
+        assert!(super::wsl_usb_name_is_filtered("Intel(R) Wi-Fi 6 AX201 160MHz"));
+        assert!(super::wsl_usb_name_is_filtered("USB 2.0 10/100M 网卡"));
 
         // 真要映射的串口设备一个都不许被误伤
         assert!(!super::wsl_usb_name_is_filtered("USB-SERIAL CH340 (COM3)"));
@@ -5002,6 +5030,12 @@ mod util_tests {
         assert!(!super::wsl_usb_name_is_filtered("FTDI FT232R USB UART"));
         // ⚠️ 过滤词只认功能、不认厂商：Goodix 也做 BLE，按厂商过滤会连带隐藏真想映射的设备
         assert!(!super::wsl_usb_name_is_filtered("Goodix BLE Dongle"));
+        // 同理 Realtek 也做读卡器/蓝牙：读卡器**不能**因为厂商是 Realtek 被隐藏（蓝牙则靠 bluetooth 拦）
+        assert!(!super::wsl_usb_name_is_filtered("Realtek USB Card Reader"));
+        assert!(super::wsl_usb_name_is_filtered("Realtek Bluetooth Adapter"));
+        // ⛔ 别为了兜 Realtek 的百兆网卡去加 `fe` / `nic` 这种两三个字母的词：
+        // `nic` 会命中 electronic / technic 这类无关名字（下面这条就是拿它当哨兵）
+        assert!(!super::wsl_usb_name_is_filtered("Electronic Scale USB"));
     }
 
     #[test]
