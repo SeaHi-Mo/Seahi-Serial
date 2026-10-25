@@ -40,6 +40,17 @@ jobs:
           foreach ($v in @($conf, $iss, $pkg, $lock)) {
             if ($v -ne $cargo) { throw "版本号不一致：Cargo.toml=$cargo 但 conf/iss/pkg/lock 中存在 $v" }
           }
+          # 发布说明必须**只包含当前版本**：历史版本不要留在文件里（否则 GitHub Release 页面
+          # 会变成一堆旧版本说明；v0.5.19 就是这么发出去的 —— 见 doc/CODE_REVIEW_FULL_2026-09.md 之后的复盘）。
+          $notes = Get-Content -Path 'RELEASE_NOTES.md' -Raw
+          $heads = [regex]::Matches($notes, '(?m)^##\s+(v[0-9]+\.[0-9]+\.[0-9]+)\s*$')
+          if ($heads.Count -ne 1) {
+            throw "RELEASE_NOTES.md 必须只包含一个版本段落（当前 $($heads.Count) 个）：$([string]::Join(', ', ($heads | ForEach-Object { $_.Groups[1].Value })))"
+          }
+          if ($heads[0].Groups[1].Value -ne "v$cargo") {
+            throw "RELEASE_NOTES.md 版本段落 $($heads[0].Groups[1].Value) 与 Cargo.toml v$cargo 不一致"
+          }
+          Write-Host "发布说明版本校验通过：$($heads[0].Groups[1].Value)"
           # tag 构建时：tag 必须与版本号一致（手动触发是分支名，跳过该检查）
           if ('${{ github.ref }}'.StartsWith('refs/tags/')) {
             $tag = '${{ github.ref_name }}'
@@ -74,7 +85,11 @@ jobs:
           # 只提取当前版本段落（"## <tag>" 到下一个 "## v" 或文件末尾），不含历史版本
           $pattern = '(?s)##\s*' + [regex]::Escape($tag) + '\s*(.*?)(?=\n##\s*v|\z)'
           $m = [regex]::Match($all, $pattern)
-          $body = if ($m.Success) { $m.Groups[1].Value.Trim() } else { $all }
+          # 缺当前版本段落时**直接失败**：绝不能退回"$all"（那会把历史版本说明整段发到 Release 页面）
+          if (-not $m.Success) {
+            throw "RELEASE_NOTES.md 缺少当前版本段落：## $tag（发布说明必须包含且只包含当前版本）"
+          }
+          $body = $m.Groups[1].Value.Trim()
           $body = $body -replace '\{VERSION\}', $tag
           echo "body<<EOF" >> $env:GITHUB_OUTPUT
           echo "$body" >> $env:GITHUB_OUTPUT
