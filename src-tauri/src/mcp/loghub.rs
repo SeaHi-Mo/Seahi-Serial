@@ -237,7 +237,9 @@ pub fn cap_for(name: &str) -> usize {
     } else if name.starts_with("ble") {
         256 * 1024
     } else if name == "app" || name == "error" || name == "mcp" {
-        128 * 1024
+        // 排障最依赖的三个通道：原来 128KB 在高频 MCP 调用下很容易丢历史（实测一次会话
+        // app 通道 dropped 6905 条），诊断时恰好缺证据。给到 512KB，总量仍受 TOTAL_CAP_BYTES 约束。
+        512 * 1024
     } else {
         // ui / workflow / 其它
         64 * 1024
