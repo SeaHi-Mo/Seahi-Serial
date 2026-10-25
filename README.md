@@ -72,6 +72,14 @@ npm run build
 
 构建产物位于 `src-tauri/target/release/seahi-serial.exe`
 
+## 下载与安装（未签名说明）
+
+> ⚠️ 本项目为个人开发，**安装包暂未做代码签名**，Windows SmartScreen 可能提示「未知发布者」——
+> 这是未签名程序的正常提示，不等于病毒。请只从
+> [官方 Release](https://github.com/SeaHi-Mo/Seahi-Serial/releases) 下载，并按
+> [代码签名与安装说明](./doc/SIGNING.md) 核对 SHA-256 后再运行。
+> 个人开发者可行的后续签名路线（SignPath 开源免费签名 / Certum / sigstore 校验）也写在那份文档里。
+
 ## 项目结构
 
 ```

@@ -454,6 +454,12 @@ node .walkthrough/mcp_smoke.js                    # 对**正在跑的应用**逐
 （`releaseDraft: false` + `prerelease: false`，安装包由 `softprops/action-gh-release` 以 `draft: false` 上传，
 **无需人工发布**）；也支持手动触发。
 
+> ⚠️ **发布产物没有代码签名是现状**（个人开发者，无 OV/EV 证书）。Release 正文与 README 必须保留
+> [`doc/SIGNING.md`](doc/SIGNING.md) 的链接与 SHA-256 校验指引；**不许写「已签名 / 绝对安全」**。
+> 个人可行的签名路线（SignPath Foundation 开源免费签名 / Certum OSS / sigstore）与后续计划都记在那份文档里。
+> 另外 `RELEASE_NOTES.md` **只允许存在当前版本一个 `## vX.Y.Z` 段落**（CI 已强制校验）——
+> 历史版本说明会让 GitHub Release 变成一堆旧版本，2026-10 已踩过一次。
+
 ## 错误上报系统
 
 两条通道：**自建服务**（`server/error-server.js` + SQLite，推荐）与 **Sentry + GitHub Webhook**
