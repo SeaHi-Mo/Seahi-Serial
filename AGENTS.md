@@ -292,7 +292,8 @@ node .walkthrough/mcp_smoke.js                    # 对**正在跑的应用**逐
   `--transport sse|http`）。
 - `doc/`：`MCP.md`（使用说明）｜`MCP_TOOLS.md`（**54 个工具手册**，由 `gen_mcp_tools_doc.js` 从 `protocol.rs` 生成）｜
   `MCP_DESIGN.md`（设计 + 每步实施记录）｜`QUICK_CMDS.md`（快速指令文件格式）｜`FRONTEND_LAYOUT.md`｜`ARCHITECTURE.md`｜
-  `CODE_REVIEW_FULL_2026-09.md`｜`BLE_VERIFICATION.md`（主机方向真机验证）｜`BLE_PERIPHERAL.md`（已归档）。
+  `CODE_REVIEW_FULL_2026-09.md`｜`BLE_VERIFICATION.md`（主机方向真机验证）｜`BLE_PERIPHERAL.md`（已归档）｜
+  `SIGNING.md`（**安装/签名说明**：未签名现状、SHA-256 与 cosign 校验、个人可行签名路线）。
 - `src-tauri/vendor/btleplug/` — **vendored fork**（4 处本地补丁；**升级依赖必须按 `VENDOR.md` 重新打**）。
 - `src-tauri/tauri.conf.json` — **不要擅自设 CSP**：Tauri 会注入 nonce，按规范 `'unsafe-inline'` 即失效，而本应用的
   行内 `style="…"`（HTML 里 51 处 + JS 模板串里 151 处）与行内 `onclick` 会被全拦（界面掉样式、按钮点了没反应）。
@@ -456,7 +457,12 @@ node .walkthrough/mcp_smoke.js                    # 对**正在跑的应用**逐
 
 > ⚠️ **发布产物没有代码签名是现状**（个人开发者，无 OV/EV 证书）。Release 正文与 README 必须保留
 > [`doc/SIGNING.md`](doc/SIGNING.md) 的链接与 SHA-256 校验指引；**不许写「已签名 / 绝对安全」**。
-> 个人可行的签名路线（SignPath Foundation 开源免费签名 / Certum OSS / sigstore）与后续计划都记在那份文档里。
+> 个人可行的签名路线（SignPath Foundation 开源免费签名 / Certum OSS）与 sigstore 校验说明都在那份文档里。
+> **CI 已接入 sigstore**：构建后生成 `SHA256SUMS.txt` 并用 `cosign sign-blob`（keyless，GitHub OIDC）签名，
+> `.sigstore.json` bundle 与校验和一起上传 Release。三条别改回去：① `permissions` 必须保留 `id-token: write`
+> （删了签名步骤会失败）；② 上传资产列表必须带上 `SHA256SUMS.txt` + `.sigstore.json`（删了用户就没法验证）；
+> ③ 校验和必须覆盖**全部**发布安装包（新增产物要加进 `Get-ChildItem` 列表）。
+> 另：sigstore 只证明「产物由本仓库 CI 构建」，**不改变 Windows 的“未签名”判定**，SmartScreen 仍会提示。
 > 另外 `RELEASE_NOTES.md` **只允许存在当前版本一个 `## vX.Y.Z` 段落**（CI 已强制校验）——
 > 历史版本说明会让 GitHub Release 变成一堆旧版本，2026-10 已踩过一次。
 

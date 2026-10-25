@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: write
+  # cosign keyless（GitHub OIDC）签名需要；删掉这一行签名步骤会失败
+  id-token: write
 
 jobs:
   build:
@@ -147,11 +149,38 @@ jobs:
       - name: Build Inno Setup installer
         run: iscc installer.iss
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Generate SHA256SUMS and sign with cosign (keyless)
+        shell: pwsh
+        run: |
+          # 发布资产 = MSI（tauri-action 已上传）+ Inno Setup 安装包（下面这步上传）。
+          # 只签 SHA256SUMS.txt：用户先用 cosign 验它，再用其中的 SHA-256 核对安装包，
+          # 这样签名文件只有三个、校验链路也短。
+          $files = @()
+          $files += Get-ChildItem -Path 'src-tauri/target/release/bundle/msi/*.msi' -ErrorAction SilentlyContinue
+          $files += Get-ChildItem -Path 'installer/Seahi-Serial-Setup-*.exe' -ErrorAction SilentlyContinue
+          if ($files.Count -eq 0) { throw '找不到发布产物（MSI / Inno Setup 安装包）' }
+          $lines = foreach ($f in $files) {
+            $h = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash.ToLower()
+            Write-Host "$h  $($f.Name)"
+            "$h  $($f.Name)"
+          }
+          Set-Content -Path 'SHA256SUMS.txt' -Value $lines -Encoding ascii
+          # keyless 签名：证书由 Fulcio 按 GitHub OIDC 身份临时签发，写入 Rekor 透明日志。
+          # cosign v3 用 bundle（签名 + 证书 + 透明日志证明打包成一个文件），不再输出 .sig/.pem。
+          cosign sign-blob --yes --bundle 'SHA256SUMS.txt.sigstore.json' 'SHA256SUMS.txt'
+          Get-ChildItem SHA256SUMS.txt* | Select-Object Name, Length
+
       - name: Upload Inno Setup installer
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           draft: false
-          files: installer/Seahi-Serial-Setup-*.exe
+          files: |
+            installer/Seahi-Serial-Setup-*.exe
+            SHA256SUMS.txt
+            SHA256SUMS.txt.sigstore.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

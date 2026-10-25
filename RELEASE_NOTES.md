@@ -49,3 +49,6 @@
 这是未签名程序的**正常提示**，不等于病毒。请只从 GitHub Release 下载，并按
 [代码签名与安装说明](https://github.com/SeaHi-Mo/Seahi-Serial/blob/main/doc/SIGNING.md) 核对 SHA-256 后再运行。
 
+Release 会附带 `SHA256SUMS.txt` 与 cosign keyless 签名（`SHA256SUMS.txt.sigstore.json`）：
+先用 cosign 验签，再核对安装包 SHA-256（命令见说明文档 §4.1）。
+

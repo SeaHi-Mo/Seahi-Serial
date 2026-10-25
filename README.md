@@ -78,7 +78,7 @@ npm run build
 > 这是未签名程序的正常提示，不等于病毒。请只从
 > [官方 Release](https://github.com/SeaHi-Mo/Seahi-Serial/releases) 下载，并按
 > [代码签名与安装说明](./doc/SIGNING.md) 核对 SHA-256 后再运行。
-> 个人开发者可行的后续签名路线（SignPath 开源免费签名 / Certum / sigstore 校验）也写在那份文档里。
+> Release 附带 `SHA256SUMS.txt` 与 cosign keyless 签名（`.sigstore.json`），验签命令见说明文档 §4.1。
 
 ## 项目结构
 
