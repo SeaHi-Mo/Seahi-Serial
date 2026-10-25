@@ -1187,15 +1187,64 @@ fn hidden_command(program: &str) -> std::process::Command {
     cmd
 }
 
-/// 运行命令并等待输出；超过 timeout_ms 毫秒则杀掉子进程并返回 None。
-/// 避免 WSL 无响应时 `.output()` 永久阻塞（wsl 进程卡住时管道不会关闭）。
-fn run_output_timeout(cmd: &mut std::process::Command, timeout_ms: u64) -> Option<std::process::Output> {
+/// 子进程启动/执行失败的原因。
+///
+/// 评审 M3：以前 `spawn` 失败与超时都返回 `None`，上层只能统一说"超时"——
+/// `usbipd` 没装会被误报成"超时需要提权"，甚至弹出 UAC 去提权（用户看到的是一次莫名其妙的授权框）。
+#[derive(Debug, Clone)]
+enum RunCmdError {
+    /// 无法启动进程（程序不存在 / 权限不足 / 系统错误）
+    Spawn(String),
+    /// 超过 timeout_ms（已 kill 子进程）
+    Timeout(u64),
+}
+
+impl RunCmdError {
+    fn message(&self) -> String {
+        match self {
+            RunCmdError::Spawn(e) => format!("无法启动命令：{}", e),
+            RunCmdError::Timeout(ms) => format!("命令执行超时（{} ms）", ms),
+        }
+    }
+}
+
+/// 运行命令并等待输出，超时则杀掉子进程。
+///
+/// ⚠️ **必须并发读取 stdout/stderr**（评审 M3）：Windows 管道缓冲约 64KB，子进程写满后
+/// 会阻塞在写端；只 `try_wait` 不读，就会"死等到超时再杀掉、输出全丢"，而且现场看起来
+/// 只是"命令超时"（`usbipd list` / `wsl --list` 的输出都可能超过 64KB）。
+fn run_output_timeout_checked(
+    cmd: &mut std::process::Command,
+    timeout_ms: u64,
+) -> Result<std::process::Output, RunCmdError> {
     use std::io::Read;
     let mut child = cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .ok()?;
+        .map_err(|e| RunCmdError::Spawn(e.to_string()))?;
+
+    // 两条读取线程把管道里的数据搬进内存；主线程只负责等退出/超时。
+    let (tx, rx) = std::sync::mpsc::channel::<(u8, Vec<u8>)>();
+    let mut readers = Vec::new();
+    if let Some(mut out) = child.stdout.take() {
+        let t = tx.clone();
+        readers.push(std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = out.read_to_end(&mut buf);
+            let _ = t.send((0u8, buf));
+        }));
+    }
+    if let Some(mut err) = child.stderr.take() {
+        let t = tx.clone();
+        readers.push(std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = err.read_to_end(&mut buf);
+            let _ = t.send((1u8, buf));
+        }));
+    }
+    drop(tx);
+
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     loop {
         match child.try_wait() {
@@ -1204,23 +1253,105 @@ fn run_output_timeout(cmd: &mut std::process::Command, timeout_ms: u64) -> Optio
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return None;
+                    return Err(RunCmdError::Timeout(timeout_ms));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
-            Err(_) => {
+            Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                return Err(RunCmdError::Spawn(e.to_string()));
             }
         }
     }
+    let status = child.wait().map_err(|e| RunCmdError::Spawn(e.to_string()))?;
+
+    // 子进程已退出，读取线程会在管道 EOF 后送数据过来；给一个短兜底，避免
+    // 孙进程占着管道导致这里永久挂起（此时按已经读到的部分结果处理）。
+    let collect_deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let _ = child.stdout.take().and_then(|mut s| s.read_to_end(&mut stdout).ok());
-    let _ = child.stderr.take().and_then(|mut s| s.read_to_end(&mut stderr).ok());
-    let status = child.wait().ok()?;
-    Some(std::process::Output { status, stdout, stderr })
+    let mut got = 0usize;
+    while got < readers.len() {
+        let left = collect_deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(left) {
+            Ok((0, buf)) => { stdout = buf; got += 1; }
+            Ok((_, buf)) => { stderr = buf; got += 1; }
+            Err(_) => break,
+        }
+    }
+    // 只有两条线程都送回了数据才 join（此时它们已退出）；否则直接丢弃句柄 ——
+    // 线程会在管道关闭后自行结束，在这里 join 反而可能被孙进程拖住。
+    if got >= readers.len() {
+        for h in readers {
+            let _ = h.join();
+        }
+    }
+    Ok(std::process::Output { status, stdout, stderr })
+}
+
+/// 运行命令并等待输出；超过 timeout_ms 毫秒则杀掉子进程并返回 None。
+/// 避免 WSL 无响应时 `.output()` 永久阻塞（wsl 进程卡住时管道不会关闭）。
+/// 需要区分"启动失败/超时"的调用方请用 `run_output_timeout_checked`。
+fn run_output_timeout(cmd: &mut std::process::Command, timeout_ms: u64) -> Option<std::process::Output> {
+    match run_output_timeout_checked(cmd, timeout_ms) {
+        Ok(out) => Some(out),
+        Err(e) => {
+            dbg_log(&format!("[run_output_timeout] {}", e.message()));
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod run_cmd_tests {
+    use super::*;
+
+    /// 评审 M3：大输出不能被管道背压卡死。
+    /// 旧实现只 `try_wait` 不读管道，子进程写满 64KB 缓冲后阻塞，只能等到超时被 kill、输出全丢。
+    #[test]
+    fn run_output_timeout_drains_large_output() {
+        #[cfg(windows)]
+        {
+            let mut cmd = hidden_command("cmd");
+            cmd.args([
+                "/C",
+                "for /L %i in (1,1,4000) do @echo 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ]);
+            let out = run_output_timeout_checked(&mut cmd, 15000).expect("大输出命令应能正常完成");
+            assert!(out.status.success(), "命令应成功退出");
+            assert!(
+                out.stdout.len() > 64 * 1024,
+                "stdout 应大于管道缓冲（实际 {} 字节）—— 小于这个数说明被背压卡死",
+                out.stdout.len()
+            );
+        }
+    }
+
+    /// 评审 M3：超时与"启动失败"必须能分辨（以前都返回 None，上层只能统一说"超时"）。
+    #[test]
+    fn run_output_timeout_reports_timeout() {
+        #[cfg(windows)]
+        {
+            let mut cmd = hidden_command("cmd");
+            cmd.args(["/C", "ping -n 30 127.0.0.1 >nul"]);
+            let started = std::time::Instant::now();
+            let err = run_output_timeout_checked(&mut cmd, 300).expect_err("应当超时");
+            assert!(matches!(err, RunCmdError::Timeout(300)), "错误应是 Timeout，实际 {:?}", err);
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "超时后应立即返回");
+        }
+    }
+
+    /// 评审 M3：启动失败（程序不存在）要能分辨出来，避免上层误弹 UAC。
+    #[test]
+    fn run_output_timeout_reports_spawn_failure() {
+        let mut cmd = std::process::Command::new("seahi-serial-definitely-not-a-real-exe-xyz");
+        let err = run_output_timeout_checked(&mut cmd, 1000).expect_err("应当启动失败");
+        assert!(matches!(err, RunCmdError::Spawn(_)), "错误应是 Spawn，实际 {:?}", err);
+    }
 }
 
 /// 嵌入的 bridge 脚本 base64
@@ -1971,18 +2102,25 @@ fn list_wsl_devices_blocking() -> Result<Vec<serde_json::Value>, String> {
     let distro = check_wsl_running().and_then(|d| d.into_iter().next()).unwrap_or_default();
     let wsl_running = !distro.is_empty();
 
-    // 用带 kill 的 run_output_timeout：usbipd 卡死时杀掉子进程，避免泄漏孤儿线程/进程
+    // 用带 kill 的 run_output_timeout_checked：usbipd 卡死时杀掉子进程，避免泄漏孤儿线程/进程
     // 缩短超时：usbipd list 在无 WSL / 未授权环境下可能卡住，避免拖垮 WSL 面板加载
     let mut cmd = hidden_command("usbipd");
     cmd.args(["list"]);
-    let output = run_output_timeout(&mut cmd, 3000);
-
     // 仅当 usbipd list 执行失败/超时才提权；成功（即使无已 attach 设备）直接使用输出，
-    // 避免"无设备"时无谓触发 UAC 提权导致加载拖慢/超时
-    let list_str = match output {
-        Some(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
-        _ => {
-            dbg_log("usbipd list 失败/超时，尝试提权执行");
+    // 避免"无设备"时无谓触发 UAC 提权导致加载拖慢/超时。
+    // ⚠️ 启动失败（多半是 usbipd 没装）**不提权**：提权也救不了，只会凭空弹一次 UAC（评审 M3）。
+    let list_str = match run_output_timeout_checked(&mut cmd, 3000) {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
+        Ok(_) => {
+            dbg_log("usbipd list 非零退出，尝试提权执行");
+            run_usbipd_list_elevated().unwrap_or_default()
+        }
+        Err(RunCmdError::Spawn(e)) => {
+            dbg_log(&format!("无法启动 usbipd（多半未安装）：{}", e));
+            String::new()
+        }
+        Err(e @ RunCmdError::Timeout(_)) => {
+            dbg_log(&format!("usbipd list {}，尝试提权执行", e.message()));
             run_usbipd_list_elevated().unwrap_or_default()
         }
     };
@@ -2260,8 +2398,12 @@ fn wsl_distro_row_from_line(line: &str) -> Option<WslDistroRow> {
 
 /// 读一次 WSL 发行版列表；失败时带回 WSL 的原始报错摘要（供界面/日志如实显示）
 fn wsl_distro_rows() -> Result<Vec<WslDistroRow>, String> {
-    let output = run_output_timeout(hidden_command("wsl").args(["--list", "--verbose"]), 5000)
-        .ok_or_else(|| "读取 WSL 发行版列表超时（wsl --list --verbose）".to_string())?;
+    // 区分"无法启动 wsl.exe"与"超时"：前者通常是 WSL 没装，提示不能写成"超时"（评审 M3）
+    let output = run_output_timeout_checked(hidden_command("wsl").args(["--list", "--verbose"]), 5000)
+        .map_err(|e| match e {
+            RunCmdError::Spawn(s) => format!("无法启动 wsl.exe：{}（WSL 没装或不在 PATH？）", s),
+            RunCmdError::Timeout(ms) => format!("读取 WSL 发行版列表超时（wsl --list --verbose，{} ms）", ms),
+        })?;
     let text = decode_wsl_output(&output.stdout);
     parse_wsl_list_verbose(&text).map_err(|detail| {
         if detail.is_empty() {
@@ -3202,11 +3344,15 @@ fn attach_port_to_wsl_blocking(port_name: String, distro: Option<String>, author
     }
 
     // 1. 获取设备列表（带 kill 的超时，避免 usbipd 卡死时泄漏孤儿线程/进程）
-    let list_out = match run_output_timeout(hidden_command("usbipd").args(["list"]), 3000) {
-        Some(out) => out,
-        None => {
-            report_error("usbipd list 执行超时或失败", "attach_port_to_wsl");
-            return Err("usbipd list 执行超时（3 秒），请确认 usbipd-win 已正确安装".to_string());
+    let list_out = match run_output_timeout_checked(hidden_command("usbipd").args(["list"]), 3000) {
+        Ok(out) => out,
+        Err(RunCmdError::Spawn(e)) => {
+            report_error(&format!("无法启动 usbipd：{}", e), "attach_port_to_wsl");
+            return Err(format!("无法启动 usbipd（{}），请先安装 usbipd-win 并确认它在 PATH 里", e));
+        }
+        Err(e) => {
+            report_error(&format!("usbipd list 失败：{}", e.message()), "attach_port_to_wsl");
+            return Err(format!("{}，请确认 usbipd-win 已正确安装", e.message()));
         }
     };
 

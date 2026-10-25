@@ -421,6 +421,11 @@ node .walkthrough/mcp_smoke.js                    # 对**正在跑的应用**逐
   MCP 日志中心（`ui:sys`/`ui:err`）。可见性只靠界面状态（按钮变「等待接入」+ 端口/WSL 状态点）；`.walkthrough` 里有
   3 条断言守着（两个 reconnect 函数体内不许出现 `appendOutput`、这些文案不许传给 `appendOutput`）。
 - USB 设备映射到 WSL 依赖 `usbipd-win` 工具，需管理员权限。
+- ⚠️ **跑外部命令（wsl/usbipd/adb）一律走 `run_output_timeout_checked`，别用裸 `Command::output()`**：
+  ① 它**并发读 stdout/stderr** —— 子进程输出超过管道缓冲（Windows 约 64KB）时会阻塞在写端，只 `wait`
+  不读就会"死等到超时再杀掉、输出全丢"；② 它把**启动失败 / 超时**分开返回（`RunCmdError::Spawn` /
+  `Timeout`）—— `usbipd` 没装不能再被误报成"超时需要提权"去弹 UAC（评审 M3）。
+  需要"只关心有没有结果"的地方用 `run_output_timeout` 包装（失败会写一条 dbg 日志）。
 - **终端模式 = xterm.js 真终端**（2026-10 用户要求「交互要达到 Linux 终端那个层级」）：输出区换成 xterm 画布
   （与 ADB 面板同一套 `src/vendor/xterm/xterm.js`），普通输出区只是**隐藏**、日志/行号/时间戳/日志中心照旧。
   七条别改回去：① **按键原样发** —— Enter=`\r`(0x0D)、Tab=`\t`(0x09)、方向键=`ESC[A…`、Ctrl 组合键原样；
