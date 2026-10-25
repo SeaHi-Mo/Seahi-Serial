@@ -171,7 +171,7 @@ npx seahi-serial-mcp uninstall
 
 ## 当前规模与测试
 
-**这一版（v0.5.11）的实际规模**：**54 个内置工具**（19 通用 + 16 串口 + 13 蓝牙 + 6 ADB）、
+**这一版（v0.5.19）的实际规模**：**54 个内置工具**（19 通用 + 16 串口 + 13 蓝牙 + 6 ADB）、
 传输为 **Streamable HTTP + 遗留 SSE 两种并存**、四批语义工具**全部落地**、
 BLE **从机（外设）方向已整条删除**（实测本机广播起不来，证据留在 `doc/BLE_PERIPHERAL.md`）。
 
@@ -183,7 +183,7 @@ mcp_limits     # 各项上限（请求体 / 每条指令长度 / 写入上限…
 ui_list        # 界面控件注册表（含面板 / 分组 / 是否禁用）
 ```
 
-三套自动化测试都可以本地跑：`cargo test`（243 条 + 1 ignored）、`node .walkthrough/gen_ble_preview.js`（1612 条）、
+三套自动化测试都可以本地跑：`cargo test`（284 条 + 1 ignored）、`node .walkthrough/gen_ble_preview.js`（1971 条）、
 `node npm/seahi-serial-mcp/test/self-test.js`（94 条）；对**正在运行的程序**跑工具自检用
 `node .walkthrough/mcp_smoke.js`（54 个工具逐个真调）。
 

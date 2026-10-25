@@ -1,6 +1,10 @@
 # SeaHi Serial - 项目交接文档
 
-> 版本: v0.2.9 | 最后更新: 2026-08-11 | 作者: SeaHi
+> 版本: v0.5.19 | 最后更新: 2026-10-25 | 作者: SeaHi
+>
+> ⚠️ **本文档是 v0.2.9 时期的历史交接快照**（当时的发布流程与踩坑记录仍有参考价值）；
+> 当前版本、测试数字与发布方式以 [README.md](../README.md)、[AGENTS.md](../AGENTS.md)、
+> [RELEASE_NOTES.md](../RELEASE_NOTES.md) 为准。
 >
 > 📌 AI 会话记忆见 [MEMORY.md](MEMORY.md)（当前状态、近期改动、技术坑、发布流程）
 
