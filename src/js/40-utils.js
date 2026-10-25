@@ -53,19 +53,8 @@ function appendRecvText(mid, decoded, frag) {
     var body = endsWithNl ? combined.replace(/\n+$/, '') : combined;
     var parts = body === '' ? [] : body.split('\n');
 
-    // 终端模式：未结束行作为"当前行提示符"，完整行作为设备输出（插到当前行之前）
-    if (_terminalBuffers[mid] && _terminalBuffers[mid].lineEl) {
-        m._recvPartial = (endsWithNl || parts.length === 0) ? '' : parts[parts.length - 1];
-        var fullParts = endsWithNl ? parts : parts.slice(0, parts.length - 1);
-        for (var k = 0; k < fullParts.length; k++) {
-            appendOutput(mid, 'recv', fullParts[k] === '' ? '' : fullParts[k], { fragment: frag });
-        }
-        // 未结束行（提示符）→ 终端当前行提示符
-        if (!endsWithNl && parts.length > 0 && parts[parts.length - 1] !== '') {
-            setTermPrompt(mid, parts[parts.length - 1]);
-        }
-        return;
-    }
+    // 终端模式（xterm）与这里无关：输出区只是隐藏，收到的原始字节在轮询处单独喂给 xterm；
+    // 这份文本缓冲照旧维护，切回普通模式能直接看到完整历史。
 
     if (parts.length === 0) {
         // 纯换行：已有打开行则关闭，否则渲染一个空行
@@ -115,23 +104,15 @@ function resetRecvStream(mid) {
     if (!m) return;
     closeRecvPartial(m);
     m._recvDecoder = null;
-    if (_terminalBuffers[mid]) setTermPrompt(mid, ''); // 终端模式：清空提示符
-    // 重连/切换后重置终端补全状态
-    if (m) { m._termComp = null; if (m._termHintTimer) { clearTimeout(m._termHintTimer); m._termHintTimer = null; } }
-    hideTermComp(mid);
+    // 重连/切换后重置接收行缓冲（终端画布由 xterm 自己维护，这里不用动）
 }
 
 function clearLog(mid) {
     var el = document.getElementById(mid + '-output');
-    // 始终保留终端当前行（隐藏时也在 DOM 里），避免清理日志后终端模式丢行
-    var termCur = document.getElementById(mid + '-termCurrent');
-    if (termCur && termCur.parentNode === el) {
-        Array.from(el.childNodes).forEach(function(n) { if (n !== termCur) n.remove(); });
-        el.appendChild(termCur);
-    } else {
-        el.innerHTML = '';
-    }
+    el.innerHTML = '';
     el._lineCount = 0;
+    // 终端模式（xterm）的内容也是"这些我不要了"的一部分，一起清
+    clearTerm(mid);
     // 同时清空紧凑存储
     if (monitors[mid]) {
         monitors[mid]._textDataLen = 0;
@@ -142,7 +123,6 @@ function clearLog(mid) {
         // （否则一个跑满 8 MiB 预算的监视器会一直占着这份内存）
         bufferCompactCapacity(monitors[mid]);
     }
-    if (_terminalBuffers[mid]) setTermPrompt(mid, '');
 }
 
 // ===== 日志隐形缓存 =====
@@ -195,7 +175,9 @@ var _typeMap = {recv: 0, send: 1, sys: 2, err: 3};
 var _typeNames = ['recv', 'send', 'sys', 'err'];
 
 // 写入一行到紧凑存储
-function bufferPush(mid, type, ts, text) {
+// `srcHint`：这条日志的来源（'ui' = 用户手动、'ai' = AI；省略 = 未标记）。
+// 终端模式的按键发送没有经过 MCP 的 `_mcpAiSend` 认领，由它显式标 'ui'。
+function bufferPush(mid, type, ts, text, srcHint) {
     var m = monitors[mid];
     if (!m) return;
 
@@ -256,7 +238,7 @@ function bufferPush(mid, type, ts, text) {
     // 来源：这条发送是不是 **AI 触发的**。`mcpSerialOp` 的 send 分支在点按钮**之前**挂标记，
     // 而 `sendData` 跑到 `appendOutput` 这一段是同步的（第一个 `await` 在它后面），
     // 所以这里一定能认领到；认领后由调用方跳过"补记"，同一次发送不会记两条。
-    var mcpSrc = 'none';
+    var mcpSrc = srcHint || 'none';
     if (type === 'send' && _mcpAiSend && _mcpAiSend.mid === mid) {
         mcpSrc = 'ai';
         _mcpAiSend.claimed = true;

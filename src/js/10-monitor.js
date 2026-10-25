@@ -293,9 +293,6 @@ function createMonitorPane(mid, title, closable) {
     });
 
     refreshPorts(mid);
-    
-    // 初始化终端模式
-    initTerminalMode(mid);
 }
 
 /* ===== 波特率下拉 ===== */
@@ -649,402 +646,346 @@ function updateLineNumbers(mid) {
 }
 
 
-/* ===== 终端模式 ===== */
-var _terminalBuffers = {}; // 用于标记终端模式开启（真值），供相关保护逻辑判断
+/* ===== 终端模式（xterm.js 真终端模拟）=====
+ * 用户 2026-10 要求「终端模式的交互要达到 Linux 终端那个层级」：
+ *   - 设备端是 Linux（getty/shell），输出里带 `\r`、ANSI 光标/擦除/清屏、全屏 TUI（vim/top）；
+ *   - **回显按标准终端**（由设备侧 tty 行规回显，本机不做本地回显）；
+ *   - **Enter 发 CR（0x0D）**、**Tab 发 HT（0x09）**，方向键/Ctrl 组合键原样发给设备。
+ *
+ * 落地方式：不再自己拼「提示符 + 单行输入框」，而是把整个输出区换成 xterm.js
+ * （`src/vendor/xterm/xterm.js` 早已随包引入，ADB 面板用的就是它）。xterm 负责
+ * VT 解析、光标、选区、输入法与键盘序列；本文件只做三件事：
+ *   1) 把收到的**原始字节**喂给 xterm（`termWriteBytes`）；
+ *   2) 把 xterm 的按键流（`onData`）**原样**发出去（`termSendRaw`，绝不追加行尾）；
+ *   3) 显隐与尺寸同步（`toggleTerminalMode` / `syncTermSize`）。
+ *
+ * ⚠️ 别改回去的几条：
+ *   a) **按键一律原样发**：别拦 Tab（本地补全已删除，补全交给设备 shell）、别拦方向键、
+ *      别追加 `leStr(mid)`（Enter 的 `\r` 由 xterm 给）—— 任何一处加工都会让 vi/top 键位错乱；
+ *   b) **不做本地回显**：设备 tty 会回显，本地再回显就是双字（标准终端语义）；
+ *   c) 普通输出区在终端模式下只是**隐藏**，不停止渲染：日志、行号、时间戳、日志中心
+ *      （MCP `serial_get_output`）与「清除内容」照旧工作，切回来能直接看到完整历史；
+ *   d) 每个 mid 一个 xterm 实例，切走/切回**不重建**（终端里的历史不会被清掉）；
+ *      关分栏才 `disposeTerminal`（ResizeObserver 与 xterm 都要收掉，否则泄漏）。
+ */
+var _terminalBuffers = {}; // mid -> true：终端模式开着（其他模块只拿它做"别动输出区光标"之类的判断）
+var _termEmus = {};        // mid -> { term, box, ro }
 
-function initTerminalMode(mid) {
+/* ===== 终端配色：跟界面主题走 =====
+ * 为什么不用 xterm 自带调色板：那套是给深色底调的，放到本应用的浅色/和风/水墨主题上会刺眼；
+ * 更要紧的是**与普通输出区不一致** —— 普通视图的 ANSI 颜色来自每套主题各一份的
+ * `.ansi-30..37 / .ansi-90..97`（16 色），终端却用 xterm 默认色，同一段彩色日志看起来像两个程序。
+ * 做法：用探针读当前主题的那 16 个 CSS 颜色（与普通输出区同一份定义），背景/前景/光标/选区从主题变量取；
+ * 结果按 `data-theme` 缓存，主题/深浅色切换时 `refreshTermThemes` 会重新构建。
+ * ⚠️ 别改成"写死一套 16 色"：12 套主题各有一份，写死就必然与普通视图分叉（用户 2026-10 要求统一风格）。 */
+var _termPalCache = {};
+
+function termAnsiPalette() {
+    var themeKey = 'default';
+    try {
+        var de = document.documentElement;
+        themeKey = (de && de.getAttribute && de.getAttribute('data-theme')) || 'default';
+    } catch (_) {}
+    if (_termPalCache[themeKey]) return _termPalCache[themeKey];
+    var names = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
+        'brightBlack', 'brightRed', 'brightGreen', 'brightYellow',
+        'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite'];
+    var codes = [30, 31, 32, 33, 34, 35, 36, 37, 90, 91, 92, 93, 94, 95, 96, 97];
+    var pal = {};
+    var probe = null;
+    try {
+        probe = document.createElement('span');
+        probe.style.cssText = 'position:absolute;left:-9999px;top:-9999px;visibility:hidden;pointer-events:none;';
+        document.body.appendChild(probe);
+        for (var i = 0; i < codes.length; i++) {
+            probe.className = 'ansi-' + codes[i];
+            var col = getComputedStyle(probe).color;
+            if (col) pal[names[i]] = col;
+        }
+    } catch (_) {
+        pal = {};
+    }
+    if (probe && probe.parentNode) probe.parentNode.removeChild(probe);
+    _termPalCache[themeKey] = pal;
+    return pal;
+}
+
+// '#4a7ab5' / 'rgb(a,b,c)' → 'rgba(r,g,b,alpha)'（选区要半透明；主题变量是 hex）
+function termRgba(color, alpha) {
+    var c = String(color == null ? '' : color).trim();
+    var m = /^#([0-9a-fA-F]{3})$/.exec(c);
+    if (m) {
+        c = '#' + m[1].charAt(0) + m[1].charAt(0) + m[1].charAt(1) + m[1].charAt(1)
+            + m[1].charAt(2) + m[1].charAt(2);
+    }
+    m = /^#([0-9a-fA-F]{6})$/.exec(c);
+    if (m) {
+        var v = parseInt(m[1], 16);
+        return 'rgba(' + ((v >> 16) & 255) + ',' + ((v >> 8) & 255) + ',' + (v & 255) + ',' + alpha + ')';
+    }
+    m = /^rgba?\(([^)]+)\)$/.exec(c);
+    if (m) {
+        var parts = m[1].split(',');
+        if (parts.length >= 3) {
+            return 'rgba(' + parts[0].trim() + ',' + parts[1].trim() + ',' + parts[2].trim() + ',' + alpha + ')';
+        }
+    }
+    return '';
+}
+
+// 取界面当前主题色（输出区实际配色 + 主题的 16 色 ANSI 调色板），供 xterm 初始化/切换主题用
+function termThemeFor(mid) {
     var output = document.getElementById(mid + '-output');
-    if (!output) return;
-
-    // 让输出区可获得焦点（点击时聚焦到终端当前行的输入框）
-    output.setAttribute('tabindex', '0');
-    output.style.outline = 'none';
-
-    // 终端当前行：提示符（来自设备输出）+ 可见输入框，内联跟随设备提示符（继承系统输入法，候选框在光标旁）。
-    // 输出区在终端模式时 contentEditable 关闭，输入全部由输入框负责，避免组合文本污染输出区。
-    var termCur = document.getElementById(mid + '-termCurrent');
-    if (!termCur) {
-        termCur = document.createElement('div');
-        termCur.id = mid + '-termCurrent';
-        termCur.className = 'term-current';
-        var out = document.createElement('span');
-        out.id = mid + '-termOut';
-        out.className = 'term-out';
-        var input = document.createElement('input');
-        input.id = mid + '-termInput';
-        input.className = 'term-in';
-        input.type = 'text';
-        input.autocomplete = 'off';
-        input.spellcheck = false;
-        termCur.appendChild(out);
-        termCur.appendChild(input);
-        // TAB 补全弹层（相对当前行定位，输入时由 JS 控制显隐）
-        var comp = document.createElement('div');
-        comp.id = mid + '-termComp';
-        comp.className = 'term-comp';
-        termCur.appendChild(comp);
-        output.appendChild(termCur);
+    var cs = output ? getComputedStyle(output) : null;
+    var bg = (cs && cs.backgroundColor && cs.backgroundColor !== 'rgba(0, 0, 0, 0)')
+        ? cs.backgroundColor : '#1c1e22';
+    var fg = (cs && cs.color) ? cs.color : '#dce0e8';
+    var accent = '';
+    try {
+        var de = document.documentElement;
+        var dcs = de ? getComputedStyle(de) : null;
+        accent = dcs && dcs.getPropertyValue
+            ? String(dcs.getPropertyValue('--accent-focus') || '').trim() : '';
+    } catch (_) {}
+    var theme = {
+        background: bg,
+        foreground: fg,
+        cursor: accent || fg,
+        cursorAccent: bg,
+        selectionBackground: (accent && termRgba(accent, 0.35)) || 'rgba(128,134,146,.35)'
+    };
+    var pal = termAnsiPalette();
+    for (var k in pal) {
+        if (Object.prototype.hasOwnProperty.call(pal, k)) theme[k] = pal[k];
     }
-    var termInput = document.getElementById(mid + '-termInput');
-
-    function termOn() {
-        var btn = document.getElementById(mid + '-btnSendLE');
-        return btn && btn.classList.contains('on');
-    }
-
-    termInput.addEventListener('keydown', function(e) {
-        if (!termOn()) return;
-        var m = monitors[mid];
-        if (!m) return;
-        if (e.isComposing) return; // 输入法组合中，回车确认候选，不发送
-
-        // TAB 补全：优先本地补全（历史命令 + 快捷指令 + 通用命令），重复 Tab 在候选中循环
-        if (e.key === 'Tab') {
-            e.preventDefault();
-            if (e.shiftKey) { // Shift+Tab：撤销当前补全
-                m._termComp = null;
-                hideTermComp(mid);
-                return;
-            }
-            completeTermTab(mid);
-            return;
-        }
-        // Esc：关闭补全弹层
-        if (e.key === 'Escape') {
-            hideTermComp(mid);
-            m._termComp = null;
-            return;
-        }
-        // 补全弹层打开时，↑/↓ 在候选中切换
-        if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && m._termComp && m._termComp.matches.length > 1) {
-            e.preventDefault();
-            var dir = e.key === 'ArrowDown' ? 1 : -1;
-            var st = m._termComp;
-            st.index = ((st.index < 0 ? 0 : st.index) + dir + st.matches.length) % st.matches.length;
-            var v = termInput.value;
-            var s = v.length;
-            while (s > 0 && !/\s/.test(v[s - 1]) && v[s - 1] !== '\n') s--;
-            termInput.value = v.slice(0, s) + st.matches[st.index];
-            termInput.setSelectionRange(termInput.value.length, termInput.value.length);
-            showTermComp(mid, st.matches, st.index);
-            return;
-        }
-
-        if (e.key === 'Enter') {
-            hideTermComp(mid);
-            if (m) m._termComp = null;
-            e.preventDefault();
-            var line = termInput.value;
-            var le = leStr(mid);
-            if (m.isConnected) {
-                // 本地回显关闭：发送内容 + 行尾。空内容也发换行（与 Linux 终端一致，空回车触发 \r\n）
-                var bytes = new TextEncoder().encode(line + le);
-                var isWsl = m.isWsl;
-                var sendCmd = isWsl ? 'send_wsl_serial' : 'send_data';
-                invokeTimeout(sendCmd, { monitorId: mid, data: Array.from(bytes) }, 5000).catch(function(err) {
-                    appendOutput(mid, 'err', '发送失败: ' + err);
-                });
-            } else {
-                // 未连接：提示（空输入不提示，仅清空）
-                if (line) appendOutput(mid, 'err', '未连接串口，无法发送');
-            }
-            // 清空输入，并清空旧的提示符缓冲（旧提示符不应并入后续设备响应）
-            if (m) m._recvPartial = '';
-            termInput.value = '';
-            termInput.focus();
-        }
-    });
-
-    // 手动编辑输入时关闭补全弹层并重置补全状态
-    termInput.addEventListener('input', function() {
-        hideTermComp(mid);
-        if (monitors[mid]) monitors[mid]._termComp = null;
-    });
-
-    // 点击输出区 → 聚焦输入框继续输入
-    output.addEventListener('click', function() {
-        if (termOn()) termInput.focus();
-    });
-
-    // 输入框获得焦点时滚动到当前行，保证输入框可见（用户要输入时）
-    termInput.addEventListener('focus', function() {
-        if (termOn()) {
-            var out = document.getElementById(mid + '-output');
-            if (out) requestScroll(out);
-        }
-    });
+    return theme;
 }
 
-// 设置终端当前行的提示符（设备输出检测到的提示符）
-// 含转义序列时用 ANSI 解析（渲染颜色 + 剥离光标/擦除等控制符），避免提示符显示成乱码
-function setTermPrompt(mid, text) {
-    var p = document.getElementById(mid + '-termOut');
-    if (!p) return;
-    if (text && text.indexOf('\x1b') !== -1) {
-        p.innerHTML = parseAnsi(text);
-    } else {
-        p.textContent = text;
-    }
+// 终端模式是否开着（其他模块用来判断「别把光标/选区逻辑套到输出区上」）
+function termModeOn(mid) {
+    return !!_terminalBuffers[mid];
 }
 
-/* ===== 终端 TAB 补全 ===== */
-
-// 取输入框内最后一个空白分隔的 token 起点下标（用于补全/替换）
-function termTokenStart(value) {
-    var s = value.length;
-    while (s > 0 && !/\s/.test(value[s - 1]) && value[s - 1] !== '\n') s--;
-    return s;
-}
-
-// ===== 通用/内置命令（基础补全词库） =====
-var GENERIC_CMDS = ['help','?','version','ver','reset','reboot','info','status','get','set','ls','dir','exit','quit','start','scan','wifi','ota','cd','pwd','cat','echo','date','ps','top','df','mount','ifconfig','ip','ping','clear','cls','type','del','copy','mkdir','rm','mv','cp','sed','grep','find','which','su','cmd'];
-
-// ===== ADB 命令树（上下文命令补全） =====
-var ADB_GLOBAL_OPTS = ['-s','-d','-e','-t','-L','--help','--version'];
-var ADB_SUBCMDS = ['connect','disconnect','devices','get-state','get-serialno','install','install-multiple','uninstall','shell','push','pull','sync','logcat','forward','reverse','reboot','sideload','root','unroot','remount','usb','tcpip','wait-for-device','start-server','kill-server','bugreport','screencap','screenrecord','version','help'];
-var ADB_SHELL_CMDS = ['ls','cat','cd','pwd','mkdir','rm','rmdir','cp','mv','chmod','chown','touch','echo','date','ps','top','df','du','mount','umount','getprop','setprop','pm','am','dumpsys','input','settings','wm','screencap','screenrecord','logcat','reboot','ifconfig','ip','netstat','ping','id','whoami','uname','env','tar','gzip','find','grep','sed','awk','which','su','cmd'];
-var ADB_SUB_OPTS = {
-    install: ['--help','-r','-t','-s','-g','-d','--no-streaming','--streaming'],
-    'install-multiple': ['--help','-r','-t','-s','-g','-d'],
-    uninstall: ['--help','-k','--user'],
-    shell: ['--help','-T','-x'],
-    logcat: ['--help','-v','-b','-f','-s','--pid'],
-    push: ['--help','--sync','-n'],
-    pull: ['--help','-a'],
-    forward: ['--help','--no-rebind','-tcp','-local','-dev','-remote'],
-    reverse: ['--help','--no-rebind','-tcp','-local','-dev','-remote'],
-    reboot: ['--help','bootloader','recovery','sideload','sideload-auto-reboot','fastboot'],
-    connect: ['--help'],
-    disconnect: ['--help'],
-    devices: ['--help','-l'],
-    'get-state': ['--help'],
-    'get-serialno': ['--help']
-};
-// 已知设备序列号（由 ADB 设备列表回填，用于 `adb -s <TAB>` 的设备补全）
-var _adbSerials = [];
-
-// 从 adb_devices 的返回中取出可用于补全的序列号（纯函数，便于无头断言）
-function pickAdbSerials(devices) {
-    if (!Array.isArray(devices)) return [];
-    var out = [];
-    devices.forEach(function(d) {
-        var s = (d && d.serial) ? String(d.serial) : '';
-        if (s && out.indexOf(s) < 0) out.push(s);
-    });
-    return out;
-}
-
-// 根据「已输入的前缀 token」推断补全上下文（首词是 adb 时走命令树）
-function getAdbContextCandidates(toks) {
-    var i = 1;                                    // 跳过 'adb'
-    // 1) 消费全局取值选项及其值（-s/-t/-L/-p <值>）
-    while (i < toks.length && (toks[i] === '-s' || toks[i] === '-t' || toks[i] === '-L' || toks[i] === '-p')) {
-        if (i === toks.length - 1) return _adbSerials.slice();   // 正在补该选项的值（设备序列号）
-        i += 2;
-    }
-    // 2) 消费布尔型全局选项（-d -e --help --version ...）
-    var afterBool = false;
-    while (i < toks.length && toks[i].charAt(0) === '-') {
-        afterBool = true;
-        i += 1;
-    }
-    if (i >= toks.length) {
-        // 正在补「首个子命令」这一位：已给过布尔选项只补子命令，否则全局选项 + 子命令
-        return afterBool ? ADB_SUBCMDS : ADB_GLOBAL_OPTS.concat(ADB_SUBCMDS);
-    }
-    var sub = toks[i];
-    if (sub === 'shell') return ADB_SHELL_CMDS;   // adb shell <Tab> → 设备内命令
-    if (toks.length - 1 === i) {                  // 正在补该子命令的参数/选项
-        var opts = (ADB_SUB_OPTS[sub] || []).slice();
-        if (sub === 'install' || sub === 'install-multiple' || sub === 'push' || sub === 'pull' || sub === 'sideload') {
-            opts = opts.concat(['./', '../', '/sdcard/', '/data/local/tmp/', '<path>']);
-        }
-        if (sub === 'connect' || sub === 'disconnect') opts = opts.concat(['<ip:port>']);
-        return opts;
-    }
-    // 更深层级：多为选项/路径，回退到该子命令的选项表
-    return ADB_SUB_OPTS[sub] || [];
-}
-
-// 补全候选：首词是 adb → 走命令树（上下文感知）；否则 通用命令 + 历史 + 快捷指令
-function getTermCompletionCandidates(mid, value, tokenStart) {
-    var before = (value.slice(0, tokenStart) || '').trim();
-    var toks = before ? before.split(/\s+/) : [];
-    if (toks.length && toks[0].toLowerCase() === 'adb') {
-        return getAdbContextCandidates(toks);
-    }
-    var set = [];
-    var seen = {};
-    function add(s) {
-        s = String(s == null ? '' : s).trim();
-        if (s && s.indexOf(' ') === -1 && !seen[s]) { seen[s] = 1; set.push(s); }
-    }
+// 把 xterm 的按键流原样发给设备。
+// ⚠️ **不追加行尾、不改写任何键**：xterm 给的 `\r`（Enter）/`\t`（Tab）/`\x1b[A`（↑）
+// 就是真实终端发出的东西，设备侧 tty 会把它翻成命令/补全/历史。
+function termSendRaw(mid, data) {
     var m = monitors[mid];
-    if (m) {
-        (m.sendHistory || []).forEach(add);
-        qcmdGroups(mid).forEach(function(g) {
-            (g.items || []).forEach(function(c) { if (c) { add(c.label); add(c.value); } });
+    if (!m) return;
+    var text = (data == null) ? '' : String(data);
+    if (!text) return;
+    termTrackInput(mid, text);   // 命令级日志：回车提交/粘贴时记一条（见下方说明）
+    var bytes = new TextEncoder().encode(text);
+    if (!bytes.length) return;
+    var sendCmd = m.isWsl ? 'send_wsl_serial' : 'send_data';
+    invokeTimeout(sendCmd, { monitorId: mid, data: Array.from(bytes) }, 5000).catch(function(err) {
+        var emu = _termEmus[mid];
+        // 直接写在终端里（用户正看着这里）；详细原因留给控制台
+        if (emu) {
+            try { emu.term.write('\r\n\x1b[31m[发送失败] ' + String(err) + '\x1b[0m\r\n'); } catch (_) {}
+        }
+        console.warn('[term] 发送失败:', err);
+    });
+}
+
+/* 终端按键的"命令级"日志：逐字符记会刷屏，所以只在**回车提交**与**粘贴**时各记一条。
+ * 走普通发送同一条路（`appendOutput` 的 send 行）→ 紧凑缓冲 + 隐形缓存 + MCP 日志中心
+ * 的 `serial:<分栏>:tx`，来源标 `ui`（MCP 的 `serial_send` 仍由 `_mcpAiSend` 认领成 `ai`）。
+ * ⚠️ 已知边界（宁可漏记也不编造）：按 ↑ 从**设备侧 readline 历史**回填的命令，本机根本没
+ * 收到那串字符（是设备自己回显的），所以不会被记进来。 */
+function termLogSend(mid, text) {
+    var line = String(text == null ? '' : text).replace(/[\x00-\x1f\x7f]/g, '').trim();
+    if (!line) return;
+    appendOutput(mid, 'send', line, { src: 'ui' });
+}
+
+// 维护"本行已经敲了什么"，用于回车/粘贴时写一条有意义的日志
+function termTrackInput(mid, data) {
+    var emu = _termEmus[mid];
+    if (!emu) return;
+    var text = String(data == null ? '' : data);
+    if (!text) return;
+    // 一次给多个可打印字符 = 粘贴（键盘每次只给一个）：剥掉 bracketed-paste 包裹与其它
+    // 转义后按行各记一条；纯转义序列（方向键 ESC[A 等）剥完是空串，落到下面的状态机忽略。
+    if (text.length > 1) {
+        var printable = text.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, '');
+        if (printable.length > 1) {
+            var parts = printable.split(/\r\n|\r|\n/);
+            for (var i = 0; i < parts.length; i++) termLogSend(mid, parts[i]);
+            return;
+        }
+        // 纯转义序列（方向键 / 功能键）：整段忽略，别把 "[A" 当成用户敲的字符
+        if (text.charAt(0) === '\x1b') return;
+    }
+    var line = emu._line || '';
+    for (var j = 0; j < text.length; j++) {
+        var ch = text.charAt(j);
+        if (ch === '\r' || ch === '\n') {
+            termLogSend(mid, line);
+            line = '';
+        } else if (ch === '\x7f' || ch === '\b') {
+            line = line.length > 0 ? line.slice(0, line.length - 1) : '';
+        } else if (ch === '\x1b') {
+            // 方向键/功能键的转义序列：不认识也不记
+        } else if (ch >= ' ') {
+            line += ch;
+        }
+    }
+    emu._line = line;
+}
+
+// 把串口/WSL 收到的原始字节写进 xterm（ANSI 光标/擦除/颜色/alt-screen 全交给 xterm 解析）
+function termWriteBytes(mid, data) {
+    var emu = _termEmus[mid];
+    if (!emu || !data || !data.length) return;
+    emu.term.write(data instanceof Uint8Array ? data : new Uint8Array(data));
+    emu.term.scrollToBottom();
+}
+
+// 计算 xterm 的 cols/rows（串口没有 PTY 行规，尺寸只影响这块画布怎么排版）
+function syncTermSize(mid) {
+    var emu = _termEmus[mid];
+    if (!emu) return;
+    var box = emu.box;
+    // 隐藏（display:none）时量出来是 0，别把终端缩成 2x2 压碎缓冲区
+    if (!box || box.offsetParent === null) return;
+    var w = box.clientWidth, h = box.clientHeight;
+    if (!w || !h) return;
+    var cw = 0, ch = 0;
+    try {
+        var d = emu.term._core && emu.term._core._renderService && emu.term._core._renderService.dimensions;
+        if (d && d.css && d.css.cell && d.css.cell.width > 0) {
+            cw = d.css.cell.width;
+            ch = d.css.cell.height;
+        }
+    } catch (_) {}
+    if (cw <= 0 || ch <= 0) {
+        // 兜底：按字体大小估个等宽字符宽高（不依赖 xterm 内部结构）
+        var st = box ? getComputedStyle(box) : null;
+        var fs = st ? (parseFloat(st.fontSize) || 14) : 14;
+        cw = fs * 0.6;
+        ch = (st && parseFloat(st.lineHeight)) || fs * 1.2;
+    }
+    var cols = Math.max(2, Math.floor(w / cw));
+    var rows = Math.max(2, Math.floor(h / ch));
+    if (cols !== emu.term.cols || rows !== emu.term.rows) emu.term.resize(cols, rows);
+}
+
+// 懒创建一个分栏的 xterm（首次进终端模式时创建；切走切回复用同一个实例）
+function ensureTerm(mid) {
+    if (_termEmus[mid]) return _termEmus[mid];
+    if (typeof Terminal === 'undefined') return null;   // xterm.js 没加载（理论上不会发生）
+    var output = document.getElementById(mid + '-output');
+    if (!output || !output.parentNode) return null;
+    var box = document.createElement('div');
+    box.className = 'term-xterm';
+    box.id = mid + '-xtermBox';
+    // 与普通输出区**并列**（同一行 .mon-body），谁 on 谁显示
+    output.parentNode.insertBefore(box, output.nextSibling);
+    var term = new Terminal({
+        cursorBlink: true,
+        fontSize: 14,
+        fontFamily: '"Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, monospace',
+        scrollback: 5000,
+        theme: termThemeFor(mid)
+    });
+    term.open(box);
+    var emu = { term: term, box: box, ro: null };
+    _termEmus[mid] = emu;
+    term.onData(function(data) {
+        if (termModeOn(mid)) termSendRaw(mid, data);
+        try { term.scrollToBottom(); } catch (_) {}
+    });
+    // Ctrl+Shift+C = 复制选中文字（Ctrl+C 本身必须是 0x03，不能抢）
+    if (typeof term.attachCustomKeyEventHandler === 'function') {
+        term.attachCustomKeyEventHandler(function(e) {
+            if (e.type === 'keydown' && e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+                var sel = term.getSelection ? term.getSelection() : '';
+                if (sel) {
+                    try { navigator.clipboard.writeText(sel); } catch (_) {}
+                    return false;
+                }
+            }
+            return true;
         });
     }
-    GENERIC_CMDS.forEach(add);
-    return set;
+    if (window.ResizeObserver) {
+        try {
+            emu.ro = new ResizeObserver(function() { syncTermSize(mid); });
+            emu.ro.observe(box);
+        } catch (_) {}
+    }
+    return emu;
 }
 
-// 求字符串列表的最长公共前缀
-function commonPrefix(list) {
-    var p = list[0] || '';
-    for (var i = 1; i < list.length; i++) {
-        var s = list[i];
-        var j = 0;
-        while (j < p.length && j < s.length && p.charCodeAt(j) === s.charCodeAt(j)) j++;
-        p = p.slice(0, j);
-        if (!p) break;
-    }
-    return p;
-}
-
-// TAB 补全主逻辑：只有唯一候选时直接补全；多候选先补到公共前缀，再次 Tab 循环
-function completeTermTab(mid) {
-    var m = monitors[mid];
-    var input = document.getElementById(mid + '-termInput');
-    if (!m || !input) return;
-    var value = input.value;
-    var start = termTokenStart(value);
-    var token = value.slice(start);
-    var prefix = value.slice(0, start);
-
-    var st = m._termComp;
-    if (!st || st.token !== token) {
-        var candidates = getTermCompletionCandidates(mid, value, start);
-        var matches = candidates.filter(function(c) {
-            return c !== token && c.toLowerCase().indexOf(token.toLowerCase()) === 0;
-        });
-        st = { token: token, matches: matches, index: -1 };
-        m._termComp = st;
-    }
-
-    if (st.matches.length === 0) {
-        // 无本地匹配：给出提示，不做其它改动
-        showTermHint(mid, '无匹配命令: ' + (token || '(空)'));
-        return;
-    }
-    if (st.matches.length === 1) {
-        input.value = prefix + st.matches[0];
-        input.setSelectionRange(input.value.length, input.value.length);
-        m._termComp = null;
-        hideTermComp(mid);
-        return;
-    }
-    // 多匹配：先尝试补到公共前缀，后续 Tab 在候选中循环
-    if (st.index < 0) {
-        var lcp = commonPrefix(st.matches);
-        if (lcp.length > token.length) {
-            input.value = prefix + lcp;
-            input.setSelectionRange(input.value.length, input.value.length);
-            showTermComp(mid, st.matches, -1);
-            return;
-        }
-        st.index = 0;
-    } else {
-        st.index = (st.index + 1) % st.matches.length;
-    }
-    input.value = prefix + st.matches[st.index];
-    input.setSelectionRange(input.value.length, input.value.length);
-    showTermComp(mid, st.matches, st.index);
-}
-
-// 显示补全候选弹层（selIdx 高亮当前选中项，-1 表示未选中）
-function showTermComp(mid, items, selIdx) {
-    var comp = document.getElementById(mid + '-termComp');
-    if (!comp) return;
-    var m = monitors[mid];
-    if (m && m._termHintTimer) { clearTimeout(m._termHintTimer); m._termHintTimer = null; }
-    comp.innerHTML = '';
-    var frag = document.createDocumentFragment();
-    items.forEach(function(it, idx) {
-        var div = document.createElement('div');
-        div.className = 'term-comp-item' + (idx === selIdx ? ' selected' : '');
-        div.textContent = it;
-        div.addEventListener('mousedown', function(e) {
-            e.preventDefault();
-            var input = document.getElementById(mid + '-termInput');
-            var mm = monitors[mid];
-            if (input && mm) {
-                var v = input.value;
-                var s = termTokenStart(v);
-                input.value = v.slice(0, s) + it;
-                input.setSelectionRange(input.value.length, input.value.length);
-                mm._termComp = null;
-                input.focus();
-            }
-            hideTermComp(mid);
-        });
-        frag.appendChild(div);
+// 主题/深浅色切换后刷新所有终端配色（终端没开时也保持同步，切回来就是对的颜色）
+function refreshTermThemes() {
+    Object.keys(_termEmus).forEach(function(mid) {
+        var emu = _termEmus[mid];
+        if (!emu) return;
+        try { emu.term.options.theme = termThemeFor(mid); } catch (_) {}
     });
-    comp.appendChild(frag);
-    comp.classList.add('open');
 }
 
-function hideTermComp(mid) {
-    var comp = document.getElementById(mid + '-termComp');
-    if (comp) comp.classList.remove('open');
+// 清空终端内容（用户点「清除内容」时与普通日志一起清）
+function clearTerm(mid) {
+    var emu = _termEmus[mid];
+    if (!emu) return;
+    try { emu.term.clear(); } catch (_) {}
 }
 
-// 无匹配时的短暂提示（约 1.6s 后自动关闭）
-function showTermHint(mid, text) {
-    var comp = document.getElementById(mid + '-termComp');
-    if (!comp) return;
-    comp.innerHTML = '<div class="term-comp-item term-comp-more">' + escapeHtml(text) + '</div>';
-    comp.classList.add('open');
-    var m = monitors[mid];
-    if (m) {
-        if (m._termHintTimer) clearTimeout(m._termHintTimer);
-        m._termHintTimer = setTimeout(function() { hideTermComp(mid); }, 1600);
-    }
+// 销毁某个分栏的终端（关分栏 / 关 WSL 监视器时调用，避免 ResizeObserver 与 xterm 泄漏）
+function disposeTerminal(mid) {
+    delete _terminalBuffers[mid];
+    var emu = _termEmus[mid];
+    if (!emu) return;
+    delete _termEmus[mid];
+    if (emu.ro) { try { emu.ro.disconnect(); } catch (_) {} }
+    try { emu.term.dispose(); } catch (_) {}
+    if (emu.box && emu.box.parentNode) emu.box.parentNode.removeChild(emu.box);
 }
 
-
+// 终端模式开/关（按钮 id 仍是 `<mid>-btnSendLE`，MCP 的 serial_set_display{terminalMode} 走同一条路）
 function toggleTerminalMode(btn, mid) {
-    btn.classList.toggle('on');
     var output = document.getElementById(mid + '-output');
     var sendBar = document.querySelector('#pane-' + mid + ' .send-bar');
-    var termCur = document.getElementById(mid + '-termCurrent');
-    var termInput = document.getElementById(mid + '-termInput');
-    if (output) {
-        if (btn.classList.contains('on')) {
-            output.style.cursor = 'text';
-            // 终端模式：关闭输出区 contenteditable（不让浏览器往输出区插入文本），
-            // 显示终端当前行（提示符+输入框，内联跟随设备提示符），输入由输入框负责（继承系统输入法）。
-            output.contentEditable = 'false';
-            if (sendBar) sendBar.style.display = 'none';
-            // ⚠️ 必须先把「当前行」移回输出区**末尾**，再让它显示。
-            // 普通模式的输出走的是 `appendChild`（见 appendOutput / flushBatch），会一行行追加到
-            // 它**后面**，把它悄悄埋到中间 —— 而它是 display:none，用户在普通模式下看不见这个过程。
-            // 不移回末尾，下次开终端模式时新输出又全都 `insertBefore` 到它前面，光标就卡在那个旧
-            // 位置上（用户 2026-09 报的"光标应停在最新 log 行之下，却停在最顶部"）。
-            // clearLog 里也做过同样的末尾维护，别只修一处。
-            if (termCur) { output.appendChild(termCur); termCur.classList.add('show'); }
-            setTermPrompt(mid, ''); // 提示符由设备输出决定，先清空
-            if (monitors[mid]) closeRecvPartial(monitors[mid]); // 清空普通模式残留行，避免污染
-            if (termInput) { termInput.value = ''; termInput.focus(); }
-            // 记录当前行元素，供 appendOutput 把设备输出插入到它之前（当前行始终在末尾）
-            _terminalBuffers[mid] = termCur ? { lineEl: termCur } : true;
-            var scrollBtn = document.getElementById(mid + '-btnScroll');
-            if (scrollBtn && scrollBtn.classList.contains('on')) requestScroll(output);
-        } else {
-            output.style.cursor = 'default';
-            // 恢复日志编辑
-            output.contentEditable = 'true';
-            if (sendBar) sendBar.style.display = '';
-            if (termCur) termCur.classList.remove('show');
-            if (termInput) termInput.value = '';
-            // 清除终端模式的接收行缓冲（提示符），避免普通模式错误合并残留数据
-            if (monitors[mid]) closeRecvPartial(monitors[mid]);
-            // 关闭补全弹层并重置补全状态
-            hideTermComp(mid);
-            if (monitors[mid]) { monitors[mid]._termComp = null; if (monitors[mid]._termHintTimer) clearTimeout(monitors[mid]._termHintTimer); }
-            delete _terminalBuffers[mid];
+    var turnOn = !(btn && btn.classList.contains('on'));
+    if (turnOn) {
+        var emu = ensureTerm(mid);
+        if (!emu) {
+            if (typeof showToast === 'function') showToast('终端模式不可用：xterm.js 未加载', 'error');
+            if (btn) btn.classList.remove('on');
+            return;
         }
+        if (btn) btn.classList.add('on');
+        // 普通输出区：隐藏但继续渲染（日志/行号/时间戳/日志中心/清除内容都照旧）
+        if (output) { output.style.display = 'none'; output.contentEditable = 'false'; }
+        if (sendBar) sendBar.style.display = 'none';
+        emu.box.classList.add('on');
+        _terminalBuffers[mid] = true;
+        // 进入终端模式后自动向设备发一个回车：设备会重新打印提示符，画布立刻有内容可看
+        // （用户 2026-10 明确要求；不做"终端已开启"之类的本地提示，也不回放旧日志）。
+        // 未连接时不发 —— 发了只会得到一条发送失败提示。
+        var m = monitors[mid];
+        if (m && m.isConnected) termSendRaw(mid, '\r');
+        syncTermSize(mid);   // 先量一次；布局稳定后再量一次并聚焦（display 刚切过来时尺寸可能还是 0）
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(function() {
+                syncTermSize(mid);
+                try { emu.term.focus(); } catch (_) {}
+            });
+        }
+        try { emu.term.scrollToBottom(); } catch (_) {}
+    } else {
+        if (btn) btn.classList.remove('on');
+        if (output) { output.style.display = ''; output.contentEditable = 'true'; }
+        if (sendBar) sendBar.style.display = '';
+        var cur = _termEmus[mid];
+        if (cur) {
+            cur.box.classList.remove('on');
+            try { cur.term.blur(); } catch (_) {}
+        }
+        delete _terminalBuffers[mid];
     }
     scheduleConfigSave();
 }
@@ -1267,6 +1208,9 @@ function startReading(mid) {
             }
             var data = (res && res.bytes) ? res.bytes : res;   // 兼容旧的纯数组返回
             if (data && data.length > 0) {
+                // 终端模式：**原始字节**直接喂 xterm（ANSI 光标/擦除/alt-screen 由它解析）。
+                // 下面那段文本解码照旧跑 —— 普通输出区只是隐藏，日志/行号/MCP 日志中心都靠它。
+                try { termWriteBytes(mid, data); } catch (e) { console.warn('[term] 写入异常:', e); }
                 // 渲染异常只记录日志，避免误触发断开/重连逻辑导致界面异常（#13）
                 try {
                     var frag = document.createDocumentFragment();

@@ -1371,17 +1371,7 @@ try {
   check(!!c2 && c2.connected === false, '切页刷新后：未连接设备 connected=false');
   check(sb._bleSelected === 'AA:BB:CC:DD:EE:01', '切页刷新后：选中项落在已连接设备');
 
-  // ---- 6) 本轮新增：ADB 串号回填 + parseAnsi 不再吞掉分块剩余文本 ----
-  const sb7 = { console };
-  vm.createContext(sb7);
-  vm.runInContext([extractFunction('pickAdbSerials')].join('\n'), sb7);
-  check(JSON.stringify(sb7.pickAdbSerials([{ serial: 'ABC123' }, { serial: 'XYZ' }])) === '["ABC123","XYZ"]',
-    'pickAdbSerials 从设备列表取出串号', JSON.stringify(sb7.pickAdbSerials([{ serial: 'ABC123' }, { serial: 'XYZ' }])));
-  check(JSON.stringify(sb7.pickAdbSerials([{ serial: 'A' }, { serial: 'A' }, {}, null])) === '["A"]',
-    'pickAdbSerials 去重并跳过空/非法项', JSON.stringify(sb7.pickAdbSerials([{ serial: 'A' }, { serial: 'A' }, {}, null])));
-  check(JSON.stringify(sb7.pickAdbSerials(null)) === '[]' && JSON.stringify(sb7.pickAdbSerials('x')) === '[]',
-    'pickAdbSerials 对非数组输入返回空数组（不抛错）');
-
+  // ---- 6) parseAnsi 不再吞掉分块剩余文本 ----
   const sb8 = { console };
   vm.createContext(sb8);
   vm.runInContext([extractFunction('escapeHtml'), extractFunction('consumeAnsi'), extractFunction('parseAnsi')].join('\n'), sb8);
@@ -1392,6 +1382,16 @@ try {
   const colored = sb8.parseAnsi('a\u001b[31mred\u001b[0m');
   check(colored.indexOf('red') > 0 && colored.indexOf('\u001b') < 0,
     'parseAnsi 对完整序列仍正常解析为 span（不含裸 ESC）', JSON.stringify(colored.slice(0, 40)));
+  // 普通模式口径（用户 2026-10 确认）：不主动上色，只有日志自带 16 色转义才显示颜色；
+  // 256 色 / 真彩色不解析（颜色能力只留给终端模式）
+  const c256 = sb8.parseAnsi('\u001b[38;5;196mred256\u001b[0m');
+  check(c256.indexOf('style=') < 0 && c256.indexOf('class="ansi-') < 0 && c256.indexOf('red256') >= 0,
+    '普通模式不解析 256 色（38;5;n 不产生颜色，文本照常显示）', c256.slice(0, 80));
+  const crgb = sb8.parseAnsi('\u001b[38;2;255;0;0mrgb\u001b[0m');
+  check(crgb.indexOf('style=') < 0 && crgb.indexOf('rgb') >= 0,
+    '普通模式不解析真彩色（38;2;r;g;b 不产生颜色）', crgb.slice(0, 80));
+  const cbg = sb8.parseAnsi('\u001b[42mx\u001b[0m');
+  check(cbg.indexOf('class=') < 0, '普通模式不处理背景色（42 被忽略）', cbg.slice(0, 80));
 
   // ---- 7) BLE 配对（WinRT）：后端命令 + 前端弹窗与连接编排 ----
   // 后端：两个命令必须注册、状态必须 manage、事件名必须与前端一致
@@ -8210,23 +8210,45 @@ try {
       '收起时的摘要行如实说"配没配、缺什么"');
   }
 
-  // ---------- 终端模式：当前行（含光标）必须跟在最新日志行之下 ----------
+  // ---------- 终端模式：xterm.js 真终端（2026-10 用户要求「达到 Linux 终端层级」） ----------
   //
-  // 用户 2026-09 报的："终端模式的光标应该保持在最新 log 行之下，而不是保持在最顶部"。
-  // 成因：普通模式的输出走 appendChild，会追加到「当前行」**后面**，把它悄悄埋到中间
-  // —— 而它是 display:none，用户在普通模式下看不见这个过程；进终端模式时又没把它移回
-  // 末尾，于是新输出全部 insertBefore 到它前面，光标就卡在那个旧位置上。
-  // 这里用**真实的** toggleTerminalMode 复现整个场景，而不是只扫源码正则。
+  // 旧实现是「提示符 + 单行输入框 + 本地补全」；现在整块换成 xterm.js：
+  //   · 收到的原始字节直接喂 xterm（ANSI 光标/擦除/alt-screen 交给它解析）；
+  //   · xterm 的 onData 按键流**原样**发出去（Enter=\r、Tab=\t、↑=\x1b[A），绝不追加行尾；
+  //   · 本地不做回显（由设备侧 tty 回显）；普通输出区只是隐藏，日志照旧收（切回来还在）。
+  // 这里用真实的 toggleTerminalMode / termSendRaw 跑行为断言，而不是只扫源码。
   {
-    // 比 fakeEl() 更完整：必须能表达 insertBefore / parentNode / lastChild，
-    // 否则复现不出"被埋到中间"这个真实故障（fakeEl 只有 appendChild）。
+    // ---- 静态约束：旧的本地补全/提示符实现必须整段消失，否则两套必然漂移 ----
+    check(!/id\s*=\s*['"]?\s*termCurrent|termInput/.test(html), '旧的「提示符+输入框」DOM 已删除');
+    check(!/completeTermTab|showTermComp|hideTermComp|termTokenStart|term-comp/.test(html),
+      '旧的本地 TAB 补全整段删除（补全交给设备 shell）');
+    check(/\.term-xterm\s*\{/.test(html) && /\.term-xterm\.on\s*\{/.test(html),
+      'xterm 容器样式存在，靠 .on 显隐');
+    check((html.match(/try \{ termWriteBytes\(mid, data\); \}/g) || []).length === 2,
+      '串口与 WSL 两条接收路径都把原始字节喂给 xterm',
+      String((html.match(/try \{ termWriteBytes\(mid, data\); \}/g) || []).length));
+    const termSendSrc = extractFunction('termSendRaw');
+    check(!/leStr|lineEnding|appendLineEnding/.test(termSendSrc),
+      '终端发送不做任何行尾加工（Enter 的 \\r 由 xterm 给）');
+    // 非终端模式必须保持原行为：普通输出/批量/接收三条路都不再感知终端状态，
+    // 接收侧在终端没开时直通（termWriteBytes 立即返回）—— 改动只发生在"终端开着"时。
+    check(!/_terminalBuffers/.test(extractFunction('appendOutput')) &&
+      !/_terminalBuffers/.test(extractFunction('flushBatch')) &&
+      !/_terminalBuffers/.test(extractFunction('appendRecvText')),
+      '非终端模式路径与原行为一致（普通输出 / 批量 / 接收都不再引用终端状态）');
+    check(/if \(!emu \|\| !data \|\| !data\.length\) return;/.test(extractFunction('termWriteBytes')),
+      '终端没开时接收路径直通（termWriteBytes 立即返回，不影响普通视图）');
+
+    // ---- 行为：假 DOM + 假 Terminal ----
     const mkEl = () => {
       const el = {
-        _kids: [],
-        id: '', className: '', textContent: '', value: '', style: {}, contentEditable: '',
+        _kids: [], parentNode: null, id: '', className: '', style: {}, contentEditable: '',
         get children() { return this._kids; },
-        get firstChild() { return this._kids[0] || null; },
-        get lastChild() { return this._kids[this._kids.length - 1] || null; },
+        get nextSibling() {
+          if (!this.parentNode) return null;
+          const i = this.parentNode._kids.indexOf(this);
+          return i >= 0 ? (this.parentNode._kids[i + 1] || null) : null;
+        },
         appendChild(c) {
           if (c.parentNode) c.parentNode.removeChild(c);
           c.parentNode = this; this._kids.push(c); return c;
@@ -8244,7 +8266,7 @@ try {
           return c;
         },
         setAttribute() {}, getAttribute() { return null; },
-        addEventListener() {}, focus() {}, querySelector() { return null; },
+        addEventListener() {}, focus() {}, blur() {}, querySelector() { return null; },
       };
       el.classList = {
         _s: {},
@@ -8255,43 +8277,154 @@ try {
       };
       return el;
     };
+    const output = mkEl(), body = mkEl(), sendBar = mkEl(), btn = mkEl();
+    body.appendChild(output);
 
-    const output = mkEl(), termCur = mkEl(), termInput = mkEl();
-    output.appendChild(mkEl());    // 旧日志行
-    output.appendChild(mkEl());
-    output.appendChild(termCur);   // 当前行（此刻在末尾）
-
-    // 普通模式又追加了两行 → 当前行被埋到中间（这就是用户遇到的状态）
-    output.appendChild(mkEl());
-    output.appendChild(mkEl());
-    check(output.lastChild !== termCur, '前置：普通模式追加后，当前行确实已被埋到中间（复现故障现场）');
-
-    const btn = mkEl();
-    btn.classList.add('x');        // 占位，避免下面 toggle 的实现差异影响结果
+    const calls = [];
+    class FakeTerminal {
+      constructor(opts) {
+        this.opts = opts || {}; this.cols = 80; this.rows = 24;
+        this.options = { theme: this.opts.theme };
+        FakeTerminal.last = this;
+        FakeTerminal.count = (FakeTerminal.count || 0) + 1;
+      }
+      open(box) { this.element = { parentElement: box }; }
+      onData(fn) { this._onData = fn; }
+      attachCustomKeyEventHandler() {}
+      write(d) { (this.writes = this.writes || []).push(String(d)); }
+      writeln() {} clear() {} scrollToBottom() {} focus() {} blur() {}
+      resize(c, r) { this.cols = c; this.rows = r; }
+      dispose() { this.disposed = true; }
+      getSelection() { return ''; }
+    }
+    const txLogs = [];
+    const themeState = { name: 'default' };
     const sbTerm = {
       console,
-      monitors: { main: {} },
-      _terminalBuffers: {},
-      closeRecvPartial() {}, setTermPrompt() {}, hideTermComp() {},
-      scheduleConfigSave() {}, requestScroll() {},
+      monitors: { main: { isConnected: true } },
+      appendOutput(mid, type, text, opts) { txLogs.push({ mid, type, text, opts }); },
+      _termPalCache: {},
+      _terminalBuffers: {}, _termEmus: {},
+      Terminal: FakeTerminal,
+      TextEncoder,
+      requestAnimationFrame: (fn) => fn(),
+      navigator: { clipboard: { writeText() {} } },
+      showToast() {},
+      scheduleConfigSave() {},
+      invokeTimeout(cmd, args) { calls.push({ cmd, args }); return Promise.resolve(); },
+      getComputedStyle(el) {
+        if (el && typeof el.className === 'string' && /^ansi-\d+$/.test(el.className)) {
+          return { color: 'rgb(9,9,9)::' + themeState.name + '::' + el.className };
+        }
+        return {
+          backgroundColor: 'rgb(28,30,34)',
+          color: 'rgb(220,224,232)',
+          getPropertyValue() { return '#4a7ab5'; },
+        };
+      },
+      window: { ResizeObserver: null },
       document: {
+        documentElement: { getAttribute() { return themeState.name; } },
+        body: mkEl(),
         getElementById(id) {
           if (id === 'main-output') return output;
-          if (id === 'main-termCurrent') return termCur;
-          if (id === 'main-termInput') return termInput;
-          return null;
+          return body._kids.find((k) => k && k.id === id) || null;
         },
-        querySelector() { return null; },
+        querySelector() { return sendBar; },
+        createElement() { return mkEl(); },
       },
     };
     vm.createContext(sbTerm);
-    vm.runInContext(extractFunction('toggleTerminalMode'), sbTerm);
-    sbTerm.toggleTerminalMode(btn, 'main');   // 点一下 = 进终端模式
+    vm.runInContext([
+      extractFunction('termModeOn'),
+      extractFunction('termAnsiPalette'),
+      extractFunction('termRgba'),
+      extractFunction('termThemeFor'),
+      extractFunction('termLogSend'),
+      extractFunction('termTrackInput'),
+      extractFunction('termSendRaw'),
+      extractFunction('syncTermSize'),
+      extractFunction('ensureTerm'),
+      extractFunction('refreshTermThemes'),
+      extractFunction('toggleTerminalMode'),
+    ].join('\n'), sbTerm);
 
-    check(output.lastChild === termCur,
-      '★ 开启终端模式后，当前行必须回到输出区末尾（光标跟在最新日志行之下，而不是卡在最顶部/中间）');
-    check(termCur.parentNode === output,
-      '当前行仍在输出区内（没有被移出 DOM）');
+    check(Object.keys(sbTerm._termEmus).length === 0,
+      '非终端模式不创建 xterm（点终端按钮才懒创建，普通模式零开销）');
+    sbTerm.toggleTerminalMode(btn, 'main');   // 开
+    const term = FakeTerminal.last;
+    const box = body._kids.find((k) => k && k.id === 'main-xtermBox');
+    check(!!term && !!box, '进入终端模式时创建了 xterm 实例与容器');
+    check(btn.classList.contains('on'), '按钮进入 on 状态');
+    check(output.style.display === 'none', '普通输出区在终端模式下被隐藏（但仍在 DOM 里）');
+    check(sendBar.style.display === 'none', '发送栏在终端模式下隐藏');
+    check(!!sbTerm._terminalBuffers.main, '终端模式标记置位（其他模块据此不动输出区光标）');
+    check(box.classList.contains('on'), 'xterm 容器显示');
+    check(output.contentEditable === 'false', '终端模式下输出区不可编辑（输入全部由 xterm 负责）');
+
+    // 终端配色跟主题走：16 色 ANSI 取自当前主题的 .ansi-* （与普通输出区同一份），
+    // 背景/前景/光标/选区取自输出区配色与主题强调色
+    const xtermTheme = term.opts.theme;
+    check(!!xtermTheme && xtermTheme.black === 'rgb(9,9,9)::default::ansi-30' &&
+      xtermTheme.red === 'rgb(9,9,9)::default::ansi-31' &&
+      xtermTheme.white === 'rgb(9,9,9)::default::ansi-37' &&
+      xtermTheme.brightWhite === 'rgb(9,9,9)::default::ansi-97',
+      '★ 终端 16 色 ANSI 调色板取自当前主题（与普通输出区同一份颜色）',
+      JSON.stringify({ black: xtermTheme && xtermTheme.black, brightWhite: xtermTheme && xtermTheme.brightWhite }));
+    check(xtermTheme.background === 'rgb(28,30,34)' && xtermTheme.foreground === 'rgb(220,224,232)',
+      '终端背景/前景取自输出区实际配色');
+    check(xtermTheme.cursor === '#4a7ab5' && xtermTheme.selectionBackground === 'rgba(74,122,181,0.35)',
+      '光标与选区颜色来自主题强调色（选区半透明）', xtermTheme.selectionBackground);
+    // 切主题：refreshTermThemes 用新主题重建调色板（缓存按 data-theme 区分）
+    themeState.name = 'ink';
+    sbTerm.refreshTermThemes();
+    check(term.options.theme.black === 'rgb(9,9,9)::ink::ansi-30',
+      '切换主题后终端调色板跟着换（按 data-theme 缓存 + refreshTermThemes）', term.options.theme.black);
+    themeState.name = 'default';
+    sbTerm.refreshTermThemes();
+    // 进入终端模式：不摆本地提示、不回放日志，而是**自动向设备发一个回车**，让设备打印提示符
+    check(calls.length === 1 && calls[0].cmd === 'send_data' && JSON.stringify(calls[0].args.data) === '[13]',
+      '★ 进入终端模式自动发一个回车（设备会重新打印提示符）', JSON.stringify(calls.map((c) => c.args.data)));
+    check(txLogs.length === 0, '自动回车不写 tx 日志（空命令没有内容可记）');
+
+    // 按键 → 字节：真实终端行为，原样发，不追加任何行尾（calls[0] 是刚进入时的自动回车）
+    term._onData('\r');        // Enter
+    term._onData('\t');        // Tab
+    term._onData('\u001b[A');  // ↑
+    check(calls.length === 4 && calls.slice(1).every((c) => c.cmd === 'send_data'),
+      '按键全部走 send_data（WSL 分栏走 send_wsl_serial）', JSON.stringify(calls.map((c) => c.cmd)));
+    check(JSON.stringify(calls[1].args.data) === '[13]',
+      'Enter 发 CR(0x0D)，不追加行尾', JSON.stringify(calls[1].args.data));
+    check(JSON.stringify(calls[2].args.data) === '[9]',
+      'Tab 发 HT(0x09) 给设备（本地不再拦截补全）', JSON.stringify(calls[2].args.data));
+    check(JSON.stringify(calls[3].args.data) === '[27,91,65]',
+      '↑ 原样发 ESC[A（方向键交给设备）', JSON.stringify(calls[3].args.data));
+
+    // 命令级 tx 日志：敲字不记、回车记一条（src=ui）、退格生效、粘贴整段记一条
+    term._onData('e'); term._onData('c'); term._onData('h');
+    check(txLogs.length === 0, '敲字过程中不写日志（逐字符记会刷屏）');
+    term._onData('\x7f'); term._onData('o');
+    term._onData('\r');
+    check(txLogs.length === 1 && txLogs[0].type === 'send' &&
+      txLogs[0].text === 'eco' && txLogs[0].opts && txLogs[0].opts.src === 'ui',
+      '★ 回车提交时记一条 send 日志（src=ui），退格已生效', JSON.stringify(txLogs.map((l) => l.text)));
+    term._onData('\u001b[200~ls -l /tmp\u001b[201~');
+    check(txLogs.length === 2 && txLogs[1].text === 'ls -l /tmp',
+      '粘贴整段记一条 send 日志（剥掉 bracketed-paste 包裹）', JSON.stringify(txLogs.map((l) => l.text)));
+    term._onData('\u001b[A');
+    check(txLogs.length === 2, '方向键等纯转义序列不写日志（没有可记的命令内容）');
+
+    sbTerm.toggleTerminalMode(btn, 'main');   // 关
+    check(output.style.display === '', '退出终端模式后普通输出区恢复显示（历史日志还在）');
+    check(sendBar.style.display === '', '发送栏恢复');
+    check(!sbTerm._terminalBuffers.main, '终端模式标记清除');
+    check(!box.classList.contains('on'), 'xterm 容器隐藏');
+    check(output.contentEditable === 'true', '退出终端模式后输出区恢复可编辑（普通模式行为不变）');
+
+    // 再开一次必须复用同一个实例（终端里的历史不能被清掉）
+    sbTerm.toggleTerminalMode(btn, 'main');
+    check(FakeTerminal.last === term && FakeTerminal.count === 1,
+      '切走再切回复用同一个 xterm 实例（不清历史、不泄漏）');
   }
 
   // ===== WSL 快捷启动：发行版名只能来自 WSL 自己报的列表（2026-10-14「点启动开出 PowerShell」事故） =====

@@ -422,8 +422,7 @@ function initWslMonitor(wmid) {
     }
     // 初始禁用（等WSL状态确认后再启用）
     setWslMonitorEnabled(false, wmid);
-    // 初始化终端模式（不刷新端口，等WSL确认运行后再刷新）
-    initTerminalMode(wmid);
+    // 终端模式（xterm）按需懒创建：点按钮时才建，不在这里初始化
 }
 
 // WSL 串口连接/断开切换
@@ -550,6 +549,8 @@ function startWslReading(mid) {
             var data = await invokeTimeout('read_wsl_serial', { monitorId: mid }, 3000);
             monitors[mid]._wslReadFails = 0;      // 拉到了就算这一轮正常（哪怕这次没数据）
             if (data && data.length > 0) {
+                // 终端模式：原始字节直接喂 xterm（与串口那条路一致）
+                try { termWriteBytes(mid, data); } catch (e) { console.warn('[term] 写入异常:', e); }
                 // 渲染异常只记录日志，避免误触发断开/重连逻辑导致界面异常（#13）
                 try {
                     checkWorkflowMatches(mid, data);

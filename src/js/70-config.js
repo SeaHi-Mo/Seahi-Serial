@@ -420,6 +420,8 @@ function applyTheme(theme) {
     el.classList.add('transitioning');
     el.setAttribute('data-theme', getThemeDataAttr());
     syncThemeUI();
+    // 终端模式（xterm）的配色是创建时抓的快照，主题/深浅色一变必须刷一次
+    if (typeof refreshTermThemes === 'function') refreshTermThemes();
     var palette = _TITLE_BAR_COLORS[_currentThemeStyle] || _TITLE_BAR_COLORS['default'];
     animateTitleBar(palette[_currentTheme] || palette.dark, 300);
     clearTimeout(el._transTid);

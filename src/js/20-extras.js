@@ -345,6 +345,7 @@ function closeWslMonitor(wmid) {
     var wasConnected = !!(monitors[wmid] && monitors[wmid].isConnected);
     var cleanup = function() {
         delete monitors[wmid];
+        disposeTerminal(wmid);   // xterm 实例 / ResizeObserver 一起收掉
         var pane = document.getElementById('pane-' + wmid);
         if (pane) pane.remove();
         renderWslDeviceList('main'); // 及时刷新 WSL 设备状态点
@@ -367,7 +368,7 @@ function closeMonitor(mid) {
     var wasConnected = !!(monitors[mid] && monitors[mid].isConnected);
     var cleanup = function() {
         delete monitors[mid];
-        delete _terminalBuffers[mid];
+        disposeTerminal(mid);   // xterm 实例 / ResizeObserver 一起收掉
         var pane = document.getElementById('pane-' + mid);
         if (pane) pane.remove();
         // 蓝牙页内嵌监视器：关闭后必须清账，否则再点「+」会以为还有一个而不给开
@@ -579,7 +580,7 @@ function appendOutput(mid, type, text, opts) {
     contentSpan.className = 'lc';
     // 写入紧凑存储（保留完整日志，不受 maxLines 限制）
     if (monitors[mid] && !isEmpty) {
-        bufferPush(mid, type, ts, text);
+        bufferPush(mid, type, ts, text, (opts && opts.src) || null);
     }
     if (type === 'recv') {
         if (opts && opts.hex) {
@@ -596,13 +597,9 @@ function appendOutput(mid, type, text, opts) {
     }
     div.appendChild(contentSpan);
     var target = (opts && opts.fragment) ? opts.fragment : el;
-    // 终端模式下，新行插到终端当前行之前（当前行保持在末尾），使设备输出显示在提示符上方
-    var termCur = _terminalBuffers[mid] && _terminalBuffers[mid].lineEl;
-    if (target === el && termCur && termCur.parentNode === el) {
-        el.insertBefore(div, termCur);
-    } else {
-        target.appendChild(div);
-    }
+    // 终端模式（xterm 画布）下输出区只是隐藏，DOM 日志照旧顺序追加 ——
+    // 切回普通模式能直接看到完整历史，日志中心/MCP 也照旧。终端画布与这份 DOM 互不干扰。
+    target.appendChild(div);
     // 维护“未结束的接收行”状态：opts.open 的 recv 行可接受后续数据合并，
     // 其余行（send/sys/hex/普通 recv）都会关闭当前打开行，避免跨输出合并
     var m = monitors[mid];
@@ -702,13 +699,8 @@ document.addEventListener('selectionchange', function() {
 function flushBatch(mid, fragment) {
     var el = document.getElementById(mid + '-output');
     if (!el || !fragment) return;
-    // 终端模式下，批量数据插到终端当前行之前
-    var termCur = _terminalBuffers[mid] && _terminalBuffers[mid].lineEl;
-    if (termCur && termCur.parentNode === el) {
-        el.insertBefore(fragment, termCur);
-    } else {
-        el.appendChild(fragment);
-    }
+    // 终端模式（xterm 画布）下输出区只是隐藏：批量数据照旧顺序追加，不插队
+    el.appendChild(fragment);
     trimOutputDom(mid, el);
     var scrollBtn = document.getElementById(mid + '-btnScroll');
     if (scrollBtn && scrollBtn.classList.contains('on')) requestScroll(el);

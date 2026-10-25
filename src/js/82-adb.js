@@ -119,9 +119,6 @@ function refreshAdbDevices() {
     var list = document.getElementById('adb-deviceList');
     if (!list) return;
     invoke('adb_devices').then(function(devices) {
-        // 回填 TAB 补全用的设备序列号：此前 _adbSerials 恒为空，
-        // 导致 `adb -s <TAB>` 没有任何候选（钩子早就留好了，只是没人填）
-        _adbSerials = pickAdbSerials(devices);
         if (!Array.isArray(devices) || devices.length === 0) {
             list.innerHTML = '<span style="font-family:var(--font-mono);font-size:12px;color:var(--text-d);">未检测到 ADB 设备</span>';
             return;
