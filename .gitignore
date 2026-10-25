@@ -47,3 +47,6 @@ platform-tools/
 
 # 开发期 GUI 测试工具（.walkthrough 整体入库，见其 README.md；仅忽略 Python 缓存）
 .walkthrough/__pycache__/
+
+# �����֤��ͼ�����������⣩
+.walkthrough/shots/
