@@ -8362,10 +8362,14 @@ try {
       extractFunction('ibtnBlocked'),
       extractFunction('termLineBufOn'),
       extractFunction('termLineEndStr'),
+      // 行缓冲的回显两个帮手：`termLineBufInput` 里直接调它们（漏了就会 ReferenceError）
+      extractFunction('termLineBufRedrawEcho'),
+      extractFunction('termLineBufInsertEcho'),
       extractFunction('termLineBufInput'),
       extractFunction('toggleLineBuf'),
       extractFunction('updateTermModeBtns'),
       'var TERM_LINEBUF_MAX = 8192;',
+      'var TERM_HIST_MAX = 200;',
       termMutedSrc,
     ].join('\n'), sbTerm);
 
@@ -8482,15 +8486,18 @@ try {
     check(JSON.stringify(calls[calls.length - 1].args.data) === '[65,13,10]',
       '★ 行缓冲：退格只擦本地缓冲，不发给设备', JSON.stringify(calls[calls.length - 1].args.data));
 
-    // 方向键这类转义序列仍然直发，不污染缓冲
-    term._onData('B'); term._onData('\u001b[A');
-    check(JSON.stringify(calls[calls.length - 1].args.data) === '[27,91,65]', '行缓冲里方向键仍原样直发');
+    // 方向键在**本地**编辑这一行（用户 2026-10-27 要求：行缓冲下上下左右要编辑命令行，不能直发）
+    const n1 = calls.length;
+    term._onData('B'); term._onData('\u001b[D'); term._onData('\u001b[C');
+    check(calls.length === n1, '★ 行缓冲里 ←/→ 只在本地移动光标（ESC 序列绝不发给设备）');
+    term._onData('\u001b[A');                          // ↑ 翻历史：把上一条提交过的命令填回缓冲
+    check(calls.length === n1, '★ ↑ 翻历史也只是本地重画，不发给设备');
 
     // 行尾跟工具栏「行尾」下拉走
     leEl.setAttribute('data-val', 'lf');
     term._onData('\r');
-    check(JSON.stringify(calls[calls.length - 1].args.data) === '[66,10]',
-      '★ 行缓冲的行尾跟随「行尾」下拉（LF 示例）', JSON.stringify(calls[calls.length - 1].args.data));
+    check(JSON.stringify(calls[calls.length - 1].args.data) === '[65,10]',
+      '★ 行缓冲的行尾跟随「行尾」下拉（↑ 取回历史后回车，LF 示例）', JSON.stringify(calls[calls.length - 1].args.data));
 
     // 关掉 → 回到逐键直发（WSL 分栏的默认口径，vim/top 与 readline 都靠它）
     lbBtn.classList.remove('on');
