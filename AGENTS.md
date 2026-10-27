@@ -15,6 +15,11 @@ npm run build                                     # 发布构建 → src-tauri/t
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（272 条 + 1 条 #[ignore] 手工联调用例）
 node .walkthrough/gen_ble_preview.js              # 前端无头断言集（改前端后必跑）
 node .walkthrough/mcp_smoke.js                    # 对**正在跑的应用**逐个真调工具（改 MCP 后必跑）
+
+# 文档站（website/，VitePress；依赖只装在 website/ 里，别在根目录装）
+npm --prefix website install                      # 首次
+npm --prefix website run dev                      # 本地预览 http://localhost:5173
+npm --prefix website run build                    # 产物 → website/docs/.vitepress/dist
 ```
 
 无 lint / 类型检查。
@@ -26,7 +31,7 @@ node .walkthrough/mcp_smoke.js                    # 对**正在跑的应用**逐
 
 - ⛔ **BLE 从机（外设）方向 2026-09 整条删除**（用户："实现不了了"）：适配器自报支持外设角色，实测**广播起不来**
   （`Aborted`）。别再往这个方向加功能；证据见 `doc/BLE_PERIPHERAL.md`（已归档）。BLE 只剩**主机方向**。
-- 前端断言集 `.walkthrough/gen_ble_preview.js`（**1935 条**，随代码增补）：`vm` 沙箱抽真函数断言（源码正则 +
+- 前端断言集 `.walkthrough/gen_ble_preview.js`（**1991 条**，随代码增补）：`vm` 沙箱抽真函数断言（源码正则 +
   假 DOM 行为断言）；`readFrontendSource()` 按标签顺序把 css/js **内联回"逻辑单文件"**再跑，所以跨 CSS/JS 的正则
   照旧有效，加新前端文件不用改断言集（只要标签写进 `index.html`）。改了 MCP 工具定义后重跑
   `node .walkthrough/gen_mcp_tools_doc.js` 生成 `doc/MCP_TOOLS.md`（断言守着"文档必须列出全部内置工具"）。
@@ -290,6 +295,10 @@ node .walkthrough/mcp_smoke.js                    # 对**正在跑的应用**逐
   内** —— 加新 BLE 代码先确认自己在哪一层（模块级看不到 `fn main()` 里的东西）。
 - `npm/seahi-serial-mcp/` — MCP 客户端配置安装器（零依赖 CLI + 94 条自测；`npx seahi-serial-mcp install`，
   `--transport sse|http`）。
+- `website/` — **文档站**（VitePress，独立 `package.json` + lockfile，**vitepress 不进根 package.json**）：首页 +
+  用户指南 + MCP 总览。`docs/mcp/tools.md` 由 `scripts/sync-mcp-tools.mjs` 从 `doc/MCP_TOOLS.md` 生成（生成物，不入库），
+  `predev`/`prebuild` 自动跑。`doc/` 仍是开发者内部文档，**不整目录发布**；部署见 `doc/DEPLOY_CLOUDFLARE.md`
+  （Cloudflare Pages，**只有打 tag 才发布**）。
 - `doc/`：`MCP.md`（使用说明）｜`MCP_TOOLS.md`（**54 个工具手册**，由 `gen_mcp_tools_doc.js` 从 `protocol.rs` 生成）｜
   `MCP_DESIGN.md`（设计 + 每步实施记录）｜`QUICK_CMDS.md`（快速指令文件格式）｜`FRONTEND_LAYOUT.md`｜`ARCHITECTURE.md`｜
   `CODE_REVIEW_FULL_2026-09.md`｜`BLE_VERIFICATION.md`（主机方向真机验证）｜`BLE_PERIPHERAL.md`（已归档）｜

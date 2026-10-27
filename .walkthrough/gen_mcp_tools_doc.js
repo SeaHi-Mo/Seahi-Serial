@@ -104,7 +104,7 @@ const META = {
   serial_open: ['写', '{pane, connected:true, state:{…}}', '**会等最多 6 秒确认真连上**；失败 → isError:true（-32006）并给出可能原因，不是乐观返回'],
   serial_close: ['写', '{pane, connected:false, state:{…}}', '会等最多 3 秒确认已断开'],
   serial_send: ['写', '{pane, sent:true, mode, bytes, data}', '需要该分栏已在监控中；mode=hex 时 data 按十六进制解析；lineEnding 会**留在界面上**（不是临时覆盖）'],
-  serial_clear: ['写', '{pane, cleared:true, outputLines}', '**只清界面**，不动磁盘会话日志缓存'],
+  serial_clear: ['写', '{pane, cleared:true, outputLines}', '**连带清掉磁盘会话日志缓存**：该分栏在 `log-cache` 里的 session 文件会被截断（不是只清界面）'],
   serial_get_history: ['读', '{pane, total, items:[…]}', '最近的在前'],
   serial_get_output: ['读', '{pane, direction, format, isConnected, channels:{rx,tx}, count, items:[{seq,ts,dir,text,bytes}], truncated, note?}（`format:"text"` 时改为 `{…, text}`，**没有再给 items**）', '**串口监视器的核心：读设备回了什么**。默认收+发按时间归并；数据与 `log_tail` 同一份存储，但**不需要你知道通道名**，且"还没收到数据"返回空列表 + note 而不是报错。**优先用 `format:"text"`**（一行一条 `[时刻] [rx|tx] 正文`，比 json 省一半以上 token；头部那行带着两通道各自的 dropped/mayBeIncomplete，正文在 content 文本里）'],
   // ===== BLE 语义（第一批：状态 + 从机）=====

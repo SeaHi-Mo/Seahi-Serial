@@ -69,7 +69,7 @@ function createMonitorPane(mid, title, closable) {
             '</button>' +
             '<div class="tsep"></div>' +
             '<div class="ibtn-group" id="' + mid + '-ibtnGroup">' +
-            '<button class="ibtn" onclick="clearLog(\'' + mid + '\')" title="清除内容">' + ICONS.clear + '</button>' +
+            '<button class="ibtn" onclick="clearLog(\'' + mid + '\')" title="清除内容（同时清空磁盘会话缓存）" aria-label="清除内容">' + ICONS.clear + '</button>' +
             '<button class="ibtn on" id="' + mid + '-btnScroll" onclick="toggleIbtn(this)" title="自动滚动">' + ICONS.rollback + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnAutoReconnect" onclick="toggleIbtn(this)" title="自动重连">' + ICONS.reconnect + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnSendLE" onclick="toggleTerminalMode(this,\'' + mid + '\')" title="终端模式">' + ICONS.terminal + '</button>' +

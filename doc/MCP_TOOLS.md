@@ -48,7 +48,7 @@
 | [`serial_open`](#serial-open) | **写** | **开始监控**（=点「开始监控」按钮）。可同时给 port/baud，省两次调用。返回前**确认真的连上**（最多 6 秒），失败会说明可能原因（端口被占用 / 设备拔出 / 驱动异常）。 |
 | [`serial_close`](#serial-close) | **写** | 停止监控（等价于点「停止监控」），返回前确认已断开。 |
 | [`serial_send`](#serial-send) | **写** | 往该分栏发数据（**需已在监控中**）。mode=hex 时 data 按十六进制解析（如 "01 03 00 00 00 02"），否则按文本；lineEnding 会覆盖该分栏的行尾并留在界面上。单次最多 64K 字符，大块数据请分批。 |
-| [`serial_clear`](#serial-clear) | **写** | 清空该分栏的输出区（=点「清除内容」）。**只清界面显示**，不动磁盘上的会话日志缓存。 |
+| [`serial_clear`](#serial-clear) | **写** | 清空该分栏的输出区（=点「清除内容」）。**连带清掉磁盘上的会话日志缓存** —— `%APPDATA%\seahi-serial\log-cache` 下属于该分栏的 session 文件会被截断；界面上不要了的内容，磁盘上也别留着。 |
 | [`serial_get_history`](#serial-get-history) | 读 | 读该分栏的发送历史（最近的在前）。用来回看刚才发过什么，或复用上一条指令。 |
 | [`serial_get_output`](#serial-get-output) | 读 | 读串口分栏**实际收发的内容** —— 设备回了什么就用它（不用 log_tail，也不用猜通道名）。默认收+发按时间归并，`dir` 区分收发、`src` 区分 ai/ui/none（追溯谁发的）。**优先 `format:"text"`**：一行一条，比 json 省一半以上 token；要逐行字段时才用 json。还没数据时回空列表，不报错。 |
 | [`serial_quick_cmd`](#serial-quick-cmd) | 读 | 面板「快速指令」列表（按循环组分段）。**不带参数**=列出（含 index/组/值/发送参数/groups/loop）；**给 index**=执行那一条（**index 从 0 起，用户口语的「第 N 条」= index N-1**）；**action=loop**=开/关整条循环链；**action=add|update|remove|group**=改列表（会写回它挂载的外部文件）。⚠️ 循环里只有同时配了 `expect` 且 `timeoutMs>0` 的条目才等回应；没写成功词的条目不等回应，此时 `timeoutMs` 就是发下一条的间隔。 |
@@ -243,10 +243,10 @@
 
 #### `serial_clear`
 
-- **作用**：清空该分栏的输出区（=点「清除内容」）。**只清界面显示**，不动磁盘上的会话日志缓存。
+- **作用**：清空该分栏的输出区（=点「清除内容」）。**连带清掉磁盘上的会话日志缓存** —— `%APPDATA%\seahi-serial\log-cache` 下属于该分栏的 session 文件会被截断；界面上不要了的内容，磁盘上也别留着。
 - **读/写**：**写**（会改状态）
 - **返回**：{pane, cleared:true, outputLines}
-- **注意**：**只清界面**，不动磁盘会话日志缓存
+- **注意**：**连带清掉磁盘会话日志缓存**：该分栏在 `log-cache` 里的 session 文件会被截断（不是只清界面）
 
 **入参**
 

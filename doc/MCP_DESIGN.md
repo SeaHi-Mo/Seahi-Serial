@@ -3173,7 +3173,7 @@ npm 安装器 62 通过；`doc/MCP_TOOLS.md` 重生成（49 个工具）；`doc/
 | `serial_select_port`、`serial_set_baud`、`serial_set_frame`、`serial_set_lines`、`serial_set_display` | 选端口 / 波特率 / 帧格式 / DTR-RTS / 显示与行为开关 |
 | `serial_open`、`serial_close` | 开 / 停监控，**会轮询确认状态**（最多 6s / 3s），失败给可操作原因 |
 | `serial_send` | 发数据（`mode=hex` 按十六进制解析；`lineEnding` 可覆盖行尾） |
-| `serial_clear` | 清空输出区（**只清界面**，不动磁盘会话缓存） |
+| `serial_clear` | 清空输出区，**并截断该分栏的磁盘会话缓存**（issue #22：只清界面会让用户误以为日志已删） |
 | `serial_get_history` | 发送历史（最新在前） |
 | `serial_quick_cmd` | 快速指令：不带 `index` 列出、带 `index` 执行 |
 

@@ -4786,6 +4786,40 @@ fn end_log_cache(state: tauri::State<'_, LogCacheState>, monitor_id: String) -> 
     Ok(())
 }
 
+/// 清空某个监视器的**磁盘会话缓存**（「清除内容」时一起调，issue #22）。
+///
+/// 只截断、不删文件：句柄还开着，删掉会让后续写入落在一个已删除的 inode 上
+/// （Windows 上也删不掉打开中的文件）。截断后 `bytes` 归零、`capped` 复位 ——
+/// 已经触顶停写过的会话也能接着记。返回 false 表示这个会话还没写过任何内容（没有文件可清）。
+///
+/// ⚠️ **不能用 `sess.file.set_len(0)`**：写句柄是以 `append(true)` 打开的，Windows 上那只有
+/// `FILE_APPEND_DATA`，`set_len` 会直接 `Access is denied (os error 5)`。这里另开一个带写权限的
+/// 句柄去截断，原来那个 append 句柄继续用（append 每次都写到文件末尾，截断后自然落到 0）。
+fn truncate_log_cache_session(sess: &mut LogCacheSession) -> Result<bool, String> {
+    sess.bytes = 0;
+    sess.capped = false;
+    if sess.file.is_none() {
+        return Ok(false);
+    }
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&sess.path)
+        .map_err(|e| format!("清空日志缓存失败: {}", e))?;
+    f.set_len(0).map_err(|e| format!("清空日志缓存失败: {}", e))?;
+    Ok(true)
+}
+
+/// 界面点「清除内容」时，把该分栏的磁盘缓存也清掉（2026-10 issue #22：
+/// 用户以为敏感日志已清除，实际 `%APPDATA%\seahi-serial\log-cache\session-*.log` 还在）。
+#[tauri::command]
+fn clear_log_cache(state: tauri::State<'_, LogCacheState>, monitor_id: String) -> Result<bool, String> {
+    let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+    match sessions.get_mut(&monitor_id) {
+        Some(sess) => truncate_log_cache_session(sess),
+        None => Ok(false),
+    }
+}
+
 /// 列出当前已缓存的日志文件（供界面展示/排查，返回文件名 + 大小 + 修改时间）
 #[tauri::command]
 fn list_log_cache() -> Result<Vec<serde_json::Value>, String> {
@@ -6978,6 +7012,56 @@ mod log_maintenance_tests {
             "session-20260101-000000002-COM1.log",
             "正在写入的文件绝不能被删"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// issue #22：「清除内容」必须把**磁盘会话缓存**也清掉，否则用户以为敏感日志已清除、
+    /// 实际 `log-cache\session-*.log` 还在（关闭应用后更没人会想起它）。
+    #[test]
+    fn clear_log_cache_truncates_file_and_resets_budget() {
+        use std::io::Write;
+
+        let dir = tmp_dir("cache-clear");
+        let path = dir.join("session-20260101-000000000-COM1.log");
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(b"AT+GMR\r\nOK\r\n").unwrap();
+        f.flush().unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 12);
+
+        // 故意把 bytes 记成一个触顶值：截断必须同时把「触顶停写」复位，
+        // 否则清空之后的日志一条都写不进去（与 restart_capped 那次同源的坑）。
+        let mut sess = LogCacheSession {
+            port_name: "COM1".into(),
+            file: Some(f),
+            path: path.clone(),
+            bytes: LOG_CACHE_MAX_BYTES,
+            capped: true,
+        };
+        assert!(truncate_log_cache_session(&mut sess).unwrap());
+
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0, "磁盘上的旧内容必须真的没了");
+        assert_eq!(sess.bytes, 0, "写入预算要归零，否则下一次追加会被误判成超限");
+        assert!(!sess.capped, "触顶标记要复位");
+
+        // 截断后继续写：句柄是 append 模式，落在文件末尾（也就是 0）而不是旧偏移
+        sess.file.as_mut().unwrap().write_all(b"NEW\r\n").unwrap();
+        sess.file.as_mut().unwrap().flush().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "NEW\r\n");
+
+        // 还没写过内容的会话（没有文件）：返回 false，不是错误
+        let mut empty = LogCacheSession {
+            port_name: "COM2".into(),
+            file: None,
+            path: dir.join("session-x.log"),
+            bytes: 0,
+            capped: false,
+        };
+        assert!(!truncate_log_cache_session(&mut empty).unwrap(), "没有文件可清不算失败");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -9389,6 +9473,7 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
             start_log_cache,
             append_log_cache,
             end_log_cache,
+            clear_log_cache,
             list_log_cache,
             attach_port_to_wsl,
             detach_port_from_wsl,

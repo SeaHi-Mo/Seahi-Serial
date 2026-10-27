@@ -73,7 +73,7 @@ function getWslMonitorHtml(wmid) {
                 '</button>' +
                 '<div class="tsep"></div>' +
                 '<div class="ibtn-group" id="' + wmid + '-ibtnGroup">' +
-                '<button class="ibtn" onclick="clearLog(\'' + wmid + '\')" title="清除内容">' + ICONS.clear + '</button>' +
+                '<button class="ibtn" onclick="clearLog(\'' + wmid + '\')" title="清除内容（同时清空磁盘会话缓存）" aria-label="清除内容">' + ICONS.clear + '</button>' +
                 '<button class="ibtn on" id="' + wmid + '-btnScroll" onclick="toggleIbtn(this)" title="自动滚动">' + ICONS.rollback + '</button>' +
                 '<button class="ibtn" id="' + wmid + '-btnAutoReconnect" onclick="toggleIbtn(this)" title="自动重连">' + ICONS.reconnect + '</button>' +
                 '<button class="ibtn" id="' + wmid + '-btnSendLE" onclick="toggleTerminalMode(this,\'' + wmid + '\')" title="终端模式">' + ICONS.terminal + '</button>' +

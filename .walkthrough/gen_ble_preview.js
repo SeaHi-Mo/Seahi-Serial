@@ -1939,6 +1939,18 @@ try {
   check(/fn enforce_log_cache_limit_in\(/.test(mainRs) && /active\.contains\(p\)/.test(mainRs),
     'M28：清理时跳过正在写入的文件');
 
+  // ---- issue #22：「清除内容」必须把磁盘会话缓存也清掉 ----
+  // 只清界面的话，关掉应用后 %APPDATA%\seahi-serial\log-cache\session-*.log 里仍是完整输出，
+  // 而用户以为自己已经清掉了（隐私预期不符）。三处一起守着：
+  // ① 前端 clearLog 真的调了后端命令；② 后端命令在 invoke_handler 里注册了；③ 按钮的说明写明会清磁盘缓存。
+  check(/invoke\('clear_log_cache'/.test(html), '★ 「清除内容」会把磁盘会话缓存一起清掉（不再只清界面）');
+  check(/clear_log_cache,/.test(mainRs) && /fn clear_log_cache\(/.test(mainRs),
+    '后端 clear_log_cache 存在且已注册（否则前端那句 invoke 会静默失败）');
+  check(/fn truncate_log_cache_session\(/.test(mainRs) && /set_len\(0\)/.test(mainRs),
+    '截断用独立写句柄（append 句柄在 Windows 上 set_len 会 ACCESS_DENIED）');
+  check(/title="清除内容（同时清空磁盘会话缓存）"/.test(html) && /aria-label="清除内容"/.test(html),
+    '「清除内容」的悬停说明写明会清磁盘缓存；控件名仍是短的 aria-label');
+
   // ---- 主题：下拉面板容器的底色只许用不透明的 var(--surface-1) ----
   // v0.5.6 踩过：5 套深色主题把「发送历史选中项」的 rgba 底色误并进下拉容器选择器组，
   // 整个面板变成半透明 —— 底下的工具栏/日志区直接透出来（波特率列表里能看见「选择日志目录」）。

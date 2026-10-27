@@ -123,6 +123,11 @@ function clearLog(mid) {
         // （否则一个跑满 8 MiB 预算的监视器会一直占着这份内存）
         bufferCompactCapacity(monitors[mid]);
     }
+    // 磁盘会话缓存也是"这些我不要了"的一部分（issue #22）：只清界面的话，关掉应用后
+    // %APPDATA%\seahi-serial\log-cache\session-*.log 里仍是完整输出，而用户以为已经清掉了。
+    // 后端的实现是**截断**同一个文件（句柄还开着，删了会让后续写入落到已删除的 inode 上）；
+    // 还没写过内容的会话返回 false，不是错误 —— 所以这里也不弹提示。
+    try { invoke('clear_log_cache', { monitorId: mid }).catch(function () {}); } catch (_) {}
 }
 
 // ===== 日志隐形缓存 =====

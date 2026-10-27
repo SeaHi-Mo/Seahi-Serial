@@ -650,7 +650,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "serial_clear",
-            "description": "清空该分栏的输出区（=点「清除内容」）。**只清界面显示**，不动磁盘上的会话日志缓存。",
+            "description": "清空该分栏的输出区（=点「清除内容」）。**连带清掉磁盘上的会话日志缓存** —— `%APPDATA%\\seahi-serial\\log-cache` 下属于该分栏的 session 文件会被截断；界面上不要了的内容，磁盘上也别留着。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
