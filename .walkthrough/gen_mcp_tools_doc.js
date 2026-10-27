@@ -95,12 +95,12 @@ for (;;) {
 // 逐个工具的「读/写」+「返回结构」+ 备注（返回结构取自对真实服务实调抓的 structuredContent）
 const META = {
   // ===== 串口语义工具（S12）=====
-  serial_get_state: ['读', '{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, advOpen, outputLines, outputBytes, historyCount, panes, portOptions:[{value,label,inUse}], logChannels:{rx,tx}}', '**操作串口前先调它**；省略 pane 默认 main；`logChannels` 是"收发内容去哪读"的通道名；`portOptions` 是**这个分栏**当前能选的端口（Windows 分栏是 COM 名，WSL 分栏是 `/dev/...` 路径）——选端口前先看它'],
+  serial_get_state: ['读', '{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, lineBuf, advOpen, outputLines, outputBytes, historyCount, panes, portOptions:[{value,label,inUse}], logChannels:{rx,tx}}', '**操作串口前先调它**；省略 pane 默认 main；`logChannels` 是"收发内容去哪读"的通道名；`portOptions` 是**这个分栏**当前能选的端口（Windows 分栏是 COM 名，WSL 分栏是 `/dev/...` 路径）——选端口前先看它'],
   serial_select_port: ['写', '{pane, applied:[{name,ok,from,to}]}', '值必须是**该分栏**端口下拉里的一个（就是 `serial_get_state` 的 `portOptions[].value`）；给错 → 协议级 `-32602` 并**回列真实可选值**，照着改就行。⚠️ 别拿 `serial_list_ports` 当依据：它只有 Windows 的 COM 口，WSL 分栏要的是 `/dev/ttyUSB0` 这类 WSL 内部路径'],
   serial_set_baud: ['写', '同上', '110..4000000；越界报 -32602'],
   serial_set_frame: ['写', '同上', 'dataBits/stopBits/parity 至少给一个；**连接中改帧格式无效**，先 serial_close'],
   serial_set_lines: ['写', '同上', 'dtr/rts 布尔；常用于让目标板复位或进下载模式'],
-  serial_set_display: ['写', '同上', 'viewMode/lineEnding/echo/lineNum/timestamp/**autoScroll(自动滚动)**/autoReconnect/terminalMode/advOpen；**serial_get_state 报出来的每个开关这里都能设**（断言集里有一条守着这条对称性）'],
+  serial_set_display: ['写', '同上', 'viewMode/lineEnding/echo/lineNum/timestamp/**autoScroll(自动滚动)**/autoReconnect/terminalMode/**lineBuf(命令行缓冲)**/advOpen；**serial_get_state 报出来的每个开关这里都能设**（断言集里有一条守着这条对称性）'],
   serial_open: ['写', '{pane, connected:true, state:{…}}', '**会等最多 6 秒确认真连上**；失败 → isError:true（-32006）并给出可能原因，不是乐观返回'],
   serial_close: ['写', '{pane, connected:false, state:{…}}', '会等最多 3 秒确认已断开'],
   serial_send: ['写', '{pane, sent:true, mode, bytes, data}', '需要该分栏已在监控中；mode=hex 时 data 按十六进制解析；lineEnding 会**留在界面上**（不是临时覆盖）'],

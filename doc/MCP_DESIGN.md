@@ -91,7 +91,7 @@
 
 ```
 version, extraCount, wslExtraCount, monitors{main,wsl,extra-N}.{port,baud,lineEnding,viewMode,
-sendAs,dataBits,stopBits,parity,dtr,rts,advOpen,btnScroll,btnAutoReconnect,btnSendLE,btnTs,
+sendAs,dataBits,stopBits,parity,dtr,rts,advOpen,btnScroll,btnAutoReconnect,btnSendLE,btnLineBuf,btnTs,
 btnEcho,btnLineNum,quickCmds[],sendHistory[],panelHeight,workflows[]},
 logDir, wslAutoMap, theme, themeStyle, windowWidth, windowHeight,
 ble.{monitor,monitorWidth,monitorCfg,openSvcs,advOpen,filterText,filterOpen,selected,mode,

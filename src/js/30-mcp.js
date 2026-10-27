@@ -23,8 +23,9 @@ var _mcpTransportCur = null;
  * 为什么不用原生 `title`（用户两张截图指出）：
  *   ① 它"鼠标一扫就弹"，鼠标划过一排按钮时会一闪一闪；
  *   ② 它一行铺开不换行，长说明横跨整个窗口；
- *   ③ 它还会被控件注册表当成 label 抄给 AI —— `mcpMakeEntry` 读的是 `title || aria-label`，
- *      于是 AI 看到的"控件名"是一整句话（所以这几个控件现在只留简短的 `aria-label`）。
+ *   ③ 它还会被控件注册表当成 label 抄给 AI —— `mcpMakeEntry` 以前读的是 `title || aria-label`，
+ *      于是 AI 看到的"控件名"是一整句话。现在**优先读简短的 `aria-label`**，title 只当悬停提示：
+ *      像终端模式下那三个置灰按钮（title 会变成"为什么按不动"的整句），控件名才不会跟着变。
  * 说明放 `data-mcp-tip`（文案里的换行用 `&#10;`，配合 CSS 的 `white-space:pre-line`）。 */
 var _mcpTipTimer = null;
 var _mcpTipBound = false;
@@ -576,7 +577,9 @@ function mcpEntryFor(el, ordinal) {
         kind: kind,
         panel: panel,
         group: group,
-        label: (el.getAttribute && (el.getAttribute('title') || el.getAttribute('aria-label'))) || id || name,
+        // ⚠️ **aria-label 优先**：它是"控件名"（短、稳定），title 是"悬停说明"（可能很长、
+        // 甚至随状态变 —— 例如终端模式下那三个置灰按钮）。反过来会让 AI 的控件名变成一整句话。
+        label: (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) || id || name,
         read: function () { return mcpReadEl(el, kind); },
         write: function (v) { return mcpWriteEl(el, kind, v); },
         enabled: function () { return mcpElEnabled(el); },
@@ -1647,6 +1650,9 @@ var MCP_SERIAL_TOGGLES = {
     timestamp:     'btnTs',
     echo:          'btnEcho',
     terminalMode:  'btnSendLE',
+    // 行缓冲（整行发送 + 本地回显）：只对终端模式生效，终端模式关着时按钮是 `.ibtn-disabled`
+    // → 点不动，`mcpSerialApply` 会按"跳过"回报（ok:true + skipped），不是失败。
+    lineBuf:       'btnLineBuf',
     advOpen:       'btnAdv',
 };
 // 没有 id 的按钮 → 直接调用它 onclick 里的那个函数（不是另写一套）
@@ -1749,6 +1755,7 @@ function mcpSerialState(mid) {
         timestamp: toggles.timestamp,
         echo: toggles.echo,
         terminalMode: toggles.terminalMode,
+        lineBuf: toggles.lineBuf,
         advOpen: toggles.advOpen,
         outputLines: m._textCount || 0,
         outputBytes: m._textDataLen || 0,

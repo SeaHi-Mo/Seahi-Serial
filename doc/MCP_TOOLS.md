@@ -39,54 +39,54 @@
 
 | 工具 | 读/写 | 作用 |
 |---|---|---|
-| [`serial_get_state`](#serial-get-state) | 读 | **动手操作串口前先调它**：读某个串口分栏的完整状态 —— 端口、波特率、帧格式(数据位/停止位/校验)、行尾、DTR/RTS、查看模式、行号/时间戳/回显/自动滚动/自动重连/终端模式、**是否正在监控**、输出行数与字节数、发送历史条数、以及全部分栏名（`panes`）。还给出 `portOptions` —— **这个分栏**当前能选哪些端口（Windows 分栏是 COM 名，WSL 分栏是 `/dev/...` 路径；`inUse` 表示被别的分栏占着）。省略 pane 默认 main。 |
-| [`serial_select_port`](#serial-select-port) | **写** | 选串口分栏要用的端口（等价于在「端口」下拉里选一项）。值必须是**该分栏**端口下拉里的一个 —— 也就是 serial_get_state 的 `portOptions` 里的 `value`；给错会回列可选值。⚠️ **别拿 serial_list_ports 当依据**：它只列 Windows 的 COM 口，而 WSL 分栏要的是 `/dev/ttyUSB0` 这类 WSL 内部路径（把 USB 串口 usbipd bind 进 WSL 之后，Windows 侧本来就看不到那个口）。 |
+| [`serial_get_state`](#serial-get-state) | 读 | **操作串口前先调它**：读该分栏的完整状态（端口/波特率/帧格式/行尾/DTR-RTS/显示开关/是否在监控/行数与字节数/全部分栏名 `panes`），外加 `portOptions` —— **这个分栏**当前能选的端口（Windows 是 COM 名，WSL 是 `/dev/...`；`inUse` = 被别的分栏占着）。 |
+| [`serial_select_port`](#serial-select-port) | **写** | 选该分栏要用的端口。值必须来自**该分栏**的 `portOptions`（见 serial_get_state）；给错会回列可选值。⚠️ 别拿 serial_list_ports 当依据：它只有 Windows 的 COM 口，WSL 分栏要的是 `/dev/ttyUSB0` 这类 WSL 内部路径。 |
 | [`serial_set_baud`](#serial-set-baud) | **写** | 设置波特率（110..4000000）。等价于在「波特率」输入框里填值。 |
-| [`serial_set_frame`](#serial-set-frame) | **写** | 设置串口帧格式：dataBits(5|6|7|8) / stopBits(1|2) / parity(none|odd|even)。至少给一个（在「更多设置」里）。**改帧格式只在未连接时有意义**，连接中请先 serial_close。 |
+| [`serial_set_frame`](#serial-set-frame) | **写** | 设置帧格式（dataBits / stopBits / parity，至少给一个）。**只在未连接时有意义**，连接中请先 serial_close。 |
 | [`serial_set_lines`](#serial-set-lines) | **写** | 设置 DTR / RTS 电平（布尔）。常用于让目标板复位（DTR 拉低）或进入下载模式。 |
-| [`serial_set_display`](#serial-set-display) | **写** | 设置显示与行为开关：viewMode(text|hex)、lineEnding(crlf|lf|cr|none)、echo(消息回显)、lineNum(行号)、timestamp(时间戳)、autoScroll(自动滚动)、autoReconnect(自动重连)、terminalMode(终端模式)、advOpen(更多设置栏展开)。至少给一个。**serial_get_state 报出来的每个开关这里都能设**。 |
-| [`serial_open`](#serial-open) | **写** | **开始监控**（等价于点「开始监控」按钮）。可以同时给 port/baud 一次设定，省两次调用。返回前会**确认真的连上**（最多等 6 秒）；失败会说明可能原因（端口被占用/设备拔出/驱动异常）。 |
+| [`serial_set_display`](#serial-set-display) | **写** | 设置显示与行为开关（viewMode / lineEnding / echo / lineNum / timestamp / autoScroll / autoReconnect / terminalMode / advOpen，至少给一个）。serial_get_state 报出来的每个开关这里都能设。⚠️ 终端模式下「行号 / 时间戳 / 回显」是置灰的：设它们不算失败，返回里带 `skipped:true`（当前状态本来就不生效），别重试。 |
+| [`serial_open`](#serial-open) | **写** | **开始监控**（=点「开始监控」按钮）。可同时给 port/baud，省两次调用。返回前**确认真的连上**（最多 6 秒），失败会说明可能原因（端口被占用 / 设备拔出 / 驱动异常）。 |
 | [`serial_close`](#serial-close) | **写** | 停止监控（等价于点「停止监控」），返回前确认已断开。 |
-| [`serial_send`](#serial-send) | **写** | 往串口发数据。mode=hex 时 data 按十六进制字节解析（如 "01 03 00 00 00 02"），否则按文本发。lineEnding 可临时覆盖该分栏的行尾设置。需要该分栏已在监控中。 |
-| [`serial_clear`](#serial-clear) | **写** | 清空该分栏的输出区内容（等价于点「清除内容」）。**只清界面显示，不动磁盘上的会话日志缓存文件。** |
+| [`serial_send`](#serial-send) | **写** | 往该分栏发数据（**需已在监控中**）。mode=hex 时 data 按十六进制解析（如 "01 03 00 00 00 02"），否则按文本；lineEnding 会覆盖该分栏的行尾并留在界面上。单次最多 64K 字符，大块数据请分批。 |
+| [`serial_clear`](#serial-clear) | **写** | 清空该分栏的输出区（=点「清除内容」）。**只清界面显示**，不动磁盘上的会话日志缓存。 |
 | [`serial_get_history`](#serial-get-history) | 读 | 读该分栏的发送历史（最近的在前）。用来回看刚才发过什么，或复用上一条指令。 |
-| [`serial_get_output`](#serial-get-output) | 读 | 读该分栏**实际收发的内容**（串口监视器的核心：设备刚才回了什么）。默认收+发都返回，按时间归并；每条带 `dir` 区分收发。**还带 `src`（来源）**：`ai` = 这一条是 AI 自己发出去的、`ui` = 用户手动发的、`none` = 未标记 —— 因为 MCP 发送与用户点按钮走的是**同一条路**（工具就是"填进输入框 + 点发送按钮"），光看内容分不出是谁发的，要追溯 AI 动过什么就认这个字段。数据取自日志中心，与 log_tail 是同一份存储；本工具额外的好处是**不需要你知道通道名**，且「还没收到数据」会返回空列表而不是报错。**读内容优先用 `format:"text"`**（一行一条 `[时刻] [rx|tx] 正文`，AI 发的会多一截 `[ai]`，比默认 json 省一半以上 token）；要逐行结构化字段时才用 json。text 格式的正文在 content 文本里，structuredContent 只给元信息。 |
-| [`serial_quick_cmd`](#serial-quick-cmd) | 读 | 快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、timeoutMs 超时、expect 追加的成功词、retry 重试次数、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；⚠️ **只有同时配了 `expect`（成功词）和 `timeoutMs > 0` 的条目才等回应** —— 没写成功词的条目不等回应，此时 `timeoutMs` 就是「隔多久发下一条」的间隔（要等内置的 `OK` 也得把 `expect` 写成 `OK`）；等回应的条目：busy 继续等 / OK 下一条 / ERROR 重发本条 / 等满超时按失败跳转，默认终止整链；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。 |
-| [`serial_workflow`](#serial-workflow) | 读 | 串口/WSL 分栏的**自动化工作流规则**（面板「更多设置 → 工作流」那一块）：收到匹配的数据就自动执行动作（发数据 / 切 DTR-RTS / 存日志）。用法：①**省略 action**=列出该分栏的全部规则（id / name / enabled / running / 条件 / 动作）；②**action=add**=加一条（可给 name / conditions / actions / enabled；**新规则一律 running=false**）；③**action=update**=按 rule 改（给哪个字段改哪个；running 只接受 false，用来停一条正在跑的）；④**action=remove**=按 rule 删（正在跑的会一起停）。⚠️ 规则一旦 running，**收到匹配数据就会自动往设备发数据** —— 要启动请用 serial_workflow_run（要 confirm），**不要**用 ui_click 点面板上那颗运行按钮绕开确认。改规则会立刻写进配置（与面板上改同一条路）。 |
+| [`serial_get_output`](#serial-get-output) | 读 | 读串口分栏**实际收发的内容** —— 设备回了什么就用它（不用 log_tail，也不用猜通道名）。默认收+发按时间归并，`dir` 区分收发、`src` 区分 ai/ui/none（追溯谁发的）。**优先 `format:"text"`**：一行一条，比 json 省一半以上 token；要逐行字段时才用 json。还没数据时回空列表，不报错。 |
+| [`serial_quick_cmd`](#serial-quick-cmd) | 读 | 面板「快速指令」列表（按循环组分段）。**不带参数**=列出（含 index/组/值/发送参数/groups/loop）；**给 index**=执行那一条（**index 从 0 起，用户口语的「第 N 条」= index N-1**）；**action=loop**=开/关整条循环链；**action=add|update|remove|group**=改列表（会写回它挂载的外部文件）。⚠️ 循环里只有同时配了 `expect` 且 `timeoutMs>0` 的条目才等回应；没写成功词的条目不等回应，此时 `timeoutMs` 就是发下一条的间隔。 |
+| [`serial_workflow`](#serial-workflow) | 读 | 串口/WSL 面板的**自动化工作流规则**（收到匹配数据就自动执行动作：发数据 / 切 DTR-RTS / 存日志）。省略 action=列出；add/update/remove=改规则（新规则一律 running=false，改动立刻写进配置）。⚠️ 规则一旦 running 就会自动往设备发数据 —— 要启动必须用 serial_workflow_run（带 confirm），别用 ui_click 绕开确认。 |
 | [`serial_workflow_run`](#serial-workflow-run) | **写** ⚠️ | 开始/停止一条工作流规则的**运行**（running）。⚠️ 危险动作：开始之后，这条规则一收到匹配的数据就会**自动往设备发数据**（动作里可能还有存日志文件），必须带 confirm:true；不带时**不会执行**并返回 -32006 说明后果。停止（on=false）同样需要 confirm —— 它属于同一条工具。 |
 | [`ble_get_state`](#ble-get-state) | 读 | 蓝牙分栏的当前状态：是否在扫描、扫到几台设备、选中/已连的是哪台、GATT 服务树有几个服务、订阅了几路通知、内嵌监视器是否打开。只读，无副作用。 |
-| [`ble_list_devices`](#ble-list-devices) | 读 | 读蓝牙扫描结果（不触发扫描）：MAC、名称、信号强度 RSSI、是否已配对、是否当前选中，以及扫描是否在进行中。**支持分页**：`limit` 每页几台、`offset` 从第几台开始（返回里给 `hasMore` / `nextOffset`，拿它接着翻）。⚠️ 扫描还在进行时列表仍在增长，翻页可能重复/漏掉个别设备；要稳定完整的名单就等 `scanning=false` 再翻，或一次给个大 `limit`。**每次都会现问一次后端**（不是只读面板那个 2 秒轮询的缓存），所以刚 ble_start_scan 完立刻问也拿得到；一台都没有时会说明下一步 —— 设备不广播（被 Windows 配对过 / 被别的主机连走）时扫描永远为空，得用 ble_connect + addr 按 MAC 直连。只读。 |
-| [`ble_start_scan`](#ble-start-scan) | **写** | 开始扫描蓝牙设备（面板那颗「开始/停止扫描」按钮的同一条路径）。默认按面板上设的时长自动停止；扫完用 ble_list_devices 取结果。⚠️ **连上设备后会自动停止扫描**（不需要再调 ble_stop_scan）—— 所以连接成功后 `ble_get_state.scanning` 会是 false，要再找别的设备就重新调它。写操作（会占用射频）。 |
+| [`ble_list_devices`](#ble-list-devices) | 读 | 读蓝牙扫描结果（**不触发扫描**）：MAC / 名称 / RSSI / 是否配对 / 是否选中。支持分页（`limit` + `offset`，返回 `hasMore`/`nextOffset`；扫描未完时翻页可能重复或漏，要稳定名单就等 `scanning=false`）。**列表为空多半是设备不广播**（被 Windows 配对过 / 被别的主机连走）—— 这时用 ble_connect 按 MAC 直连。只读。 |
+| [`ble_start_scan`](#ble-start-scan) | **写** | 开始扫描蓝牙设备。**时长由面板上的设置决定，本工具不收时长参数**；扫完用 ble_list_devices 取结果。⚠️ 连上设备会自动停扫描，所以连接后 `scanning=false` 属正常；要再找别的设备就重新调它。写操作（占用射频）。 |
 | [`ble_stop_scan`](#ble-stop-scan) | **写** | 停止蓝牙扫描（复用同一颗按钮的路径）。写操作。 |
-| [`ble_connect`](#ble-connect) | **写** | 连接一台 BLE 设备。给 addr 时：**扫描列表里有它**就点它的卡片再走「连接设备」（同一条路）；**列表里没有**就走「按 MAC 直连」（不依赖广播 —— 被 Windows 配对过、或被别的主机连走因而不广播的设备，只有这条路连得上）。不给 addr 就用面板当前选中的那台。**等连接真的成功才返回**（会带上服务数）。⚠️ **连上的一刻会自动停止正在进行的扫描**（面板与 AI 同一条路径），所以返回后 `ble_get_state.scanning` 是 false —— 这是有意的（扫描列表每 2 秒刷新一次会跟连接后的状态抢），要再找别的设备就重新 `ble_start_scan`。写操作。 |
+| [`ble_connect`](#ble-connect) | **写** | 连接一台 BLE 设备。给 addr 时：列表里有它就点卡片连，**列表里没有就按 MAC 直连**（不依赖广播 —— 不广播的设备只有这条路）。不给 addr 用面板当前选中的那台。等连接真的成功才返回（带服务数）。⚠️ 连上会自动停扫描，返回后 `scanning=false` 属正常。写操作。 |
 | [`ble_disconnect`](#ble-disconnect) | **写** | 断开当前已连接的设备（面板那颗「断开设备」按钮的同一条路）。断开后服务树、订阅状态、本次会话的数据日志一并清空。写操作。 |
 | [`ble_get_services`](#ble-get-services) | 读 | 当前已连接设备的 GATT 服务树（服务 UUID / 名称，每个服务下的特征 UUID、属性 props、描述符个数）。只读，取的是面板已经拉到的那份，不会重新去问设备。 |
-| [`ble_read`](#ble-read) | 读 | 读一个特征的值（按 UUID 寻址）——**点的是面板上那颗读按钮**，结果随后出现在 ble_get_output 里。需要设备已连接、且该特征有 read 属性（用 ble_get_services 看）。 |
-| [`ble_write`](#ble-write) | **写** | 往一个特征写数据（按 UUID 寻址）——**打开的就是面板那个写入窗并点「发送」**，HEX/文本解析、行尾、写响应/无响应全用面板那套（写入窗会留在界面上，数据日志里也能看到这一条）。需要设备已连接、且该特征有 write 属性（见 ble_get_services）。写操作。 |
+| [`ble_read`](#ble-read) | 读 | 读一个特征的值（按 UUID）—— 走面板那颗读按钮，结果随后出现在 ble_get_output 里。需要设备已连接、该特征有 read 属性（见 ble_get_services）。 |
+| [`ble_write`](#ble-write) | **写** | 往一个特征写数据（按 UUID）—— 打开面板那个写入窗并点「发送」，HEX/文本解析、行尾、写响应全用面板那套。需要设备已连接、该特征有 write 属性（见 ble_get_services）。写操作。 |
 | [`ble_subscribe`](#ble-subscribe) | **写** | 开/关某个特征的通知订阅（notify / indicate）——点的是面板上那颗订阅按钮，数据随后出现在 ble_get_output 里。**状态已经在目标值时不会重复点**（不会把用户刚打开的订阅关掉）。 |
-| [`ble_get_output`](#ble-get-output) | 读 | 读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。`items[].kind` 区分方向（`rx`/`tx`/`info`/`err`）。要跨会话的完整历史就用返回里的 `channels.rx`（通知/读值）或 `channels.tx`（写出去的内容，2026-09 起也回灌进日志中心了）去 `log_tail`。**要"这条 ERROR 出现几次"别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `count` 只回计数、`matches` 只回片段、`lines`（默认）回条目。匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也能搜）。⚠️ **CTS（0x1805）的时间条目会自动附上解读**：`items[].decoded`（完整字段）+ `items[].decodedSummary`（一行'设备现在几点、比本机快慢多少'）—— 不用再把这些 HEX 手动喂给 `ble_cts_time`。只读。 |
-| [`ble_refresh_rssi`](#ble-refresh-rssi) | 读 | 读当前已连接设备的信号强度（RSSI，负数，越接近 0 越强）。只问一次射频、不改状态；还没连设备时会直接说明。 |
-| [`ble_cts_time`](#ble-cts-time) | 读 | 把 **CTS（Current Time Service 0x1805）**的值翻译成人话。为什么要单独一个工具：`ble_read{char:"0x2a2b"}` 读回来的是**10 字节原始值**（年 = uint16 **小端**、星期是 1..7、Fractions256 = 1/256 秒、Adjust Reason 是位域），人肉解容易错，而错一个字段结论就全歪。给它 HEX 或字节数组，它回 `{utc, skewSecs(与本机差多少秒), dayOfWeekName, adjustReasons, notes}`，并**主动指出可疑处**：年份像 RTC 没初始化、星期几与日期对不上、时钟偏了多少分钟。**按长度认字段**：**2 字节**按 Local Time Information(0x2A0F) 解（时区 = int8 × 15 分钟；DST 偏移按规范也是 15 分钟单位：2=+0.5h / 4=+1h / 8=+2h）；**4 字节**按 Reference Time Information(0x2A14) 解（时间源 / 精度，**精度步长 1/8 秒** / 距上次对时）。**设备没给出的字段一律回 `null`，不许猜一个具体值**：时区 -128 → `utcOffset:null`、DST 0xFF → `dstOffsetMinutes:null`、精度 254/255 → `accuracyMillis:null`（原始字节仍留在各自字段里）。纯后端：不碰设备也不碰界面（读值仍走 `ble_read` → `ble_get_output`）。 |
+| [`ble_get_output`](#ble-get-output) | 读 | 读蓝牙面板**本次会话**的数据日志（收到的通知/读值 + 写出去的内容；切设备或断开会清空）。跨会话历史用返回的 `channels.rx`/`tx` 去 log_tail。**只想知道出现几次就别拉条目**：给 `pattern` + `mode`（count / matches / lines）。⚠️ CTS 时间条目已自动附 `decoded`/`decodedSummary`，不用再喂 ble_cts_time。只读。 |
+| [`ble_refresh_rssi`](#ble-refresh-rssi) | 读 | 读已连接设备的信号强度（负数，越接近 0 越强）。只问一次射频、不改状态。⚠️ **没连设备会直接失败**（先 ble_connect）。 |
+| [`ble_cts_time`](#ble-cts-time) | 读 | 把 CTS 时间特征的原始值翻译成人话（0x2A2B / 0x2A0F / 0x2A14，**按长度认字段**：10 / 2 / 4 字节）。回 `utc` / `skewSecs` / 星期 / `adjustReasons` / `notes`，并主动指出可疑处（年份像 RTC 没初始化、星期与日期对不上、偏了多少分钟）。**data 必须来自实际读取**（ble_read，或 ble_get_output 里的条目），别凭空构造。设备没给出的字段回 `null`，不猜。纯后端：不碰设备也不碰界面。 |
 | [`adb_list_devices`](#adb-list-devices) | 读 | 列出 `adb devices -l` 看到的设备（序列号 / 状态 / 型号）。只读，不会开 shell。**只有 state=device 的那台才可用**；unauthorized 表示还没在设备上点「允许 USB 调试」。 |
-| [`adb_open_shell`](#adb-open-shell) | **写** ⚠️ | 在设备上开一个交互式 shell 会话（等价于点面板上那台设备的卡片：建 xterm + PTY）。开之前先确认设备在且 state=device；**等 PTY 真的建出来才返回**（最长 10 秒）。⚠️ 危险动作（之后能在设备上执行任意命令），必须带 confirm:true；不带时不会执行并返回 -32006。开完用 adb_shell_write 发命令、adb_shell_read 读输出。 |
-| [`adb_shell_write`](#adb-shell-write) | **写** ⚠️ | 往已打开的 ADB shell 写入内容（与在面板终端里敲键盘同一条路：字节会进设备 shell 的 stdin）。**命令要自己带上 \n**，不带就只是填在命令行上不会执行。⚠️ 危险动作（写进去的内容会被设备真的执行），必须带 confirm:true。单次最多 4096 字符（mcp_limits.maxAdbWriteChars），超了报 -32602。 |
-| [`adb_shell_read`](#adb-shell-read) | 读 | 读 ADB shell 已经产生的输出（日志中心 adb:rx 通道：PTY 读线程在生产端旁路的一份副本，**不会抢走界面终端要显示的队列**）。**items 是 PTY 的输出块、不是按行切好的文本**（终端输出本来就没有行边界，ANSI 光标序列会跨块）。用 sinceSeq 增量跟进：下一次传返回 items 里最后一条的 seq。**`logcat` 刷屏时先别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `mode:"count"` 只回"命中多少条/多少处"，`mode:"matches"` 只回命中片段，`mode:"lines"`（默认）回条目本身（给了 pattern 就只回命中的）。只读，不需要界面。 |
+| [`adb_open_shell`](#adb-open-shell) | **写** ⚠️ | 在设备上开一个交互式 shell（=点面板上那台设备的卡片：建 xterm + PTY），**等 PTY 真的建出来才返回**（最长 10 秒）；先确认设备 `state=device`。⚠️ 危险动作，必须带 confirm:true，否则不执行并回 -32006。开完用 adb_shell_write 发命令、adb_shell_read 读输出。 |
+| [`adb_shell_write`](#adb-shell-write) | **写** ⚠️ | 往已打开的 ADB shell 写入内容（与在面板终端敲键盘同一条路）。**命令要自己带上 \n**，不带就只填在命令行上、不会执行。⚠️ 危险动作（内容会被设备真的执行），必须带 confirm:true。单次最多 4096 字符。 |
+| [`adb_shell_read`](#adb-shell-read) | 读 | 读 ADB shell 已经产生的输出（日志中心 `adb:rx` 的旁路副本，不抢界面终端要显示的队列）。`items` 是 PTY 输出块、不是按行切的文本；增量跟进给 `sinceSeq`。**logcat 刷屏时先给 `pattern` + `mode`**（count 只回计数、matches 只回片段）。只读，没有界面也能用。 |
 | [`adb_shell_resize`](#adb-shell-resize) | **写** | 调整已打开 ADB shell 会话的 PTY 尺寸（与面板跟着容器尺寸自动推的是同一个后端命令）。cols/rows 都是 2~1000（mcp_limits.maxAdbCols / maxAdbRows）。注意：面板自己的尺寸同步（窗口/容器变化时）可能随后把它改回真实容器尺寸。写操作。 |
 | [`adb_close_shell`](#adb-close-shell) | **写** | 关掉当前 ADB shell 会话（等价于点面板上会话的关闭：杀掉 adb shell 子进程 + 移除终端）。本来就没开会话时是幂等的（closed:false + note），不是错误。写操作。 |
 | [`mcp_danger`](#mcp-danger) | 读 | 列出**需要二次确认**的危险工具（会对外产生不可撤销影响的那些）与各自的后果。调用它们时必须带 confirm:true，否则不会执行。只读。 |
 | [`app_info`](#app-info) | 读 | 本机 SeaHi Serial 应用的基本信息（版本、平台、进程、运行时长）。只读，无副作用。 |
 | [`mcp_status`](#mcp-status) | 读 | **不确定从我这儿怎么下手就先调它**：MCP 服务器自身状态（是否运行、监听端点、会话数、请求数与限流/丢弃计数），外加一份 `nextSteps` —— 按「有没有界面 / 用户是不是开了只读模式」给出下一步该调什么。只读。 |
 | [`mcp_limits`](#mcp-limits) | 读 | MCP 服务器的硬性上限（会话数、队列深度、心跳、限流、超时等）。只读，用于判断会不会被限流。⚠️ `toolsPage` **只对控件工具（名字以 ctl 开头的那批）生效** —— 内置工具一律在 `tools/list` 第一页给全，不会把你分页切走。 |
-| [`serial_list_ports`](#serial-list-ports) | 读 | 枚举本机可用串口（端口名 / 友好名称 / 产品名）。只读，不会打开端口。⚠️ **只有 Windows 侧的 COM 口** —— WSL 分栏的端口是 WSL 内部的 `/dev/...`，不在这里（用 serial_get_state 的 `portOptions` 看那个分栏能选什么）。返回 {count, ports:[…]}。 |
+| [`serial_list_ports`](#serial-list-ports) | 读 | 枚举本机串口（端口名 / 友好名称 / 产品名）。只读，不打开端口。⚠️ **只有 Windows 的 COM 口** —— WSL 分栏要的是 WSL 内部的 `/dev/...`，看 serial_get_state 的 `portOptions`。 |
 | [`ui_list`](#ui-list) | 读 | 列出界面上的可操控控件（按钮/输入框/下拉/开关）。每条给出 path、类型、面板、当前值、是否可用与不可用的原因。建议先用它枚举，再决定操作哪个。 |
 | [`ui_describe`](#ui-describe) | 读 | 看某个控件的完整信息与它的输入格式（inputSchema）：可选值有哪些、要传数字还是布尔。 |
 | [`ui_get`](#ui-get) | 读 | 读某个控件的当前值（实时从界面读，不是缓存的配置）。 |
-| [`ui_set`](#ui-set) | **写** | 设置控件值。执行走的是与用户点击完全相同的路径，所以界面会同步变化。返回的是**写后的真实值**（控件可能规范化输入）。可用 items 一次设置多个。⚠️ 少数动作是「点了才开始跑」的 —— 典型是 WSL 端口映射那个复选框（要过 usbipd，可能要用户在机器上点授权框）：结果里会带 `mapRequest.settled=false` 与 `note`，**那时不要重试**，稍后用 ui_get_state{section:"wslDevices"} 看 status 是否变成 mapped。 |
+| [`ui_set`](#ui-set) | **写** | 设置控件值（与用户点击同一条路径，界面会同步变）。返回的是**写后的真实值**；可用 items 批量。⚠️ 少数动作是「点了才开始跑」（典型是 WSL 端口映射复选框，可能要用户点授权框）：结果带 `mapRequest.settled=false` + `note`，**别重试**，稍后用 ui_get_state{section:"wslDevices"} 看 status 是否变成 mapped。 |
 | [`ui_click`](#ui-click) | **写** | 点一个按钮/开关（等价于 ui_set 传 true，但语义更清楚）。⚠️ 同 ui_set：WSL 端口映射那种「点了才开始跑」的控件会在结果里带 `mapRequest.settled=false`，别重试，去 ui_get_state{section:"wslDevices"} 复查。 |
-| [`ui_get_state`](#ui-get-state) | 读 | 读整个界面状态的快照（就是随用户配置持久化的那份：各监视器的端口/波特率/行尾/显示模式/开关、主题、蓝牙选中项等）。可用 section 只取子树。 |
+| [`ui_get_state`](#ui-get-state) | 读 | 读界面状态快照（随用户配置持久化的那份：各监视器的端口/波特率/行尾/显示模式/开关、主题、蓝牙选中项）。用 section 只取子树；**两张运行时设备表**（`bleDevices` / `wslDevices`）只有这里能读到。 |
 | [`log_channels`](#log-channels) | 读 | **不确定日志在哪时先调它**：列出所有日志通道（条数 / 字节 / seq 区间 / 被丢弃条数 / 最后一条时间）。 |
-| [`log_tail`](#log-tail) | 读 | 取某个通道的尾部若干行。**读日志优先用 `format:"text"`** —— 一行一条纯文本，同样内容比默认的 json 省一半以上 token（实测短行日志 3.5 倍：101 字节/行 → 29 字节/行，短行的开销几乎全在每行的 JSON 包装上）；要逐行的结构化字段（seq/时间戳/字节数/方向/**来源 src**）时才用 json —— `src: "ai"` 表示这条是 AI 通过 MCP 发出去的（用户手发的同样内容在串口 tx 通道里是 `ui`/`none`），**要复盘"AI 到底动过什么"就按它过滤**。给了 `sinceSeq` 就是增量拉取：返回里的 `nextSinceSeq` 是**下次该带的值**（推进到它就不会漏也不会重复；直接跳到 `seqTo` 会把没拿到的行永远跳过），`missed>0` 表示这一段还有行没给你，`mayBeIncomplete=true` 表示该通道丢过最旧的行（别把日志当完整证据）。text 格式的日志正文在 content 文本里，structuredContent 只给元信息。 |
-| [`log_search`](#log-search) | 读 | 在日志里检索（子串或正则）。不给 channel 就搜所有通道。**先想清楚要多少信息再选 `mode`**：`count` 只回计数（`total` + 有命中的通道各几次，几十 token —— 问"ERROR 出现过几次""到底有没有超时"就用它）；`matches` 只回匹配片段（一行里每处命中一条，只有 `match` 字段，长行日志用它比回整行省得多）；`lines`（默认）回命中行本身，另可用 `context` 带前后几行。每条命中都带 channel/seq，便于接着 log_tail 看上下文。⚠️ 要成段读某个通道就用 `log_tail{format:"text"}`，别把本工具当"读全部"用。 |
+| [`log_tail`](#log-tail) | 读 | 读某个日志通道的尾部。**优先 `format:"text"`**（一行一条，比 json 省一半以上 token）；要逐行结构化字段（含来源 `src`：ai/ui/none）时才用 json。增量拉给 `sinceSeq`，下次用返回的 `nextSinceSeq`（别直接跳 `seqTo`，会跳过 `missed` 的行）；`mayBeIncomplete=true` = 该通道丢过最旧的行，别把它当完整证据。通道名见 log_channels。 |
+| [`log_search`](#log-search) | 读 | 在日志里检索（子串或正则；不给 channel 就搜全部）。**按需要的信息量选 `mode`**：count 只回计数（「出现几次」用它）、matches 只回匹配片段、lines（默认）回命中行并可带前后 context 行。命中都带 channel/seq，便于接着 log_tail。⚠️ 要成段读某个通道别用它，用 log_tail{format:"text"}。 |
 | [`log_stats`](#log-stats) | 读 | 各通道的概览：条数、字节、被丢弃条数、告警/错误数、时间跨度与平均行/秒。用来判断"是不是在刷屏"。 |
 | [`log_clear`](#log-clear) | **写** | 清空某个通道，或省略 channel 清空全部。⚠️ **这是销毁证据的动作**：清掉的行回不来了（用户想复盘设备行为就只能让他复现）—— 只在确认这份记录不再需要时用，别为「看起来干净」随手清。 |
 | [`mcp_calls`](#mcp-calls) | 读 | 查最近的工具调用记录（谁在什么时候调了什么、成没成、耗时多久、改动了哪些控件）。记录写在独立的 ai-calls.jsonl，不碰用户配置。 |
@@ -104,20 +104,20 @@
 
 #### `serial_get_state`
 
-- **作用**：**动手操作串口前先调它**：读某个串口分栏的完整状态 —— 端口、波特率、帧格式(数据位/停止位/校验)、行尾、DTR/RTS、查看模式、行号/时间戳/回显/自动滚动/自动重连/终端模式、**是否正在监控**、输出行数与字节数、发送历史条数、以及全部分栏名（`panes`）。还给出 `portOptions` —— **这个分栏**当前能选哪些端口（Windows 分栏是 COM 名，WSL 分栏是 `/dev/...` 路径；`inUse` 表示被别的分栏占着）。省略 pane 默认 main。
+- **作用**：**操作串口前先调它**：读该分栏的完整状态（端口/波特率/帧格式/行尾/DTR-RTS/显示开关/是否在监控/行数与字节数/全部分栏名 `panes`），外加 `portOptions` —— **这个分栏**当前能选的端口（Windows 是 COM 名，WSL 是 `/dev/...`；`inUse` = 被别的分栏占着）。
 - **读/写**：只读，无副作用
-- **返回**：{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, advOpen, outputLines, outputBytes, historyCount, panes, portOptions:[{value,label,inUse}], logChannels:{rx,tx}}
+- **返回**：{pane, isConnected, portName, port, baud, viewMode, lineEnding, sendAs, dataBits, stopBits, parity, dtr, rts, autoScroll, autoReconnect, lineNum, timestamp, echo, terminalMode, lineBuf, advOpen, outputLines, outputBytes, historyCount, panes, portOptions:[{value,label,inUse}], logChannels:{rx,tx}}
 - **注意**：**操作串口前先调它**；省略 pane 默认 main；`logChannels` 是"收发内容去哪读"的通道名；`portOptions` 是**这个分栏**当前能选的端口（Windows 分栏是 COM 名，WSL 分栏是 `/dev/...` 路径）——选端口前先看它
 
 **入参**
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 
 #### `serial_select_port`
 
-- **作用**：选串口分栏要用的端口（等价于在「端口」下拉里选一项）。值必须是**该分栏**端口下拉里的一个 —— 也就是 serial_get_state 的 `portOptions` 里的 `value`；给错会回列可选值。⚠️ **别拿 serial_list_ports 当依据**：它只列 Windows 的 COM 口，而 WSL 分栏要的是 `/dev/ttyUSB0` 这类 WSL 内部路径（把 USB 串口 usbipd bind 进 WSL 之后，Windows 侧本来就看不到那个口）。
+- **作用**：选该分栏要用的端口。值必须来自**该分栏**的 `portOptions`（见 serial_get_state）；给错会回列可选值。⚠️ 别拿 serial_list_ports 当依据：它只有 Windows 的 COM 口，WSL 分栏要的是 `/dev/ttyUSB0` 这类 WSL 内部路径。
 - **读/写**：**写**（会改状态）
 - **返回**：{pane, applied:[{name,ok,from,to}]}
 - **注意**：值必须是**该分栏**端口下拉里的一个（就是 `serial_get_state` 的 `portOptions[].value`）；给错 → 协议级 `-32602` 并**回列真实可选值**，照着改就行。⚠️ 别拿 `serial_list_ports` 当依据：它只有 Windows 的 COM 口，WSL 分栏要的是 `/dev/ttyUSB0` 这类 WSL 内部路径
@@ -127,7 +127,7 @@
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `port` | string | **是** | 端口名：Windows 分栏如 COM3；WSL 分栏如 /dev/ttyUSB0 |
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 
 #### `serial_set_baud`
 
@@ -141,11 +141,11 @@
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `baud` | number | **是** | 波特率，如 115200 |
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 
 #### `serial_set_frame`
 
-- **作用**：设置串口帧格式：dataBits(5|6|7|8) / stopBits(1|2) / parity(none|odd|even)。至少给一个（在「更多设置」里）。**改帧格式只在未连接时有意义**，连接中请先 serial_close。
+- **作用**：设置帧格式（dataBits / stopBits / parity，至少给一个）。**只在未连接时有意义**，连接中请先 serial_close。
 - **读/写**：**写**（会改状态）
 - **返回**：同上
 - **注意**：dataBits/stopBits/parity 至少给一个；**连接中改帧格式无效**，先 serial_close
@@ -157,7 +157,7 @@
 | `dataBits` | string | 否 | 枚举：`5` / `6` / `7` / `8` |
 | `stopBits` | string | 否 | 枚举：`1` / `2` |
 | `parity` | string | 否 | 枚举：`none` / `odd` / `even` |
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 
 #### `serial_set_lines`
 
@@ -172,14 +172,14 @@
 |---|---|---|---|
 | `dtr` | boolean | 否 |  |
 | `rts` | boolean | 否 |  |
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 
 #### `serial_set_display`
 
-- **作用**：设置显示与行为开关：viewMode(text|hex)、lineEnding(crlf|lf|cr|none)、echo(消息回显)、lineNum(行号)、timestamp(时间戳)、autoScroll(自动滚动)、autoReconnect(自动重连)、terminalMode(终端模式)、advOpen(更多设置栏展开)。至少给一个。**serial_get_state 报出来的每个开关这里都能设**。
+- **作用**：设置显示与行为开关（viewMode / lineEnding / echo / lineNum / timestamp / autoScroll / autoReconnect / terminalMode / lineBuf / advOpen，至少给一个）。serial_get_state 报出来的每个开关这里都能设。⚠️ 终端模式下「行号 / 时间戳 / 回显」是置灰的：设它们不算失败，返回里带 `skipped:true`（当前状态本来就不生效），别重试。⚠️ `lineBuf`（命令行缓冲：整行发送 + 本地回显，AT 指令用）只对终端模式生效，终端模式关着时同样回 `skipped:true`。
 - **读/写**：**写**（会改状态）
 - **返回**：同上
-- **注意**：viewMode/lineEnding/echo/lineNum/timestamp/**autoScroll(自动滚动)**/autoReconnect/terminalMode/advOpen；**serial_get_state 报出来的每个开关这里都能设**（断言集里有一条守着这条对称性）
+- **注意**：viewMode/lineEnding/echo/lineNum/timestamp/**autoScroll(自动滚动)**/autoReconnect/terminalMode/**lineBuf(命令行缓冲)**/advOpen；**serial_get_state 报出来的每个开关这里都能设**（断言集里有一条守着这条对称性）
 
 **入参**
 
@@ -193,12 +193,13 @@
 | `autoScroll` | boolean | 否 |  |
 | `autoReconnect` | boolean | 否 |  |
 | `terminalMode` | boolean | 否 |  |
+| `lineBuf` | boolean | 否 | 命令行缓冲：整行发送 + 本地回显（AT 指令用）；只对终端模式生效，终端模式关着时设它会回 skipped |
 | `advOpen` | boolean | 否 | 「更多设置」栏是否展开（真串口面板才有） |
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 
 #### `serial_open`
 
-- **作用**：**开始监控**（等价于点「开始监控」按钮）。可以同时给 port/baud 一次设定，省两次调用。返回前会**确认真的连上**（最多等 6 秒）；失败会说明可能原因（端口被占用/设备拔出/驱动异常）。
+- **作用**：**开始监控**（=点「开始监控」按钮）。可同时给 port/baud，省两次调用。返回前**确认真的连上**（最多 6 秒），失败会说明可能原因（端口被占用 / 设备拔出 / 驱动异常）。
 - **读/写**：**写**（会改状态）
 - **返回**：{pane, connected:true, state:{…}}
 - **注意**：**会等最多 6 秒确认真连上**；失败 → isError:true（-32006）并给出可能原因，不是乐观返回
@@ -209,7 +210,7 @@
 |---|---|---|---|
 | `port` | string | 否 | 可选：先选端口再打开 |
 | `baud` | number | 否 | 可选：先设波特率再打开 |
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 
 #### `serial_close`
 
@@ -222,11 +223,11 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 
 #### `serial_send`
 
-- **作用**：往串口发数据。mode=hex 时 data 按十六进制字节解析（如 "01 03 00 00 00 02"），否则按文本发。lineEnding 可临时覆盖该分栏的行尾设置。需要该分栏已在监控中。
+- **作用**：往该分栏发数据（**需已在监控中**）。mode=hex 时 data 按十六进制解析（如 "01 03 00 00 00 02"），否则按文本；lineEnding 会覆盖该分栏的行尾并留在界面上。单次最多 64K 字符，大块数据请分批。
 - **读/写**：**写**（会改状态）
 - **返回**：{pane, sent:true, mode, bytes, data}
 - **注意**：需要该分栏已在监控中；mode=hex 时 data 按十六进制解析；lineEnding 会**留在界面上**（不是临时覆盖）
@@ -238,11 +239,11 @@
 | `data` | string | **是** | 要发送的内容（文本或 HEX 串）；单次最多 64K 字符，大块数据请分批 |
 | `mode` | string | 否 | 枚举：`text` / `hex` 发送模式，默认沿用界面当前设置 |
 | `lineEnding` | string | 否 | 枚举：`crlf` / `lf` / `cr` / `none` 临时改行尾（改完会留在界面上） |
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 
 #### `serial_clear`
 
-- **作用**：清空该分栏的输出区内容（等价于点「清除内容」）。**只清界面显示，不动磁盘上的会话日志缓存文件。**
+- **作用**：清空该分栏的输出区（=点「清除内容」）。**只清界面显示**，不动磁盘上的会话日志缓存。
 - **读/写**：**写**（会改状态）
 - **返回**：{pane, cleared:true, outputLines}
 - **注意**：**只清界面**，不动磁盘会话日志缓存
@@ -251,7 +252,7 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 
 #### `serial_get_history`
 
@@ -265,11 +266,11 @@
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `limit` | number | 否 | 最多返回多少条，默认 20，上限 200 |
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 
 #### `serial_get_output`
 
-- **作用**：读该分栏**实际收发的内容**（串口监视器的核心：设备刚才回了什么）。默认收+发都返回，按时间归并；每条带 `dir` 区分收发。**还带 `src`（来源）**：`ai` = 这一条是 AI 自己发出去的、`ui` = 用户手动发的、`none` = 未标记 —— 因为 MCP 发送与用户点按钮走的是**同一条路**（工具就是"填进输入框 + 点发送按钮"），光看内容分不出是谁发的，要追溯 AI 动过什么就认这个字段。数据取自日志中心，与 log_tail 是同一份存储；本工具额外的好处是**不需要你知道通道名**，且「还没收到数据」会返回空列表而不是报错。**读内容优先用 `format:"text"`**（一行一条 `[时刻] [rx|tx] 正文`，AI 发的会多一截 `[ai]`，比默认 json 省一半以上 token）；要逐行结构化字段时才用 json。text 格式的正文在 content 文本里，structuredContent 只给元信息。
+- **作用**：读串口分栏**实际收发的内容** —— 设备回了什么就用它（不用 log_tail，也不用猜通道名）。默认收+发按时间归并，`dir` 区分收发、`src` 区分 ai/ui/none（追溯谁发的）。**优先 `format:"text"`**：一行一条，比 json 省一半以上 token；要逐行字段时才用 json。还没数据时回空列表，不报错。
 - **读/写**：只读，无副作用
 - **返回**：{pane, direction, format, isConnected, channels:{rx,tx}, count, items:[{seq,ts,dir,text,bytes}], truncated, note?}（`format:"text"` 时改为 `{…, text}`，**没有再给 items**）
 - **注意**：**串口监视器的核心：读设备回了什么**。默认收+发按时间归并；数据与 `log_tail` 同一份存储，但**不需要你知道通道名**，且"还没收到数据"返回空列表 + note 而不是报错。**优先用 `format:"text"`**（一行一条 `[时刻] [rx|tx] 正文`，比 json 省一半以上 token；头部那行带着两通道各自的 dropped/mayBeIncomplete，正文在 content 文本里）
@@ -278,14 +279,14 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 | `direction` | string | 否 | 枚举：`rx` / `tx` / `both` 只要收(rx)/只要发(tx)/都要(both，默认) |
 | `lines` | number | 否 | 最多返回多少行，默认 50，上限 2000 |
 | `format` | string | 否 | 枚举：`json` / `text` 输出编码：text=一行一条纯文本（推荐，省 token）；json=逐行结构化对象（默认） |
 
 #### `serial_quick_cmd`
 
-- **作用**：快速指令（监控输出区最右侧那条可折叠分栏，默认折叠）—— 列表按**循环组**分段，一组一张表。四种用法：①**不带参数**=列出全部（每条含 index/所属组/值/label 与它自己的发送参数 seq 顺序号、timeoutMs 超时、expect 追加的成功词、retry 重试次数、hex 是否按 HEX 发，以及可直接交给 ui_set 的 domIds；另给 groups[]（组名/条数/on 是否参与循环/folded）与 loop{on,planLength}，以及列表是否来自外部文件）；②**给 index**=执行第 index 条（按该条自己的 hex 决定文本还是 HEX）；③**action=loop**=开/关整条循环链（组从上到下 → 组内顺序号；⚠️ **只有同时配了 `expect`（成功词）和 `timeoutMs > 0` 的条目才等回应** —— 没写成功词的条目不等回应，此时 `timeoutMs` 就是「隔多久发下一条」的间隔（要等内置的 `OK` 也得把 `expect` 写成 `OK`）；等回应的条目：busy 继续等 / OK 下一条 / ERROR 重发本条 / 等满超时按失败跳转，默认终止整链；on 省略=取反；没连串口或没有可发条目时会拒绝并说明原因）；④**action=add|update|remove|group**=改列表（加一条/改一条/删一条/组操作 op=add|remove|rename|move|on|fold）。改列表会同时写回它挂载的外部文件（文件即存储）。
+- **作用**：面板「快速指令」列表（按循环组分段）。**不带参数**=列出（含 index/组/值/发送参数/groups/loop）；**给 index**=执行那一条（**index 从 0 起，用户口语的「第 N 条」= index N-1**）；**action=loop**=开/关整条循环链；**action=add|update|remove|group**=改列表（会写回它挂载的外部文件）。⚠️ 循环里只有同时配了 `expect` 且 `timeoutMs>0` 的条目才等回应；没写成功词的条目不等回应，此时 `timeoutMs` 就是发下一条的间隔。
 - **读/写**：只读，无副作用
 - **返回**：{pane, items:[{index,label,value,seq,timeoutMs,expect,retry,okGoto,errGoto,hex}], usable, file, source}
 - **注意**：不带 index 只列；带 index 才执行（→ {pane, ran, label, value, hex}）。`seq`/`timeoutMs`/`expect`/`retry`/`okGoto`/`errGoto`/`hex` 是**每条自己的等待参数**（顺序号 > 0 才进面板上的「循环发送」列表；⚠️ **等回应 ⇔ `expect` 非空 且 `timeoutMs > 0`**：`expect` 留空 = 这条**不等回应**，此时 `timeoutMs` 就是"隔多久发下一条"的**间隔**（要等内置的 `OK` 也得显式写 `OK`，它是**追加**的成功词）；`timeoutMs` 缺省 3000、上限 600000、**填 0 = 按 20ms 最小间隔连发**，配了 `expect` 时它是等回应的上限（等满就按失败跳转，默认终止整链）；`retry` = 收到 ERROR 后重发几次、缺省 3；**`okGoto`/`errGoto` = 跳转**：收到 OK 走前者、ERROR 用尽**或超时**走后者，取值 `留空`/`下一条`（缺省）/ 数字=顺序号 / `结束` —— 这就是"分支与循环"，它们同样只在**等回应**的条目上生效）；除 `timeoutMs` 外这几项**面板上都没有入口**，写在指令文件的同名列里；add/update 也收 `delayMs`（**旧拼写**，与 `timeoutMs` 同值）；`source=file` 表示这个列表来自外部文件（面板里增删改会写回该文件），`file` 是它的路径；`source=config` 才是纯配置里的列表
@@ -302,16 +303,16 @@
 | `toIndex` | number | 否 | action=group 且 op=move 时的目标组序号（0 起；组的上下顺序就是循环顺序） |
 | `value` | string | 否 | action=add/update 时的指令内容（原样发送，不按逗号切分） |
 | `seq` | number | 否 | action=add/update 时的顺序号：0 = 不参与循环，>0 在**组内**按数字升序发 |
-| `timeoutMs` | number | 否 | action=add/update 时的**超时**（毫秒）= 这一条占用的时间。写了 `expect` 时它是**等回应的上限**：等到 OK 发下一条、等到 ERROR 重发本条（见 retry）、等满这个时间还没等到 OK 就按失败跳转（默认**终止整条循环**），缺省 3000、上限 600000。没写 `expect` 时没有回应可等，它就**直接是「隔多久发下一条」的间隔**。填 0 = 按 20ms 最小间隔连发（有 `expect` 时 = 不等响应） |
+| `timeoutMs` | number | 否 | action=add/update 时的超时（毫秒）：有 `expect` 时是**等回应的上限**（等满按失败跳转）；没写 `expect` 时它就是发下一条的间隔。缺省 3000，上限 600000，填 0 = 20ms 最小间隔 |
 | `delayMs` | number | 否 | ⚠️ **旧拼写**：与 timeoutMs 同一个值（这一项的语义是「超时」，不是「发送间隔」）。新调用请用 timeoutMs —— 两个都给时以 timeoutMs 为准 |
-| `expect` | string | 否 | action=add/update 时的**自定义成功词**，多个用 `|` 分隔（如 `WIFI GOT IP|OK`）。⚠️ **它同时是「这条要不要等回应」的开关**：留空 = 这条**不等回应**（此时 `timeoutMs` 变成发下一条前的间隔）；写了才等，且内置的 OK / ERROR / busy 仍然认（`expect` 是**追加**在它们之上的成功词）。所以想等内置的 OK，就显式写 `OK`。⚠️ 面板上没有它的入口（它写在指令文件的「期望」列里），通过这里改会同时落到模型与文件 |
+| `expect` | string | 否 | action=add/update 时的成功词，多个用 `|` 分隔。⚠️ **它同时是「这条要不要等回应」的开关**：留空 = 这条**不等回应**（`timeoutMs` 变成发下一条的间隔）；写了才等，且内置 OK / ERROR / busy 仍认（`expect` 是追加）。想等内置 OK 就显式写 `OK`。⚠️ 面板上没有这个入口，改这里会同时写进指令文件 |
 | `retry` | number | 否 | action=add/update 时：收到 ERROR 后最多重发几次（缺省 3，上限 10；0 = 不重发，直接终止） |
 | `hex` | boolean | 否 | action=add/update 时：这一条是否按 HEX 解析后发送（默认 false） |
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 
 #### `serial_workflow`
 
-- **作用**：串口/WSL 分栏的**自动化工作流规则**（面板「更多设置 → 工作流」那一块）：收到匹配的数据就自动执行动作（发数据 / 切 DTR-RTS / 存日志）。用法：①**省略 action**=列出该分栏的全部规则（id / name / enabled / running / 条件 / 动作）；②**action=add**=加一条（可给 name / conditions / actions / enabled；**新规则一律 running=false**）；③**action=update**=按 rule 改（给哪个字段改哪个；running 只接受 false，用来停一条正在跑的）；④**action=remove**=按 rule 删（正在跑的会一起停）。⚠️ 规则一旦 running，**收到匹配数据就会自动往设备发数据** —— 要启动请用 serial_workflow_run（要 confirm），**不要**用 ui_click 点面板上那颗运行按钮绕开确认。改规则会立刻写进配置（与面板上改同一条路）。
+- **作用**：串口/WSL 面板的**自动化工作流规则**（收到匹配数据就自动执行动作：发数据 / 切 DTR-RTS / 存日志）。省略 action=列出；add/update/remove=改规则（新规则一律 running=false，改动立刻写进配置）。⚠️ 规则一旦 running 就会自动往设备发数据 —— 要启动必须用 serial_workflow_run（带 confirm），别用 ui_click 绕开确认。
 - **读/写**：只读，无副作用
 - **返回**：{pane, count, runningCount, rules:[{id,name,enabled,running,conditions,actions,domIds}], limits}
 - **注意**：串口/WSL 分栏的**自动化工作流规则**（面板「更多设置 → 工作流」）：收到匹配数据就自动执行动作。省略 action = 列出；`action=add|update|remove` 改规则（走的就是面板改的同一条路，立刻写进配置）。⚠️ 新规则**一律 running=false**；`running:true` 这里会被拒（-32602）—— 让规则跑起来必须用 `serial_workflow_run`（带确认门）。规则一旦 running，**收到匹配数据就会自动往设备发数据**
@@ -321,7 +322,7 @@
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `action` | string | 否 | 枚举：`list` / `add` / `update` / `remove` 要做的动作：list=列出（省略即 list）；add=加一条；update=改一条；remove=删一条 |
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 | `rule` | string | 否 | update/remove 时的规则 id（见 list 里 rules[].id） |
 | `name` | string | 否 | add/update 时的规则名（最长 64 字符） |
 | `enabled` | boolean | 否 | add/update 时这条规则是否**启用**（关掉的规则不参与匹配；注意它与 running 是两回事） |
@@ -342,7 +343,7 @@
 |---|---|---|---|
 | `rule` | string | **是** | 规则 id（见 serial_workflow 的 rules[].id） |
 | `on` | boolean | 否 | true = 开始跑，false = 停止（省略 = true） |
-| `pane` | string | 否 | 分栏名：main / extra-N（Windows），wsl / wsl-xN（WSL）；省略=main。写操作会自动把该分栏的面板切到前台（用户要看得见）；WSL 分栏是懒创建的，写操作会顺带把它建出来 |
+| `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 | `confirm` | boolean | 否 | 危险动作确认：必须为 true 才会执行（想清楚再传） |
 
 ### 蓝牙语义工具（BLE，**主机方向**）
@@ -360,7 +361,7 @@
 
 #### `ble_list_devices`
 
-- **作用**：读蓝牙扫描结果（不触发扫描）：MAC、名称、信号强度 RSSI、是否已配对、是否当前选中，以及扫描是否在进行中。**支持分页**：`limit` 每页几台、`offset` 从第几台开始（返回里给 `hasMore` / `nextOffset`，拿它接着翻）。⚠️ 扫描还在进行时列表仍在增长，翻页可能重复/漏掉个别设备；要稳定完整的名单就等 `scanning=false` 再翻，或一次给个大 `limit`。**每次都会现问一次后端**（不是只读面板那个 2 秒轮询的缓存），所以刚 ble_start_scan 完立刻问也拿得到；一台都没有时会说明下一步 —— 设备不广播（被 Windows 配对过 / 被别的主机连走）时扫描永远为空，得用 ble_connect + addr 按 MAC 直连。只读。
+- **作用**：读蓝牙扫描结果（**不触发扫描**）：MAC / 名称 / RSSI / 是否配对 / 是否选中。支持分页（`limit` + `offset`，返回 `hasMore`/`nextOffset`；扫描未完时翻页可能重复或漏，要稳定名单就等 `scanning=false`）。**列表为空多半是设备不广播**（被 Windows 配对过 / 被别的主机连走）—— 这时用 ble_connect 按 MAC 直连。只读。
 - **读/写**：只读，无副作用
 - **返回**：{scanning, total, offset, limit, returned, hasMore, nextOffset, devices:[{mac,name,rssi,paired,selected}], selected, note?}
 - **注意**：**每调一次都会现问一次后端**（不是只读面板缓存）—— 刚 ble_start_scan 完立刻问也拿得到。**支持分页**：`limit` 每页几台（省略=全量）、`offset` 从第几台开始，返回里给 `hasMore`/`nextOffset` 接着翻。空列表时 `note` 会说下一步（含"设备不广播就只能按 MAC 直连"）；RSSI 是负数，越接近 0 越强
@@ -374,7 +375,7 @@
 
 #### `ble_start_scan`
 
-- **作用**：开始扫描蓝牙设备（面板那颗「开始/停止扫描」按钮的同一条路径）。默认按面板上设的时长自动停止；扫完用 ble_list_devices 取结果。⚠️ **连上设备后会自动停止扫描**（不需要再调 ble_stop_scan）—— 所以连接成功后 `ble_get_state.scanning` 会是 false，要再找别的设备就重新调它。写操作（会占用射频）。
+- **作用**：开始扫描蓝牙设备。**时长由面板上的设置决定，本工具不收时长参数**；扫完用 ble_list_devices 取结果。⚠️ 连上设备会自动停扫描，所以连接后 `scanning=false` 属正常；要再找别的设备就重新调它。写操作（占用射频）。
 - **读/写**：**写**（会改状态）
 - **返回**：{scanning, seconds, deviceCount}
 - **注意**：走面板那颗「开始/停止扫描」按钮的同一路径；按面板上设的时长自动停止，扫完用 `ble_list_devices` 取结果
@@ -396,7 +397,7 @@
 
 #### `ble_connect`
 
-- **作用**：连接一台 BLE 设备。给 addr 时：**扫描列表里有它**就点它的卡片再走「连接设备」（同一条路）；**列表里没有**就走「按 MAC 直连」（不依赖广播 —— 被 Windows 配对过、或被别的主机连走因而不广播的设备，只有这条路连得上）。不给 addr 就用面板当前选中的那台。**等连接真的成功才返回**（会带上服务数）。⚠️ **连上的一刻会自动停止正在进行的扫描**（面板与 AI 同一条路径），所以返回后 `ble_get_state.scanning` 是 false —— 这是有意的（扫描列表每 2 秒刷新一次会跟连接后的状态抢），要再找别的设备就重新 `ble_start_scan`。写操作。
+- **作用**：连接一台 BLE 设备。给 addr 时：列表里有它就点卡片连，**列表里没有就按 MAC 直连**（不依赖广播 —— 不广播的设备只有这条路）。不给 addr 用面板当前选中的那台。等连接真的成功才返回（带服务数）。⚠️ 连上会自动停扫描，返回后 `scanning=false` 属正常。写操作。
 - **读/写**：**写**（会改状态）
 - **返回**：{pane, connected, addr, name, via, serviceCount, paired?}
 - **注意**：`via=list`（扫描列表里点卡片连）/ `direct`（列表里没有 → 按 MAC 直连，**不依赖广播**）/ `selected`（用面板已选中的那台）。**等连接真的成功才返回**；需要配对时会弹出配对窗等用户确认
@@ -431,7 +432,7 @@
 
 #### `ble_read`
 
-- **作用**：读一个特征的值（按 UUID 寻址）——**点的是面板上那颗读按钮**，结果随后出现在 ble_get_output 里。需要设备已连接、且该特征有 read 属性（用 ble_get_services 看）。
+- **作用**：读一个特征的值（按 UUID）—— 走面板那颗读按钮，结果随后出现在 ble_get_output 里。需要设备已连接、该特征有 read 属性（见 ble_get_services）。
 - **读/写**：只读，无副作用
 - **返回**：{pane, uuid, action, note}
 - **注意**：按特征 UUID 寻址，**点的是面板上那颗读按钮**；结果随后出现在 ble_get_output 里。特征没有 read 属性时直接说清
@@ -444,7 +445,7 @@
 
 #### `ble_write`
 
-- **作用**：往一个特征写数据（按 UUID 寻址）——**打开的就是面板那个写入窗并点「发送」**，HEX/文本解析、行尾、写响应/无响应全用面板那套（写入窗会留在界面上，数据日志里也能看到这一条）。需要设备已连接、且该特征有 write 属性（见 ble_get_services）。写操作。
+- **作用**：往一个特征写数据（按 UUID）—— 打开面板那个写入窗并点「发送」，HEX/文本解析、行尾、写响应全用面板那套。需要设备已连接、该特征有 write 属性（见 ble_get_services）。写操作。
 - **读/写**：**写**（会改状态）
 - **返回**：{pane, uuid, hex, bytes, writeType, format, lineEnding}
 - **注意**：**打开面板那个写入窗并点「发送」**：HEX/文本解析、行尾、写响应/无响应全用面板那套（写入窗会留在界面上）。单次最多 `maxBleWriteChars` 个字符；特征的写入方式不支持时要的错误里会把可选值列出来
@@ -475,7 +476,7 @@
 
 #### `ble_get_output`
 
-- **作用**：读蓝牙面板**本次会话**的数据日志（连上之后收到的通知/读到的内容、发出的写，按时间排列；切设备或断开会清空）。`items[].kind` 区分方向（`rx`/`tx`/`info`/`err`）。要跨会话的完整历史就用返回里的 `channels.rx`（通知/读值）或 `channels.tx`（写出去的内容，2026-09 起也回灌进日志中心了）去 `log_tail`。**要"这条 ERROR 出现几次"别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `count` 只回计数、`matches` 只回片段、`lines`（默认）回条目。匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也能搜）。⚠️ **CTS（0x1805）的时间条目会自动附上解读**：`items[].decoded`（完整字段）+ `items[].decodedSummary`（一行'设备现在几点、比本机快慢多少'）—— 不用再把这些 HEX 手动喂给 `ble_cts_time`。只读。
+- **作用**：读蓝牙面板**本次会话**的数据日志（收到的通知/读值 + 写出去的内容；切设备或断开会清空）。跨会话历史用返回的 `channels.rx`/`tx` 去 log_tail。**只想知道出现几次就别拉条目**：给 `pattern` + `mode`（count / matches / lines）。⚠️ CTS 时间条目已自动附 `decoded`/`decodedSummary`，不用再喂 ble_cts_time。只读。
 - **读/写**：只读，无副作用
 - **返回**：{pane, count, scanned, mode, total, channels:{rx}, items:[{seq,ts,kind,hex,charUuid,descUuid,text,dim}]}（CTS 条目另有 `decoded` / `decodedSummary`）；`mode:"matches"` 时是 `hits:[{seq,ts,kind,match}]`，`mode:"count"` 时是 `total`/`totalMatches`（**都没有 items**），后两档另外带 `pattern`/`regex`
 - **注意**：**本次会话的蓝牙数据日志**（切设备/断开就清空）。要跨会话用 `channels.rx` 去 log_tail；`sinceSeq` 增量跟进。**要"这条 ERROR 出现几次"别拉条目**：给 `pattern` + `mode`（`count` 只回计数、`matches` 只回片段）；匹配的文本取 `text`，`text` 为空时取 `hex`（HEX 通知也搜得到）。⚠️ **CTS 的时间条目会自动带上解读**（`items[].decoded` + `items[].decodedSummary`），不用再把这些 HEX 喂给 `ble_cts_time`；判据是特征短号 `2a2b`/`2a0f` 且长度正好对得上 —— **描述符的值不解读**（CCCD 也是 2 字节，解出来会说一个错的时区）
@@ -493,7 +494,7 @@
 
 #### `ble_refresh_rssi`
 
-- **作用**：读当前已连接设备的信号强度（RSSI，负数，越接近 0 越强）。只问一次射频、不改状态；还没连设备时会直接说明。
+- **作用**：读已连接设备的信号强度（负数，越接近 0 越强）。只问一次射频、不改状态。⚠️ **没连设备会直接失败**（先 ble_connect）。
 - **读/写**：只读，无副作用
 - **返回**：{addr, rssi, raw}
 - **注意**：只问一次射频、不改状态；没连设备时直接报"先连上"
@@ -504,7 +505,7 @@
 
 #### `ble_cts_time`
 
-- **作用**：把 **CTS（Current Time Service 0x1805）**的值翻译成人话。为什么要单独一个工具：`ble_read{char:"0x2a2b"}` 读回来的是**10 字节原始值**（年 = uint16 **小端**、星期是 1..7、Fractions256 = 1/256 秒、Adjust Reason 是位域），人肉解容易错，而错一个字段结论就全歪。给它 HEX 或字节数组，它回 `{utc, skewSecs(与本机差多少秒), dayOfWeekName, adjustReasons, notes}`，并**主动指出可疑处**：年份像 RTC 没初始化、星期几与日期对不上、时钟偏了多少分钟。**按长度认字段**：**2 字节**按 Local Time Information(0x2A0F) 解（时区 = int8 × 15 分钟；DST 偏移按规范也是 15 分钟单位：2=+0.5h / 4=+1h / 8=+2h）；**4 字节**按 Reference Time Information(0x2A14) 解（时间源 / 精度，**精度步长 1/8 秒** / 距上次对时）。**设备没给出的字段一律回 `null`，不许猜一个具体值**：时区 -128 → `utcOffset:null`、DST 0xFF → `dstOffsetMinutes:null`、精度 254/255 → `accuracyMillis:null`（原始字节仍留在各自字段里）。纯后端：不碰设备也不碰界面（读值仍走 `ble_read` → `ble_get_output`）。
+- **作用**：把 CTS 时间特征的原始值翻译成人话（0x2A2B / 0x2A0F / 0x2A14，**按长度认字段**：10 / 2 / 4 字节）。回 `utc` / `skewSecs` / 星期 / `adjustReasons` / `notes`，并主动指出可疑处（年份像 RTC 没初始化、星期与日期对不上、偏了多少分钟）。**data 必须来自实际读取**（ble_read，或 ble_get_output 里的条目），别凭空构造。设备没给出的字段回 `null`，不猜。纯后端：不碰设备也不碰界面。
 - **读/写**：只读，无副作用
 - **返回**：{field, charUuid, bytes, hex, utc, skewSecs, year, month, day, hour, minute, second, dayOfWeek, dayOfWeekName, fractions256, fractionMillis, adjustReason, adjustReasons, notes}；`field:"localTimeInfo"`（2 字节）时是 `{timeZoneQuarterHours, utcOffset, utcOffsetMinutes, dstOffset, dstName, dstOffsetMinutes, notes}`；`field:"referenceTimeInfo"`（4 字节）时是 `{timeSource, timeSourceName, timeAccuracy, accuracyMillis, accuracyName, daysSinceUpdate, hoursSinceUpdate, sinceUpdateHours, sinceUpdateText, notes}`
 - **注意**：把 CTS（Current Time Service 0x1805）的原始值翻译成人话 —— **纯后端工具**：不碰设备也不碰界面（读值仍走 `ble_read` → `ble_get_output`）。**按长度认字段**：`2A2B` 的 10 字节 / `2A0F` 的 2 字节 / `2A14` 的 4 字节都认；返回里 `utc`/`skewSecs` 是结论，`notes` 会主动指出可疑处（年份像 RTC 没初始化、星期与日期对不上、时钟偏了多少分钟、设备自报"未同步"）。⚠️ **设备没给出的字段回 `null`，不许猜一个具体值**（`0` 也是结论）：时区 `-128` → `utcOffset:null`、DST `0xFF` → `dstOffsetMinutes:null`、时间精度 `254/255` → `accuracyMillis:null`（`timeZoneQuarterHours`/`dstOffset`/`timeAccuracy` 保留原始字节）。单位都按规范：DST 值是 **15 分钟单位**（2=+0.5h / 4=+1h / 8=+2h）、时间精度是 **1/8 秒（125ms）步长**；越界与保留值都会写进 `notes`。
@@ -530,7 +531,7 @@
 
 #### `adb_open_shell`
 
-- **作用**：在设备上开一个交互式 shell 会话（等价于点面板上那台设备的卡片：建 xterm + PTY）。开之前先确认设备在且 state=device；**等 PTY 真的建出来才返回**（最长 10 秒）。⚠️ 危险动作（之后能在设备上执行任意命令），必须带 confirm:true；不带时不会执行并返回 -32006。开完用 adb_shell_write 发命令、adb_shell_read 读输出。
+- **作用**：在设备上开一个交互式 shell（=点面板上那台设备的卡片：建 xterm + PTY），**等 PTY 真的建出来才返回**（最长 10 秒）；先确认设备 `state=device`。⚠️ 危险动作，必须带 confirm:true，否则不执行并回 -32006。开完用 adb_shell_write 发命令、adb_shell_read 读输出。
 - **读/写**：只读，无副作用
 - **返回**：{serial, opened, cols, rows, note?}
 - **注意**：**危险动作**（开出来之后就能在设备上执行任意命令），必须带 `confirm:true`，否则不执行并回 `-32006`。开之前先确认设备 `state=device`（`serial` 省略=用第一台可用的）；**等 PTY 真的建出来才返回**（最长 10 秒），失败会如实说清是"这台机器没有可用设备"还是"serial 不存在"
@@ -544,7 +545,7 @@
 
 #### `adb_shell_write`
 
-- **作用**：往已打开的 ADB shell 写入内容（与在面板终端里敲键盘同一条路：字节会进设备 shell 的 stdin）。**命令要自己带上 \n**，不带就只是填在命令行上不会执行。⚠️ 危险动作（写进去的内容会被设备真的执行），必须带 confirm:true。单次最多 4096 字符（mcp_limits.maxAdbWriteChars），超了报 -32602。
+- **作用**：往已打开的 ADB shell 写入内容（与在面板终端敲键盘同一条路）。**命令要自己带上 \n**，不带就只填在命令行上、不会执行。⚠️ 危险动作（内容会被设备真的执行），必须带 confirm:true。单次最多 4096 字符。
 - **读/写**：只读，无副作用
 - **返回**：{serial, written, bytes, data}
 - **注意**：**危险动作**（写进去的内容会被设备真的执行），必须带 `confirm:true`。命令要自己带 `\n`，不带只是填在命令行上；单次最多 `maxAdbWriteChars` 个字符（超了 -32602）。走的就是面板终端敲键盘那条命令
@@ -558,7 +559,7 @@
 
 #### `adb_shell_read`
 
-- **作用**：读 ADB shell 已经产生的输出（日志中心 adb:rx 通道：PTY 读线程在生产端旁路的一份副本，**不会抢走界面终端要显示的队列**）。**items 是 PTY 的输出块、不是按行切好的文本**（终端输出本来就没有行边界，ANSI 光标序列会跨块）。用 sinceSeq 增量跟进：下一次传返回 items 里最后一条的 seq。**`logcat` 刷屏时先别拉条目**：给 `pattern` + `mode`（与 `log_search` 同一套词汇）—— `mode:"count"` 只回"命中多少条/多少处"，`mode:"matches"` 只回命中片段，`mode:"lines"`（默认）回条目本身（给了 pattern 就只回命中的）。只读，不需要界面。
+- **作用**：读 ADB shell 已经产生的输出（日志中心 `adb:rx` 的旁路副本，不抢界面终端要显示的队列）。`items` 是 PTY 输出块、不是按行切的文本；增量跟进给 `sinceSeq`。**logcat 刷屏时先给 `pattern` + `mode`**（count 只回计数、matches 只回片段）。只读，没有界面也能用。
 - **读/写**：只读，无副作用
 - **返回**：{serial, channel, count, scanned, mode, items:[{seq,ts,level,dir,bytes,text}], truncated, dropped, mayBeIncomplete, note?}；`mode:"matches"` 时是 `hits:[{seq,ts,level,dir,match}]`，`mode:"count"` 时是 `total`/`totalMatches`（**都没有 items**），后两档另外带 `pattern`/`regex`
 - **注意**：读日志中心 `adb:rx` —— PTY 读线程在**生产端**旁路的一份副本（**不会抢走界面终端要显示的队列**）。`items` 是 PTY 的**输出块**、不是按行切好的文本；`truncated=true` 表示凑满了一页（还有更多，用 `sinceSeq` 接着拉）；`mayBeIncomplete=true` 表示通道丢过最旧的行。**`logcat` 刷屏时先给 `pattern` + `mode`**：`count` 只回"命中多少块/多少处"（几十 token），`matches` 只回片段。**纯后端工具，没有界面也能用**
@@ -648,7 +649,7 @@
 
 #### `serial_list_ports`
 
-- **作用**：枚举本机可用串口（端口名 / 友好名称 / 产品名）。只读，不会打开端口。⚠️ **只有 Windows 侧的 COM 口** —— WSL 分栏的端口是 WSL 内部的 `/dev/...`，不在这里（用 serial_get_state 的 `portOptions` 看那个分栏能选什么）。返回 {count, ports:[…]}。
+- **作用**：枚举本机串口（端口名 / 友好名称 / 产品名）。只读，不打开端口。⚠️ **只有 Windows 的 COM 口** —— WSL 分栏要的是 WSL 内部的 `/dev/...`，看 serial_get_state 的 `portOptions`。
 - **读/写**：只读，无副作用
 - **返回**：`{count, ports:[{portName, friendlyName, productName}]}`
 - **注意**：不会打开端口；**端口名在 `portName`**（字段一律驼峰，别去猜 `port_name`）。⚠️ **只列 Windows 侧的 COM 口** —— WSL 分栏的端口是 WSL 内部的 `/dev/...`，不在这里（用 `serial_get_state` 的 `portOptions`）
@@ -703,7 +704,7 @@
 
 #### `ui_set`
 
-- **作用**：设置控件值。执行走的是与用户点击完全相同的路径，所以界面会同步变化。返回的是**写后的真实值**（控件可能规范化输入）。可用 items 一次设置多个。⚠️ 少数动作是「点了才开始跑」的 —— 典型是 WSL 端口映射那个复选框（要过 usbipd，可能要用户在机器上点授权框）：结果里会带 `mapRequest.settled=false` 与 `note`，**那时不要重试**，稍后用 ui_get_state{section:"wslDevices"} 看 status 是否变成 mapped。
+- **作用**：设置控件值（与用户点击同一条路径，界面会同步变）。返回的是**写后的真实值**；可用 items 批量。⚠️ 少数动作是「点了才开始跑」（典型是 WSL 端口映射复选框，可能要用户点授权框）：结果带 `mapRequest.settled=false` + `note`，**别重试**，稍后用 ui_get_state{section:"wslDevices"} 看 status 是否变成 mapped。
 - **读/写**：**写**（会改状态）
 - **返回**：`{results:[{path, ok, notFound?, error?, from?, to?, mapRequest?}], effects:[{path, from, to}]}`（**单目标失败时不会有这个结构**：整个调用直接失败）
 - **注意**：**会真的改界面**；支持批量 `items:[{path,value}]`（整批一次回执）；只给一个 `path`/`value` 时按**单目标语义**——失败即整次调用失败（路径不存在 → `-32602`；控件被禁用 → `isError`+`-32006`）。⚠️ 少数动作**点了才开始跑**（典型：WSL 端口映射那个复选框要过 usbipd、还可能弹授权框等用户点）—— 那时结果里会带 `mapRequest.settled=false` + `note`：**别重试**，稍后用 `ui_get_state{section:"wslDevices"}` 看 status 是否变成 `mapped`
@@ -731,7 +732,7 @@
 
 #### `ui_get_state`
 
-- **作用**：读整个界面状态的快照（就是随用户配置持久化的那份：各监视器的端口/波特率/行尾/显示模式/开关、主题、蓝牙选中项等）。可用 section 只取子树。
+- **作用**：读界面状态快照（随用户配置持久化的那份：各监视器的端口/波特率/行尾/显示模式/开关、主题、蓝牙选中项）。用 section 只取子树；**两张运行时设备表**（`bleDevices` / `wslDevices`）只有这里能读到。
 - **读/写**：只读，无副作用
 - **返回**：当前会话配置快照（与界面「保存配置」同一份真源）；**两张"运行时设备表"都要从它读**：`section:"bleDevices"` = 蓝牙扫描结果全量、`section:"wslDevices"` = WSL 端口映射的 USB 设备表（`{wslRunning, targetDistro, panelOpened, count, mapped, devices:[{busid, port, name, vidpid, hasCom, status, wslPath, wslSerial, busy, mapControlPath, autoMapControlPath}], note, mapUnavailableReason}`）—— 两处的行都是**动态 div、不在控件注册表里**，只有通用桥的客户端只能从这里读；`ble` 段里另带一份前 10 台的 `scanResult`
 
@@ -756,7 +757,7 @@
 
 #### `log_tail`
 
-- **作用**：取某个通道的尾部若干行。**读日志优先用 `format:"text"`** —— 一行一条纯文本，同样内容比默认的 json 省一半以上 token（实测短行日志 3.5 倍：101 字节/行 → 29 字节/行，短行的开销几乎全在每行的 JSON 包装上）；要逐行的结构化字段（seq/时间戳/字节数/方向/**来源 src**）时才用 json —— `src: "ai"` 表示这条是 AI 通过 MCP 发出去的（用户手发的同样内容在串口 tx 通道里是 `ui`/`none`），**要复盘"AI 到底动过什么"就按它过滤**。给了 `sinceSeq` 就是增量拉取：返回里的 `nextSinceSeq` 是**下次该带的值**（推进到它就不会漏也不会重复；直接跳到 `seqTo` 会把没拿到的行永远跳过），`missed>0` 表示这一段还有行没给你，`mayBeIncomplete=true` 表示该通道丢过最旧的行（别把日志当完整证据）。text 格式的日志正文在 content 文本里，structuredContent 只给元信息。
+- **作用**：读某个日志通道的尾部。**优先 `format:"text"`**（一行一条，比 json 省一半以上 token）；要逐行结构化字段（含来源 `src`：ai/ui/none）时才用 json。增量拉给 `sinceSeq`，下次用返回的 `nextSinceSeq`（别直接跳 `seqTo`，会跳过 `missed` 的行）；`mayBeIncomplete=true` = 该通道丢过最旧的行，别把它当完整证据。通道名见 log_channels。
 - **读/写**：只读，无副作用
 - **返回**：`{channel, format, lines:[{seq, ts, level, dir, text, rawBytes}], returned, dropped, seqFrom, seqTo, missed, nextSinceSeq, mayBeIncomplete, truncated}`（`format:"text"` 时是 `{…, text}`，**没有再给 lines**）
 - **注意**：**读日志优先用 `format:"text"`**：一行一条纯文本（头部一行元信息 + `[时刻] [级别] 正文`），同样数据比 json 省一半以上 token —— 实测 200 条短行 **101 字节/行 → 29 字节/行（3.5 倍）**，行越长省得越少。增量跟进用 `sinceSeq`，并把**返回里的 `nextSinceSeq`** 当下次的入参（**别直接跳到 `seqTo`**，那会跳过 `missed` 那些行）；`missed>0` = 这一段还有行没给你（含已被裁掉的），`mayBeIncomplete=true` = 该通道丢过最旧的行。text 格式的**正文在 content 文本里**，structuredContent 只给元信息（要逐行字段就用默认 json）。渠道名见 `log_channels`
@@ -772,7 +773,7 @@
 
 #### `log_search`
 
-- **作用**：在日志里检索（子串或正则）。不给 channel 就搜所有通道。**先想清楚要多少信息再选 `mode`**：`count` 只回计数（`total` + 有命中的通道各几次，几十 token —— 问"ERROR 出现过几次""到底有没有超时"就用它）；`matches` 只回匹配片段（一行里每处命中一条，只有 `match` 字段，长行日志用它比回整行省得多）；`lines`（默认）回命中行本身，另可用 `context` 带前后几行。每条命中都带 channel/seq，便于接着 log_tail 看上下文。⚠️ 要成段读某个通道就用 `log_tail{format:"text"}`，别把本工具当"读全部"用。
+- **作用**：在日志里检索（子串或正则；不给 channel 就搜全部）。**按需要的信息量选 `mode`**：count 只回计数（「出现几次」用它）、matches 只回匹配片段、lines（默认）回命中行并可带前后 context 行。命中都带 channel/seq，便于接着 log_tail。⚠️ 要成段读某个通道别用它，用 log_tail{format:"text"}。
 - **读/写**：只读，无副作用
 - **返回**：`{pattern, regex, mode, hits:[{channel, seq, ts, level, dir, text, before?, after?}], scanned, truncated}`；`mode:"matches"` 时 `hits[]` 里是 `{channel, seq, ts, level, dir, match}`（**没有整行 text**）；`mode:"count"` 时是 `{pattern, regex, mode, total, channels:[{channel, count, scanned}], scanned, scannedChannels, truncated:false}`（**没有 hits**）
 - **注意**：**三档按需要的信息量选**：`count` 只回计数（几十 token —— "ERROR 出现过几次""到底有没有超时"就用它）；`matches` 只回匹配片段（一行多处算多条，长行日志用它比回整行省得多）；`lines`（默认）回命中行，可配 `context` 0~5 带前后几行。不给 `channel` 就搜所有通道；`matches`/`count` 的图案同样按字面量处理（`+`/`(` 不用转义）
