@@ -435,7 +435,8 @@ node .walkthrough/mcp_smoke.js                    # 对**正在跑的应用**逐
   本地累积整行 + **本地回显** + 退格本地擦除，回车才「整行 + 行尾」一次发出（行尾取工具栏「行尾」下拉）。
   AT 指令必须走行缓冲：逐键发、Enter 只给 `\r`、退格 0x7F 被模组当垃圾丢掉，三条凑一起就是「AT 命令必错」；
   设备若也回显（ATE1）会看到两份，属预期，`ATE0` 关掉设备侧回显即可。
-  ② **行缓冲里方向键/功能键仍原样直发**（ESC 序列不进缓冲）、Ctrl+C 先冲掉半行再发中断、Ctrl+U 清行；
+  ② **行缓冲里方向键在本地编辑这一行**（用户 2026-10-27 要求：上下左右要能编辑命令行）——ESC 序列既不进缓冲、
+  **也不发给设备**（AT 模组收到 ESC 只会吐垃圾）；↑↓ 翻本地命令历史，Ctrl+C 先冲掉半行再发中断，Ctrl+U 清行；
   ③ **不做本地 Tab 补全**（交给设备 shell；旧的 `completeTermTab` / `.term-comp` / `term-current` 已整段删除，
   别加回来）；④ 每个分栏一个 xterm 实例、切走切回**复用**（历史不能清），关分栏 `disposeTerminal` 收掉
   ResizeObserver；主题/深浅色切换走 `refreshTermThemes`；⑤ 接收侧喂的是**原始字节**（`termWriteBytes`），
@@ -452,6 +453,9 @@ node .walkthrough/mcp_smoke.js                    # 对**正在跑的应用**逐
   ⑨ **终端模式下「显示行号 / 时间戳 / 消息回显」置灰**（用户 2026-10-27）：这三项只作用于**普通输出视图**
   （终端模式由 xterm 自己排版、回显由设备 tty 负责），由 `updateTermModeBtns` 加 `.ibtn-disabled` + 改 title；
   **只改外观、不动 `on` 状态**（退出终端模式后用户原来的开关照旧生效，别悄悄关掉）；
+  ⚠️ **这几个按钮必须同时带一个固定的 `aria-label`**：控件注册表 `mcpMakeEntry` 的 label **优先读
+  `aria-label`**、`title` 只当悬停说明（2026-10-27 改）。否则那句"为什么按不动"的 title 会被 AI 当成控件名，
+  而且一开/关终端模式就变一次（AI 上一轮记住的控件名下一轮就没了）；
   **别用 `disabled` 属性** —— Chromium 不给 disabled 元素派发鼠标事件，title 提示就弹不出来，
   而这里正是要靠提示说明「为什么按不动」。点击拦截放在 `ibtnBlocked`（`toggleIbtn` / `toggleLineNum` / `toggleLineBuf`
   入口），MCP 的 `serial_set_display` 按 `.ibtn-disabled` 报「跳过」而不是失败。

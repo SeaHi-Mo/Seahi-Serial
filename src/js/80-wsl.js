@@ -47,7 +47,7 @@ function getWslMonitorHtml(wmid) {
                     '</div>' +
                 '</div>' +
                 '<span class="lbl">端口</span>' +
-                '<div class="sel sel-port" id="' + wmid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:135px;">' +
+                '<div class="sel sel-port" id="' + wmid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:80px;">' +
                     '<span class="sel-text">无可用端口</span><span class="sel-arrow">&#9660;</span>' +
                     '<div class="sel-drop wsl-port-drop" id="' + wmid + '-portDrop"></div>' +
                 '</div>' +
@@ -427,6 +427,9 @@ function initWslMonitor(wmid) {
     setWslMonitorEnabled(false, wmid);
     // 终端模式相关的按钮初始态（终端模式关 → 行号/时间戳/回显可用、命令行缓冲置灰）
     updateTermModeBtns(wmid);
+    // 工具栏自适应：窄窗口时先压端口框保一行（与 Windows 分栏同一套，见 10-monitor.js 的
+    // layoutMonitorToolbar）。少了这一句，WSL 面板在窄窗口下会先把图标按钮挤到第二行。
+    watchToolbarFit(wmid);
     // 终端模式（xterm）按需懒创建：点按钮时才建，不在这里初始化
 }
 

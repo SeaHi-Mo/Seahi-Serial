@@ -919,6 +919,9 @@ var TERM_HIST_MAX = 200;    // ↑/↓ 能翻的命令条数上限
 
 // 整行重画（↑↓ 翻历史时用）：光标退到本行我们写过的起点，擦到行尾，再写新内容。
 // ⚠️ 只擦**我们自己回显的那一段**（\b 回退 + ESC[K 擦到行尾），不碰设备回显的提示符。
+// ⚠️ 光标算术按「一个 UTF-16 单元 = 一列」算（`\b` 与 `ESC[D` 都按字符数发）。ASCII 精确；
+//    中文/emoji 在终端里占 2 列或 2 个单元，回显会错位 —— 行缓冲面向 AT 指令（ASCII），这个边界是取舍，
+//    要做全宽字符先得有 wcwidth 之类的宽度表，别在半懂的情况下改算术。
 function termLineBufRedrawEcho(emu, newLine) {
     var pos = typeof emu._linePos === 'number' ? emu._linePos : String(emu._lineBuf || '').length;
     var echo = '';
@@ -1066,6 +1069,9 @@ function termLineBufInput(mid, data) {
         echo += termLineBufInsertEcho(emu, ch);            // 可打印字符：插到光标处
         i++;
         if (String(emu._lineBuf).length >= TERM_LINEBUF_MAX) {   // 兜底：超长就冲掉
+            // ⚠️ 这里**故意不带行尾**：它是"防止缓冲无限涨"的兜底，不是一次正常的提交。
+            // 代价说清楚：设备若在等 CR，这半条命令会被当成不完整的一条（进不了历史，也不落日志）。
+            // 真要发长数据请分多条发，别靠这段兜底。
             out += emu._lineBuf;
             emu._lineBuf = '';
             emu._linePos = 0;
@@ -1100,6 +1106,9 @@ function updateTermModeBtns(mid) {
         // 而这里恰恰要靠提示告诉用户"为什么按不动"。改用 class + 事件里拦截（toggleIbtn/toggleLineNum）。
         el.classList.toggle('ibtn-disabled', on);
         el.setAttribute('aria-disabled', on ? 'true' : 'false');
+        // 控件注册表（mcpMakeEntry）的 label 优先读 aria-label —— 这里必须给一个**固定的短名**：
+        // 否则下面那句"为什么按不动"的 title 会被 AI 当成控件名，而且一开/关终端模式名字就变。
+        el.setAttribute('aria-label', it[1]);
         el.setAttribute('title', on ? (it[2] + '（终端模式下无关紧要）') : el._baseTitle);
     });
     var lb = document.getElementById(mid + '-btnLineBuf');
@@ -1107,6 +1116,7 @@ function updateTermModeBtns(mid) {
         if (!lb._baseTitle) lb._baseTitle = lb.getAttribute('title') || '命令行缓冲';
         lb.classList.toggle('ibtn-disabled', !on);
         lb.setAttribute('aria-disabled', on ? 'false' : 'true');
+        lb.setAttribute('aria-label', '命令行缓冲');   // 同上：注册表 label 用这个短名，别用 title
         lb.setAttribute('title', on ? lb._baseTitle : '命令行缓冲只作用于终端模式：先开终端模式');
     }
 }

@@ -1503,6 +1503,13 @@ fn list_serialcomm_ports() -> Vec<String> {
                 data_buf.as_mut_ptr() as *mut u8,
                 &mut data_len,
             );
+            // ⚠️ 234 = ERROR_MORE_DATA：这一条的值比 256 个宽字符还长。
+            // 只跳过**这一条**（index 照常 +1 继续枚举）—— 旧写法把任何非 0 都当"枚举结束"，
+            // 于是只要有不正常的值，它**后面**的端口会全部静默消失。
+            if rc == 234 {
+                index += 1;
+                continue;
+            }
             if rc != 0 {
                 break;                                   // ERROR_NO_MORE_ITEMS 或出错：结束
             }
@@ -1514,7 +1521,9 @@ fn list_serialcomm_ports() -> Vec<String> {
             }
             let name = name.trim().to_string();
             // 只要 COMx（有的虚拟串口会把别的设备也塞进这个键）
-            if name.len() > 3 && name[..3].eq_ignore_ascii_case("COM") {
+            // ⚠️ 别写成 `name[..3]`：那是**按字节**切，非 ASCII 的值（注册表里可能被塞进任意垃圾）
+            // 会落在非法字符边界上 panic —— 而这条路径是启动/刷新端口的必经之路。
+            if matches!(name.get(..3), Some(head) if head.eq_ignore_ascii_case("COM")) {
                 out.push(name);
             }
         }
