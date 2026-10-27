@@ -1447,14 +1447,136 @@ fn build_friendly_name_map() -> HashMap<String, (String, String)> {
     map
 }
 
-/// 通过 SetupAPI 枚举所有 COM 端口，同时获取端口名和友好名称。
-/// 比 serialport::available_ports() 快得多，因为它不需要尝试打开每个端口。
+/// 读注册表 `HKLM\HARDWARE\DEVICEMAP\SERIALCOMM`：系统认可的**所有** COM 口都在这里，
+/// 包括 com0com / VSPD / 蓝牙链路 这类虚拟串口 —— 它们不一定出现在 Ports 设备类里，
+/// 有的连 FriendlyName 都不设。
+/// ⚠️ 别退回去只用 SetupAPI 的 FriendlyName 解析：那样虚拟串口会整条丢掉
+///    （用户 2026-10-27 报的"没有识别虚拟串口"）。
+/// 这里自己声明 advapi32 的三个注册表函数，不给 winapi 加 "winreg" feature ——
+/// 本机 cargo 是离线环境，改 feature 会触发依赖重新解析（index 拉不到），反而编不过。
+#[cfg(windows)]
+fn list_serialcomm_ports() -> Vec<String> {
+    use std::os::raw::c_void;
+
+    type Hkey = *mut c_void;
+    const HKEY_LOCAL_MACHINE: usize = 0x8000_0002;
+    const KEY_READ: u32 = 0x0002_0019;
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn RegOpenKeyExW(hkey: Hkey, sub: *const u16, options: u32, sam: u32, out: *mut Hkey) -> i32;
+        fn RegEnumValueW(
+            hkey: Hkey,
+            index: u32,
+            name: *mut u16,
+            name_len: *mut u32,
+            reserved: *mut u32,
+            ty: *mut u32,
+            data: *mut u8,
+            data_len: *mut u32,
+        ) -> i32;
+        fn RegCloseKey(hkey: Hkey) -> i32;
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let sub: Vec<u16> = "HARDWARE\\DEVICEMAP\\SERIALCOMM\0".encode_utf16().collect();
+    unsafe {
+        let mut hkey: Hkey = std::ptr::null_mut();
+        let hklm = HKEY_LOCAL_MACHINE as Hkey;
+        if RegOpenKeyExW(hklm, sub.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
+            return out;
+        }
+        let mut index: u32 = 0;
+        loop {
+            let mut name_buf = [0u16; 512];
+            let mut name_len: u32 = name_buf.len() as u32;
+            let mut data_buf = [0u16; 256];              // 值数据是 REG_SZ（宽字符），用 u16 缓冲保证对齐
+            let mut data_len: u32 = (data_buf.len() * 2) as u32;
+            let mut ty: u32 = 0;
+            let rc = RegEnumValueW(
+                hkey,
+                index,
+                name_buf.as_mut_ptr(),
+                &mut name_len,
+                std::ptr::null_mut(),
+                &mut ty,
+                data_buf.as_mut_ptr() as *mut u8,
+                &mut data_len,
+            );
+            if rc != 0 {
+                break;                                   // ERROR_NO_MORE_ITEMS 或出错：结束
+            }
+            index += 1;
+            let chars = (data_len as usize / 2).min(data_buf.len());
+            let mut name = String::from_utf16_lossy(&data_buf[..chars]);
+            if let Some(z) = name.find('\0') {
+                name.truncate(z);
+            }
+            let name = name.trim().to_string();
+            // 只要 COMx（有的虚拟串口会把别的设备也塞进这个键）
+            if name.len() > 3 && name[..3].eq_ignore_ascii_case("COM") {
+                out.push(name);
+            }
+        }
+        RegCloseKey(hkey);
+    }
+    out
+}
+
+/// 从友好名映射里取走某个端口（大小写不敏感：注册表与设备属性的大小写不一定一致）
+#[cfg(windows)]
+fn take_friendly(map: &mut HashMap<String, (String, String)>, port: &str) -> (String, String) {
+    let key = map.keys().find(|k| k.eq_ignore_ascii_case(port)).cloned();
+    match key {
+        Some(k) => map.remove(&k).unwrap_or_default(),
+        None => (String::new(), String::new()),
+    }
+}
+
+/// COM 口排序键：COM2 要排在 COM10 前面
+#[cfg(windows)]
+fn com_sort_key(name: &str) -> (u32, String) {
+    let digits: String = name
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    (digits.parse::<u32>().unwrap_or(u32::MAX), name.to_uppercase())
+}
+
+/// 枚举所有 COM 端口：**端口集合以注册表 SERIALCOMM 为准**（虚拟串口也在里面），
+/// SetupAPI 的 FriendlyName 只用来补显示名；两边取并集，避免任何一侧漏设备。
+/// 端口集合不再依赖 FriendlyName 里能不能找到 "COM" —— 那正是虚拟串口被漏掉的原因。
 #[cfg(windows)]
 fn enumerate_ports() -> Vec<PortInfo> {
-    build_friendly_name_map()
-        .into_iter()
-        .map(|(port_name, (friendly_name, product_name))| PortInfo { port_name, friendly_name, product_name })
-        .collect()
+    let mut map = build_friendly_name_map();
+    let mut out: Vec<PortInfo> = Vec::new();
+
+    // 1) 注册表：系统认可的端口全集（含 com0com / VSPD / 蓝牙串口等虚拟串口）
+    for name in list_serialcomm_ports() {
+        let (friendly, product) = take_friendly(&mut map, &name);
+        out.push(PortInfo {
+            port_name: name.clone(),
+            friendly_name: if friendly.is_empty() { name.clone() } else { friendly },
+            product_name: product,
+        });
+    }
+
+    // 2) SetupAPI 里有、注册表没报的（个别驱动只建了设备节点）——补上，双保险
+    for (name, (friendly, product)) in map.into_iter() {
+        if out.iter().any(|p| p.port_name.eq_ignore_ascii_case(&name)) {
+            continue;
+        }
+        out.push(PortInfo {
+            port_name: name.clone(),
+            friendly_name: if friendly.is_empty() { name.clone() } else { friendly },
+            product_name: product,
+        });
+    }
+
+    // 3) 按 COM 号排序，下拉里顺序稳定
+    out.sort_by_key(|p| com_sort_key(&p.port_name));
+    out
 }
 
 /// 获取所有可用串口列表
@@ -4210,7 +4332,7 @@ fn apply_window_state(window: &tauri::WebviewWindow) {
             None => return,
         },
     };
-    let width = state.width.max(1047);
+    let width = state.width.max(838);
     let height = state.height.max(650);
     if state.maximized {
         let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height }));
@@ -5667,7 +5789,7 @@ fn get_window_size(window: tauri::Window) -> Result<(u32, u32), String> {
 /// 设置窗口大小
 #[tauri::command]
 fn set_window_size(window: tauri::Window, width: u32, height: u32) -> Result<(), String> {
-    let w = width.max(1047);
+    let w = width.max(838);
     let h = height.max(650);
     window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: w, height: h }))
         .map_err(|e| format!("设置窗口大小失败: {}", e))
@@ -9348,7 +9470,7 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
             // 主窗口在 tauri.conf.json 中设为 visible:false（避免先居中/默认尺寸闪现），
             // 几何恢复后由前端页面就绪时调用 reveal_main_window 一次性显示。
             if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_min_size(Some(tauri::LogicalSize::new(1047.0, 650.0)));
+                let _ = win.set_min_size(Some(tauri::LogicalSize::new(838.0, 650.0)));
                 apply_window_state(&win);
                 // 兜底：若前端迟迟未(或未能)主动显示，超时后强制显示，避免窗口一直隐藏
                 let reveal_app = app.handle().clone();

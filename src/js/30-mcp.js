@@ -1804,6 +1804,14 @@ function mcpSerialApply(mid, items) {
                 if (!tel) { results.push({ name: name, ok: false, error: '找不到开关 ' + mid + '-' + MCP_SERIAL_TOGGLES[name] }); continue; }
                 var was = tel.classList.contains('on');
                 var want = !!value;
+                // 置灰的开关（终端模式下的 行号/时间戳/回显，非终端模式下的 命令行缓冲）：
+                // 点不动也不该算失败 —— 它此刻本来就不生效。如实回报"跳过"，别让 AI 反复重试。
+                // 置灰用 class 标记（不是 disabled 属性，见 10-monitor.js 的 updateTermModeBtns）
+                if (tel.classList.contains('ibtn-disabled')) {
+                    results.push({ name: name, ok: true, from: was, to: was, skipped: true,
+                                   note: '当前状态下该项已置灰（终端模式与普通视图互斥），不生效' });
+                    continue;
+                }
                 if (was !== want) tel.click();          // 交给它自己的 onclick（toggleIbtn / toggleLineNum / …）
                 var now = tel.classList.contains('on');
                 results.push({ name: name, ok: now === want, from: was, to: now });

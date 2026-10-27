@@ -43,7 +43,7 @@ function createMonitorPane(mid, title, closable) {
                 '</div>' +
             '</div>' +
             '<span class="lbl">端口</span>' +
-            '<div class="sel sel-port" id="' + mid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:252px;">' +
+            '<div class="sel sel-port" id="' + mid + '-portSelect" onclick="toggleSelDrop(this)">' +
                 '<span class="sel-text">加载中...</span><span class="sel-arrow">&#9660;</span>' +
                 '<div class="sel-drop" id="' + mid + '-portDrop"></div>' +
             '</div>' +
@@ -73,6 +73,8 @@ function createMonitorPane(mid, title, closable) {
             '<button class="ibtn on" id="' + mid + '-btnScroll" onclick="toggleIbtn(this)" title="自动滚动">' + ICONS.rollback + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnAutoReconnect" onclick="toggleIbtn(this)" title="自动重连">' + ICONS.reconnect + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnSendLE" onclick="toggleTerminalMode(this,\'' + mid + '\')" title="终端模式">' + ICONS.terminal + '</button>' +
+            /* 命令行缓冲：串口默认**开**（AT 指令要整行发），点一下回到逐键直发（Linux shell / TUI） */
+            '<button class="ibtn on" id="' + mid + '-btnLineBuf" onclick="toggleLineBuf(this,\'' + mid + '\')" title="命令行缓冲：整行发送 + 本地回显（AT 指令用）；关掉=逐键直发（Linux shell / TUI）">' + ICONS.lineBuf + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnLineNum" onclick="toggleLineNum(this,\'' + mid + '\')" title="显示行号">' + ICONS.lineNum + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnTs" onclick="toggleIbtn(this)" title="开启时间戳">' + ICONS.timestamp + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnEcho" onclick="toggleIbtn(this)" title="启动消息回显">' + ICONS.copy + '</button>' +
@@ -292,6 +294,9 @@ function createMonitorPane(mid, title, closable) {
         if (el) el.addEventListener('change', function() { scheduleConfigSave(); });
     });
 
+    // 终端模式相关的按钮初始态：终端模式关 → 行号/时间戳/回显可用、命令行缓冲置灰
+    updateTermModeBtns(mid);
+
     refreshPorts(mid);
 }
 
@@ -421,9 +426,100 @@ function setSendAs(mid, val, el, e) {
     scheduleConfigSave();
 }
 
+/* ===== 端口名自适应显示（用户 2026-10-27 要求） =====
+ * 端口框宽度由 CSS 控制在 80~189px 之间弹性伸缩：窗口变窄时**先压端口框**，
+ * 而不是把「清除内容」到「更多设置」那组图标按钮挤到第二行。
+ * 名字被压到放不下时，**保留尾部**（串口号在末尾）并在前面加省略号 ——
+ * 否则看到 "USB-Enhan…" 根本分不清是哪个串口；放得下时仍是完整名字。
+ * ⚠️ 别改成纯 CSS 的 text-overflow：它默认截尾部，正好把要看的 COM 号切掉。
+ */
+function fitPortLabel(sel) {
+    if (!sel) return;
+    var el = sel.querySelector('.sel-text');
+    if (!el) return;
+    var full = el.getAttribute('data-full-name');
+    if (full == null) { full = el.textContent; el.setAttribute('data-full-name', full); }
+    el.textContent = full;
+    el.classList.remove('name-truncated');
+    if (el.scrollWidth <= el.clientWidth + 1) return;      // 放得下：完整名字
+    // 放不下：二分找「最长的、以 COM 号结尾的可见后缀」
+    var lo = 0, hi = full.length, best = '\u2026';
+    while (lo <= hi) {
+        var mid = (lo + hi) >> 1;
+        var cand = '\u2026' + full.slice(full.length - mid);
+        el.textContent = cand;
+        if (el.scrollWidth <= el.clientWidth + 1) { best = cand; lo = mid + 1; }
+        else { hi = mid - 1; }
+    }
+    el.textContent = best;
+    el.classList.add('name-truncated');
+}
+
+/* 工具栏排布：先靠端口框收缩保住一行；收缩到下限（CSS 的 min-width:80px）
+ * 仍然放不下时才允许换行。
+ * 判定方式：nowrap 状态下浏览器已经把端口框压到最小，此时还溢出
+ * （scrollWidth > clientWidth）就说明"救不回来了"，去掉 tb-fit 让工具栏换行。
+ * ⚠️ 别改成 CSS 硬性 nowrap：窄窗口下会横向裁掉右边的按钮。
+ */
+function layoutMonitorToolbar(tb) {
+    if (!tb) return;
+    tb.classList.add('tb-fit');      // 先试一行：端口框会自动收缩让位
+    // 读 scrollWidth 会强制重排，拿到的是"端口框已收缩到下限"后的真实宽度；
+    // 这样还溢出就说明救不回来了 → 去掉 tb-fit，回到默认的换行
+    if (tb.scrollWidth > tb.clientWidth + 1) tb.classList.remove('tb-fit');
+}
+
+// 工具栏宽度变化时重新排布 + 重新适配端口名；重复调用安全
+function watchToolbarFit(mid) {
+    var pane = document.getElementById('pane-' + mid);
+    var tb = pane && pane.querySelector('.toolbar');
+    if (!tb || tb._fitRO || !window.ResizeObserver) return;
+    var lastW = -1;
+    try {
+        tb._fitRO = new ResizeObserver(function() {
+            var w = tb.clientWidth;
+            if (w === lastW) return;      // 换行只改高度，不改宽度：避免来回抖
+            lastW = w;
+            layoutMonitorToolbar(tb);
+            fitPortLabel(pane.querySelector('.sel-port'));
+        });
+        tb._fitRO.observe(tb);
+        lastW = tb.clientWidth;
+        layoutMonitorToolbar(tb);
+    } catch (_) {}
+}
+
+// 设置端口框文字：记住全名，再按当前宽度决定截不截
+function setPortLabel(mid, text) {
+    var sel = document.getElementById(mid + '-portSelect');
+    if (!sel) return;
+    var el = sel.querySelector('.sel-text');
+    if (!el) return;
+    el.setAttribute('data-full-name', text == null ? '' : String(text));
+    fitPortLabel(sel);
+}
+
+// 端口框宽度变化（窗口缩放 / 分栏拖动）时重新适配；重复调用安全
+function watchPortLabel(mid) {
+    var sel = document.getElementById(mid + '-portSelect');
+    if (!sel || sel._fitRO || !window.ResizeObserver) return;
+    try {
+        sel._fitRO = new ResizeObserver(function() {
+            if (sel._fitRaf) return;
+            sel._fitRaf = requestAnimationFrame(function() {
+                sel._fitRaf = 0;
+                fitPortLabel(sel);
+            });
+        });
+        sel._fitRO.observe(sel);
+    } catch (_) {}
+}
+
 /* ===== 端口管理 ===== */
 var _portCache = { data: null, ts: 0 };
 async function refreshPorts(mid, force) {
+    watchPortLabel(mid);
+    watchToolbarFit(mid);
     try {
         var now = Date.now();
         var ports;
@@ -440,7 +536,7 @@ async function refreshPorts(mid, force) {
         var prev = (sel.getAttribute('data-val')) || (monitors[mid] && monitors[mid]._savedPort) || '';
         drop.innerHTML = '';
         if (!ports || ports.length === 0) {
-            sel.querySelector('.sel-text').textContent = '无可用端口';
+            setPortLabel(mid, '无可用端口');
             sel.setAttribute('data-val', '');
             return;
         }
@@ -468,7 +564,7 @@ async function refreshPorts(mid, force) {
         if (matchPort) {
             var matchEl = drop.querySelector('.sel-opt[data-val="' + matchPort + '"]');
             if (matchEl) {
-                sel.querySelector('.sel-text').textContent = matchEl.textContent;
+                setPortLabel(mid, matchEl.textContent);
                 sel.setAttribute('data-val', matchPort);
                 drop.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
                 matchEl.classList.add('active');
@@ -482,7 +578,7 @@ async function refreshPorts(mid, force) {
 function setPortSel(mid, val, el) {
     var sel = document.getElementById(mid + '-portSelect');
     var drop = document.getElementById(mid + '-portDrop');
-    sel.querySelector('.sel-text').textContent = el.textContent;
+    setPortLabel(mid, el.textContent);
     sel.setAttribute('data-val', val);
     drop.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
     el.classList.add('active');
@@ -513,7 +609,7 @@ function revertPortSel(mid, portName) {
     if (!sel || !drop || !portName) return;
     var matchEl = drop.querySelector('.sel-opt[data-val="' + portName + '"]');
     if (matchEl) {
-        sel.querySelector('.sel-text').textContent = matchEl.textContent;
+        setPortLabel(mid, matchEl.textContent);
         sel.setAttribute('data-val', portName);
         drop.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
         matchEl.classList.add('active');
@@ -614,10 +710,16 @@ function toggleToolbarCollapse(mid) {
         if (header) { header.onmouseenter = expand; header.onmouseleave = collapse; }
     }
 }
-function toggleIbtn(btn) { btn.classList.toggle('on'); scheduleConfigSave(); }
+// 开关类按钮的通用点击：置灰的（见 updateTermModeBtns）直接不理 —— 用 class 而不是 disabled 属性拦，
+// 才能保住 hover 时的 title 提示（Chromium 的 disabled 元素收不到鼠标事件）
+function ibtnBlocked(btn) {
+    return !!(btn && btn.classList && btn.classList.contains('ibtn-disabled'));
+}
+function toggleIbtn(btn) { if (ibtnBlocked(btn)) return; btn.classList.toggle('on'); scheduleConfigSave(); }
 
 /* ===== 行号切换 ===== */
 function toggleLineNum(btn, mid) {
+    if (ibtnBlocked(btn)) return;   // 终端模式下置灰：行号只作用于普通输出视图
     btn.classList.toggle('on');
     var output = document.getElementById(mid + '-output');
     if (output) {
@@ -656,15 +758,21 @@ function updateLineNumbers(mid) {
  * （`src/vendor/xterm/xterm.js` 早已随包引入，ADB 面板用的就是它）。xterm 负责
  * VT 解析、光标、选区、输入法与键盘序列；本文件只做三件事：
  *   1) 把收到的**原始字节**喂给 xterm（`termWriteBytes`）；
- *   2) 把 xterm 的按键流（`onData`）**原样**发出去（`termSendRaw`，绝不追加行尾）；
+ *   2) 把 xterm 的按键流（`onData`）发出去 —— 两种口径（见下方 `termLineBufInput`）：
+ *      行缓冲（串口默认，AT 指令用）/ 逐键直发（WSL 默认，Linux shell 与全屏 TUI 用）；
  *   3) 显隐与尺寸同步（`toggleTerminalMode` / `syncTermSize`）。
  *
- * ⚠️ 别改回去的几条：
- *   a) **按键一律原样发**：别拦 Tab（本地补全已删除，补全交给设备 shell）、别拦方向键、
+ * ⚠️ 两条口径都要留着，别合成一条（用户 2026-10 先后提过两次相反的需求，各自有场景）：
+ *   a) **直发（`btnLineBuf` 关）**：按键一律原样发 —— 别拦 Tab、别拦方向键、
  *      别追加 `leStr(mid)`（Enter 的 `\r` 由 xterm 给）—— 任何一处加工都会让 vi/top 键位错乱；
- *   b) **不做本地回显**：设备 tty 会回显，本地再回显就是双字（标准终端语义）；
- *   c) 普通输出区在终端模式下只是**隐藏**，不停止渲染：日志、行号、时间戳、日志中心
+ *   b) **行缓冲（`btnLineBuf` 开）**：本地累积整行 + **本地回显** + 退格本地擦除，
+ *      回车才把「整行 + 行尾」一次发出。AT 指令必须走这条 —— 逐键发、Enter 只发 `\r`、
+ *      退格 0x7F 被模组当垃圾丢掉，这三条凑一起就是"AT 命令必错"（用户 2026-10-27 报的）；
+ *      设备若也回显（ATE1）会看到两份，属预期，`ATE0` 关掉设备侧回显即可；
+ *   c) 普通输出区在终端模式下只是**隐藏**，不停止渲染：日志、日志中心
  *      （MCP `serial_get_output`）与「清除内容」照旧工作，切回来能直接看到完整历史；
+ *      但「显示行号 / 时间戳 / 消息回显」只作用于**普通输出视图**，终端模式下由
+ *      `updateTermModeBtns` 置灰并提示 —— 别改成"点了没反应"，也别悄悄关掉用户原来的开关；
  *   d) 每个 mid 一个 xterm 实例，切走/切回**不重建**（终端里的历史不会被清掉）；
  *      关分栏才 `disposeTerminal`（ResizeObserver 与 xterm 都要收掉，否则泄漏）。
  */
@@ -766,9 +874,245 @@ function termModeOn(mid) {
     return !!_terminalBuffers[mid];
 }
 
-// 把 xterm 的按键流原样发给设备。
-// ⚠️ **不追加行尾、不改写任何键**：xterm 给的 `\r`（Enter）/`\t`（Tab）/`\x1b[A`（↑）
-// 就是真实终端发出的东西，设备侧 tty 会把它翻成命令/补全/历史。
+/* ===== 终端模式下的两种输入口径（用户 2026-10-27 报的问题） =====
+ * 背景：原先 `onData` 一律走 `termSendRaw`（逐键直发），接 AT 指令时必错：
+ *   - Enter 只发 `\r`，很多模组要 `\r\n`（界面上的「行尾」设置在这里形同虚设）；
+ *   - 逐键发，字符之间隔着一次 IPC，模组的 AT 解析器容易判成半条命令；
+ *   - 退格 0x7F 被 AT 解析器当垃圾丢掉，打错了改不掉，只能整条重敲。
+ * 现在分两种口径，用工具栏的「命令行缓冲」按钮（`<mid>-btnLineBuf`）切换：
+ *   - 开（串口默认）：本地累积整行 → 本地回显 → 退格本地擦除 → 回车才「整行 + 行尾」一次发出；
+ *   - 关（WSL 默认）：逐键直发，给 Linux shell / vim / top 这类要 readline 与全屏 TUI 的场景。
+ * ⚠️ 默认值按分栏类型给（串口=开、WSL=关），别统一成一个：WSL 那侧本来就是 Linux shell，
+ *    行缓冲会把 readline 的历史/补全/方向键全废掉。
+ */
+var TERM_LINEBUF_MAX = 8192;   // 单行上限：没人按回车时别无限攒
+
+// 命令行缓冲是否开着（读按钮的 on 状态，与其它 .ibtn 同一口径；配置恢复后自动同步）
+function termLineBufOn(mid) {
+    var btn = document.getElementById(mid + '-btnLineBuf');
+    return !!(btn && btn.classList.contains('on'));
+}
+
+// 点「命令行缓冲」：只切口径；切走时把敲了一半的行冲掉，免得切回来串行
+function toggleLineBuf(btn, mid) {
+    if (ibtnBlocked(btn)) return;   // 终端模式关着时置灰：这条口径只对终端模式生效
+    if (btn) btn.classList.toggle('on');
+    var emu = _termEmus[mid];
+    if (emu) { emu._lineBuf = ''; emu._linePos = 0; emu._histIdx = (emu._hist || []).length; }
+    scheduleConfigSave();
+}
+
+// 行尾字符串：与普通模式同口径（「行尾」下拉的 CRLF/LF/CR/无）
+function termLineEndStr(mid) {
+    return (typeof leStr === 'function') ? leStr(mid) : '\r\n';
+}
+
+/* 行缓冲输入：`data` 是 xterm 这一次给的按键串（粘贴时是一整段）。
+ * 可打印字符进缓冲并本地回显；退格 / Delete / ←→ / Home / End 在**本地**编辑这一行；
+ * ↑↓ 翻本地命令历史；回车整行发出；其余控制键（Tab、Ctrl 组合等）原样直发。
+ * ⚠️ 用户 2026-10-27 要求「终端模式时上下左右方向键应该能够对命令行进行编辑而不是直发」：
+ *   行缓冲下方向键**绝不能**再原样发给设备 —— AT 模组收到 ESC 序列只会吐垃圾，
+ *   而且整行还没提交，设备侧也没有可移动的光标。直发模式（`btnLineBuf` 关）不受影响，
+ *   那边仍然是逐键原样发（Linux shell / vim 要的就是它）。
+ * 发送仍然走 `termSendRaw`，所以命令级日志（tx 通道 / 日志中心）与"发送失败"提示都不变。 */
+var TERM_HIST_MAX = 200;    // ↑/↓ 能翻的命令条数上限
+
+// 整行重画（↑↓ 翻历史时用）：光标退到本行我们写过的起点，擦到行尾，再写新内容。
+// ⚠️ 只擦**我们自己回显的那一段**（\b 回退 + ESC[K 擦到行尾），不碰设备回显的提示符。
+function termLineBufRedrawEcho(emu, newLine) {
+    var pos = typeof emu._linePos === 'number' ? emu._linePos : String(emu._lineBuf || '').length;
+    var echo = '';
+    for (var k = 0; k < pos; k++) echo += '\b';
+    echo += '\x1b[K' + newLine;
+    emu._lineBuf = newLine;
+    emu._linePos = newLine.length;
+    return echo;
+}
+
+// 在光标处插入文本：写新字符 + 光标后的旧内容，再把光标退回插入点之后
+function termLineBufInsertEcho(emu, ins) {
+    var buf = String(emu._lineBuf || '');
+    var pos = typeof emu._linePos === 'number' ? emu._linePos : buf.length;
+    var tail = buf.slice(pos);
+    emu._lineBuf = buf.slice(0, pos) + ins + tail;
+    emu._linePos = pos + ins.length;
+    var echo = ins + tail;
+    for (var k = 0; k < tail.length; k++) echo += '\x1b[D';
+    return echo;
+}
+
+function termLineBufInput(mid, data) {
+    var emu = _termEmus[mid];
+    if (!emu) return;
+    var text = String(data == null ? '' : data);
+    if (!text) return;
+    if (!emu._hist) { emu._hist = []; emu._histIdx = 0; }
+    if (typeof emu._linePos !== 'number') emu._linePos = String(emu._lineBuf || '').length;
+    if (typeof emu._histIdx !== 'number') emu._histIdx = emu._hist.length;
+    var echo = '';      // 本地回显（只回显被我们吃掉的键，控制键交给设备回显）
+    var out = '';       // 本次要发给设备的内容
+    var i = 0;
+    while (i < text.length) {
+        var ch = text[i];
+        var code = text.charCodeAt(i);
+        if (ch === '\r' || ch === '\n') {
+            // 回车：整行 + 行尾一次发出（AT 指令要的就是这一下）
+            var line = String(emu._lineBuf || '');
+            out += line + termLineEndStr(mid);
+            if (line) {   // 记进历史：与上一条相同就不重复记，超上限丢最老的
+                if (emu._hist[emu._hist.length - 1] !== line) emu._hist.push(line);
+                if (emu._hist.length > TERM_HIST_MAX) emu._hist.shift();
+            }
+            emu._lineBuf = '';
+            emu._linePos = 0;
+            emu._histIdx = emu._hist.length;
+            echo += '\r\n';
+            if (ch === '\r' && text[i + 1] === '\n') i++;   // 粘贴里的 \r\n 只算一次
+            i++;
+            continue;
+        }
+        if (code === 0x7f || code === 0x08) {              // 退格：删光标前一个字符（不发设备）
+            var b = String(emu._lineBuf || '');
+            var p = emu._linePos;
+            if (p > 0) {
+                var tailB = b.slice(p);
+                emu._lineBuf = b.slice(0, p - 1) + tailB;
+                emu._linePos = p - 1;
+                if (tailB) {
+                    echo += '\b' + tailB;
+                    for (var t = 0; t < tailB.length; t++) echo += '\x1b[D';
+                } else {
+                    echo += '\b \b';
+                }
+            }
+            i++;
+            continue;
+        }
+        if (code === 0x03) {                               // Ctrl+C：先冲掉半行，再发中断
+            var bc = String(emu._lineBuf || '');
+            out += bc + '\x03';
+            for (var c = emu._linePos; c < bc.length; c++) echo += '\x1b[C';   // 光标移到行尾再打 ^C
+            emu._lineBuf = '';
+            emu._linePos = 0;
+            emu._histIdx = emu._hist.length;
+            echo += '^C\r\n';
+            i++;
+            continue;
+        }
+        if (code === 0x15) {                               // Ctrl+U：擦掉当前行（不换行）
+            for (var u = 0; u < emu._linePos; u++) echo += '\b';
+            echo += '\x1b[K';
+            emu._lineBuf = '';
+            emu._linePos = 0;
+            i++;
+            continue;
+        }
+        if (code === 0x1b) {
+            // ESC 序列：方向键 / Home / End / Delete 在**本地**编辑这一行，其余功能键原样直发
+            var mm = /^\x1b(\[[0-9;?]*[ -\/]*[@-~]|O[@-~]|.)/.exec(text.slice(i));
+            var seq = mm ? mm[0] : ch;
+            i += seq.length;
+            var arrow = /^\x1b(?:\[[0-9;]*|O)([ABCD])$/.exec(seq);   // CSI（含 Ctrl/Shift 修饰的 1;5D 等）/ SS3
+            if (arrow) {
+                var bl = String(emu._lineBuf || '');
+                if (arrow[1] === 'D') {                        // ← 左移一格
+                    if (emu._linePos > 0) { emu._linePos--; echo += '\x1b[D'; }
+                } else if (arrow[1] === 'C') {                 // → 右移一格
+                    if (emu._linePos < bl.length) { emu._linePos++; echo += '\x1b[C'; }
+                } else if (arrow[1] === 'A') {                 // ↑ 上一条历史
+                    if (emu._histIdx > 0) {
+                        emu._histIdx--;
+                        echo += termLineBufRedrawEcho(emu, emu._hist[emu._histIdx] || '');
+                    }
+                } else {                                       // ↓ 下一条（到底=空行）
+                    if (emu._histIdx < emu._hist.length) {
+                        emu._histIdx++;
+                        echo += termLineBufRedrawEcho(emu, emu._histIdx >= emu._hist.length ? '' : emu._hist[emu._histIdx]);
+                    }
+                }
+                continue;
+            }
+            if (seq === '\x1b[H' || seq === '\x1b[1~' || seq === '\x1bOH' || seq === '\x1b[7~') {   // Home
+                while (emu._linePos > 0) { emu._linePos--; echo += '\x1b[D'; }
+                continue;
+            }
+            if (seq === '\x1b[F' || seq === '\x1b[4~' || seq === '\x1bOF' || seq === '\x1b[8~') {   // End
+                var le = String(emu._lineBuf || '').length;
+                while (emu._linePos < le) { emu._linePos++; echo += '\x1b[C'; }
+                continue;
+            }
+            if (seq === '\x1b[3~') {                            // Delete：删光标处字符
+                var bd = String(emu._lineBuf || '');
+                if (emu._linePos < bd.length) {
+                    var tailD = bd.slice(emu._linePos + 1);
+                    emu._lineBuf = bd.slice(0, emu._linePos) + tailD;
+                    if (tailD) {
+                        echo += tailD;
+                        for (var d = 0; d < tailD.length; d++) echo += '\x1b[D';
+                    } else {
+                        echo += ' \x1b[D';                     // 删末尾：用空格盖掉原字符
+                    }
+                }
+                continue;
+            }
+            out += seq;   // 其余功能键（F1-F12 / PgUp / PgDn 等）保持原样直发
+            continue;
+        }
+        if (code < 0x20) {                                 // 其余控制键（含 Tab）直发
+            out += ch;
+            i++;
+            continue;
+        }
+        echo += termLineBufInsertEcho(emu, ch);            // 可打印字符：插到光标处
+        i++;
+        if (String(emu._lineBuf).length >= TERM_LINEBUF_MAX) {   // 兜底：超长就冲掉
+            out += emu._lineBuf;
+            emu._lineBuf = '';
+            emu._linePos = 0;
+        }
+    }
+    if (echo) { try { emu.term.write(echo); } catch (_) {} }
+    if (out) termSendRaw(mid, out);
+}
+
+/* ===== 终端模式下"无关紧要"的按钮：置灰 + 说明（用户 2026-10-27 要求） =====
+ * 为什么互斥/隐含：
+ *   - 显示行号 / 时间戳：都只作用于**普通输出视图**（`<mid>-output` 的 .with-line-num 与行首时间戳）。
+ *     终端模式下输出区被隐藏，真正显示内容的是 xterm，排版与时间由它自己管；
+ *   - 消息回显：普通模式是"发送前把内容贴到输出区"的**本地**回显；终端模式的回显由设备端 tty 负责，
+ *     再开本地回显就是双份。
+ * 做法：只置灰（.ibtn-disabled + aria-disabled，**不设 `disabled` 属性**）并改 title，**不动它们的 on 状态** ——
+ * 退出终端模式后用户原来开着的行号/时间戳照旧生效，不会被悄悄关掉。
+ * 反过来，「命令行缓冲」只对终端模式有意义，终端模式关着时它也置灰。 */
+var TERM_MUTED_BTNS = [
+    ['btnLineNum', '显示行号', '终端模式下由 xterm 自己排版，行号只作用于普通输出视图'],
+    ['btnTs', '开启时间戳', '终端模式下不显示时间戳，它只作用于普通输出视图'],
+    ['btnEcho', '启动消息回显', '终端模式的回显由设备端负责，本地再回显会重复']
+];
+
+function updateTermModeBtns(mid) {
+    var on = termModeOn(mid);
+    TERM_MUTED_BTNS.forEach(function (it) {
+        var el = document.getElementById(mid + '-' + it[0]);
+        if (!el) return;
+        if (!el._baseTitle) el._baseTitle = el.getAttribute('title') || it[1];
+        // ⚠️ **不设 `disabled` 属性**：Chromium 不给 disabled 元素派发鼠标事件，title 提示就弹不出来，
+        // 而这里恰恰要靠提示告诉用户"为什么按不动"。改用 class + 事件里拦截（toggleIbtn/toggleLineNum）。
+        el.classList.toggle('ibtn-disabled', on);
+        el.setAttribute('aria-disabled', on ? 'true' : 'false');
+        el.setAttribute('title', on ? (it[2] + '（终端模式下无关紧要）') : el._baseTitle);
+    });
+    var lb = document.getElementById(mid + '-btnLineBuf');
+    if (lb) {
+        if (!lb._baseTitle) lb._baseTitle = lb.getAttribute('title') || '命令行缓冲';
+        lb.classList.toggle('ibtn-disabled', !on);
+        lb.setAttribute('aria-disabled', on ? 'false' : 'true');
+        lb.setAttribute('title', on ? lb._baseTitle : '命令行缓冲只作用于终端模式：先开终端模式');
+    }
+}
+
+// 终端里"发一串字节给设备"的唯一出口（直发模式直接给它按键流，行缓冲模式给它整行 + 行尾）。
+// ⚠️ 它自己**不追加行尾、不改写任何键**：行尾由调用方决定（直发=不追加，行缓冲=按「行尾」下拉）。
 function termSendRaw(mid, data) {
     var m = monitors[mid];
     if (!m) return;
@@ -890,10 +1234,15 @@ function ensureTerm(mid) {
         theme: termThemeFor(mid)
     });
     term.open(box);
-    var emu = { term: term, box: box, ro: null };
+    var emu = { term: term, box: box, ro: null, _lineBuf: '', _linePos: 0, _hist: [], _histIdx: 0 };
     _termEmus[mid] = emu;
     term.onData(function(data) {
-        if (termModeOn(mid)) termSendRaw(mid, data);
+        if (termModeOn(mid)) {
+            // 行缓冲（串口默认）：本地回显 + 整行发送，AT 指令必须走这条；
+            // 直发：逐键原样发，Linux shell / vim / top 这类 TUI 用
+            if (termLineBufOn(mid)) termLineBufInput(mid, data);
+            else termSendRaw(mid, data);
+        }
         try { term.scrollToBottom(); } catch (_) {}
     });
     // Ctrl+Shift+C = 复制选中文字（Ctrl+C 本身必须是 0x03，不能抢）
@@ -963,6 +1312,9 @@ function toggleTerminalMode(btn, mid) {
         if (sendBar) sendBar.style.display = 'none';
         emu.box.classList.add('on');
         _terminalBuffers[mid] = true;
+        emu._lineBuf = '';   // 新会话从空行开始，别把上次敲了一半的行带进来
+        emu._linePos = 0;
+        emu._histIdx = (emu._hist || []).length;
         // 进入终端模式后自动向设备发一个回车：设备会重新打印提示符，画布立刻有内容可看
         // （用户 2026-10 明确要求；不做"终端已开启"之类的本地提示，也不回放旧日志）。
         // 未连接时不发 —— 发了只会得到一条发送失败提示。
@@ -987,6 +1339,8 @@ function toggleTerminalMode(btn, mid) {
         }
         delete _terminalBuffers[mid];
     }
+    // 行号/时间戳/回显 与终端模式互斥 → 跟着开关置灰；命令行缓冲只在终端模式里可用
+    updateTermModeBtns(mid);
     scheduleConfigSave();
 }
 
@@ -1293,7 +1647,7 @@ async function reconnectPort(mid, portName, attempt) {
         // 显式设置下拉框为目标端口，防止 refreshPorts 将其重置为第一个端口
         var matchEl = sel.parentElement.querySelector('.sel-drop .sel-opt[data-val="' + portName + '"]');
         if (matchEl) {
-            sel.querySelector('.sel-text').textContent = matchEl.textContent;
+            setPortLabel(mid, matchEl.textContent);
             sel.setAttribute('data-val', portName);
             sel.parentElement.querySelectorAll('.sel-opt').forEach(function(o) { o.classList.remove('active'); });
             matchEl.classList.add('active');

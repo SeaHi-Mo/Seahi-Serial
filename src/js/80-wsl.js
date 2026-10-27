@@ -47,7 +47,7 @@ function getWslMonitorHtml(wmid) {
                     '</div>' +
                 '</div>' +
                 '<span class="lbl">端口</span>' +
-                '<div class="sel sel-port" id="' + wmid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:180px;">' +
+                '<div class="sel sel-port" id="' + wmid + '-portSelect" onclick="toggleSelDrop(this)" style="min-width:135px;">' +
                     '<span class="sel-text">无可用端口</span><span class="sel-arrow">&#9660;</span>' +
                     '<div class="sel-drop wsl-port-drop" id="' + wmid + '-portDrop"></div>' +
                 '</div>' +
@@ -77,6 +77,9 @@ function getWslMonitorHtml(wmid) {
                 '<button class="ibtn on" id="' + wmid + '-btnScroll" onclick="toggleIbtn(this)" title="自动滚动">' + ICONS.rollback + '</button>' +
                 '<button class="ibtn" id="' + wmid + '-btnAutoReconnect" onclick="toggleIbtn(this)" title="自动重连">' + ICONS.reconnect + '</button>' +
                 '<button class="ibtn" id="' + wmid + '-btnSendLE" onclick="toggleTerminalMode(this,\'' + wmid + '\')" title="终端模式">' + ICONS.terminal + '</button>' +
+                /* 命令行缓冲：WSL 侧就是 Linux shell，默认**关**（逐键直发，readline/补全/方向键才对），
+                   要发 AT 类整行命令时再点开（见 10-monitor.js 的 termLineBufInput） */
+                '<button class="ibtn" id="' + wmid + '-btnLineBuf" onclick="toggleLineBuf(this,\'' + wmid + '\')" title="命令行缓冲：整行发送 + 本地回显（AT 指令用）；关掉=逐键直发（Linux shell / TUI）">' + ICONS.lineBuf + '</button>' +
                 '<button class="ibtn" id="' + wmid + '-btnLineNum" onclick="toggleLineNum(this,\'' + wmid + '\')" title="显示行号">' + ICONS.lineNum + '</button>' +
                 '<button class="ibtn" id="' + wmid + '-btnTs" onclick="toggleIbtn(this)" title="开启时间戳">' + ICONS.timestamp + '</button>' +
                 '<button class="ibtn" id="' + wmid + '-btnEcho" onclick="toggleIbtn(this)" title="启动消息回显">' + ICONS.copy + '</button>' +
@@ -422,6 +425,8 @@ function initWslMonitor(wmid) {
     }
     // 初始禁用（等WSL状态确认后再启用）
     setWslMonitorEnabled(false, wmid);
+    // 终端模式相关的按钮初始态（终端模式关 → 行号/时间戳/回显可用、命令行缓冲置灰）
+    updateTermModeBtns(wmid);
     // 终端模式（xterm）按需懒创建：点按钮时才建，不在这里初始化
 }
 

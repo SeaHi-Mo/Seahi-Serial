@@ -108,6 +108,7 @@ function collectConfig() {
             btnScroll:    btnOn(mid + '-btnScroll'),
             btnAutoReconnect: btnOn(mid + '-btnAutoReconnect'),
             btnSendLE:    btnOn(mid + '-btnSendLE'),
+            btnLineBuf:   btnOn(mid + '-btnLineBuf'),
             btnTs:        btnOn(mid + '-btnTs'),
             btnEcho:      btnOn(mid + '-btnEcho'),
             btnLineNum:   btnOn(mid + '-btnLineNum'),
@@ -160,6 +161,7 @@ function collectConfigForMonitor(mid) {
         btnScroll:    btnOn(mid + '-btnScroll'),
         btnAutoReconnect: btnOn(mid + '-btnAutoReconnect'),
         btnSendLE:    btnOn(mid + '-btnSendLE'),
+        btnLineBuf:   btnOn(mid + '-btnLineBuf'),
         btnTs:        btnOn(mid + '-btnTs'),
         btnEcho:      btnOn(mid + '-btnEcho'),
         btnLineNum:   btnOn(mid + '-btnLineNum'),
@@ -308,6 +310,8 @@ function applyMonitorConfig(mid, mc) {
     if (mc.btnAutoReconnect !== undefined) setBtn(mid + '-btnAutoReconnect', mc.btnAutoReconnect);
     // 终端模式是交互式会话状态，不随配置自动恢复为"开"，否则按钮显示开启但实际未进入终端模式
     setBtn(mid + '-btnSendLE', false);
+    // 命令行缓冲（终端模式的行/直发口径）：老配置里没有这个字段 → 保留 HTML 里的默认（串口开、WSL 关）
+    if (mc.btnLineBuf !== undefined) setBtn(mid + '-btnLineBuf', mc.btnLineBuf);
     if (mc.btnTs !== undefined)            setBtn(mid + '-btnTs', mc.btnTs);
     if (mc.btnEcho !== undefined)          setBtn(mid + '-btnEcho', mc.btnEcho);
     if (mc.btnLineNum !== undefined) {
@@ -354,6 +358,9 @@ function applyMonitorConfig(mid, mc) {
     if (mc.port) {
         monitors[mid]._savedPort = mc.port;
     }
+    // 配置恢复后重算"终端模式互斥按钮"的置灰态：终端模式刚被强制关掉，
+    // 行号/时间戳/回显要恢复可用，命令行缓冲要重新置灰（否则刷新后灰化状态跟按钮状态对不上）
+    updateTermModeBtns(mid);
 }
 
 // 保存配置（防抖：500ms 后写入）

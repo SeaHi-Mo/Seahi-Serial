@@ -21,7 +21,7 @@ function addMonitor() {
     copyMonitorConfig('main', 'extra-' + extraCount);
     // 自动扩展窗口宽度以容纳新监视器
     var panes = document.querySelectorAll('#paneContainer .monitor-pane');
-    var minWidth = panes.length * 524;
+    var minWidth = panes.length * 419;   // 单栏最小 419px（原 524 的 80%，与窗口最小宽度 838 对齐）
     invoke('get_window_size').then(function(size) {
         // 后端 get_window_size 返回 Result<(u32,u32)>，经 serde 序列化为数组 [width, height]
         var w = Array.isArray(size) ? size[0] : size.width;

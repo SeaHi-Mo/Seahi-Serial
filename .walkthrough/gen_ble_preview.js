@@ -8265,7 +8265,9 @@ try {
           if (i >= 0) { this._kids.splice(i, 1); c.parentNode = null; }
           return c;
         },
-        setAttribute() {}, getAttribute() { return null; },
+        _attrs: {},
+        setAttribute(k, v) { this._attrs[k] = String(v); },
+        getAttribute(k) { return this._attrs[k] !== undefined ? this._attrs[k] : null; },
         addEventListener() {}, focus() {}, blur() {}, querySelector() { return null; },
       };
       el.classList = {
@@ -8273,7 +8275,12 @@ try {
         add(c) { this._s[c] = 1; },
         remove(c) { delete this._s[c]; },
         contains(c) { return !!this._s[c]; },
-        toggle(c) { this._s[c] ? delete this._s[c] : (this._s[c] = 1); },
+        // 真 DOM 的 toggle(c, force)：给了第二参就是"设定"，不是"翻转"。
+        // 置灰那套（updateTermModeBtns）全靠 force，假 DOM 不实现就会把断言骗过去。
+        toggle(c, force) {
+          if (force === undefined) { this._s[c] ? delete this._s[c] : (this._s[c] = 1); return; }
+          if (force) this._s[c] = 1; else delete this._s[c];
+        },
       };
       return el;
     };
@@ -8335,6 +8342,9 @@ try {
       },
     };
     vm.createContext(sbTerm);
+    // TERM_MUTED_BTNS 是数组常量（不是函数），按源码切片塞进沙箱，避免测试里再抄一份
+    const iMuted = html.indexOf('var TERM_MUTED_BTNS');
+    const termMutedSrc = html.slice(iMuted, html.indexOf('];', iMuted) + 2);
     vm.runInContext([
       extractFunction('termModeOn'),
       extractFunction('termAnsiPalette'),
@@ -8347,6 +8357,16 @@ try {
       extractFunction('ensureTerm'),
       extractFunction('refreshTermThemes'),
       extractFunction('toggleTerminalMode'),
+      // 2026-10-27 新增：行缓冲（AT 指令）与终端模式下置灰的按钮
+      extractFunction('leStr'),
+      extractFunction('ibtnBlocked'),
+      extractFunction('termLineBufOn'),
+      extractFunction('termLineEndStr'),
+      extractFunction('termLineBufInput'),
+      extractFunction('toggleLineBuf'),
+      extractFunction('updateTermModeBtns'),
+      'var TERM_LINEBUF_MAX = 8192;',
+      termMutedSrc,
     ].join('\n'), sbTerm);
 
     check(Object.keys(sbTerm._termEmus).length === 0,
@@ -8425,6 +8445,65 @@ try {
     sbTerm.toggleTerminalMode(btn, 'main');
     check(FakeTerminal.last === term && FakeTerminal.count === 1,
       '切走再切回复用同一个 xterm 实例（不清历史、不泄漏）');
+
+    // ===== 2026-10-27：终端模式接 AT 指令 =====
+    // 用户报的问题：终端模式"没有命令行缓冲而是立即发送"，逐键直发 + Enter 只发 \r + 退格被模组丢掉，
+    // 三条凑一起 AT 命令必错。现在串口分栏默认「命令行缓冲」开（整行 + 行尾一次发出），
+    // WSL 分栏默认关（那侧是 Linux shell，要 readline 的历史/补全）。两种口径都要留着。
+    const lbBtn = mkEl(); lbBtn.id = 'main-btnLineBuf'; lbBtn.classList.add('on'); body.appendChild(lbBtn);
+    const lnBtn = mkEl(); lnBtn.id = 'main-btnLineNum'; lnBtn.classList.add('on'); body.appendChild(lnBtn);
+    const tsBtn = mkEl(); tsBtn.id = 'main-btnTs'; body.appendChild(tsBtn);
+    const ecBtn = mkEl(); ecBtn.id = 'main-btnEcho'; body.appendChild(ecBtn);
+    const leEl = mkEl(); leEl.id = 'main-lineEnding'; leEl.setAttribute('data-val', 'crlf'); body.appendChild(leEl);
+
+    // ---- 置灰：行号 / 时间戳 / 回显 只作用于普通输出视图 ----
+    sbTerm.updateTermModeBtns('main');
+    check(lnBtn.classList.contains('ibtn-disabled') && tsBtn.classList.contains('ibtn-disabled') &&
+      ecBtn.classList.contains('ibtn-disabled'), '★ 终端模式下「显示行号 / 时间戳 / 消息回显」置灰');
+    check(lnBtn.classList.contains('on'), '置灰只改外观，不动用户原来的开关（退出终端模式后照旧生效）');
+    check(/无关紧要/.test(lnBtn.getAttribute('title') || ''),
+      '★ 置灰按钮的 title 说明"终端模式下无关紧要"（用 class 不用 disabled：disabled 元素收不到鼠标事件，提示弹不出来）',
+      lnBtn.getAttribute('title'));
+    check(!lbBtn.classList.contains('ibtn-disabled'), '终端模式下「命令行缓冲」可点（它只对终端模式生效）');
+
+    // ---- 行缓冲：敲字不发送、本地回显、回车整行 + 行尾一次发出 ----
+    const n0 = calls.length, w0 = (term.writes || []).length;
+    term._onData('A'); term._onData('T');
+    check(calls.length === n0, '★ 行缓冲：敲字过程中一个字节都不发（不再逐键直发）');
+    check((term.writes || []).slice(w0).join('') === 'AT', '★ 行缓冲：本地回显（AT 模组常把回显关掉，不自己回显就看不见输入）');
+    term._onData('\r');
+    check(calls.length === n0 + 1 && JSON.stringify(calls[n0].args.data) === '[65,84,13,10]',
+      '★ 行缓冲：回车把「整行 + CRLF」一次发出（AT 指令要的就是这一下）', JSON.stringify(calls[n0].args.data));
+    check(txLogs[txLogs.length - 1] && txLogs[txLogs.length - 1].text === 'AT',
+      '行缓冲提交的命令照样进 tx 日志（src=ui）');
+
+    // 退格只在本地擦，不发给设备（0x7F 在 AT 解析器里就是垃圾）
+    term._onData('A'); term._onData('X'); term._onData('\x7f'); term._onData('\r');
+    check(JSON.stringify(calls[calls.length - 1].args.data) === '[65,13,10]',
+      '★ 行缓冲：退格只擦本地缓冲，不发给设备', JSON.stringify(calls[calls.length - 1].args.data));
+
+    // 方向键这类转义序列仍然直发，不污染缓冲
+    term._onData('B'); term._onData('\u001b[A');
+    check(JSON.stringify(calls[calls.length - 1].args.data) === '[27,91,65]', '行缓冲里方向键仍原样直发');
+
+    // 行尾跟工具栏「行尾」下拉走
+    leEl.setAttribute('data-val', 'lf');
+    term._onData('\r');
+    check(JSON.stringify(calls[calls.length - 1].args.data) === '[66,10]',
+      '★ 行缓冲的行尾跟随「行尾」下拉（LF 示例）', JSON.stringify(calls[calls.length - 1].args.data));
+
+    // 关掉 → 回到逐键直发（WSL 分栏的默认口径，vim/top 与 readline 都靠它）
+    lbBtn.classList.remove('on');
+    term._onData('C');
+    check(JSON.stringify(calls[calls.length - 1].args.data) === '[67]', '关掉命令行缓冲 = 逐键直发');
+    lbBtn.classList.add('on');
+
+    // ---- 退出终端模式：三个按钮恢复，命令行缓冲反过来置灰 ----
+    sbTerm.toggleTerminalMode(btn, 'main');
+    check(!lnBtn.classList.contains('ibtn-disabled') && !tsBtn.classList.contains('ibtn-disabled') &&
+      !ecBtn.classList.contains('ibtn-disabled'), '★ 退出终端模式后三个按钮恢复可点（不留在灰态）');
+    check(lnBtn.getAttribute('title') === '显示行号', '退出后 title 还原成原来的说明', lnBtn.getAttribute('title'));
+    check(lbBtn.classList.contains('ibtn-disabled'), '终端模式关着时「命令行缓冲」置灰（它只对终端模式生效）');
   }
 
   // ===== WSL 快捷启动：发行版名只能来自 WSL 自己报的列表（2026-10-14「点启动开出 PowerShell」事故） =====

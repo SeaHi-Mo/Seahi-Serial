@@ -705,6 +705,19 @@
 .toolbar-wrap.collapsed { max-height:6px; border-bottom:none; overflow:hidden; }
 .toolbar-wrap.collapsed ~ .adv-wf-wrap { display:none !important; }
 .toolbar-wrap .toolbar { border-bottom:none; }
+/* 串口监视器工具栏：控件多（查看/端口/刷新/波特率/行尾/开始/9 个图标），
+   间距比通用工具栏收紧一点，让半屏平铺（约 960px）时仍能保持一行。 */
+.monitor-pane .toolbar { gap:4px; padding:5px 8px; }
+/* 端口框弹性：宽度在 80~189 之间伸缩。窄窗口先压它，
+   别把「清除内容」到「更多设置」那组图标按钮挤到第二行。 */
+.monitor-pane .toolbar > .sel-port { flex:0 1 189px; width:189px; min-width:80px; max-width:189px; }
+/* 默认是换行（继承 .toolbar）；只有 JS 判定「端口框压到下限也能一行」时才加 tb-fit 切不换行。
+   这样即使 JS 没跑，也只是换行，不会把右边按钮裁掉。 */
+.monitor-pane .toolbar.tb-fit { flex-wrap:nowrap; }
+/* 名字放不下时显示尾部（串口号在末尾），前面用省略号，并靠右显示 */
+.sel-port .sel-text.name-truncated { text-align:right; }
+.monitor-pane .toolbar .btn-main { margin-left:0; }
+.monitor-pane .toolbar .tsep { margin:0; }
 .lbl { color:var(--text); font-size:12px; white-space:nowrap; flex-shrink:0; font-weight:500; }
 
 /* 通用下拉选择 */
@@ -742,7 +755,7 @@
 .baud-input {
     background:var(--input-bg); border:1px solid transparent; border-radius:4px 0 0 4px;
     color:var(--text); font-size:12px; height:24px; padding:0 6px;
-    outline:none; width:84px; font-family:inherit; -moz-appearance:textfield;
+    outline:none; width:63px; font-family:inherit; -moz-appearance:textfield;
     transition: border-color .15s;
 }
 .baud-input::-webkit-outer-spin-button, .baud-input::-webkit-inner-spin-button { -webkit-appearance:none; }
@@ -751,7 +764,7 @@
 .baud-arrow {
     background:var(--input-bg); border:1px solid transparent; border-left:none;
     border-radius:0 4px 4px 0; color:var(--text-d); cursor:pointer;
-    height:24px; width:18px; display:inline-flex; align-items:center;
+    height:24px; width:14px; display:inline-flex; align-items:center;
     justify-content:center; font-size:8px; flex-shrink:0; padding:0;
 }
 .baud-arrow:hover { background:var(--surface-1); color:var(--text); }
@@ -805,6 +818,14 @@
 .ibtn svg { display:block; }
 .ibtn:hover { background:rgba(255,255,255,.05); color:var(--text-b); }
 .ibtn.on { background:var(--btn-p); color:#fff; }
+/* 置灰态（终端模式下与普通视图互斥的按钮，见 10-monitor.js 的 updateTermModeBtns）：
+   实际靠 `.ibtn-disabled` 这个 class（点击由 ibtnBlocked 拦），`:disabled` 只是留个兜底 ——
+   **别改成只设 `disabled` 属性**：Chromium 不给 disabled 元素派发鼠标事件，title 提示就弹不出来，
+   而这里正是要靠提示说明"为什么按不动"。
+   `.ibtn.on` 的置灰**保留底色**（看得出"用户本来就开着"，只是当前不生效），别改成纯灰。 */
+.ibtn:disabled, .ibtn.ibtn-disabled { opacity:.35; cursor:not-allowed; background:transparent; color:var(--text-d); }
+.ibtn:disabled:hover, .ibtn.ibtn-disabled:hover { background:transparent; color:var(--text-d); }
+.ibtn.on:disabled, .ibtn.on.ibtn-disabled { background:var(--btn-p); color:#fff; opacity:.35; }
 .ibtn:focus-visible, .btn-main:focus-visible, .btn-ref:focus-visible, .pane-close:focus-visible, .btn-send:focus-visible, .sel:focus-visible { outline:2px solid var(--link); outline-offset:-2px; }
 
 /* 状态区 */
