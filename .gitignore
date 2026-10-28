@@ -58,3 +58,5 @@ website/docs/mcp/tools.md
 
 # 首页窗口图标（由 website/scripts/sync-ui-icons.mjs 从 src/ 抽取，生成物）
 website/docs/.vitepress/theme/components/landing/icons.generated.ts
+
+website/docs/.vitepress/theme/components/landing/releases.generated.ts

@@ -4,16 +4,39 @@ import { useData } from 'vitepress'
 import { getCopy } from './copy'
 import AppWindow from './AppWindow.vue'
 import FeatureCards from './FeatureCards.vue'
+import { RELEASES_LIST } from './releases.generated'
 
-const { lang } = useData()
+const { lang, theme } = useData()
 const t = computed(() => getCopy(lang.value))
 const isEn = computed(() => lang.value.toLowerCase().startsWith('en'))
 
 const REPO = 'https://github.com/SeaHi-Mo/Seahi-Serial'
 const RELEASES = `${REPO}/releases/latest`
 
-const copyLabel = computed(() => (isEn.value ? 'Copy' : '复制'))
-const copiedLabel = computed(() => (isEn.value ? 'Copied' : '已复制'))
+/* 下载走国内加速：ghfast.top 代理 GitHub 的发布页 / 安装包（哈希仍以 GitHub 为准） */
+const MIRROR = 'https://ghfast.top/'
+const appVersion = computed(() => String(theme.value.appVersion || '').replace(/^v/, ''))
+const hasVersion = computed(() => /^\d+\.\d+\.\d+$/.test(appVersion.value))
+const downloadPage = computed(() => `${MIRROR}${RELEASES}`)
+
+/* 版本下拉：默认最新（RELEASES_LIST 是构建时从 git tag 生成的，倒序） */
+const versions = computed(() => (RELEASES_LIST.length ? RELEASES_LIST : hasVersion.value ? [appVersion.value] : []))
+const selectedVersion = ref(versions.value[0] || appVersion.value)
+const downloadAsset = computed(() => {
+  const v = selectedVersion.value
+  if (!/^\d+\.\d+\.\d+$/.test(v)) return downloadPage.value
+  return `${MIRROR}${REPO}/releases/download/v${v}/Seahi-Serial-Setup-${v}.exe`
+})
+
+/* 页脚社媒：Bilibili / 嘉立创开源广场 / 立创优选（链接里的 jlc_vid 是对方给的追踪参数，原样保留） */
+const SOCIAL = {
+  bilibili: 'https://space.bilibili.com/355202584',
+  oshwhub:
+    'https://oshwhub.com/seahi?tab=works&jspm=hub.ex.zp&jlc_vid=FlVcVVcFEVUNXgZUFARcAQdfFgBaAwYHElBZUwdQRlExVlNfRFBWVlNfQVlYXztWKAkaExQVTU5BCBcOAAkbBUoFGAw%3D',
+  jlc: 'https://www.jlc-yx.com/store/629626440220585986?jlc_vid=T1AMA10CTwAPVQdWE1RcVFdSQQNaBQIDQlEKUlJXFlQxVlNfRFBWVl1XRFhbVTtWKAkaExQVTU5BEBMRWQsCBEkfD08NCAk=',
+}
+
+
 
 /* 顶栏：滚过 8px 变毛玻璃胶囊 */
 const scrolled = ref(false)
@@ -56,19 +79,7 @@ onBeforeUnmount(() => {
   io?.disconnect()
 })
 
-/* 复制命令 */
-const copied = ref('')
-const copy = async (text: string) => {
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch {
-    return
-  }
-  copied.value = text
-  window.setTimeout(() => {
-    if (copied.value === text) copied.value = ''
-  }, 1400)
-}
+
 </script>
 
 <template>
@@ -87,7 +98,7 @@ const copy = async (text: string) => {
             <a href="/" :class="{ on: !isEn }">{{ t.lang.zh }}</a>
             <a href="/en/" :class="{ on: isEn }">{{ t.lang.en }}</a>
           </span>
-          <a class="lp-btn lp-btn-primary lp-btn-s" :href="RELEASES">{{ t.nav.download }}</a>
+          <a class="lp-btn lp-btn-primary lp-btn-s" :href="downloadPage">{{ t.nav.download }}</a>
         </nav>
       </div>
     </header>
@@ -108,7 +119,7 @@ const copy = async (text: string) => {
               <p>{{ t.hero.lede2 }}</p>
             </div>
             <div class="lp-cta-row lp-enter lp-d2">
-              <a class="lp-btn lp-btn-primary lp-btn-m" :href="RELEASES">
+              <a class="lp-btn lp-btn-primary lp-btn-m" :href="downloadAsset">
                 <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
                   <path
                     d="M8 1.5v8.2m0 0L4.9 6.6M8 9.7l3.1-3.1M2 11.6v1.4c0 .8.7 1.5 1.5 1.5h9c.8 0 1.5-.7 1.5-1.5v-1.4"
@@ -120,14 +131,12 @@ const copy = async (text: string) => {
                 </svg>
                 {{ t.hero.cta }}
               </a>
-              <a class="lp-btn lp-btn-secondary lp-btn-m" :href="REPO" target="_blank" rel="noopener">
-                <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                  <path
-                    d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"
-                  />
-                </svg>
-                {{ t.hero.ghostLabel }}
-              </a>
+              <label v-if="versions.length" class="lp-ver">
+                <select v-model="selectedVersion" aria-label="选择版本">
+                  <option v-for="v in versions" :key="v" :value="v">v{{ v }}</option>
+                </select>
+              </label>
+
             </div>
           </div>
 
@@ -139,27 +148,23 @@ const copy = async (text: string) => {
 
       <FeatureCards />
 
-      <section class="lp-dev-sec lp-wrap">
-        <div class="lp-dev-h lp-reveal">
-          <h2>{{ t.dev.title }}</h2>
+      <section class="lp-sec lp-wrap lp-mcp-sec">
+        <div class="lp-sec-h lp-reveal">
+          <h2>{{ t.mcp.title }}</h2>
+          <p class="lp-mcp-lede">{{ t.mcp.body }}</p>
         </div>
-        <div class="lp-grid2 lp-grid-tight">
-          <div
-            v-for="(c, i) in t.dev.cards"
-            :key="i"
-            class="lp-dev-card lp-reveal"
-            :class="i ? 'lp-d1' : ''"
-          >
-            <div class="lp-dev-inner">
-              <h3>{{ c.title }}</h3>
-              <p>{{ c.body }}</p>
-              <div class="lp-code">
-                <code><span class="lp-dollar">$ </span>{{ c.cmd }}</code>
-                <button type="button" class="lp-copy" @click="copy(c.cmd)">
-                  {{ copied === c.cmd ? copiedLabel : copyLabel }}
-                </button>
-              </div>
-            </div>
+        <!-- 照真实设置窗：标题 + 监听状态 + 一行控件 -->
+        <div class="lp-mcp lp-reveal">
+          <div class="lp-mcp-hd">
+            <span class="lp-mcp-name">MCP 服务器</span>
+            <span class="lp-mcp-dot"></span>
+            <span class="lp-mcp-status">监听中 · 127.0.0.1:7777 · 0 个会话</span>
+          </div>
+          <div class="lp-mcp-ctl">
+            <span class="lp-mcp-btn primary">关闭 MCP 服务器</span>
+            <span class="lp-mcp-select">HTTP<i>▾</i></span>
+            <span class="lp-mcp-btn">只读模式</span>
+            <span class="lp-mcp-btn ghost">重置令牌</span>
           </div>
         </div>
       </section>
@@ -178,7 +183,7 @@ const copy = async (text: string) => {
               :key="a.label"
               class="lp-btn lp-btn-m"
               :class="a.primary ? 'lp-btn-primary' : 'lp-btn-secondary'"
-              :href="a.href"
+              :href="a.href === 'download' ? downloadAsset : a.href"
             >
               {{ a.label }}
             </a>
@@ -191,13 +196,26 @@ const copy = async (text: string) => {
       <div class="lp-f-line"></div>
       <div class="lp-f-body">
         <div class="lp-f-left">
-          <a :href="REPO" target="_blank" rel="noopener">{{ t.footer.github }}</a>
+          <a :href="SOCIAL.bilibili" target="_blank" rel="noopener">
+            <img class="lp-f-ico" src="/img/social/bilibili.png" width="16" height="16" alt="" />
+            {{ t.footer.bilibili }}
+          </a>
+          <span class="lp-f-sep">·</span>
+          <a :href="SOCIAL.oshwhub" target="_blank" rel="noopener">
+            <img class="lp-f-ico" src="/img/social/oshwhub.png" width="16" height="16" alt="" />
+            {{ t.footer.oshwhub }}
+          </a>
+          <span class="lp-f-sep">·</span>
+          <a :href="SOCIAL.jlc" target="_blank" rel="noopener">
+            <img class="lp-f-ico" src="/img/social/jlc.png" width="16" height="16" alt="" />
+            {{ t.footer.jlc }}
+          </a>
         </div>
         <div class="lp-f-mid">{{ t.footer.mid }}</div>
         <div class="lp-f-right">
           <a href="/guide/quick-start">{{ t.footer.docs }}</a>
           <span class="lp-f-sep">·</span>
-          <a :href="RELEASES">{{ t.footer.download }}</a>
+          <a :href="downloadPage">{{ t.footer.download }}</a>
         </div>
       </div>
     </footer>
