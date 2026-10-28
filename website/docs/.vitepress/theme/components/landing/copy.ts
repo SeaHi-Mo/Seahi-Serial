@@ -4,7 +4,6 @@ export interface LandingCopy {
   nav: { guide: string; mcp: string; github: string; download: string }
   lang: { zh: string; en: string }
   hero: {
-    badge: string
     titleA: string
     titleSub: string
     lede1: string
@@ -46,7 +45,6 @@ const zh: LandingCopy = {
   nav: { guide: '指南', mcp: 'MCP', github: 'GitHub', download: '下载' },
   lang: { zh: '中文', en: 'EN' },
   hero: {
-    badge: 'WINDOWS · TAURI 2 · 开源',
     titleA: 'SeaHi Serial',
     titleSub: '一个窗口，把设备调通',
     lede1: '多串口分栏、xterm 真终端、蓝牙 GATT、ADB 与 WSL —— 调试时在几个工具之间来回切的日子结束了。',
@@ -120,7 +118,6 @@ const en: LandingCopy = {
   nav: { guide: 'Guide', mcp: 'MCP', github: 'GitHub', download: 'Download' },
   lang: { zh: '中文', en: 'EN' },
   hero: {
-    badge: 'WINDOWS · TAURI 2 · OPEN SOURCE',
     titleA: 'SeaHi Serial',
     titleSub: 'One window. Everything talks.',
     lede1:

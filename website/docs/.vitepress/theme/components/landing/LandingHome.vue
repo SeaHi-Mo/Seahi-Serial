@@ -98,7 +98,6 @@ const copy = async (text: string) => {
         <div class="lp-wrap lp-hero-inner">
           <div class="lp-hero-copy">
             <div class="lp-enter lp-hero-head">
-              <span class="lp-badge">{{ t.hero.badge }}</span>
               <h1>
                 <span class="lp-lat">{{ t.hero.titleA }}</span><br />
                 {{ t.hero.titleSub }}

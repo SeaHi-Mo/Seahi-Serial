@@ -315,18 +315,6 @@
   align-items: center;
   gap: 16px;
 }
-.lp-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-family: var(--lp-font-mono);
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  line-height: 1;
-  color: rgba(220, 224, 232, 0.5);
-}
 .lp-root h1 {
   margin: 0;
   font-family: var(--lp-font-display);
