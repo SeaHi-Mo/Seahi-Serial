@@ -7,16 +7,16 @@
 
 .lp-root {
   --lp-page: #1c1e22;
-  --lp-s1: rgba(255, 255, 255, 0.05);
-  --lp-s2: rgba(255, 255, 255, 0.035);
-  --lp-s3: rgba(255, 255, 255, 0.02);
-  --lp-b1: rgba(255, 255, 255, 0.06);
-  --lp-b2: #2e3138;
-  --lp-b3: rgba(255, 255, 255, 0.22);
-  --lp-t1: #dce0e8;
-  --lp-t2: #b8bcc4;
-  --lp-t3: #8b919a;
-  --lp-t4: #6b7280;
+  --lp-s1: rgba(255, 255, 255, 0.08);
+  --lp-s2: rgba(255, 255, 255, 0.05);
+  --lp-s3: rgba(255, 255, 255, 0.04);
+  --lp-b1: rgba(255, 255, 255, 0.11);
+  --lp-b2: #3a3f47;
+  --lp-b3: rgba(255, 255, 255, 0.3);
+  --lp-t1: #e8ebf0;
+  --lp-t2: #c8cdd6;
+  --lp-t3: #a6adb9;
+  --lp-t4: #8b93a1;
   --lp-brand: #4a7ab5;
   --lp-accent: #6a9fd8;
   --lp-green: #5a9e6e;
@@ -258,7 +258,7 @@
 .lp-btn-secondary {
   background: var(--lp-s1);
   color: var(--lp-t1);
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.22);
 }
 .lp-btn-secondary::after {
   background: rgba(255, 255, 255, 0.08);
@@ -392,9 +392,9 @@
   min-width: 0;
   overflow: hidden;
   padding: var(--lp-sp-7) var(--lp-sp-7) var(--lp-sp-6);
-  border: 1px solid var(--lp-b1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--lp-r-panel);
-  background: var(--lp-s3);
+  background: #232830;
 }
 .lp-card-copy {
   display: flex;
@@ -448,8 +448,8 @@
   display: flex;
   flex-direction: column;
   border-radius: var(--lp-r-panel);
-  background: var(--lp-s3);
-  border: 1px solid var(--lp-b1);
+  background: #232830;
+  border: 1px solid rgba(255, 255, 255, 0.12);
 }
 .lp-dev-inner {
   display: flex;
