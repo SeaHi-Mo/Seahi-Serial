@@ -14,7 +14,7 @@ const t = computed(() => getCopy(lang.value))
  */
 
 const logs = [
-  { k: 'sys', text: '已连接 COM3 · 115200 8N1' },
+  { k: 'sys', text: '已连接 COM8 · 115200 8N1' },
   { k: 'send', text: 'AT+GMR' },
   { k: 'recv', text: 'AT version:1.7.4.0 (May 11 2022)' },
   { k: 'send', text: 'AT+CIFSR' },
@@ -89,7 +89,7 @@ const ibtns = [
         </span>
         <span class="aw-grp">
           <span class="aw-lbl">端口</span>
-          <span class="aw-sel aw-sel-port">通信端口 (COM1)<span class="aw-arw"></span></span>
+          <span class="aw-sel aw-sel-port">USB-SERIAL CH340 (COM8)<span class="aw-arw"></span></span>
           <span class="aw-ref" title="刷新端口" v-html="I.toolbar.refresh"></span>
         </span>
         <span class="aw-grp">
@@ -100,7 +100,7 @@ const ibtns = [
           <span class="aw-lbl">行尾</span>
           <span class="aw-sel">CRLF<span class="aw-arw"></span></span>
         </span>
-        <span class="aw-run"><span class="aw-run-ico">▶</span>开始监控</span>
+        <span class="aw-run aw-run-stop"><span class="aw-run-ico">■</span>停止监控</span>
         <span class="aw-tsep"></span>
         <span class="aw-ibg">
           <span v-for="b in ibtns" :key="b.k" class="aw-ibtn" :class="{ on: b.on }" v-html="I.toolbar[b.k]"></span>

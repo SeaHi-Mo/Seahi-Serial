@@ -248,6 +248,12 @@
   color: #b8bcc4;
   white-space: nowrap;
 }
+/* 已连接：按钮变成蓝底白字的「停止监控」（.btn-main.stop）—— 日志只在这时才会有内容 */
+.aw-run-stop {
+  background: #4a7ab5;
+  border-color: #4a7ab5;
+  color: #fff;
+}
 .aw-run-ico {
   font-size: 9px;
 }
