@@ -1,56 +1,60 @@
 # 常见问题
 
-## 安装包为什么没有签名？SmartScreen 为什么报「未知发布者」？
+## 安装包为什么没有签名？
 
-个人项目，没有商业代码签名证书（OV / EV 证书对本项目成本过高）。未签名程序在 Windows 上必然触发 SmartScreen，这是既定事实，**不代表程序有问题**，也没有任何「已签名 / 绝对安全」的说法。
+这是个人项目，没有购买 OV / EV 代码签名证书。未签名的程序在 Windows 上会触发 SmartScreen「未知发布者」提示，这是系统的默认行为，并不代表程序有问题。
 
-能做的是可验证：
+可以这样验证安装包：
 
-- 只从 [GitHub Releases](https://github.com/SeaHi-Mo/Seahi-Serial/releases/latest) 下载；
-- 对照发布页的 `SHA256SUMS.txt` 核对安装包；
-- CI 用 cosign keyless 签名（`.sigstore.json`），能证明「产物由本仓库构建」。
+- 只从 [GitHub Releases](https://github.com/SeaHi-Mo/Seahi-Serial/releases/latest) 下载。
+- 用发布页的 `SHA256SUMS.txt` 核对文件哈希。
+- CI 使用 cosign keyless 签名生成 `.sigstore.json`，可以验证产物由本仓库构建。
 
 完整步骤见 [代码签名与安装说明](https://github.com/SeaHi-Mo/Seahi-Serial/blob/main/doc/SIGNING.md)。
 
-## 支持 macOS / Linux 吗？
+## 支持 macOS 或 Linux 吗？
 
-不支持，且短期不会支持。串口枚举走的是 Win32 SetupAPI（为了正确显示中文设备名），窗口、WSL、ADB 的很多行为都绑定 Windows。
+不支持，短期也没有计划。串口枚举使用 Win32 SetupAPI，窗口、WSL 和 ADB 的许多行为也依赖 Windows。
 
-## 配置文件在哪？
+## 配置文件在哪里？
 
 ```
 %APPDATA%\seahi-serial\
-├── config.json          # 界面/串口配置
+├── config.json          # 界面和串口配置
 ├── window.json          # 窗口位置与尺寸
 ├── ai-config.json       # MCP 设置（开关、端口、token）
-├── ai-calls.jsonl       # AI 工具调用记录（可在弹窗里开关）
+├── ai-calls.jsonl       # AI 工具调用记录
 └── log-cache\           # 会话日志缓存，最多 10 个
 ```
 
-MCP 的设置与调用记录**单独存放**，`config.json` 里不会出现任何 AI 痕迹。
+MCP 的配置和调用记录单独存放，`config.json` 里不会包含 AI 相关数据。
 
-## 关掉程序后窗口位置/大小会丢吗？
+## 关闭程序后窗口位置和大小会丢失吗？
 
-不会。位置与尺寸由程序自己记在 `window.json`：位置存窗口外框、尺寸存内容区；最小化/最大化状态下不会覆盖你正常窗口的几何。老版本升级上来时，会从 `config.json` 里迁移一次尺寸。
+不会。位置和尺寸保存在 `window.json`，位置记录外框坐标，尺寸记录内容区大小。窗口最小化或最大化时不会覆盖正常状态的几何信息。从旧版本升级时，会从 `config.json` 迁移一次尺寸。
 
-## 设备明明插着，端口列表里没有
+## 设备已插入，端口列表里却没有
 
-按顺序查：
+按顺序检查：
 
-1. 设备管理器里有没有该 COM 口（没有 → 驱动问题）；
-2. 端口是否被别的程序占着（同一个口不能被两个进程同时打开）；
-3. 换一根数据线（不少线只能供电）。
+1. 设备管理器里有没有对应的 COM 口。没有的话是驱动问题。
+2. 端口是否被其他程序占用。一个串口只能被一个程序打开。
+3. 换一根数据线。有些线只能供电，不能传输数据。
 
-蓝牙设备则是另一套：设备不广播就搜不到，用「按 MAC 直连」，见 [蓝牙调试](/guide/ble)。
+蓝牙设备的问题通常不同：设备不广播时不会出现在扫描列表里，可以使用「按 MAC 直连」，见[蓝牙调试](/guide/ble)。
 
-## AI 客户端里看不到新工具 / 报「连不上」
+## AI 客户端看不到新工具，或提示连不上
 
-- **看不到新工具**：工具定义是编译进 exe 的，**升级程序后客户端要重连**才会重读 `tools/list`；还不行就确认跑的是新构建。
-- **连不上**：确认程序正在运行、MCP 服务器已启用；`/healthz` 是唯一免鉴权端点，可先用它确认端口通。
-- 传输选错是常见原因：新客户端用 Streamable HTTP（`POST /mcp`），老客户端用遗留 SSE。弹窗里可以切「仅 HTTP / 仅 SSE / 两者」，选单档时另一条端点直接 404。
+看不到新工具：工具定义编译在 exe 里，升级程序后需要让客户端重新连接，才会重新读取 `tools/list`。也可以先确认客户端启动的是新版本。
 
-详见 [MCP 接入](/mcp/)。
+提示连不上：确认程序正在运行、MCP 服务器已启用。`/healthz` 是唯一不需要鉴权的端点，可以先访问它确认端口是否可用。
 
-## 怎么反馈问题？
+传输方式选错也是常见原因。新客户端使用 Streamable HTTP（`POST /mcp`），老客户端使用遗留 SSE。MCP 弹窗里可以切换「仅 HTTP」「仅 SSE」或「两者」，选择单档时另一条端点会返回 404。
 
-[GitHub Issues](https://github.com/SeaHi-Mo/Seahi-Serial/issues)。带上：版本号（设置里可见）、Windows 版本、复现步骤、相关日志片段。**不要贴 token**——MCP 弹窗里的连接地址带令牌，贴之前删掉。
+更多说明见 [MCP 接入](/mcp/)。
+
+## 如何反馈问题？
+
+到 [GitHub Issues](https://github.com/SeaHi-Mo/Seahi-Serial/issues) 提交。请附上版本号、Windows 版本、复现步骤和相关日志片段。
+
+MCP 弹窗里的连接地址包含访问令牌，贴出之前请删除令牌。

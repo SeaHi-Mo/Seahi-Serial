@@ -313,6 +313,7 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
   ADB 这类没有真机可测的页面**不硬配假截图**，等有设备再补。
   文档页在宽屏（≥90rem）走**全宽布局**：左侧快速导航贴浏览器左边缘、右侧目录贴右边缘，正文最大 `60rem`；
   规则在 `styles/docs-layout.css`（覆盖 VitePress 默认按 1440px 居中留下的两侧空白），窄屏不受影响。
+  指南文案保持直接、具体：按任务顺序组织段落，少用排比、满屏加粗和提示框（2026-10 用户要求去掉 AI 味）。
   自有组件放 `docs/.vitepress/theme/components/`，样式变量在 `docs/.vitepress/theme/styles/vars.css`（换风格先改它），
   落地页样式在 `styles/landing*.css`（类名统一 `lp-` 前缀，别和默认主题的 `.card/.nav` 撞）。
   `docs/mcp/tools.md` 由 `scripts/sync-mcp-tools.mjs` 从 `doc/MCP_TOOLS.md` 生成（生成物，不入库），`predev`/`prebuild`

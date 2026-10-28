@@ -21,22 +21,25 @@ export const zhCN: LocaleContent = {
     '/guide/': [
       {
         text: '开始',
+        items: [{ text: '快速开始', link: '/guide/quick-start' }],
+      },
+      {
+        text: '串口',
         items: [
-          { text: '快速开始', link: '/guide/quick-start' },
           { text: '串口调试', link: '/guide/serial' },
+          { text: '终端模式', link: '/guide/terminal' },
+          { text: '快速指令', link: '/guide/quick-cmds' },
         ],
       },
       {
-        text: '进阶',
+        text: '设备',
         items: [
-          { text: '终端模式', link: '/guide/terminal' },
-          { text: '快速指令', link: '/guide/quick-cmds' },
           { text: '蓝牙调试', link: '/guide/ble' },
           { text: 'ADB 与 WSL', link: '/guide/adb-wsl' },
         ],
       },
       {
-        text: '其它',
+        text: '参考',
         items: [{ text: '常见问题', link: '/guide/faq' }],
       },
     ],
