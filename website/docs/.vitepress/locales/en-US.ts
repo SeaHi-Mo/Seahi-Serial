@@ -15,7 +15,6 @@ export const enUS: LocaleContent = {
 
   nav: [
     { text: 'Guide', link: '/en/guide/quick-start', activeMatch: '/en/guide/' },
-    { text: 'MCP', link: '/en/mcp/', activeMatch: '/en/mcp/' },
     { text: 'Download', link: RELEASES },
     { text: 'GitHub', link: REPO },
   ],

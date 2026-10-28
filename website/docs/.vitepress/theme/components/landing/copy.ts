@@ -1,7 +1,7 @@
 /** 落地页文案（中英各一份）。页面结构在 LandingHome.vue 里，这里只放会变的字。 */
 
 export interface LandingCopy {
-  nav: { guide: string; mcp: string; github: string; download: string }
+  nav: { guide: string; github: string; download: string }
   lang: { zh: string; en: string }
   hero: {
     titleA: string
@@ -34,7 +34,7 @@ const REPO = 'https://github.com/SeaHi-Mo/Seahi-Serial'
 const RELEASES = `${REPO}/releases/latest`
 
 const zh: LandingCopy = {
-  nav: { guide: '指南', mcp: 'MCP', github: 'GitHub', download: '下载' },
+  nav: { guide: '指南', github: 'GitHub', download: '下载' },
   lang: { zh: '中文', en: 'EN' },
   hero: {
     titleA: 'SeaHi Serial',
@@ -84,7 +84,7 @@ const zh: LandingCopy = {
 }
 
 const en: LandingCopy = {
-  nav: { guide: 'Guide', mcp: 'MCP', github: 'GitHub', download: 'Download' },
+  nav: { guide: 'Guide', github: 'GitHub', download: 'Download' },
   lang: { zh: '中文', en: 'EN' },
   hero: {
     titleA: 'SeaHi Serial',

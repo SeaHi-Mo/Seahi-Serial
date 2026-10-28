@@ -92,7 +92,6 @@ onBeforeUnmount(() => {
         </a>
         <nav class="lp-nav">
           <a class="lp-nav-link" href="/guide/quick-start">{{ t.nav.guide }}</a>
-          <a class="lp-nav-link" href="/mcp/">{{ t.nav.mcp }}</a>
           <a class="lp-nav-link" :href="REPO" target="_blank" rel="noopener">{{ t.nav.github }}</a>
           <span class="lp-lang">
             <a href="/" :class="{ on: !isEn }">{{ t.lang.zh }}</a>

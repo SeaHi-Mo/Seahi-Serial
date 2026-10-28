@@ -12,7 +12,6 @@ export const zhCN: LocaleContent = {
 
   nav: [
     { text: '指南', link: '/guide/quick-start', activeMatch: '/guide/' },
-    { text: 'MCP', link: '/mcp/', activeMatch: '/mcp/' },
     { text: '下载', link: RELEASES },
     { text: 'GitHub', link: REPO },
   ],
