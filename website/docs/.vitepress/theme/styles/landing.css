@@ -297,7 +297,7 @@
   align-items: center;
   gap: var(--lp-sp-8);
   padding-top: var(--lp-sp-11);
-  padding-bottom: var(--lp-sp-9);
+  padding-bottom: var(--lp-sp-7);
 }
 .lp-hero-copy {
   display: flex;
@@ -350,7 +350,7 @@
 
 /* ---------------- section rhythm ---------------- */
 .lp-sec {
-  padding: var(--lp-sp-11) 0;
+  padding: var(--lp-sp-9) 0 var(--lp-sp-11);
 }
 .lp-sec-h {
   max-width: 820px;
