@@ -42,6 +42,10 @@ export const enUS: LocaleContent = {
         ],
       },
       {
+        text: 'MCP',
+        items: [{ text: 'MCP setup', link: '/en/guide/mcp' }],
+      },
+      {
         text: 'Reference',
         items: [{ text: 'FAQ', link: '/en/guide/faq' }],
       },

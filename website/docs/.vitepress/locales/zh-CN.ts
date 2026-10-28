@@ -39,6 +39,10 @@ export const zhCN: LocaleContent = {
         ],
       },
       {
+        text: 'MCP',
+        items: [{ text: 'MCP 接入', link: '/guide/mcp' }],
+      },
+      {
         text: '参考',
         items: [{ text: '常见问题', link: '/guide/faq' }],
       },

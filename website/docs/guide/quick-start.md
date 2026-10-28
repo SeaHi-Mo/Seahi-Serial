@@ -55,5 +55,6 @@ SeaHi Serial 是 Windows 上的串口与蓝牙调试工具。这一页完成三�
 - [串口调试](/guide/serial)：分栏、行尾、DTR/RTS、日志与工作流
 - [终端模式](/guide/terminal)：把输出区变成终端
 - [快速指令](/guide/quick-cmds)：按组循环发送指令
+- [MCP 接入](/guide/mcp)：让 AI 客户端连接程序
 - [蓝牙调试](/guide/ble)
 - [ADB 与 WSL](/guide/adb-wsl)
