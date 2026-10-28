@@ -670,15 +670,75 @@
 }
 
 /* ---------- 卡片示意图（保持原有的示意，配色跟真实界面一致） ---------- */
-/* 多串口同屏：三个分栏由 2px 主题色分栏线隔开（.monitor-pane + .monitor-pane { border-left: 2px solid var(--split-line) }） */
+/* 多串口同屏：画「点了左上角 ＋ 新建分栏」这一刻 —— 两栏在跑，第三栏正在插入 */
 .lp-mwin {
   display: flex;
-  gap: 2px;
+  flex-direction: column;
   width: 100%;
   height: 176px;
   overflow: hidden;
   border: 1px solid var(--lp-b1);
   border-radius: 8px;
+  background: #1c1e22;
+}
+.lp-mbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+  padding: 0 5px;
+  flex: none;
+  background: #22252a;
+  border-bottom: 1px solid #2e3138;
+}
+.lp-mbar-app {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+.lp-mbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 2px;
+  border-radius: 3px;
+  background: #2e3138;
+  color: #8b919a;
+  font-size: 7px;
+  line-height: 1;
+}
+.lp-mbar-btn.lp-press {
+  background: #4a7ab5;
+  color: #fff;
+  box-shadow: 0 0 0 2px rgba(74, 122, 181, 0.3);
+}
+.lp-mbar-spacer {
+  flex: 1;
+}
+.lp-mbar-win {
+  color: #6b7280;
+  font-size: 7px;
+  letter-spacing: 1px;
+}
+.lp-cursor {
+  position: absolute;
+  left: 27px;
+  top: 10px;
+  width: 13px;
+  height: 13px;
+  fill: #fff;
+  stroke: #16181c;
+  stroke-width: 1;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+}
+.lp-mpanes {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+  min-height: 0;
   background: var(--lp-brand);
 }
 .lp-mpane {
@@ -687,6 +747,35 @@
   display: flex;
   flex-direction: column;
   background: #1c1e22;
+}
+.lp-mpane-ghost {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: #20242a;
+  border: 1px dashed rgba(106, 159, 216, 0.55);
+  color: #8fb6e8;
+  animation: lpGhostIn 0.9s ease 0.2s both;
+}
+.lp-ghost-plus {
+  font-size: 16px;
+  line-height: 1;
+}
+.lp-ghost-hint {
+  font-size: 8px;
+  color: #8fb6e8;
+}
+@keyframes lpGhostIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 .lp-mpane-tb {
   display: flex;

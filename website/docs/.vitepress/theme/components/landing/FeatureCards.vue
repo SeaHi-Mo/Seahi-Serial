@@ -40,20 +40,40 @@ const services = [
           <p>{{ t.section.cards[0].body }}</p>
         </div>
         <div class="lp-media">
+          <!-- 画的是「点了左上角 ＋ 新建分栏」这一刻：前两栏已在跑，第三栏正在插入 -->
           <div class="lp-mwin">
-            <article v-for="(p, i) in ports" :key="p.name" class="lp-mpane">
-              <div class="lp-mpane-tb">
-                <span class="lp-mpane-sel">{{ p.name }}</span>
-                <span class="lp-mpane-ref">⟳</span>
-                <span class="lp-mpane-baud">{{ p.baud }}</span>
-                <span class="lp-mpane-run">▶</span>
-                <span v-if="i > 0" class="lp-mpane-close">✕</span>
-              </div>
-              <div class="lp-mpane-out">
-                <i v-for="(w, j) in p.w" :key="j" :style="{ width: w + '%' }"></i>
-              </div>
-              <div class="lp-mpane-send"><span></span></div>
-            </article>
+            <div class="lp-mbar">
+              <img src="/logo.png" class="lp-mbar-app" width="12" height="12" alt="" />
+              <span class="lp-mbar-btn lp-press">＋</span>
+              <span class="lp-mbar-btn">▢</span>
+              <span class="lp-mbar-btn">ADB</span>
+              <span class="lp-mbar-btn">✦</span>
+              <span class="lp-mbar-spacer"></span>
+              <span class="lp-mbar-win">— ▢ ✕</span>
+              <svg class="lp-cursor" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M3.2 2.2l8.9 5.9-4 .8-1.7 3.6z" />
+              </svg>
+            </div>
+            <div class="lp-mpanes">
+              <article v-for="(p, i) in ports.slice(0, 2)" :key="p.name" class="lp-mpane">
+                <div class="lp-mpane-tb">
+                  <span class="lp-mpane-sel">{{ p.name }}</span>
+                  <span class="lp-mpane-ref">⟳</span>
+                  <span class="lp-mpane-baud">{{ p.baud }}</span>
+                  <span class="lp-mpane-run">▶</span>
+                  <span v-if="i > 0" class="lp-mpane-close">✕</span>
+                </div>
+                <div class="lp-mpane-out">
+                  <i v-for="(w, j) in p.w" :key="j" :style="{ width: w + '%' }"></i>
+                </div>
+                <div class="lp-mpane-send"><span></span></div>
+              </article>
+
+              <article class="lp-mpane lp-mpane-ghost">
+                <span class="lp-ghost-plus">＋</span>
+                <span class="lp-ghost-hint">新分栏</span>
+              </article>
+            </div>
           </div>
         </div>
       </article>

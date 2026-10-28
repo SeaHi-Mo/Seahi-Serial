@@ -49,7 +49,7 @@ const zh: LandingCopy = {
     cards: [
       {
         title: '多串口同屏',
-        body: '每个分栏有独立的端口、波特率和行尾。插拔设备时列表自动刷新。',
+        body: '点左上角的 ＋ 新建分栏，每个分栏有独立的端口、波特率和行尾。',
       },
       {
         title: '真终端',
@@ -113,7 +113,7 @@ const en: LandingCopy = {
     cards: [
       {
         title: 'Many ports, one window',
-        body: 'Each pane has its own port, baud rate and line ending. The port list refreshes on plug/unplug.',
+        body: 'Click + to add a pane. Each pane has its own port, baud rate and line ending.',
       },
       {
         title: 'A real terminal',
