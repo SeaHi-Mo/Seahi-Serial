@@ -52,9 +52,21 @@ jobs:
           APP_VERSION: ${{ steps.version.outputs.value }}
         run: npm run build
 
+      - name: Check Cloudflare secrets
+        id: cf
+        # 站点还没接 Cloudflare 时（本地/新克隆）不能因为"没有 secret"把 tag 构建搞红：
+        # 构建照做（校验站点能编过），部署跳过。
+        run: |
+          if [ -n "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::未配置 CLOUDFLARE_API_TOKEN，跳过部署（站点仍会构建校验）"
+          fi
+
       - name: Deploy to Cloudflare Pages
-        # PR 来自 fork 时没有 secrets，这里也必须跳过
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        # PR 来自 fork 时没有 secrets；未配置 secret 时同样跳过
+        if: (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && steps.cf.outputs.ready == 'true'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
