@@ -50,3 +50,11 @@ platform-tools/
 
 # Õæ»úÑéÖ¤½ØÍ¼£¨Éú³ÉÎï£¬²»Èë¿â£©
 .walkthrough/shots/
+
+# æ–‡æ¡£ç«™ï¼ˆwebsite/ï¼‰ï¼šæ„å»ºäº§ç‰©ä¸ç”Ÿæˆç‰©
+website/docs/.vitepress/dist/
+website/docs/.vitepress/cache/
+website/docs/mcp/tools.md
+
+# é¦–é¡µçª—å£å›¾æ ‡ï¼ˆç”± website/scripts/sync-ui-icons.mjs ä» src/ æŠ½å–ï¼Œç”Ÿæˆç‰©ï¼‰
+website/docs/.vitepress/theme/components/landing/icons.generated.ts

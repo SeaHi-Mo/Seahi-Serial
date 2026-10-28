@@ -17,9 +17,11 @@ node .walkthrough/gen_ble_preview.js              # 前端无头断言集（改�
 node .walkthrough/mcp_smoke.js                    # 对**正在跑的应用**逐个真调工具（改 MCP 后必跑）
 
 # 文档站（website/，VitePress；依赖只装在 website/ 里，别在根目录装）
-npm --prefix website install                      # 首次
-npm --prefix website run dev                      # 本地预览 http://localhost:5173
-npm --prefix website run build                    # 产物 → website/docs/.vitepress/dist
+# 以下在**仓库根目录**执行。`--prefix website` 是相对当前目录的 ——
+# 在 website/ 里再写一次就变成 website/website（npm ENOENT 最常见的来源）
+npm run docs:dev                                  # 本地预览 http://localhost:5173
+npm run docs:build                                # 产物 → website/docs/.vitepress/dist
+npm --prefix website install                      # 首次装依赖（等价 cd website && npm install）
 ```
 
 无 lint / 类型检查。
@@ -295,9 +297,17 @@ npm --prefix website run build                    # 产物 → website/docs/.vit
   内** —— 加新 BLE 代码先确认自己在哪一层（模块级看不到 `fn main()` 里的东西）。
 - `npm/seahi-serial-mcp/` — MCP 客户端配置安装器（零依赖 CLI + 94 条自测；`npx seahi-serial-mcp install`，
   `--transport sse|http`）。
-- `website/` — **文档站**（VitePress，独立 `package.json` + lockfile，**vitepress 不进根 package.json**）：首页 +
-  用户指南 + MCP 总览。`docs/mcp/tools.md` 由 `scripts/sync-mcp-tools.mjs` 从 `doc/MCP_TOOLS.md` 生成（生成物，不入库），
-  `predev`/`prebuild` 自动跑。`doc/` 仍是开发者内部文档，**不整目录发布**；部署见 `doc/DEPLOY_CLOUDFLARE.md`
+- `website/` — **文档站**（VitePress，独立 `package.json` + lockfile，**vitepress 不进根 package.json**）：
+  **中文在根路径、英文在 `/en/`**；所有界面文案 / nav / sidebar 都在 `docs/.vitepress/locales/*`（新增语言 = 加一个
+  语言包 + 在 `locales/index.ts` 登记 + 建 `docs/<前缀>/` 目录），`config.mts` 只留 base/head/全站 themeConfig。
+  **首页是 `layout: false` + `components/landing/LandingHome.vue`**（复刻 deepseek.com/harness 的版式，配色换成软件
+  默认主题的 `#1c1e22 / #2e3138 / #4a7ab5`；文案在 `landing/copy.ts`，产品窗口在 `landing/AppWindow.vue` —— 那个窗口
+  **1:1 照 `src/index.html` + `js/10-monitor.js` 的真实结构**绘制（全局操作栏 / 工具栏 9 个 ibtn / 快速指令侧栏 /
+  发送栏），改它之前先读那两个源文件）。
+  自有组件放 `docs/.vitepress/theme/components/`，样式变量在 `docs/.vitepress/theme/styles/vars.css`（换风格先改它），
+  落地页样式在 `styles/landing*.css`（类名统一 `lp-` 前缀，别和默认主题的 `.card/.nav` 撞）。
+  `docs/mcp/tools.md` 由 `scripts/sync-mcp-tools.mjs` 从 `doc/MCP_TOOLS.md` 生成（生成物，不入库），`predev`/`prebuild`
+  自动跑。`doc/` 仍是开发者内部文档，**不整目录发布**；部署见 `doc/DEPLOY_CLOUDFLARE.md`
   （Cloudflare Pages，**只有打 tag 才发布**）。
 - `doc/`：`MCP.md`（使用说明）｜`MCP_TOOLS.md`（**54 个工具手册**，由 `gen_mcp_tools_doc.js` 从 `protocol.rs` 生成）｜
   `MCP_DESIGN.md`（设计 + 每步实施记录）｜`QUICK_CMDS.md`（快速指令文件格式）｜`FRONTEND_LAYOUT.md`｜`ARCHITECTURE.md`｜

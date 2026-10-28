@@ -1,0 +1,66 @@
+name: Docs
+
+# 只有打 tag 才发布站点（Cloudflare 没有 tag 触发器，所以构建放在这里，Cloudflare 只收产物）。
+# PR 只做构建校验，不部署。
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    paths:
+      - 'website/**'
+      - 'doc/MCP_TOOLS.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install
+        working-directory: website
+        run: npm ci
+
+      - name: Resolve version
+        id: version
+        run: |
+          # 打 tag 时用 tag 名；手动触发（文档改急了）时退回仓库当前版本号，
+          # 别让正式站点上出现 "dev"。
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=v$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        working-directory: website
+        env:
+          APP_VERSION: ${{ steps.version.outputs.value }}
+        run: npm run build
+
+      - name: Deploy to Cloudflare Pages
+        # PR 来自 fork 时没有 secrets，这里也必须跳过
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: >-
+            pages deploy website/docs/.vitepress/dist
+            --project-name seahi-serial-docs
+            --branch main
+            --commit-hash ${{ github.sha }}

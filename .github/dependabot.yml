@@ -1,0 +1,15 @@
+version: 2
+# 只盯文档站：根目录的 @tauri-apps/cli 不该被自动升级（Tauri 版本要和 Rust 侧一起动）。
+updates:
+  - package-ecosystem: npm
+    directory: /website
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    groups:
+      vitepress:
+        patterns:
+          - vitepress
+          - vitepress-plugin-*
+          - vite
+          - vue

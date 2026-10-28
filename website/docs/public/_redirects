@@ -1,0 +1,9 @@
+# Cloudflare Pages 重定向规则（构建产物根目录生效）
+# 语法：<来源路径> <目标> <状态码>
+# 这些是「对外稳定短链」，站点内的按钮直接指向 GitHub，不经过这里。
+
+/download           https://github.com/SeaHi-Mo/Seahi-Serial/releases/latest                 302
+/releases           https://github.com/SeaHi-Mo/Seahi-Serial/releases                        302
+/changelog          https://github.com/SeaHi-Mo/Seahi-Serial/releases                        302
+/signing            https://github.com/SeaHi-Mo/Seahi-Serial/blob/main/doc/SIGNING.md        302
+/issues             https://github.com/SeaHi-Mo/Seahi-Serial/issues                          302

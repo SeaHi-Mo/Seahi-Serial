@@ -1,0 +1,27 @@
+/**
+ * 设计变量：换风格时**先改这里**，不要在页面或组件里写死色值。
+ * 之后要换成别的官网风格（例如 deepseek.com/harness），改这一个文件就能换掉大半观感。
+ */
+
+:root {
+  /* 品牌色（默认主题的按钮、链接、选中态都读这三个） */
+  --vp-c-brand-1: #0b57d0;
+  --vp-c-brand-2: #1a73e8;
+  --vp-c-brand-3: #4285f4;
+  --vp-c-brand-soft: rgba(11, 87, 208, 0.14);
+
+  /* 首页/卡片上用的扩展 token，留给后续换风格 */
+  --site-radius-card: 12px;
+  --site-radius-hero: 14px;
+  --site-shadow-card: 0 8px 24px rgba(0, 0, 0, 0.1);
+  --site-shadow-hero: 0 18px 48px rgba(0, 0, 0, 0.18);
+  --site-hero-gradient: linear-gradient(120deg, var(--vp-c-brand-1) 20%, #22a2c9 90%);
+}
+
+.dark {
+  --vp-c-brand-1: #7aa7ff;
+  --vp-c-brand-2: #5b8def;
+  --vp-c-brand-3: #4285f4;
+  --site-shadow-card: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --site-shadow-hero: 0 18px 48px rgba(0, 0, 0, 0.5);
+}

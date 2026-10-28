@@ -1,0 +1,19 @@
+{
+  "name": "seahi-serial-docs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "SeaHi Serial 文档站（VitePress）",
+  "scripts": {
+    "sync:tools": "node scripts/sync-mcp-tools.mjs",
+    "sync:icons": "node scripts/sync-ui-icons.mjs",
+    "predev": "npm run sync:tools && npm run sync:icons",
+    "dev": "vitepress dev docs",
+    "prebuild": "npm run sync:tools && npm run sync:icons",
+    "build": "vitepress build docs",
+    "preview": "vitepress preview docs"
+  },
+  "devDependencies": {
+    "vitepress": "^2.0.0-alpha.21"
+  }
+}

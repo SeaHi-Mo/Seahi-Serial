@@ -1,0 +1,26 @@
+/** 首页专用：截图墙、版本号徽标。 */
+
+.shots {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin: 20px 0 8px;
+}
+
+.shots img {
+  width: 100%;
+  border-radius: var(--site-radius-card);
+  border: 1px solid var(--vp-c-divider);
+  box-shadow: var(--site-shadow-card);
+}
+
+.version-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--vp-c-brand-1);
+  background: var(--vp-c-brand-soft);
+  border: 1px solid var(--vp-c-brand-1);
+}

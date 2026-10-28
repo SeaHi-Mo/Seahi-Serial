@@ -1,0 +1,18 @@
+/** 全站微调（不针对某一页）：尽量少写，写得越少越不怕升级 VitePress。 */
+
+.VPHero .name,
+.VPHero .text {
+  letter-spacing: -0.02em;
+}
+
+.VPHero .name {
+  background: var(--site-hero-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.VPHero .image-src {
+  border-radius: var(--site-radius-hero);
+  box-shadow: var(--site-shadow-hero);
+}
