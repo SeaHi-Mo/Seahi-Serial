@@ -48,7 +48,7 @@ platform-tools/
 # 开发期 GUI 测试工具（.walkthrough 整体入库，见其 README.md；仅忽略 Python 缓存）
 .walkthrough/__pycache__/
 
-# �����֤��ͼ�����������⣩
+# �����֤��ͼ�����������⣩
 .walkthrough/shots/
 
 # 文档站（website/）：构建产物与生成物
@@ -56,7 +56,5 @@ website/docs/.vitepress/dist/
 website/docs/.vitepress/cache/
 website/docs/mcp/tools.md
 
-# 首页窗口图标（由 website/scripts/sync-ui-icons.mjs 从 src/ 抽取，生成物）
-website/docs/.vitepress/theme/components/landing/icons.generated.ts
 
 website/docs/.vitepress/theme/components/landing/releases.generated.ts

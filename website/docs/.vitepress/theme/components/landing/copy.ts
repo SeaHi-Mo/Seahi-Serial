@@ -42,7 +42,7 @@ const zh: LandingCopy = {
     lede1: '串口、蓝牙、ADB、WSL 各开一栏，互不打扰。',
     lede2: '内置 54 个 MCP 工具，AI 可以读日志、发指令。12 套主题可选。',
     cta: '下载安装包',
-    winLabel: '产品界面预览：多串口输出区与快速指令面板',
+    winLabel: '真实界面截图：串口已连接，快速指令侧栏展开',
   },
   section: {
     title: '功能一览',
@@ -92,7 +92,7 @@ const en: LandingCopy = {
     lede1: 'Serial, BLE, ADB and WSL, each in its own pane.',
     lede2: '54 built-in MCP tools let an AI read logs and send commands. 12 themes.',
     cta: 'Download installer',
-    winLabel: 'Product preview: multiple serial panes with the quick-command panel',
+    winLabel: 'Real app screenshot: serial connected, quick-command sidebar open',
   },
   section: {
     title: 'Features',

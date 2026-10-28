@@ -437,6 +437,46 @@
   pointer-events: none;
 }
 
+/* ---------- 首页真实截图（2026-10-28：不再用 DOM 临摹界面） ---------- */
+/* 产品窗口与功能卡片都直接用程序截图：截图为 v0.5.21 release 构建 + 真实设备。 */
+.aw-shot {
+  margin: 0;
+  width: 100%;
+  max-width: 1080px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #17191d;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 20px 56px rgba(0, 0, 0, 0.5);
+}
+.aw-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.lp-card-wide {
+  grid-column: 1 / -1;
+}
+.lp-media-wide {
+  display: block;
+  min-height: 0;
+  padding-top: 4px;
+}
+.lp-shot {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top left;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #17191d;
+}
+.lp-media-wide .lp-shot {
+  height: auto;
+  object-fit: contain;
+}
+
 /* ---------------- developer section ---------------- */
 /* 内置 MCP 服务器（替换掉原来的「接入方式」整章） */
 .lp-mcp-sec {

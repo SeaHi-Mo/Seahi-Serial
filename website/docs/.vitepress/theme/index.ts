@@ -5,7 +5,6 @@ import './styles/vars.css'
 import './styles/base.css'
 import './styles/home.css'
 import './styles/landing.css'
-import './styles/landing-window.css'
 
 export default {
   extends: DefaultTheme,
