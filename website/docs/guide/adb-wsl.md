@@ -20,6 +20,12 @@
 - 支持自动映射与手动绑定，绑定过程中会弹授权窗口，需要你在系统弹框上确认。
 - 映射完成后，WSL 里能看到新增的 `/dev/ttyUSB*` 或 `/dev/ttyACM*`。
 
+<GuideMedia
+  src="/img/guide/wsl.mp4"
+  poster="/img/guide/wsl.png"
+  caption="真实界面：WSL 端口映射面板列出本机 usbipd 设备与发行版状态（Ubuntu-20.04）。"
+/>
+
 ## 在 WSL 里直接调试
 
 WSL 分栏可在 **WSL 内**打开串口并收发：

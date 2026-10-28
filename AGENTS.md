@@ -308,6 +308,9 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
   hero 与「真终端」卡片是真实录制的 `hero.mp4` / `terminal.mp4`（窗口逐帧抓取 → H.264，同名 png 作 poster，
   `prefers-reduced-motion` 时退回静态帧）；其余卡片是真实截图。换界面后按 `AppWindow.vue` 顶部注释重新截图/录屏。
   「真终端」配真实 Linux 串口设备的终端画面；ADB 无真机时不放 ADB 卡片。
+  指南页（`docs/guide/*.md`）里的界面素材统一走全局组件 `<GuideMedia src poster caption />`：`src` 是真实录屏
+  （循环播放），`poster` 是真实截图（也是 `prefers-reduced-motion` 回退）；素材在 `docs/public/img/guide/`。
+  ADB 这类没有真机可测的页面**不硬配假截图**，等有设备再补。
   自有组件放 `docs/.vitepress/theme/components/`，样式变量在 `docs/.vitepress/theme/styles/vars.css`（换风格先改它），
   落地页样式在 `styles/landing*.css`（类名统一 `lp-` 前缀，别和默认主题的 `.card/.nav` 撞）。
   `docs/mcp/tools.md` 由 `scripts/sync-mcp-tools.mjs` 从 `doc/MCP_TOOLS.md` 生成（生成物，不入库），`predev`/`prebuild`

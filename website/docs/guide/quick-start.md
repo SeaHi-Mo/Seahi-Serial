@@ -8,6 +8,10 @@
 | WebView2 | Win10/11 通常已预装；缺失时安装程序会引导 |
 | 串口驱动 | USB 转串口（CH340 / CP210x / FTDI…）需已装好驱动，设备管理器里能看到 COM 口 |
 
+::: tip 本页动图都是真实运行录屏
+下面出现的动画都是程序实际运行时的窗口录屏（真实设备 / 真实输出），不是示意图。
+:::
+
 ## 安装
 
 1. 打开 [Releases](https://github.com/SeaHi-Mo/Seahi-Serial/releases/latest)，下载 `.msi` 或 `Seahi-Serial-Setup-*.exe`。
@@ -27,6 +31,12 @@
 4. 点 **▶ 开始监控**。连接成功后按钮变成「停止监控」，输出区开始滚动。
 
 > 要改数据位 / 停止位 / 校验位、或拨 DTR / RTS，点工具栏的齿轮展开高级设置。
+
+<GuideMedia
+  src="/img/guide/serial.mp4"
+  poster="/img/guide/serial.png"
+  caption="真实界面：选中 COM 口 → 点「开始监控」→ 输入命令回车，输出区实时滚动。"
+/>
 
 ## 发一条，看它回什么
 

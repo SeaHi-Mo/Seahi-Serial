@@ -7,6 +7,11 @@
 - 同时看两块板子的日志、分别发指令，不用来回切窗口。
 - 分栏可以关闭；关掉的那一路的连接会一并释放。
 
+<GuideMedia
+  poster="/img/landing/feature-panes.png"
+  caption="两个分栏各自连真实串口（COM9 与 COM17）：端口、波特率、行尾互不影响。"
+/>
+
 ## 工具栏上有什么
 
 | 控件 | 作用 |
@@ -26,6 +31,12 @@
 - 文本模式按 UTF-8 发出；HEX 模式按字节发（`AA 55 01` 这样写）。
 - 行尾按工具栏的选择追加；**AT 指令建议行缓冲 + `\r\n`**（见 [终端模式](/guide/terminal)）。
 - 发送历史每栏独立保存最近 **50** 条，`↑` / `↓` 翻，`Esc` 关掉历史下拉。
+
+<GuideMedia
+  src="/img/guide/serial.mp4"
+  poster="/img/guide/serial.png"
+  caption="真实界面：发送命令、按行尾追加、输出区滚动（COM9 上的 Linux 设备）。"
+/>
 
 ## 日志与缓存
 

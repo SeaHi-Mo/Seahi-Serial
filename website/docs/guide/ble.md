@@ -2,6 +2,12 @@
 
 顶栏切到蓝牙面板，点「开始扫描」搜索周边 BLE 设备。列表里能看到名称、MAC、RSSI、设备类型，以及 iBeacon / Mesh 标记。
 
+<GuideMedia
+  src="/img/guide/ble.mp4"
+  poster="/img/guide/ble.png"
+  caption="真实界面：开始扫描后设备列表实时出现（本机蓝牙适配器实际扫到的设备）。"
+/>
+
 ## 扫描与连接
 
 - 点设备卡片连接；连上后右侧展开 **GATT 服务树**。

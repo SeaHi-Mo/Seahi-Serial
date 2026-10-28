@@ -2,6 +2,12 @@
 
 工具栏的终端图标把输出区切成一块 **xterm.js 终端画布**。它不是给日志换个字体——是真正的终端语义：光标移动、清屏、颜色、alt-screen 都由 xterm 处理，串口那头跑 `vim`、`top` 这类全屏程序能正常显示和操作。
 
+<GuideMedia
+  src="/img/landing/terminal.mp4"
+  poster="/img/landing/feature-terminal.png"
+  caption="真实终端：逐字输入命令、彩色输出；光标、清屏、颜色都由 xterm 处理。"
+/>
+
 ## 两种输入口径，各有各的场景
 
 工具栏的「命令行缓冲」决定按键怎么发。**默认：串口分栏开、WSL 分栏关。**

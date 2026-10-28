@@ -1,0 +1,41 @@
+/**
+ * 指南页里的真实界面素材（截图 / 录屏）。
+ * - 有 src：循环播放真实录屏；同名 poster 是首帧静态图。
+ * - 无 src：只显示静态截图。
+ * - prefers-reduced-motion：不播放视频，退回静态图。
+ */
+.gmedia {
+  margin: 20px 0 26px;
+}
+
+.gmedia video,
+.gmedia-img,
+.gmedia-fallback {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+  background: #17191d;
+}
+
+.gmedia-fallback {
+  display: none;
+}
+
+.gmedia figcaption {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--vp-c-text-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gmedia video {
+    display: none;
+  }
+
+  .gmedia-fallback {
+    display: block;
+  }
+}

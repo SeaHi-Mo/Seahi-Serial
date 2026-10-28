@@ -8,6 +8,10 @@
 | WebView2 | Usually preinstalled; the installer guides you if it is missing |
 | Driver | USB-serial adapters (CH340 / CP210x / FTDI…) need their driver installed |
 
+::: tip Animations are real recordings
+The moving images on this page are screen recordings of the actual app, not mockups.
+:::
+
 ## Install
 
 1. Open [Releases](https://github.com/SeaHi-Mo/Seahi-Serial/releases/latest) and download the `.msi` or `Seahi-Serial-Setup-*.exe`.
@@ -20,6 +24,12 @@
 2. Pick the COM port in the toolbar (the list refreshes on plug/unplug).
 3. Baud rate defaults to `115200`; typing a custom value works too.
 4. Click **Start monitoring**. The button turns into *Stop monitoring* and output starts scrolling.
+
+<GuideMedia
+  src="/img/guide/serial.mp4"
+  poster="/img/guide/serial.png"
+  caption="Real app: pick the COM port, click Start monitoring, then type a command and press Enter."
+/>
 
 ## Send something and read the answer
 
