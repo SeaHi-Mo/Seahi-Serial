@@ -1,0 +1,32 @@
+/**
+ * 文档页铺满窗口（2026-10 用户要求：左侧快速导航贴浏览器左边缘、右侧目录贴右边缘）。
+ *
+ * VitePress 默认在 ≥90rem 时把内容区按 1440px 居中：`.VPContent.has-sidebar` 左右各有
+ * `(100% - 1440px) / 2` 的空白，`.VPSidebar` 也用同样的偏移把导航文字推进画面中间。
+ * 这里把这层「居中留白」去掉，并让顶部导航一起铺满；正文仍保留可读的最大行长。
+ */
+@media (min-width: 90rem) {
+  .VPContent.has-sidebar {
+    padding-inline-start: var(--vp-sidebar-width) !important;
+    padding-inline-end: 0 !important;
+  }
+
+  .VPSidebar {
+    width: var(--vp-sidebar-width) !important;
+    padding-inline-start: 2rem !important;
+  }
+
+  .VPNavBar.has-sidebar {
+    --vp-nav-col-offset: var(--vp-sidebar-width) !important;
+  }
+
+  .VPNavBar .container,
+  .VPFooter .container {
+    max-width: none !important;
+  }
+
+  /* 比默认的 43rem 宽一些：截图/表格更好看，同时行长不失控 */
+  .VPDoc .content-container {
+    max-width: 60rem !important;
+  }
+}

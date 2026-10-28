@@ -7,6 +7,7 @@ import './styles/base.css'
 import './styles/home.css'
 import './styles/landing.css'
 import './styles/guide-media.css'
+import './styles/docs-layout.css'
 
 export default {
   extends: DefaultTheme,
