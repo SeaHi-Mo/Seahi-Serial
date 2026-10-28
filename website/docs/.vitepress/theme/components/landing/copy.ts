@@ -51,7 +51,7 @@ const zh: LandingCopy = {
     titleSub: '一个窗口，把设备调通',
     lede1: '多串口分栏、xterm 真终端、蓝牙 GATT、ADB 与 WSL —— 调试时在几个工具之间来回切的日子结束了。',
     lede2: '内置 54 个 MCP 工具，让 AI 直接读日志、发指令；12 套主题，盯一整天也不刺眼。',
-    cta: '下载 Windows 版',
+    cta: '下载安装包',
     ghostLabel: 'GitHub',
     winLabel: '产品界面预览：多串口输出区与快速指令面板',
   },
@@ -127,7 +127,7 @@ const en: LandingCopy = {
       'Multiple serial panes, a real xterm terminal, BLE GATT, ADB and WSL — no more juggling three tools while debugging.',
     lede2:
       '54 built-in MCP tools let an AI read logs and send commands; 12 themes keep it easy on the eyes all day.',
-    cta: 'Download for Windows',
+    cta: 'Download installer',
     ghostLabel: 'GitHub',
     winLabel: 'Product preview: multiple serial panes with the quick-command panel',
   },
