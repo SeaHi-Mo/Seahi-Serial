@@ -300,6 +300,7 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
 - `website/` — **文档站**（VitePress，独立 `package.json` + lockfile，**vitepress 不进根 package.json**）：
   **中文在根路径、英文在 `/en/`**；所有界面文案 / nav / sidebar 都在 `docs/.vitepress/locales/*`（新增语言 = 加一个
   语言包 + 在 `locales/index.ts` 登记 + 建 `docs/<前缀>/` 目录），`config.mts` 只留 base/head/全站 themeConfig。
+  英文指南与中文一一对应（`docs/en/guide/` 下 7 篇）；新增或修改中文指南页时要同步英文页和 `en-US.ts` 侧边栏。
   **首页是 `layout: false` + `components/landing/LandingHome.vue`**（复刻 deepseek.com/harness 的版式，配色换成软件
   默认主题的 `#1c1e22 / #2e3138 / #4a7ab5`；文案在 `landing/copy.ts`）。
   ⚠️ **首页的产品窗口与功能卡片一律用真实程序画面**（`docs/public/img/landing/`，由 release 构建 + 真实设备

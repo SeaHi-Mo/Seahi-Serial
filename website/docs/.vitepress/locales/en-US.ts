@@ -5,7 +5,7 @@ const RELEASES = `${REPO}/releases/latest`
 
 /**
  * English：挂在 `/en/` 下。
- * ⚠️ 侧边栏只能指向**已经存在的 /en/ 页面** —— 指向没翻译的页面会被 VitePress 的失效链接检查判为构建失败。
+ * 侧边栏分组与中文保持一致；新增英文页时同步更新这里（指向不存在的页面会构建失败）。
  */
 export const enUS: LocaleContent = {
   label: 'English',
@@ -25,6 +25,25 @@ export const enUS: LocaleContent = {
       {
         text: 'Get started',
         items: [{ text: 'Quick start', link: '/en/guide/quick-start' }],
+      },
+      {
+        text: 'Serial',
+        items: [
+          { text: 'Serial debugging', link: '/en/guide/serial' },
+          { text: 'Terminal mode', link: '/en/guide/terminal' },
+          { text: 'Quick commands', link: '/en/guide/quick-cmds' },
+        ],
+      },
+      {
+        text: 'Devices',
+        items: [
+          { text: 'Bluetooth', link: '/en/guide/ble' },
+          { text: 'ADB and WSL', link: '/en/guide/adb-wsl' },
+        ],
+      },
+      {
+        text: 'Reference',
+        items: [{ text: 'FAQ', link: '/en/guide/faq' }],
       },
     ],
     '/en/mcp/': [

@@ -52,8 +52,8 @@ Use **Save log** to keep a permanent copy.
 
 ## Next
 
-- [Serial debugging](/guide/serial): panes, line endings, DTR/RTS, logs, and workflows
-- [Terminal mode](/guide/terminal): turn the output area into a terminal
-- [Quick commands](/guide/quick-cmds): send commands in repeating groups
-- [Bluetooth](/guide/ble)
-- [ADB and WSL](/guide/adb-wsl)
+- [Serial debugging](/en/guide/serial): panes, line endings, DTR/RTS, logs, and workflows
+- [Terminal mode](/en/guide/terminal): turn the output area into a terminal
+- [Quick commands](/en/guide/quick-cmds): send commands in repeating groups
+- [Bluetooth](/en/guide/ble)
+- [ADB and WSL](/en/guide/adb-wsl)
