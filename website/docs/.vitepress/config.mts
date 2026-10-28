@@ -1,13 +1,33 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { defineConfig } from 'vitepress'
 import type { DefaultTheme } from 'vitepress'
 import { locales } from './locales/index.ts'
 
 /**
- * 版本号由 CI 注入（tag 名，例如 v0.5.20）；本地构建/预览显示 dev。
+ * 版本号优先取 CI 注入的 APP_VERSION（tag 名，例如 v0.5.21）。
+ * 没有时从仓库根目录的 package.json 读取 —— Cloudflare Pages 这类只跑
+ * `npm run build` 的环境不需要额外配置环境变量，发版时更新 package.json 即可。
  * 走 themeConfig 而不是 Vite 的 define：define 在 SSR 渲染阶段不生效，
  * 首页那个 <VersionBadge /> 会在构建时报 "__APP_VERSION__ is not defined"。
  */
-const APP_VERSION = process.env.APP_VERSION || 'dev'
+function fallbackVersion(): string {
+  let dir = process.cwd()
+  for (let i = 0; i < 4; i++) {
+    try {
+      const pkg = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8'))
+      if (pkg.name === 'serial-debugger' && /^\d+\.\d+\.\d+$/.test(pkg.version)) {
+        return `v${pkg.version}`
+      }
+    } catch {
+      // 继续向上一级找
+    }
+    dir = resolve(dir, '..')
+  }
+  return 'dev'
+}
+
+const APP_VERSION = process.env.APP_VERSION || fallbackVersion()
 
 const REPO = 'https://github.com/SeaHi-Mo/Seahi-Serial'
 

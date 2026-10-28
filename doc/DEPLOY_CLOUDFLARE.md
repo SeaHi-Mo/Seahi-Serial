@@ -70,3 +70,23 @@ PR 只做构建校验（`npm ci && npm run build`），不部署。
 
 `docs.yml` 与 `build.yml` **完全独立**：站点构建失败不会挡住发版，发版失败也不会让站点停在半新半旧的状态。
 代价是「文档改了要等下一次 tag」——着急就手动 Run workflow。
+
+## 七、改用 Cloudflare 自己的 Git 构建（可选）
+
+如果不想用 GitHub Actions，也可以让 Cloudflare Pages 直接连 Git 构建：
+
+| 配置项 | 值 |
+|---|---|
+| Root directory | `website` |
+| Build command | `npm run build` |
+| Build output directory | `docs/.vitepress/dist` |
+| 环境变量 | `NODE_VERSION=22` |
+
+`APP_VERSION` 可以不填：没有这个环境变量时，`config.mts` 会读取仓库根目录 `package.json` 的 `version`。
+GitHub Actions 的 tag 构建仍然会用 tag 名覆盖它。
+
+注意 Git 集成项目和 Direct Upload 是两种项目，不能互相转换；用 Git 集成就不要再用 `wrangler pages deploy` 部署同一个项目。
+
+版本下拉依赖 git tag。Cloudflare 的浅克隆通常没有 tag，`sync-releases.mjs` 在本地 tag 为空时会用
+`git ls-remote --tags` 从远端仓库取一次，版本列表仍然完整。
+
