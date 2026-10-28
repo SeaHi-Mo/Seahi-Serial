@@ -302,10 +302,12 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
   语言包 + 在 `locales/index.ts` 登记 + 建 `docs/<前缀>/` 目录），`config.mts` 只留 base/head/全站 themeConfig。
   **首页是 `layout: false` + `components/landing/LandingHome.vue`**（复刻 deepseek.com/harness 的版式，配色换成软件
   默认主题的 `#1c1e22 / #2e3138 / #4a7ab5`；文案在 `landing/copy.ts`）。
-  ⚠️ **首页的产品窗口与功能卡片一律用真实程序截图**（`docs/public/img/landing/*.png`，由 release 构建 + 真实设备
-  截取），**不许再照着源码用 DOM 临摹界面**（2026-10 用户明确要求：页面展示的必须是程序真实渲染；
-  `AppWindow.vue` / `FeatureCards.vue` 里只放 `<img>`，不再有 UI 图标生成器）。换界面后按 `AppWindow.vue`
-  顶部注释的步骤重新截图；「真终端」卡片配的是真实 Linux 串口设备的终端画面（ADB 无真机时不放 ADB 卡片）。
+  ⚠️ **首页的产品窗口与功能卡片一律用真实程序画面**（`docs/public/img/landing/`，由 release 构建 + 真实设备
+  截图或逐帧录屏），**不许再照着源码用 DOM 临摹界面、也不许用 CSS 假动画**（2026-10 用户明确要求：页面展示的
+  必须是程序真实渲染；`AppWindow.vue` / `FeatureCards.vue` 里只放 `<img>` / `<video>`，不再有 UI 图标生成器）。
+  hero 与「真终端」卡片是真实录制的 `hero.mp4` / `terminal.mp4`（窗口逐帧抓取 → H.264，同名 png 作 poster，
+  `prefers-reduced-motion` 时退回静态帧）；其余卡片是真实截图。换界面后按 `AppWindow.vue` 顶部注释重新截图/录屏。
+  「真终端」配真实 Linux 串口设备的终端画面；ADB 无真机时不放 ADB 卡片。
   自有组件放 `docs/.vitepress/theme/components/`，样式变量在 `docs/.vitepress/theme/styles/vars.css`（换风格先改它），
   落地页样式在 `styles/landing*.css`（类名统一 `lp-` 前缀，别和默认主题的 `.card/.nav` 撞）。
   `docs/mcp/tools.md` 由 `scripts/sync-mcp-tools.mjs` 从 `doc/MCP_TOOLS.md` 生成（生成物，不入库），`predev`/`prebuild`

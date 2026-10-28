@@ -16,6 +16,10 @@ const t = computed(() => getCopy(lang.value))
  * - feature-ble：BLE 扫描结果与设备详情（本机蓝牙适配器真实扫到的设备）
  * - feature-terminal：终端模式接真实 Linux 设备跑 `ls` / `uname` / `uptime`
  *
+ * 其中 hero 与 terminal 两张是**真实录制的动画**（`hero.mp4` / `terminal.mp4`，由窗口逐帧抓取后编码，
+ * 不是 CSS 动画）：hero 演示串口日志滚动 + 快速指令侧栏；terminal 演示真实敲命令与彩色输出。
+ * `prefers-reduced-motion` 用户看到的是同名 `.png` 静态帧。
+ *
  * 更新方式：跑起程序、进入对应界面、截图覆盖 `docs/public/img/landing/*.png`。
  * **不要再用源码临摹界面**（2026-10 用户明确要求：首页展示的必须是真实渲染）。
  */
@@ -79,7 +83,12 @@ const t = computed(() => getCopy(lang.value))
           <p>{{ t.section.terminal.body }}</p>
         </div>
         <div class="lp-media lp-media-wide">
-          <img class="lp-shot" src="/img/landing/feature-terminal.png" :alt="t.section.terminal.title" loading="lazy" />
+          <div class="motion">
+            <video autoplay muted loop playsinline preload="metadata" poster="/img/landing/feature-terminal.png" :aria-label="t.section.terminal.title">
+              <source src="/img/landing/terminal.mp4" type="video/mp4" />
+            </video>
+            <img class="lp-shot motion-still" src="/img/landing/feature-terminal.png" :alt="t.section.terminal.title" loading="lazy" />
+          </div>
         </div>
       </article>
     </div>

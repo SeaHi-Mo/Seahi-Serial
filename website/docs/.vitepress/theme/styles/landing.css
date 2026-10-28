@@ -453,6 +453,32 @@
   width: 100%;
   height: auto;
 }
+.aw-shot video {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+/* 真实录制动画（hero / 终端）：减少动态效果时退回同名静态帧 */
+.motion {
+  position: relative;
+  width: 100%;
+}
+.motion video {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.motion .motion-still {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .motion video {
+    display: none;
+  }
+  .motion .motion-still {
+    display: block;
+  }
+}
 .lp-card-wide {
   grid-column: 1 / -1;
 }

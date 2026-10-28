@@ -7,18 +7,21 @@ const { lang } = useData()
 const t = computed(() => getCopy(lang.value))
 
 /**
- * 首页产品窗口 = **真实程序的截图**，不是 DOM 临摹。
+ * 首页产品窗口 = **真实程序的录制画面**，不是 DOM 临摹、也不是 CSS 假动画。
  *
- * 截图来源：v0.5.21 release 构建，窗口 1440×950，主分栏接真实 Linux 设备（COM9 /
- * USB-SERIAL CH340），快速指令侧栏展开（数据来自程序自己的配置文件）。
- * 生成/更新方式：跑起程序 → 连接设备 → 按需切换界面 → 窗口截图另存到
- * `docs/public/img/landing/hero.png`。**别再照着源码重画一个"像界面"的东西** ——
- * 页面上展示的必须是程序真的渲染出来的画面。
+ * hero.mp4 由 v0.5.21 release 构建逐帧抓窗口（15fps）后编码：主分栏接真实 Linux 设备
+ * （COM9 / USB-SERIAL CH340），期间真的发送命令、日志真的滚动，快速指令侧栏的数据
+ * 来自程序自己的配置。同名 hero.png 是第一帧（poster + 减少动态效果时的静态回退）。
+ * 更新流程：跑起程序 → 连接设备 → 按需切换界面 → 录帧/截图覆盖 `docs/public/img/landing/`。
+ * **别再照着源码重画一个"像界面"的东西** —— 页面上展示的必须是程序真的渲染出来的画面。
  */
 </script>
 
 <template>
-  <figure class="aw-shot" role="img" :aria-label="t.hero.winLabel">
-    <img src="/img/landing/hero.png" width="1456" height="959" :alt="t.hero.winLabel" loading="lazy" />
+  <figure class="aw-shot motion" role="img" :aria-label="t.hero.winLabel">
+    <video autoplay muted loop playsinline preload="metadata" poster="/img/landing/hero.png" :aria-label="t.hero.winLabel">
+      <source src="/img/landing/hero.mp4" type="video/mp4" />
+    </video>
+    <img class="motion-still" src="/img/landing/hero.png" width="1456" height="959" :alt="t.hero.winLabel" loading="lazy" />
   </figure>
 </template>
