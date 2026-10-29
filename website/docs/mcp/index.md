@@ -10,7 +10,7 @@
 | 传输 | **Streamable HTTP**（`POST /mcp`，新客户端默认）与**遗留 SSE**（`GET /sse` + `POST /messages`）并存，同一套工具、同一张会话表 |
 | 监听地址 | **只监听回环**（`127.0.0.1` / `::1` / `localhost`），外网连不上 |
 | 鉴权 | 每个请求都要带 token（`?token=` 或 `Authorization: Bearer`）；`/healthz` 是唯一免鉴权端点，只回 `{"ok":true}` |
-| 开关 | 顶栏 MCP 图标 → 弹窗内启用/关闭，状态存 `ai-config.json` |
+| 开关 | 顶栏 MCP 图标 →「MCP 服务器」窗口内启用/关闭，状态存 `ai-config.json` |
 
 ## 一键接入
 
@@ -26,7 +26,7 @@ npx seahi-serial-mcp status
 npx seahi-serial-mcp uninstall
 ```
 
-也可以点开顶栏 MCP 弹窗，复制「连接地址」手动配置。http 传输的 `type` 各家写法不同（VS Code 写 `http`，Cline 认 `streamableHttp`），安装器与弹窗两种都给。
+也可以点开顶栏的「MCP 服务器」窗口，按客户端类型复制对应传输（Streamable HTTP / 遗留 SSE）的连接地址或客户端配置；窗口里每个控件的说明见 [MCP 接入](/guide/mcp)。http 传输的 `type` 各家写法不同（VS Code 写 `http`，Cline 认 `streamableHttp`），安装器与窗口两种都给。
 
 ## 安全模型
 

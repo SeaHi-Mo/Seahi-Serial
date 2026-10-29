@@ -10,7 +10,7 @@ SeaHi Serial ships a [Model Context Protocol](https://modelcontextprotocol.io/) 
 | Transports | **Streamable HTTP** (`POST /mcp`) and **legacy SSE** (`GET /sse` + `POST /messages`), same tools and sessions |
 | Binding | **Loopback only** (`127.0.0.1` / `::1` / `localhost`) |
 | Auth | Token on every request (`?token=` or `Authorization: Bearer`); `/healthz` is the only unauthenticated endpoint and returns `{"ok":true}` |
-| Toggle | MCP button in the title bar; state lives in `ai-config.json` |
+| Toggle | MCP icon in the title bar; on/off in the **MCP 服务器** window; state lives in `ai-config.json` |
 
 ## Connect
 
@@ -21,7 +21,7 @@ npx seahi-serial-mcp status
 npx seahi-serial-mcp uninstall
 ```
 
-You can also copy the endpoint from the MCP dialog in the app.
+You can also open the **MCP 服务器** window and copy the URL or client config for the matching transport (Streamable HTTP / legacy SSE). See [MCP setup](/en/guide/mcp) for a control-by-control description of the window.
 
 ## Safety model
 
