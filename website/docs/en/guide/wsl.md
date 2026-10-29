@@ -2,6 +2,22 @@
 
 The **WSL port mapping** button in the title bar maps a USB serial port into WSL so the device can be used directly inside WSL.
 
+## Starting WSL quickly
+
+The top of the WSL panel lists the distributions installed on this machine. The names come from the real output of `wsl --list --verbose`; you do not need to open Windows Terminal first.
+
+- A stopped distribution shows **Start**. Click it to start that distribution.
+- A running distribution shows **Stop** and its uptime. **Stop** shuts the distribution down.
+- The terminal icon opens that distribution in Windows Terminal.
+- With multiple distributions, use the **Map to** dropdown to choose the target; leaving it empty uses the default distribution.
+- While WSL is stopped, device mapping and the WSL pane's **Start monitoring** button are unavailable. Start a distribution first.
+
+<GuideMedia
+  src="/img/guide/wsl-quick.mp4"
+  poster="/img/guide/wsl-quick.png"
+  caption="Real app: starting Ubuntu-20.04 from the WSL panel; the status and uptime update immediately."
+/>
+
 ## Mapping a device
 
 - It requires [usbipd-win](https://github.com/dorssel/usbipd-win), which is included in the installer. Binding and attaching need administrator privileges.
@@ -15,12 +31,21 @@ The **WSL port mapping** button in the title bar maps a USB serial port into WSL
   caption="The WSL mapping panel listing usbipd devices and the installed distribution."
 />
 
-## Debugging from a WSL pane
+## After mapping: debugging from a WSL pane
 
-A WSL pane can open a serial port inside WSL and send or receive data directly. It uses a Python bridge with a persistent shell to avoid process startup overhead on every operation.
+Once the device is mapped, the WSL pane is the serial console for it; you do not need to keep a Windows-side monitor open.
 
-The **Launch** button opens the distribution in Windows Terminal. The distribution name comes from the real output of `wsl --list --verbose`; if parsing fails, the panel shows the original WSL error instead of launching with a wrong name.
+1. Make sure the distribution is running (see **Starting WSL quickly**). The pane stays unavailable while WSL is stopped.
+2. Tick **Map** on the target device in the WSL device list. The first time, Windows asks for administrator approval; wait until the state shows mapped.
+3. The device row shows its WSL path, for example `/dev/ttyUSB0`. It can take a few seconds to appear after mapping; the list refreshes automatically.
+4. In the WSL pane below, click the refresh button next to the port dropdown and choose that `/dev/ttyUSB*` or `/dev/ttyACM*` port.
+5. Set the baud rate, line ending and view mode, then click **Start monitoring**. Sending and receiving work like a normal serial pane: text/HEX send, send history and the session log cache are all available.
+6. For an interactive terminal, turn on the pane's terminal mode. The WSL pane uses direct send by default, so keys go to the Linux-side device unchanged; enable line buffering if the device expects whole lines.
+7. When the device disconnects, the pane shows *Waiting for connection*. Check that the device is still plugged in and still mapped, then map it again and refresh the port list if needed.
 
-If read polling fails repeatedly, the pane is treated as disconnected and shows *Waiting for connection*. If a loop is running, it stops as well.
+If the WSL pane's port list stays empty:
 
-When `sg` is unavailable or the user is not in the `dialout` group, the bridge only uses `sg` when it can switch groups non-interactively; otherwise it runs `python3` directly. A missing `sg` does not prevent startup. If the user is not in `dialout`, add the user to the group or attach the device through usbipd.
+- Check that the distribution is actually running, not just that a Windows Terminal window opened.
+- Go back to the WSL panel and confirm the device is mapped and its WSL path has appeared.
+- Click refresh in the WSL pane; or unmap and map the device again.
+- Inside WSL, run `ls /dev/ttyUSB* /dev/ttyACM*` to confirm the device node exists.
