@@ -6,6 +6,7 @@ The **WSL port mapping** button in the title bar maps a USB serial port into WSL
 
 - It requires [usbipd-win](https://github.com/dorssel/usbipd-win), which is included in the installer. Binding and attaching need administrator privileges.
 - Automatic mapping and manual binding are both supported. Windows shows an authorisation dialog during binding that must be confirmed.
+- If the target COM port is being monitored in a pane, the app stops that pane before mapping the device.
 - After mapping, WSL should show a new `/dev/ttyUSB*` or `/dev/ttyACM*` device.
 
 <GuideMedia

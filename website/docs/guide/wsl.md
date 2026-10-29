@@ -6,6 +6,7 @@
 
 - 依赖 [usbipd-win](https://github.com/dorssel/usbipd-win)，安装包里已经包含。绑定和映射需要管理员权限。
 - 支持自动映射和手动绑定。绑定过程中 Windows 会弹出授权窗口，需要在系统弹框上确认。
+- 映射前如果目标 COM 口正在某个分栏里监控，程序会先停止该分栏的监控，再执行映射。
 - 映射完成后，WSL 里会出现新的 `/dev/ttyUSB*` 或 `/dev/ttyACM*`。
 
 <GuideMedia

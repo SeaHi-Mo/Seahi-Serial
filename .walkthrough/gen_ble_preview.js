@@ -3473,6 +3473,14 @@ try {
     '函数体内按 busid 取设备（唯一真源 _wslDevices）');
   check(/if \(mapBusid\) itemRes\.mapRequest = mcpWslMapOutcome\(mapBusid, after\);/.test(html),
     '界面桥把 mapRequest 挂进回执（同步回执只能说"发起了"，不能说"映射好了"）');
+  // 映射前必须先停掉目标 COM 口的监控：attach 后 Windows 侧端口消失，
+  // 继续开着监控只会连续读失败/自动重连，端口也释放不干净。
+  check(/async function stopMonitoringForWslMap\(portName\)/.test(html),
+    '存在映射前停止目标 COM 口监控的 helper');
+  check(/!m\.isWsl && m\.portName === portName/.test(html),
+    'helper 只停 Windows 分栏，且只停目标端口（不误伤 WSL 分栏）');
+  check((html.match(/await stopMonitoringForWslMap\(device\.port\)/g) || []).length >= 2,
+    '手动映射和自动映射都在 attach 前调用停止监控');
   check(/id="wslMap-' \+ safeBusid \+ '" data-wsl-busid="' \+ safeBusid \+ '"/.test(html),
     '设备行给「映射」复选框写了 id 与 data-wsl-busid（前者给路径，后者给回执判据）');
   check(/id="wslAutoMap-' \+ safeBusid \+ '"/.test(html),
@@ -8563,7 +8571,40 @@ try {
   check(/showToast\('WSL 操作失败: ' \+ e, 'error'\)/.test(html),
     '发行版「启动/关闭」失败有 toast 提示（以前只回退按钮文字，观感是"点了没反应"）');
 
-  runQcmdLoopAsyncTests().then(function () {
+  async function runWslMapStopAsyncTests() {
+    const disconnected = [];
+    const logs = [];
+    const sbMap = {
+      monitors: {
+        main: { isConnected: true, portName: 'COM9' },
+        x2: { isConnected: true, portName: 'COM9' },
+        wsl: { isConnected: true, isWsl: true, portName: '/dev/ttyUSB0' },
+        other: { isConnected: true, portName: 'COM17' },
+        closed: { isConnected: false, portName: 'COM9' },
+      },
+      appendOutput: function(mid, type, text) { logs.push({ mid: mid, text: text }); },
+      disconnectPort: async function(mid) {
+        disconnected.push(mid);
+        sbMap.monitors[mid].isConnected = false;
+        sbMap.monitors[mid].portName = '';
+      },
+    };
+    vm.createContext(sbMap);
+    vm.runInContext(extractFunction('stopMonitoringForWslMap'), sbMap);
+    await sbMap.stopMonitoringForWslMap('COM9');
+    check(disconnected.sort().join(',') === 'main,x2',
+      '映射前停监控：只停 COM9 上正在打开的分栏（main、x2），不碰其它端口');
+    check(logs.length === 2 && logs.every((l) => l.text.indexOf('COM9') !== -1),
+      '停监控时在对应分栏写一条说明（用户能看到为什么自己停了）');
+    check(sbMap.monitors.wsl.isConnected === true,
+      '映射前停监控：不误伤 WSL 分栏（它开的是 /dev/ttyUSB0，不是 Windows COM）');
+    check(sbMap.monitors.other.isConnected === true,
+      '映射前停监控：不误伤其它 COM 口');
+    check(sbMap.monitors.closed.isConnected === false,
+      '映射前停监控：本来就没打开的分栏不会被多断一次');
+  }
+
+  runQcmdLoopAsyncTests().then(runWslMapStopAsyncTests).then(function () {
     console.log(`\n结果: ${pass} passed, ${fail} failed`);
     process.exit(fail ? 1 : 0);
   }, function (e) {

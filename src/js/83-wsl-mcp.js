@@ -283,6 +283,24 @@ function showWslMapApproval(device, distro) {
     });
 }
 
+/// 映射前先停掉目标 COM 口上的监控。
+///
+/// usbipd attach 会把设备从 Windows 侧摘走；如果这里还开着监控，读线程只会连续
+/// 报错/触发自动重连，端口也没法干净释放。停止监控放在真正的 attach 之前。
+async function stopMonitoringForWslMap(portName) {
+    if (!portName) return;
+    var opened = [];
+    Object.keys(monitors).forEach(function(mid) {
+        var m = monitors[mid];
+        if (m && m.isConnected && !m.isWsl && m.portName === portName) opened.push(mid);
+    });
+    if (!opened.length) return;
+    await Promise.all(opened.map(function(mid) {
+        appendOutput(mid, 'sys', '映射到 WSL：先停止 ' + portName + ' 的监控');
+        return disconnectPort(mid);
+    }));
+}
+
 /// 映射/取消映射一台设备。
 ///
 /// **按 busid 寻址，不按下标**：设备表每 5 秒 `innerHTML` 重画一次，下标随时会过期；
@@ -300,6 +318,8 @@ async function toggleWslMapping(busid, checked) {
     
     try {
         if (checked) {
+            // 目标 COM 口还开着监控时，先停止；否则 attach 后读线程会连续报错/重连
+            if (device.hasCom && device.port) await stopMonitoringForWslMap(device.port);
             // 两阶段映射：先探测是否需要管理员权限；需要时弹出独立授权窗口，确认后才提权执行
             var res = await invokeTimeout('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null, authorized: false }, 60000);
             if (res && res.needsApproval) {
@@ -428,21 +448,25 @@ async function autoMapCheck() {
                 var autoAttachId = d.hasCom ? d.port : d.busid;
                 (function(device, attachId) {
                     tasks.push(
-                        invokeTimeout('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null, authorized: true }, 60000)
-                            .then(function(result) {
-                                device.status = 'mapped';
-                                delete _wslAutoFailCount[device.vidpid];
-                            })
-                            .catch(function(e) {
-                                console.error('[WSL] 自动映射失败:', e);
-                                _wslAutoFailCount[device.vidpid] = (_wslAutoFailCount[device.vidpid] || 0) + 1;
-                                if (_wslAutoFailCount[device.vidpid] === 3) {
-                                    showToast('自动映射连续失败 3 次，已暂停该设备 (' + (device.name || device.busid) + ')，请检查 WSL 状态', 'error');
-                                }
-                            })
-                            .finally(function() {
-                                delete _wslBusy[device.busid];
-                            })
+                        (async function() {
+                            // 自动映射同样先把目标 COM 口的监控停掉
+                            if (device.hasCom && device.port) await stopMonitoringForWslMap(device.port);
+                            return invokeTimeout('attach_port_to_wsl', { portName: attachId, distro: _wslTargetDist || null, authorized: true }, 60000)
+                                .then(function(result) {
+                                    device.status = 'mapped';
+                                    delete _wslAutoFailCount[device.vidpid];
+                                })
+                                .catch(function(e) {
+                                    console.error('[WSL] 自动映射失败:', e);
+                                    _wslAutoFailCount[device.vidpid] = (_wslAutoFailCount[device.vidpid] || 0) + 1;
+                                    if (_wslAutoFailCount[device.vidpid] === 3) {
+                                        showToast('自动映射连续失败 3 次，已暂停该设备 (' + (device.name || device.busid) + ')，请检查 WSL 状态', 'error');
+                                    }
+                                })
+                                .finally(function() {
+                                    delete _wslBusy[device.busid];
+                                });
+                        })()
                     );
                 })(d, autoAttachId);
             }
