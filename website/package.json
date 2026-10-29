@@ -7,9 +7,10 @@
   "scripts": {
     "sync:tools": "node scripts/sync-mcp-tools.mjs",
     "sync:releases": "node scripts/sync-releases.mjs",
-    "predev": "npm run sync:tools && npm run sync:releases",
+    "sync:changelog": "node scripts/sync-changelog.mjs",
+    "predev": "npm run sync:tools && npm run sync:releases && npm run sync:changelog",
     "dev": "vitepress dev docs",
-    "prebuild": "npm run sync:tools && npm run sync:releases",
+    "prebuild": "npm run sync:tools && npm run sync:releases && npm run sync:changelog",
     "build": "vitepress build docs",
     "preview": "vitepress preview docs"
   },

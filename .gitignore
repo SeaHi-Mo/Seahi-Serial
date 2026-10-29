@@ -58,3 +58,6 @@ website/docs/mcp/tools.md
 
 
 website/docs/.vitepress/theme/components/landing/releases.generated.ts
+
+website/docs/changelog.md
+website/docs/en/changelog.md

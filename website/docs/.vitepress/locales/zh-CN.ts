@@ -1,4 +1,5 @@
 import type { LocaleContent } from './types.ts'
+import { DOWNLOAD_ASSET } from '../download.ts'
 
 const REPO = 'https://github.com/SeaHi-Mo/Seahi-Serial'
 const RELEASES = `${REPO}/releases/latest`
@@ -12,8 +13,7 @@ export const zhCN: LocaleContent = {
 
   nav: [
     { text: '指南', link: '/guide/quick-start', activeMatch: '/guide/' },
-    { text: '下载', link: RELEASES },
-    { text: 'GitHub', link: REPO },
+    { text: '下载', link: DOWNLOAD_ASSET },
   ],
 
   sidebar: {

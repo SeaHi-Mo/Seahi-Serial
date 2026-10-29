@@ -1,0 +1,126 @@
+/**
+ * 文档页的快捷栏：导航下方一整行（横跨左侧导航之上），窄屏收进侧栏抽屉。
+ * 组件由 theme/index.ts 分别挂到 `layout-top`（桌面）与 `sidebar-nav-before`（窄屏）。
+ */
+:root {
+  --docs-tabs-height: 36px;
+}
+
+.docs-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2rem;
+}
+
+.docs-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--vp-c-text-2);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.2s;
+}
+
+.docs-tab:hover {
+  color: var(--vp-c-text-1);
+}
+
+.docs-tab.active {
+  color: var(--vp-c-brand-1);
+}
+
+.docs-tab.active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--vp-c-brand-1);
+}
+
+/* ---------- 桌面：整行快捷栏 ---------- */
+.docs-tabs--bar {
+  display: none;
+}
+
+@media (min-width: 60rem) {
+  .docs-tabs--bar {
+    position: fixed;
+    top: var(--vp-nav-height);
+    left: 0;
+    right: 0;
+    z-index: 21;
+    display: flex;
+    height: var(--docs-tabs-height);
+    padding: 2px 2rem 0;
+    border-bottom: 1px solid var(--vp-c-divider);
+    background: var(--vp-c-bg);
+  }
+
+  /* 让内容、左侧导航、右侧目录都从快捷栏下面开始 */
+  .VPContent {
+    padding-top: calc(var(--vp-nav-height) + var(--docs-tabs-height)) !important;
+  }
+
+  /* 侧栏整块下移（不是只加内边距）——否则它的不透明背景会盖住快捷栏左半段 */
+  .VPSidebar {
+    top: calc(var(--vp-nav-height) + var(--docs-tabs-height)) !important;
+    padding-top: 1.5rem !important;
+  }
+
+  .VPSidebar .curtain {
+    display: none !important;
+  }
+
+  .VPDoc .aside-container {
+    padding-top: calc(var(--vp-nav-height) + var(--docs-tabs-height) + 3rem) !important;
+  }
+
+  /* 导航栏底色的起始位置默认从侧栏右缘开始（左侧由侧栏自己铺），
+     但侧栏已被下移到快捷栏之下，那条缝会露出来 —— 这里让底色铺满整行 */
+  .VPNavBar.has-sidebar::before {
+    inset-inline: 0 !important;
+  }
+
+  /* 导航底边那条线在快捷栏上方会露出半截（快捷栏自己有 border-bottom）—— 整条去掉 */
+  .VPNavBar .divider {
+    display: none !important;
+  }
+
+  /* 搜索框紧跟标题（参考 DeepSeek 文档的排布）：标题按内容宽度，
+     不再按侧栏宽度占位，否则搜索框会被推到正文那一列 */
+  .VPNavBar .title {
+    min-width: 0 !important;
+    max-width: none !important;
+    width: auto !important;
+  }
+
+  .VPNavBar .content {
+    padding-inline-start: 1rem;
+  }
+
+  /* VitePress 在 60–80rem 会在这条位置渲染「本页目录」栏，会盖住快捷栏；
+     桌面端由快捷栏占这一行，直接收起它（≥80rem 它本来就是隐藏的） */
+  .VPLocalNav {
+    display: none !important;
+  }
+}
+
+/* ---------- 窄屏：放进侧栏抽屉 ---------- */
+.docs-tabs--side {
+  margin: 0 0 1.25rem;
+  padding: 0 0 0.6rem;
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+
+@media (min-width: 60rem) {
+  .docs-tabs--side {
+    display: none;
+  }
+}

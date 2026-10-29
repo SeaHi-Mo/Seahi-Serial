@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { defineConfig } from 'vitepress'
 import type { DefaultTheme } from 'vitepress'
 import { locales } from './locales/index.ts'
+import { APP_VERSION as APP_VERSION_RAW } from './download.ts'
 
 const DOCS_ROOT = resolve(process.cwd(), 'docs')
 
@@ -14,23 +15,7 @@ const DOCS_ROOT = resolve(process.cwd(), 'docs')
  * 走 themeConfig 而不是 Vite 的 define：define 在 SSR 渲染阶段不生效，
  * 首页那个 <VersionBadge /> 会在构建时报 "__APP_VERSION__ is not defined"。
  */
-function fallbackVersion(): string {
-  let dir = process.cwd()
-  for (let i = 0; i < 4; i++) {
-    try {
-      const pkg = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8'))
-      if (pkg.name === 'serial-debugger' && /^\d+\.\d+\.\d+$/.test(pkg.version)) {
-        return `v${pkg.version}`
-      }
-    } catch {
-      // 继续向上一级找
-    }
-    dir = resolve(dir, '..')
-  }
-  return 'dev'
-}
-
-const APP_VERSION = process.env.APP_VERSION || fallbackVersion()
+const APP_VERSION = APP_VERSION_RAW
 
 const REPO = 'https://github.com/SeaHi-Mo/Seahi-Serial'
 
@@ -44,6 +29,9 @@ const themeConfig: DefaultTheme.Config & { appVersion: string } = {
   siteTitle: 'SeaHi Serial',
   appVersion: APP_VERSION,
   socialLinks: [{ icon: 'github', link: REPO }],
+  // 本地搜索：索引在构建时生成。provider 必须写在**根** themeConfig 里，
+  // 只放语言包不会触发索引生成（搜索框会是空的）。
+  search: { provider: 'local' },
 }
 
 export default defineConfig({

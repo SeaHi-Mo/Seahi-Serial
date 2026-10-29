@@ -97,7 +97,7 @@ onBeforeUnmount(() => {
             <a href="/" :class="{ on: !isEn }">{{ t.lang.zh }}</a>
             <a href="/en/" :class="{ on: isEn }">{{ t.lang.en }}</a>
           </span>
-          <a class="lp-btn lp-btn-primary lp-btn-s" :href="downloadPage">{{ t.nav.download }}</a>
+          <a class="lp-btn lp-btn-primary lp-btn-s" :href="downloadAsset">{{ t.nav.download }}</a>
         </nav>
       </div>
     </header>
@@ -214,7 +214,7 @@ onBeforeUnmount(() => {
         <div class="lp-f-right">
           <a href="/guide/quick-start">{{ t.footer.docs }}</a>
           <span class="lp-f-sep">·</span>
-          <a :href="downloadPage">{{ t.footer.download }}</a>
+          <a :href="downloadAsset">{{ t.footer.download }}</a>
         </div>
       </div>
     </footer>

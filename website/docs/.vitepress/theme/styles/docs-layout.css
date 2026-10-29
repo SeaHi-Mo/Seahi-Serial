@@ -30,3 +30,12 @@
     max-width: 60rem !important;
   }
 }
+
+/* 更新日志没有页面大标题，正文顶部不留额外空白 */
+.changelog .vp-doc {
+  padding-top: 0 !important;
+}
+
+.changelog .vp-doc > div > h2:first-child {
+  margin-top: 0 !important;
+}

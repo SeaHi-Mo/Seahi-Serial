@@ -2,7 +2,7 @@
 
 这一版没有改动程序功能，更新集中在文档站：首页和指南改用真实界面截图与录屏，并补齐英文内容、MCP 接入说明和 Cloudflare 构建支持。安装包版本号随发布更新。
 
-### ✨ 文档站
+### ✨ 新增
 
 **1. 首页改用真实界面**
 
@@ -30,17 +30,3 @@
 - Cloudflare Pages Git 构建：未设置 `APP_VERSION` 时读取根目录 `package.json` 的版本号。
 - 构建环境没有本地 git tag 时，版本下拉通过远端 tag 列表生成，不再只剩当前版本。
 - `doc/DEPLOY_CLOUDFLARE.md` 补充 Cloudflare Git 构建配置。
-
-### 🧪 验证
-
-- `npm run docs:build` 通过；中英文页面、录屏播放、版本下拉按预期生成。
-- 程序功能与 v0.5.21 相同。
-
-### ⚠️ 安装说明（未签名）
-
-本项目为个人开发，安装包暂未做代码签名，Windows SmartScreen 可能提示「未知发布者」——
-这是未签名程序的**正常提示**，不等于病毒。请只从 GitHub Release 下载，并按
-[代码签名与安装说明](https://github.com/SeaHi-Mo/Seahi-Serial/blob/main/doc/SIGNING.md) 核对 SHA-256 后再运行。
-
-Release 会附带 `SHA256SUMS.txt` 与 cosign keyless 签名（`SHA256SUMS.txt.sigstore.json`）：
-先用 cosign 验签，再核对安装包 SHA-256（命令见说明文档 §4.1）。
