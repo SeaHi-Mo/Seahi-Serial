@@ -51,7 +51,7 @@ website/
     │   │       ├── landing.css       # 落地页布局、按钮、动效、响应式
     │   │       └── landing-window.css # 产品窗口与卡片示意图
     ├── index.md                 # 中文首页（layout: false + <LandingHome />）
-    ├── guide/                   # 中文指南：quick-start / serial / terminal / quick-cmds / ble / adb / faq
+    ├── guide/                   # 中文指南：quick-start / serial / terminal / quick-cmds / wsl / theme / ble / adb / faq
     ├── mcp/                     # 中文 MCP：index.md + tools.md（生成物）
     ├── en/                      # 英文，目录与中文镜像
     │   ├── index.md

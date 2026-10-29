@@ -28,6 +28,7 @@ export const zhCN: LocaleContent = {
           { text: '串口调试', link: '/guide/serial' },
           { text: '终端模式', link: '/guide/terminal' },
           { text: '快速指令', link: '/guide/quick-cmds' },
+          { text: 'WSL 端口映射', link: '/guide/wsl' },
         ],
       },
       {
@@ -43,7 +44,10 @@ export const zhCN: LocaleContent = {
       },
       {
         text: '参考',
-        items: [{ text: '常见问题', link: '/guide/faq' }],
+        items: [
+          { text: '主题', link: '/guide/theme' },
+          { text: '常见问题', link: '/guide/faq' },
+        ],
       },
     ],
     '/mcp/': [

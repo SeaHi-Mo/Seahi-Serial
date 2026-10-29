@@ -261,7 +261,8 @@ git push origin v0.x.x
 | 主题 | 文档 |
 |---|---|
 | 安装、连接第一个串口、发送命令 | [快速开始](https://www.seahi-serial.c-hi.cn/guide/quick-start) |
-| 分栏、行尾、DTR/RTS、WSL 端口映射、日志、工作流 | [串口调试](https://www.seahi-serial.c-hi.cn/guide/serial) |
+| 分栏、行尾、DTR/RTS、日志、工作流 | [串口调试](https://www.seahi-serial.c-hi.cn/guide/serial) |
+| 把 USB 串口映射进 WSL | [WSL 端口映射](https://www.seahi-serial.c-hi.cn/guide/wsl) |
 | 直发/行缓冲、终端行为、配色 | [终端模式](https://www.seahi-serial.c-hi.cn/guide/terminal) |
 | 循环组、超时、跳转、外部文件 | [快速指令](https://www.seahi-serial.c-hi.cn/guide/quick-cmds) |
 | 扫描、连接、GATT、CTS | [蓝牙调试](https://www.seahi-serial.c-hi.cn/guide/ble) |
@@ -269,6 +270,7 @@ git push origin v0.x.x
 | MCP 服务器与客户端接入 | [MCP 接入](https://www.seahi-serial.c-hi.cn/guide/mcp) |
 | 54 个 MCP 工具的参数与返回 | [MCP 工具参考](https://www.seahi-serial.c-hi.cn/mcp/tools) |
 | 安装签名、端口占用等 | [常见问题](https://www.seahi-serial.c-hi.cn/guide/faq) |
+| 12 套主题与配色 | [主题](https://www.seahi-serial.c-hi.cn/guide/theme) |
 
 ### 快速上手
 

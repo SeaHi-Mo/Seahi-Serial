@@ -31,6 +31,7 @@ export const enUS: LocaleContent = {
           { text: 'Serial debugging', link: '/en/guide/serial' },
           { text: 'Terminal mode', link: '/en/guide/terminal' },
           { text: 'Quick commands', link: '/en/guide/quick-cmds' },
+          { text: 'WSL port mapping', link: '/en/guide/wsl' },
         ],
       },
       {
@@ -46,7 +47,10 @@ export const enUS: LocaleContent = {
       },
       {
         text: 'Reference',
-        items: [{ text: 'FAQ', link: '/en/guide/faq' }],
+        items: [
+          { text: 'Themes', link: '/en/guide/theme' },
+          { text: 'FAQ', link: '/en/guide/faq' },
+        ],
       },
     ],
     '/en/mcp/': [

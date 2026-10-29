@@ -52,7 +52,8 @@ Use **Save log** to keep a permanent copy.
 
 ## Next
 
-- [Serial debugging](/en/guide/serial): panes, line endings, DTR/RTS, WSL port mapping, logs, and workflows
+- [Serial debugging](/en/guide/serial): panes, line endings, DTR/RTS, logs, and workflows
+- [WSL port mapping](/en/guide/wsl): map a USB serial port into WSL
 - [Terminal mode](/en/guide/terminal): turn the output area into a terminal
 - [Quick commands](/en/guide/quick-cmds): send commands in repeating groups
 - [MCP setup](/en/guide/mcp): connect an AI client
