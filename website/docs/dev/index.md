@@ -1,6 +1,6 @@
 # 开发指南
 
-写给要改这个仓库的人：环境、命令、测试、目录、发版。**项目约定以根目录的 [`AGENTS.md`](https://github.com/SeaHi-Mo/Seahi-Serial/blob/main/AGENTS.md) 为准**，这一页只做索引和最小上手路径。
+写给要改这个仓库的人：环境、命令、测试与目录。**项目约定以根目录的 [`AGENTS.md`](https://github.com/SeaHi-Mo/Seahi-Serial/blob/main/AGENTS.md) 为准**，这一页只做索引和最小上手路径。
 
 ## 环境
 
@@ -57,36 +57,53 @@ Seahi-Serial/
 
 前端**没有构建步骤**：`index.html` 按顺序加载 `css/*.css` 与 `js/*.js`，改动直接生效。
 
-## 发版
-
-版本号必须**五处一致**，CI 会校验，不一致直接构建失败：
-
-1. `src-tauri/Cargo.toml` 的 `version`
-2. `src-tauri/tauri.conf.json` 的 `version`
-3. `installer.iss` 的 `MyAppVersion`
-4. `package.json` 的 `version`
-5. `src-tauri/Cargo.lock` 里 `seahi-serial` 条目的 `version`
-
-流程：
-
-```bash
-# 1. 改上面五处版本号
-# 2. 更新 RELEASE_NOTES.md（只写功能：新增 / 修复 / 性能 / 删除）
-# 3. 提交并推送
-git commit -am "chore(release): v0.x.y"
-git push
-
-# 4. 打 tag 触发 CI，构建完成后直接发布为正式 Release
-git tag v0.x.y
-git push origin v0.x.y
-```
-
-⚠️ 版本号是**编译期烘焙**进 exe 的：只改文件不重编，装出来的应用仍是旧号。本地打包前先 `npm run build`。
-
 ## 用技能（skills）开发
 
 仓库里的 `skills/` 是写给 AI 助手的开发手册：项目约束、命令、常见坑都在里面。开始改代码前先让助手读对应的 SKILL.md，能少踩很多坑。详见 [技能](/dev/skills)。
 
+## 提交 PR
+
+### 前提条件
+
+动手前先确认这几条，否则 PR 大概率要打回：
+
+1. **分支基于最新的 `main`**，不要从过期分支拉；一个 PR 只做一件事。
+2. **能编译、能启动**：`npm run build` 通过；`npm run dev` 起得来，改动涉及界面时手动点一遍。
+3. **测试通过**：
+   - `cargo test --manifest-path src-tauri/Cargo.toml`
+   - `node .walkthrough/gen_ble_preview.js`（改前端必跑）
+   - `node .walkthrough/mcp_smoke.js`（改 MCP 必跑，需要应用正在运行）
+   - 改了文档站时 `npm run docs:build`，它会检查死链
+4. **版本号没动**（除非这个 PR 就是发版）：五个版本号文件只由发版提交修改，CI 会校验一致性。
+5. **没夹带无关改动**：顺手格式化、改编辑器配置、删空行这类噪声，会让 review 变得很痛苦。
+
+### 要求
+
+**标题**：`类型(范围): 一句话说明`，类型用 `feat` / `fix` / `docs` / `chore` / `refactor` / `test`，例如：
+
+```
+fix(logs): 「清除内容」连带清掉磁盘会话缓存
+docs(dev): 新增开发指南与 skills 使用指引
+```
+
+**描述**：写清三件事——为什么改（现象或 issue）、改了什么、怎么验证的。贴上报错原文、复现步骤或截图，比「修复了一些问题」有用得多。
+
+**不要提交**：
+
+- 生成物：`node_modules/`、`dist/`、`website/docs/mcp/tools.md`、`website/docs/changelog.md`、`*.generated.ts`（构建时自动生成，`.gitignore` 已覆盖）；
+- 本机路径、令牌、`config.json` 这类带个人环境的内容；
+- 与本次改动无关的重新格式化。
+
+**提交前自查**：
+
+```bash
+git diff --stat          # 改动范围是否符合预期
+git status               # 有没有误加的文件
+npm run docs:build       # 改了文档时确认无死链
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+**合并流程**：PR 由维护者 review 后合并；CI 会在 PR 上跑构建与测试，红了先修再喊人看。涉及发布产物的改动（版本号、安装器、CI）需要额外说明影响范围。
 ## 更多文档
 
 | 文件 | 内容 |

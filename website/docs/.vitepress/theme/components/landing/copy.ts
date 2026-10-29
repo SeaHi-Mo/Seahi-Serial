@@ -38,7 +38,7 @@ const zh: LandingCopy = {
   lang: { zh: '中文', en: 'EN' },
   hero: {
     titleA: 'SeaHi Serial',
-    titleSub: '所有调试口，收进一个窗口',
+    titleSub: '最用心的调试助手',
     lede1: '串口、蓝牙、ADB、WSL 各开一栏，互不打扰。',
     lede2: '内置 54 个 MCP 工具，AI 可以读日志、发指令。12 套主题可选。',
     cta: '下载安装包',
@@ -88,7 +88,7 @@ const en: LandingCopy = {
   lang: { zh: '中文', en: 'EN' },
   hero: {
     titleA: 'SeaHi Serial',
-    titleSub: 'Every debug port, one window.',
+    titleSub: 'The debug assistant that cares.',
     lede1: 'Serial, BLE, ADB and WSL, each in its own pane.',
     lede2: '54 built-in MCP tools let an AI read logs and send commands. 12 themes.',
     cta: 'Download installer',

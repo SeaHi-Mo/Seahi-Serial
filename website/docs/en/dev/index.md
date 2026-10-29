@@ -1,6 +1,6 @@
 # Development
 
-For people changing this repository: environment, commands, tests, layout, release. **The project rules in [`AGENTS.md`](https://github.com/SeaHi-Mo/Seahi-Serial/blob/main/AGENTS.md) are authoritative**; this page is the minimal path in.
+For people changing this repository: environment, commands, tests and layout. **The project rules in [`AGENTS.md`](https://github.com/SeaHi-Mo/Seahi-Serial/blob/main/AGENTS.md) are authoritative**; this page is the minimal path in.
 
 ## Requirements
 
@@ -49,26 +49,47 @@ Seahi-Serial/
 
 The frontend has **no build step**: `index.html` loads `css/*.css` and `js/*.js` in order.
 
-## Release
+## Pull requests
 
-The version must match in **five places** (CI checks it):
+### Before you start
 
-1. `src-tauri/Cargo.toml` — `version`
-2. `src-tauri/tauri.conf.json` — `version`
-3. `installer.iss` — `MyAppVersion`
-4. `package.json` — `version`
-5. `src-tauri/Cargo.lock` — the `seahi-serial` entry
+1. **Branch from the latest `main`.** One PR does one thing.
+2. **It builds and runs**: `npm run build` succeeds; `npm run dev` opens; click through the UI if your change touches it.
+3. **Tests pass**:
+   - `cargo test --manifest-path src-tauri/Cargo.toml`
+   - `node .walkthrough/gen_ble_preview.js` (required for frontend changes)
+   - `node .walkthrough/mcp_smoke.js` (required for MCP changes; needs the app running)
+   - `npm run docs:build` when you change the docs site — it checks for dead links
+4. **The version is unchanged** unless the PR *is* a release: the five version strings are only touched by release commits, and CI verifies they match.
+5. **No unrelated churn**: drive-by formatting, editor config or blank-line cleanup makes review painful.
 
-```bash
-# bump the five version strings, update RELEASE_NOTES.md (features only)
-git commit -am "chore(release): v0.x.y" && git push
+### Requirements
 
-git tag v0.x.y
-git push origin v0.x.y   # CI builds and publishes the release
+**Title**: `type(scope): what changed` using `feat` / `fix` / `docs` / `chore` / `refactor` / `test`, for example:
+
+```
+fix(logs): clear the on-disk session cache when clearing output
+docs(dev): add development guide and skills walkthrough
 ```
 
-⚠️ The version is baked into the binary at compile time — changing files without rebuilding ships the old number.
+**Description**: say why (symptom or issue), what changed, and how you verified it. Paste the error text, reproduction steps or a screenshot — far more useful than "fixed some issues".
 
+**Do not commit**:
+
+- generated files: `node_modules/`, `dist/`, `website/docs/mcp/tools.md`, `website/docs/changelog.md`, `*.generated.ts` (built automatically and covered by `.gitignore`);
+- machine-specific paths, tokens, or `config.json` contents;
+- reformatting unrelated to the change.
+
+**Before pushing**:
+
+```bash
+git diff --stat          # is the scope what you expect?
+git status               # any stray files?
+npm run docs:build       # dead-link check if you touched docs
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+**Merging**: the maintainer reviews and merges. CI runs the build and tests on the PR — fix red checks before asking for review. Changes that affect release artifacts (version, installer, CI) need a note about their impact.
 ## Use the skills
 
 `skills/` contains development handbooks for AI agents: constraints, commands and known pitfalls. Have your assistant read the relevant `SKILL.md` before editing. See [skills](/en/dev/skills).

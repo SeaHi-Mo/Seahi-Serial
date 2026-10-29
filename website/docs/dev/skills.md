@@ -47,7 +47,7 @@ Claude Code / Cline 等支持自定义指令或规则，把 `skills/` 指过去�
 2. 按任务挑技能：日常开发 → `seahi-serial-dev`；构建报错 → `win-build-access-denied`；
 3. 动手改；
 4. 跑测试：后端单测 + 前端断言集（改 MCP 再加 `mcp_smoke.js`）；
-5. 涉及版本号时，按 [开发指南 → 发版](/dev/#发版) 检查五处是否一致。
+5. 涉及版本号 / 发版时，按 `AGENTS.md` 的「版本号同步」检查。
 
 ## 写新技能
 

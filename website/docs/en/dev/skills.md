@@ -40,4 +40,4 @@ It covers the project layout (no frontend build step, shared global scope), comm
 2. Pick a skill: everyday work → `seahi-serial-dev`; build errors → `win-build-access-denied`.
 3. Make the change.
 4. Run the tests: backend unit tests + frontend assertions (plus `mcp_smoke.js` for MCP changes).
-5. If the version changed, check the five places in [Development → Release](/en/dev/#release).
+5. If the version changed, follow the version checklist in `AGENTS.md`.
