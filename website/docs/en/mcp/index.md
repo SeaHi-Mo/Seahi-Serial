@@ -12,16 +12,15 @@ SeaHi Serial ships a [Model Context Protocol](https://modelcontextprotocol.io/) 
 | Auth | Token on every request (`?token=` or `Authorization: Bearer`); `/healthz` is the only unauthenticated endpoint and returns `{"ok":true}` |
 | Toggle | MCP icon in the title bar; on/off in the **MCP 服务器** window; state lives in `ai-config.json` |
 
-## Connect
+## Installation guide
 
-```bash
-npx seahi-serial-mcp install          # detect a running instance and write the client config
-npx seahi-serial-mcp install --dry-run
-npx seahi-serial-mcp status
-npx seahi-serial-mcp uninstall
-```
+Open the **MCP 服务器** window from the title bar, make sure the server is enabled, then:
 
-You can also open the **MCP 服务器** window and copy the URL or client config for the matching transport (Streamable HTTP / legacy SSE). See [MCP setup](/en/guide/mcp) for a control-by-control description of the window.
+1. Pick a transport: `HTTP` (newer clients) / `SSE` (older clients) / `All` (when unsure)
+2. Copy **安装提示词** (install prompt)
+3. Send the whole prompt to the AI client you are using
+
+The prompt already contains the connection URL, an `mcpServers` config snippet, the current tool list and the instruction to call `mcp_status` first. After resetting the token, copy it again. See [MCP setup](/en/guide/mcp) for a control-by-control description of the window.
 
 ## Safety model
 

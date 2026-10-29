@@ -39,24 +39,32 @@
 
 地址里带 `token`，等同于密码，不要发给别人或贴到公开页面。
 
-## 连接客户端
+## 安装指南
 
-推荐用安装器：
+安装入口就在 MCP 窗口里，用「安装提示词」完成，不需要手动拼 JSON。
 
-```bash
-npx seahi-serial-mcp install          # 探测正在运行的程序并写入客户端配置
-npx seahi-serial-mcp install --dry-run
-npx seahi-serial-mcp status
-npx seahi-serial-mcp uninstall
+1. 在窗口里选择传输档：新版客户端选 `HTTP`，只支持旧协议的选择 `SSE`，不确定就保持 `All`。
+2. 点「安装提示词」右侧的「复制」。
+3. 把复制到的整段内容发给你正在使用的 AI 客户端，例如 Claude Code、Cursor、VS Code 或 Cline。这段提示词已经包含当前传输的地址、`mcpServers` 配置片段、当前工具列表，以及连上后先调 `mcp_status` 的说明。
+4. 客户端按提示词写入配置并连接后，回到窗口看标题右侧的状态：会话数会从 0 开始增加。
+5. 如果客户端没有自动写配置，就把提示词里的 URL 或配置片段按它的格式贴进去。HTTP 的 `type` 一般写 `http`，Cline 等不认时改成 `streamableHttp`。
+6. 点过「重置令牌」后，旧提示词里的地址已经失效，需要重新复制一次。
+
+窗口里的安装提示词结构如下，地址、配置和工具列表由程序按当前状态生成：
+
+```text
+请把下面这个 MCP 服务器加入你的 MCP 配置并连接。它有两条传输，**任选一条**：
+① Streamable HTTP（推荐，新版客户端默认走这个）：
+  URL: http://127.0.0.1:7777/mcp?token=<访问令牌>
+  配置片段：{ "mcpServers": { "seahi-serial": { "type": "http", "url": "..." } } }
+  （若你的客户端不认 "type":"http"，就把它写成 "type":"streamableHttp"，Cline 等属于这种）
+② 遗留 SSE（只支持 SSE 的老客户端）：
+  URL: http://127.0.0.1:7777/sse?token=<访问令牌>
+它是本机 "SeaHi Serial" 串口/蓝牙调试器暴露的工具集，当前可用工具：……
+连上后**先调 mcp_status**，它的 nextSteps 会按当前状态告诉你下一步该调什么。
 ```
 
-也可以直接从窗口复制：
-
-- 新版客户端：复制「Streamable HTTP」下的地址或客户端配置 JSON
-- 只支持 SSE 的旧客户端：复制「遗留 SSE」下的地址或配置 JSON
-- 不想手动找配置文件：复制「安装提示词」发给 AI
-
-HTTP 传输的 `type` 写法不统一：VS Code 用 `http`，Cline 用 `streamableHttp`。窗口里的 Streamable HTTP 配置下面有一行提示，安装器也会给出两种写法。
+提示词里的 `token` 等同于密码，不要发给别人或贴到公开页面。实际内容以窗口里复制出来的为准。
 
 ## 常用工具
 

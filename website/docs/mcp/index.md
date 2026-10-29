@@ -12,21 +12,15 @@
 | 鉴权 | 每个请求都要带 token（`?token=` 或 `Authorization: Bearer`）；`/healthz` 是唯一免鉴权端点，只回 `{"ok":true}` |
 | 开关 | 顶栏 MCP 图标 →「MCP 服务器」窗口内启用/关闭，状态存 `ai-config.json` |
 
-## 一键接入
+## 安装指南
 
-```bash
-# 自动探测本机正在运行的程序实例，写入客户端配置
-npx seahi-serial-mcp install
+打开顶栏的「MCP 服务器」窗口，确认服务器已启用，然后：
 
-# 只预览将改什么，不落盘
-npx seahi-serial-mcp install --dry-run
+1. 选传输档：`HTTP`（新版客户端）/ `SSE`（旧客户端）/ `All`（不确定时）
+2. 复制「安装提示词」
+3. 把整段提示词发给你正在使用的 AI 客户端
 
-# 查看状态 / 卸载
-npx seahi-serial-mcp status
-npx seahi-serial-mcp uninstall
-```
-
-也可以点开顶栏的「MCP 服务器」窗口，按客户端类型复制对应传输（Streamable HTTP / 遗留 SSE）的连接地址或客户端配置；窗口里每个控件的说明见 [MCP 接入](/guide/mcp)。http 传输的 `type` 各家写法不同（VS Code 写 `http`，Cline 认 `streamableHttp`），安装器与窗口两种都给。
+提示词里已经包含连接地址、`mcpServers` 配置片段、当前工具列表和「连上后先调 `mcp_status`」的说明；重置令牌后需要重新复制。窗口里每个控件的说明见 [MCP 接入](/guide/mcp)。http 传输的 `type` 各家写法不同（VS Code 写 `http`，Cline 认 `streamableHttp`），窗口里的配置片段已经带了提示。
 
 ## 安全模型
 

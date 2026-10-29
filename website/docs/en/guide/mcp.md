@@ -39,24 +39,32 @@ The window shows only the section for the selected transport:
 
 The URLs contain a `token`. Treat it as a password; do not share it or paste it into a public page.
 
-## Connect a client
+## Installation guide
 
-The recommended way is the installer:
+Installation starts from the MCP window: use **安装提示词** (install prompt). There is no need to assemble JSON by hand.
 
-```bash
-npx seahi-serial-mcp install          # detect the running app and write the client config
-npx seahi-serial-mcp install --dry-run
-npx seahi-serial-mcp status
-npx seahi-serial-mcp uninstall
+1. Pick a transport in the window: `HTTP` for newer clients, `SSE` for older clients, or keep `All` if unsure.
+2. Click **复制** next to **安装提示词**.
+3. Send the copied text to the AI client you are using, for example Claude Code, Cursor, VS Code or Cline. The prompt already contains the current URL, an `mcpServers` config snippet, the current tool list, and the instruction to call `mcp_status` first.
+4. After the client writes the config and connects, go back to the window and check the status on the right of the title: the session count starts increasing from 0.
+5. If the client does not write the config automatically, paste the URL or config snippet from the prompt in the format that client expects. For HTTP, `type` is usually `http`; use `streamableHttp` for Cline and similar clients.
+6. After **重置令牌** (reset token), the old prompt no longer contains a valid URL; copy it again.
+
+The prompt in the window is structured like this; the URL, config and tool list are generated from the current state:
+
+```text
+请把下面这个 MCP 服务器加入你的 MCP 配置并连接。它有两条传输，**任选一条**：
+① Streamable HTTP（推荐，新版客户端默认走这个）：
+  URL: http://127.0.0.1:7777/mcp?token=<token>
+  配置片段：{ "mcpServers": { "seahi-serial": { "type": "http", "url": "..." } } }
+  （若你的客户端不认 "type":"http"，就把它写成 "type":"streamableHttp"，Cline 等属于这种）
+② 遗留 SSE（只支持 SSE 的老客户端）：
+  URL: http://127.0.0.1:7777/sse?token=<token>
+它是本机 "SeaHi Serial" 串口/蓝牙调试器暴露的工具集，当前可用工具：……
+连上后**先调 mcp_status**，它的 nextSteps 会按当前状态告诉你下一步该调什么。
 ```
 
-You can also copy from the window:
-
-- Newer clients: copy the Streamable HTTP URL or client config JSON
-- Older SSE-only clients: copy the legacy SSE URL or config JSON
-- If you do not want to edit client files by hand: copy the install prompt and send it to the AI
-
-The `type` value for HTTP is not consistent across clients: VS Code uses `http`, Cline uses `streamableHttp`. The Streamable HTTP config in the window includes a note about this, and the installer provides both forms.
+The `token` in the prompt is a password; do not share it or paste it into a public page. Use the text copied from the window as the source of truth.
 
 ## Common tools
 
