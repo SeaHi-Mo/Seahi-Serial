@@ -52,9 +52,9 @@ Use **Save log** to keep a permanent copy.
 
 ## Next
 
-- [Serial debugging](/en/guide/serial): panes, line endings, DTR/RTS, logs, and workflows
+- [Serial debugging](/en/guide/serial): panes, line endings, DTR/RTS, WSL port mapping, logs, and workflows
 - [Terminal mode](/en/guide/terminal): turn the output area into a terminal
 - [Quick commands](/en/guide/quick-cmds): send commands in repeating groups
 - [MCP setup](/en/guide/mcp): connect an AI client
 - [Bluetooth](/en/guide/ble)
-- [ADB and WSL](/en/guide/adb-wsl)
+- [ADB debugging](/en/guide/adb)

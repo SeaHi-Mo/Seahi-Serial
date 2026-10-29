@@ -1,8 +1,11 @@
+import { execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { defineConfig } from 'vitepress'
 import type { DefaultTheme } from 'vitepress'
 import { locales } from './locales/index.ts'
+
+const DOCS_ROOT = resolve(process.cwd(), 'docs')
 
 /**
  * 版本号优先取 CI 注入的 APP_VERSION（tag 名，例如 v0.5.22）。
@@ -41,14 +44,13 @@ const themeConfig: DefaultTheme.Config & { appVersion: string } = {
   siteTitle: 'SeaHi Serial',
   appVersion: APP_VERSION,
   socialLinks: [{ icon: 'github', link: REPO }],
-  // 语言包只补 text，pattern 留在这里
-  editLink: { pattern: `${REPO}/edit/main/website/docs/:path` },
 }
 
 export default defineConfig({
   // 站点挂在 www.seahi-serial.c-hi.cn 根上，不要改成带路径的 base
   base: '/',
   cleanUrls: true,
+  lastUpdated: true,
 
   title: 'SeaHi Serial',
   titleTemplate: ':title · SeaHi Serial',
@@ -62,4 +64,20 @@ export default defineConfig({
   locales,
 
   themeConfig,
+
+  // 兜底：某些构建环境（浅克隆 / VitePress 缓存）拿不到 page.lastUpdated，
+  // 这里直接从 git 补一次文件最后提交时间，保证页脚能显示「更新时间」。
+  transformPageData(pageData) {
+    if (pageData.lastUpdated) return
+    try {
+      const out = execSync(`git log -1 --pretty=%at -- "${pageData.filePath}"`, {
+        cwd: DOCS_ROOT,
+        encoding: 'utf8',
+      }).trim()
+      const ts = Number(out)
+      if (ts > 0) pageData.lastUpdated = ts * 1000
+    } catch {
+      // 没有 git 或浅克隆里取不到时保持原值
+    }
+  },
 })

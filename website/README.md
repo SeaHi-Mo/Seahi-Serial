@@ -51,7 +51,7 @@ website/
     │   │       ├── landing.css       # 落地页布局、按钮、动效、响应式
     │   │       └── landing-window.css # 产品窗口与卡片示意图
     ├── index.md                 # 中文首页（layout: false + <LandingHome />）
-    ├── guide/                   # 中文指南：quick-start / serial / terminal / quick-cmds / ble / adb-wsl / faq
+    ├── guide/                   # 中文指南：quick-start / serial / terminal / quick-cmds / ble / adb / faq
     ├── mcp/                     # 中文 MCP：index.md + tools.md（生成物）
     ├── en/                      # 英文，目录与中文镜像
     │   ├── index.md
@@ -79,7 +79,7 @@ website/
 
 - 根路径是简体中文（`root`），英文在 `/en/`；语言切换器由 VitePress 按 `locales` 自动生成。
 - 语言包只放**与语言相关**的东西：`nav` / `sidebar` / 界面文案 / 搜索弹窗文案。
-- 全站共用的（`logo`、GitHub 链接、`editLink.pattern`、`appVersion`）在 `config.mts` 的根 `themeConfig` 里，语言包会继承（VitePress 按属性合并）。
+- 全站共用的（`logo`、GitHub 链接、`appVersion`）在 `config.mts` 的根 `themeConfig` 里，语言包会继承（VitePress 按属性合并）。
 
 **新增一种语言**（比如日语）：
 

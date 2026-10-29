@@ -37,7 +37,7 @@ export const enUS: LocaleContent = {
         text: 'Devices',
         items: [
           { text: 'Bluetooth', link: '/en/guide/ble' },
-          { text: 'ADB and WSL', link: '/en/guide/adb-wsl' },
+          { text: 'ADB debugging', link: '/en/guide/adb' },
         ],
       },
       {
@@ -66,7 +66,6 @@ export const enUS: LocaleContent = {
     sidebarMenu: 'Menu',
     darkMode: 'Appearance',
     language: 'Language',
-    editThisPage: 'Edit this page on GitHub',
     footerMessage: 'Released under the MIT License · installers are not code-signed',
   },
 

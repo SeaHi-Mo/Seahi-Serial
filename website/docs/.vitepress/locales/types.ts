@@ -10,7 +10,6 @@ export interface LocaleText {
   sidebarMenu: string
   darkMode: string
   language: string
-  editThisPage: string
   footerMessage: string
 }
 

@@ -6,7 +6,7 @@ import { enUS } from './en-US.ts'
 /**
  * 把语言包翻译成 VitePress 的 locale 配置。
  *
- * 只放**与语言相关**的 themeConfig：logo / socialLinks / editLink.pattern / appVersion
+ * 只放**与语言相关**的 themeConfig：nav / sidebar / 文案 / appVersion
  * 这些全站共用的留在 config.mts 的根 themeConfig 里 —— VitePress 会按属性合并
  * （locale 覆盖同名键，未覆盖的继承根配置），所以这里不用重复抄一遍。
  */
@@ -31,7 +31,6 @@ export function toLocaleConfig(
       sidebarMenuLabel: locale.text.sidebarMenu,
       darkModeSwitchLabel: locale.text.darkMode,
       langMenuLabel: locale.text.language,
-      editLink: { text: locale.text.editThisPage },
       footer: { message: locale.text.footerMessage, copyright: 'SeaHi Serial' },
     },
   }

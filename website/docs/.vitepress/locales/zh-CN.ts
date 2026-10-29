@@ -34,7 +34,7 @@ export const zhCN: LocaleContent = {
         text: '设备',
         items: [
           { text: '蓝牙调试', link: '/guide/ble' },
-          { text: 'ADB 与 WSL', link: '/guide/adb-wsl' },
+          { text: 'ADB 调试', link: '/guide/adb' },
         ],
       },
       {
@@ -61,12 +61,11 @@ export const zhCN: LocaleContent = {
     outline: '本页目录',
     prev: '上一篇',
     next: '下一篇',
-    lastUpdated: '最后更新',
+    lastUpdated: '更新时间',
     returnToTop: '回到顶部',
     sidebarMenu: '目录',
     darkMode: '主题',
     language: '语言',
-    editThisPage: '在 GitHub 上编辑此页',
     footerMessage: '基于 MIT 许可证发布 · 安装包未做代码签名',
   },
 
