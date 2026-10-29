@@ -46,33 +46,6 @@
 - **首次使用引导** — 9 步聚光灯引导，快速上手
 - **自动更新** — 启动时检测 GitHub 最新版本
 
-## 环境依赖
-
-| 依赖 | 说明 |
-|------|------|
-| **Rust** | https://rustup.rs/ |
-| **Node.js 18+** | https://nodejs.org/ |
-| **Visual Studio Build Tools 2022** | 需勾选 "C++ 桌面开发" |
-| **WebView2** | Windows 10/11 通常已预装 |
-
-## 快速开始
-
-```bash
-# 克隆仓库
-git clone git@github.com:SeaHi-Mo/Seahi-Serial.git
-cd SeaHi-Serial
-
-# 安装依赖
-npm install
-
-# 开发模式（热重载）
-npm run dev
-
-# 构建发布版 .exe
-npm run build
-```
-
-构建产物位于 `src-tauri/target/release/seahi-serial.exe`
 
 ## 下载与安装（未签名说明）
 
@@ -82,37 +55,20 @@ npm run build
 > [代码签名与安装说明](./doc/SIGNING.md) 核对 SHA-256 后再运行。
 > Release 附带 `SHA256SUMS.txt` 与 cosign keyless 签名（`.sigstore.json`），验签命令见说明文档 §4.1。
 
-## 项目结构
 
-```
-serial-debugger-tauri/
-├── src/
-│   ├── index.html                # 前端骨架（head + body + 4 个 <link> + 15 个 <script src>）
-│   ├── css/                      # 4 块样式（无打包器，按顺序 <link> 加载）
-│   ├── js/                       # 15 块逻辑（普通脚本、共享全局作用域；见 doc/FRONTEND_LAYOUT.md）
-│   │                             #   其中 81-ble-uuids.js 是**生成文件**（SIG 官方 UUID 名称表）
-│   └── vendor/xterm/             # 终端模式用的 xterm（外部依赖，原样引入）
-├── src-tauri/
-│   ├── Cargo.toml                # Rust 依赖
-│   ├── tauri.conf.json           # Tauri 应用配置
-│   ├── capabilities/
-│   │   └── default.json          # ACL 权限配置
-│   ├── vendor/btleplug/          # btleplug 的 vendored fork（4 处本地补丁）
-│   ├── wsl-daemon/               # WSL bridge 脚本（base64 编码）
-│   └── src/
-│       ├── main.rs               # Rust 后端（~7600 行）
-│       └── mcp/                  # MCP 服务器（transport / protocol / bridge / registry /
-│                                 #   loghub / calllog / aiconfig / report / mod）
-├── npm/
-│   └── seahi-serial-mcp/         # MCP 客户端配置安装器（零依赖 CLI）
-├── skills/
-│   └── seahi-serial-dev/
-│       └── SKILL.md              # AI 开发技能指南
-├── .walkthrough/                 # 无头断言集（gen_ble_preview.js）+ MCP 工具自检 + 两个生成器
-├── doc/                          # 项目文档（MCP.md / MCP_TOOLS.md / MCP_DESIGN.md / QUICK_CMDS.md / FRONTEND_LAYOUT.md …）
-├── RELEASE_NOTES.md              # 每个版本的发布说明（CI 按 tag 取对应段落作为 Release 正文）
-├── installer.iss                 # Inno Setup 安装脚本
-└── TEST_CASES.md                 # 测试用例
+## 开发
+
+环境准备、构建、测试、目录结构与发版流程都搬到了文档站：
+
+- **[开发指南](https://www.seahi-serial.c-hi.cn/dev/)** —— 依赖、`npm run dev/build`、三套测试、目录结构、版本号五处同步与 tag 发版
+- **[用技能（skills）开发](https://www.seahi-serial.c-hi.cn/dev/skills)** —— 仓库里的 `skills/` 是写给 AI 助手的开发手册（项目约束 + 已踩过的坑），改代码前先让助手读一遍
+
+改代码前请先读 [`AGENTS.md`](./AGENTS.md)：MCP、BLE、窗口几何、终端模式等硬约束都在里面。
+
+```bash
+npm install     # 依赖（只有 @tauri-apps/cli）
+npm run dev     # 开发模式（热重载）
+npm run build   # 发布构建 → src-tauri/target/release/seahi-serial.exe
 ```
 
 ## MCP（AI 控制接口）
@@ -179,78 +135,6 @@ npx seahi-serial-mcp uninstall
 
 > 详细使用说明见 [MCP 接入](https://www.seahi-serial.c-hi.cn/guide/mcp)；**54 个工具的完整参考（入参 + 返回结构）见 [MCP 工具参考](https://www.seahi-serial.c-hi.cn/mcp/tools)**；架构与设计取舍见 [`doc/MCP_DESIGN.md`](./doc/MCP_DESIGN.md)。
 
-## 当前规模与测试
-
-**这一版（v0.5.22）的实际规模**：**54 个内置工具**（19 通用 + 16 串口 + 13 蓝牙 + 6 ADB）、
-传输为 **Streamable HTTP + 遗留 SSE 两种并存**、四批语义工具**全部落地**、
-BLE **从机（外设）方向已整条删除**（实测本机广播起不来，证据留在 `doc/BLE_PERIPHERAL.md`）。
-
-想知道**跑起来的这个实例**的实时状态，直接问程序（不用翻文档）：
-
-```
-mcp_status     # 工具数、会话、限流、日志中心、错误上报
-mcp_limits     # 各项上限（请求体 / 每条指令长度 / 写入上限…）
-ui_list        # 界面控件注册表（含面板 / 分组 / 是否禁用）
-```
-
-三套自动化测试都可以本地跑：`cargo test`（284 条 + 1 ignored）、`node .walkthrough/gen_ble_preview.js`（1971 条）、
-`node npm/seahi-serial-mcp/test/self-test.js`（94 条）；对**正在运行的程序**跑工具自检用
-`node .walkthrough/mcp_smoke.js`（54 个工具逐个真调）。
-
-> 逐次的技术细节（改了什么、为什么、怎么验证的）记在 [`doc/MCP_DESIGN.md`](./doc/MCP_DESIGN.md) §17「实施记录」；
-> 每个版本面向用户的说明在 [`RELEASE_NOTES.md`](./RELEASE_NOTES.md)。
-
-## 技术栈
-
-- **前端**：原生 HTML/CSS/JavaScript（**无框架、无打包器、无构建步骤**；已按功能拆成 4 个 CSS + 15 个 JS，见 `doc/FRONTEND_LAYOUT.md`）
-- **后端**：Rust + `serialport 3.3` + `winapi 0.3` + `windows-sys 0.59`
-- **桌面框架**：Tauri 2
-- **原生对话框**：`rfd 0.15`
-- **WSL 桥接**：Python bridge 脚本 + `usbipd-win`
-- **蓝牙**：`btleplug 0.13`（主机，vendored fork）+ `windows 0.62`（配对）
-- **ADB**：内置 `platform-tools` + 伪终端（`xterm.js` 只做显示）
-- **MCP 服务器**：`hyper 1` + `hyper-util` + `http-body-util`（**Streamable HTTP `/mcp` + 遗留 SSE**，均随 `reqwest` 进入依赖树，无新增下载）
-
-## 自动构建（GitHub Actions）
-
-项目已配置 GitHub Actions 自动构建，推送版本 tag 后自动编译并创建 GitHub Release。
-
-### 工作流配置
-
-工作流文件位于 `.github/workflows/build.yml`，包含以下功能：
-
-- **触发方式**：推送 `v*` 格式的 tag 时自动触发，也支持手动触发
-- **运行环境**：`windows-latest`
-- **缓存优化**：Rust 编译缓存，加速后续构建
-- **自动发布**：构建完成后**直接发布正式 Release（latest）**，附带 MSI 与 exe 安装包
-- **版本校验**：构建前先校验 tag 与 5 处版本号一致（不一致即失败，防止发出"版本号对不上"的包）
-
-### 如何使用
-
-```bash
-# 1. 修改版本号（5 处必须一致，CI 会校验）
-#    - src-tauri/Cargo.toml      中的 version
-#    - src-tauri/tauri.conf.json 中的 version
-#    - installer.iss              中的 MyAppVersion
-#    - package.json               中的 version
-#    - src-tauri/Cargo.lock       中 seahi-serial 条目的 version
-
-# 2. 提交并推送代码
-git add -A
-git commit -m "v0.x.x: 更新说明"
-git push origin main
-
-# 3. 创建并推送版本 tag
-git tag v0.x.x
-git push origin v0.x.x
-
-# 4. GitHub Actions 自动开始构建，完成后**直接发布为正式 Release（latest）**
-#    无需手动操作（releaseDraft/prerelease/draft 均为 false）
-```
-
-### 手动触发构建
-
-进入 GitHub 仓库 → **Actions** → **Build Release** → **Run workflow**，无需创建 tag 即可手动触发构建。
 
 ## 使用教程
 

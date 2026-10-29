@@ -20,6 +20,15 @@ export const enUS: LocaleContent = {
   ],
 
   sidebar: {
+    '/en/dev/': [
+      {
+        text: 'Development',
+        items: [
+          { text: 'Development guide', link: '/en/dev/' },
+          { text: 'Skills', link: '/en/dev/skills' },
+        ],
+      },
+    ],
     '/en/guide/': [
       {
         text: 'Get started',

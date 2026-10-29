@@ -21,6 +21,11 @@ const tabs = computed(() => [
     active: /^(en\/)?guide\//.test(rel.value),
   },
   {
+    label: isEn.value ? 'Development' : '开发指南',
+    href: isEn.value ? '/en/dev/' : '/dev/',
+    active: /^(en\/)?dev\//.test(rel.value),
+  },
+  {
     label: isEn.value ? 'Changelog' : '更新日志',
     href: isEn.value ? '/en/changelog' : '/changelog',
     active: /changelog\.md$/.test(rel.value),

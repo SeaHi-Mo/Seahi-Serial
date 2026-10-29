@@ -17,6 +17,15 @@ export const zhCN: LocaleContent = {
   ],
 
   sidebar: {
+    '/dev/': [
+      {
+        text: '开发',
+        items: [
+          { text: '开发指南', link: '/dev/' },
+          { text: '技能（skills）', link: '/dev/skills' },
+        ],
+      },
+    ],
     '/guide/': [
       {
         text: '开始',
