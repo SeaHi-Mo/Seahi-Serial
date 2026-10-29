@@ -1,14 +1,15 @@
 # 部署文档站到 Cloudflare Pages
 
-站点地址：`https://serial.<你的域名>`。构建在 GitHub Actions 里做，Cloudflare 只负责托管产物 ——
-所以这里**没有** build command / output directory 要填，也没有 watch paths。
+站点地址：`https://www.seahi-serial.c-hi.cn`。默认流程是 GitHub Actions 构建、Cloudflare 只托管产物 ——
+所以 Direct Upload 项目**没有** build command / output directory 要填，也没有 watch paths。
+如果改用 Cloudflare 自己的 Git 构建，配置见最后一节。
 
 ## 一、建项目（Direct Upload）
 
 Cloudflare Dashboard → **Workers & Pages** → **Create** → **Pages** → **Direct Upload**：
 
 - 项目名填 `seahi-serial-docs`（必须和 `.github/workflows/docs.yml` 里的 `--project-name` 一致）
-- 不要选「Connect to Git」——那会变成 Git 集成项目，`wrangler pages deploy` 会直接报错，且**不能改回来**
+- 按本文的 Direct Upload 流程时不要选「Connect to Git」——那会变成 Git 集成项目，`wrangler pages deploy` 会直接报错，且**不能改回来**。
 
 ## 二、建 API Token
 
@@ -32,17 +33,17 @@ Cloudflare Dashboard → **Workers & Pages** → **Create** → **Pages** → **
 
 ## 四、绑自定义域
 
-Pages 项目 → **Custom domains** → **Set up a domain** → `serial.<你的域名>`。
+Pages 项目 → **Custom domains** → **Set up a domain** → `www.seahi-serial.c-hi.cn`。
 
 - 域名在同一个 Cloudflare 账号下：一键完成，DNS 记录自动加。
-- 若 `serial` 这个子域**之前被别的 Worker 路由或 A 记录占着**：先删掉那条记录/路由，否则会看到 522 或错误站点。
+- 若该域名**之前被别的 Worker 路由或 A 记录占着**：先删掉那条记录/路由，否则会看到 522 或错误站点。
 - SSL/TLS 模式用 **Full (strict)**。
 
 ## 五、发布
 
 ```bash
-git tag v0.5.21
-git push origin v0.5.21
+git tag v0.5.22
+git push origin v0.5.22
 ```
 
 只有 tag 会触发 `.github/workflows/docs.yml`。首次可以先在 Actions 里手动跑一次 **Docs → Run workflow** 验证链路。
@@ -50,7 +51,7 @@ PR 只做构建校验（`npm ci && npm run build`），不部署。
 
 ## 六、发完检查这四项
 
-1. `https://serial.<域名>/` 打开是首页，**样式正常**（样式 404 通常是 `base` 写错了）。
+1. `https://www.seahi-serial.c-hi.cn/` 打开是首页，**样式正常**（样式 404 通常是 `base` 写错了）。
 2. `/guide/quick-start` 能直接访问（`cleanUrls: true`，没有 `.html` 后缀）。
 3. `/download` 返回 **302** 且跳到 GitHub Releases 最新版（验证 `_redirects` 生效）。
 4. 首页版本号是刚打的 tag（不是 `dev`）—— 说明 `APP_VERSION` 注入成功。

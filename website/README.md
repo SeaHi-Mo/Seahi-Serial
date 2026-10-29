@@ -1,6 +1,6 @@
 # 文档站（VitePress）
 
-对应线上地址：`https://serial.<你的域名>`（Cloudflare Pages 项目 `seahi-serial-docs`）。
+对应线上地址：`https://www.seahi-serial.c-hi.cn`（Cloudflare Pages 项目 `seahi-serial-docs`）。
 
 ## 本地
 
@@ -144,7 +144,7 @@ website/
 **只有打 tag 才会部署**（`.github/workflows/docs.yml`）：
 
 ```bash
-git tag v0.5.21 && git push origin v0.5.21
+git tag v0.5.22 && git push origin v0.5.22
 ```
 
 版本号来自 tag（`APP_VERSION`），不需要改任何文件。文档改急了、又不想发版：Actions → **Docs** → Run workflow。

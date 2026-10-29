@@ -5,7 +5,7 @@ import type { DefaultTheme } from 'vitepress'
 import { locales } from './locales/index.ts'
 
 /**
- * 版本号优先取 CI 注入的 APP_VERSION（tag 名，例如 v0.5.21）。
+ * 版本号优先取 CI 注入的 APP_VERSION（tag 名，例如 v0.5.22）。
  * 没有时从仓库根目录的 package.json 读取 —— Cloudflare Pages 这类只跑
  * `npm run build` 的环境不需要额外配置环境变量，发版时更新 package.json 即可。
  * 走 themeConfig 而不是 Vite 的 define：define 在 SSR 渲染阶段不生效，
@@ -46,7 +46,7 @@ const themeConfig: DefaultTheme.Config & { appVersion: string } = {
 }
 
 export default defineConfig({
-  // 站点挂在子域根上（serial.<你的域名>），不要改成带路径的 base
+  // 站点挂在 www.seahi-serial.c-hi.cn 根上，不要改成带路径的 base
   base: '/',
   cleanUrls: true,
 
