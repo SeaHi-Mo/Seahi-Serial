@@ -55,6 +55,7 @@ export const zhCN: LocaleContent = {
         text: '参考',
         items: [
           { text: '主题', link: '/guide/theme' },
+          { text: '错误上报', link: '/guide/error-reporting' },
           { text: '常见问题', link: '/guide/faq' },
         ],
       },

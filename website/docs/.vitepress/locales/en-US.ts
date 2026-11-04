@@ -58,6 +58,7 @@ export const enUS: LocaleContent = {
         text: 'Reference',
         items: [
           { text: 'Themes', link: '/en/guide/theme' },
+          { text: 'Error reporting', link: '/en/guide/error-reporting' },
           { text: 'FAQ', link: '/en/guide/faq' },
         ],
       },

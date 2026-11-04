@@ -36,6 +36,8 @@ Yes. Panics, backend runtime errors and frontend JS exceptions are sent to a sel
 - Serial traffic, log contents and device data are **never** sent. Stack traces may contain source file paths (used to locate the fault).
 - It is on by default and has no UI switch; to opt out, set `SEAHI_ERROR_REPORT=0` before launching the app (a system environment variable works too).
 
+See [Error reporting](/en/guide/error-reporting) for the fields, timing and destination.
+
 ## Does the app lose window geometry after it closes?
 
 No. Position and size are stored in `window.json`: outer position for the window and the content-area size. Minimised or maximised windows do not overwrite the normal geometry. When upgrading from an older version, the size is migrated once from `config.json`.

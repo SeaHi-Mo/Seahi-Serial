@@ -29,4 +29,4 @@
 ### 📦 安装说明
 
 - 安装包未做代码签名，Windows SmartScreen 可能提示「未知发布者」，属未签名程序的正常提示。
-- 校验方式见 [doc/SIGNING.md](doc/SIGNING.md)：Release 附带 `SHA256SUMS.txt` 与 cosign keyless 签名（`.sigstore.json`）。
+- 校验方式见 [代码签名与安装说明](https://github.com/SeaHi-Mo/Seahi-Serial/blob/main/doc/SIGNING.md)：Release 附带 `SHA256SUMS.txt` 与 cosign keyless 签名（`.sigstore.json`）。

@@ -80,10 +80,14 @@ try {
 
 const zh = []
 const en = []
+// ⚠️ 当前版本这一段也要过 `stripInternalSections`：它和 tag 里的段落一样会被贴进更新日志页，
+// 而发布说明里的「安装说明 / 验证」块是给发布流程看的（里面还可能出现仓库相对链接，
+// 在文档站就是死链 —— v0.5.23 本地构建时就因为这个红过）。
+const currentPublic = stripInternalSections(current).trim()
 
 if (tags.length === 0) {
-  zh.push(current)
-  en.push(current)
+  zh.push(currentPublic)
+  en.push(currentPublic)
 } else {
   for (const tag of tags) {
     const raw = tag === currentVersion ? current : notesFromTag(tag)
@@ -93,8 +97,8 @@ if (tags.length === 0) {
   }
   // 本地还没打当前版本的 tag 时，把它补在最前面
   if (currentVersion && !tags.includes(currentVersion)) {
-    zh.unshift(current)
-    en.unshift(current)
+    zh.unshift(currentPublic)
+    en.unshift(currentPublic)
   }
 }
 
