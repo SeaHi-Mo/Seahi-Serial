@@ -1,5 +1,10 @@
 /**
- * 生成「版本下拉」用的版本列表：读 git tag（v*），按版本倒序写进 releases.generated.ts。
+ * 生成「版本下拉」用的**历史版本**列表：读 git tag（v*），按版本倒序写进 releases.generated.ts。
+ *
+ * ⚠️ 它只提供历史版本，**当前版本不从这里取**：Cloudflare Pages 的 Git 构建是浅克隆，而且在
+ * 「打 tag 之前」就已经构建了（tag 推送不会触发新的 Pages 构建），所以这个列表通常比 package.json 旧。
+ * 当前版本由 `LandingHome.vue` 用构建时注入的 `appVersion` 优先合并（v0.5.23 发完 tag 后首页
+ * 仍显示 0.5.22 就是这个坑，别再改回去）。
  *
  * 为什么要生成而不是运行时拉 GitHub API：
  *  - 站点在国内访问，api.github.com 慢且可能不通；

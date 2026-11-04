@@ -318,8 +318,12 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
   自有组件放 `docs/.vitepress/theme/components/`，样式变量在 `docs/.vitepress/theme/styles/vars.css`（换风格先改它），
   落地页样式在 `styles/landing*.css`（类名统一 `lp-` 前缀，别和默认主题的 `.card/.nav` 撞）。
   `docs/mcp/tools.md` 由 `scripts/sync-mcp-tools.mjs` 从 `doc/MCP_TOOLS.md` 生成（生成物，不入库），`predev`/`prebuild`
-  自动跑。`doc/` 仍是开发者内部文档，**不整目录发布**；部署见 `doc/DEPLOY_CLOUDFLARE.md`
-  （Cloudflare Pages，**只有打 tag 才发布**）。
+  自动跑。`doc/` 仍是开发者内部文档，**不整目录发布**；部署见 `doc/DEPLOY_CLOUDFLARE.md`：
+  **Cloudflare Pages 的 Git 集成在推 `main` 时自动构建部署**，`.github/workflows/docs.yml` 只做构建校验。
+  两条别改回去：① **不要往 docs.yml 加 `wrangler pages deploy`**（Direct Upload 与 Git 集成是两种项目，
+  混用会报 *project is a git project* 且两套部署互相覆盖）；② **首页“当前版本”取构建时 `package.json` 的 version，
+  不能取 git tag 列表第一项**（CF 是浅克隆、且在打 tag 之前就构建了，拿 tag 当当前版本会让首页停在上一版，
+  v0.5.23 踩过）。
 - `doc/`：`MCP.md`（使用说明）｜`MCP_TOOLS.md`（**54 个工具手册**，由 `gen_mcp_tools_doc.js` 从 `protocol.rs` 生成）｜
   `MCP_DESIGN.md`（设计 + 每步实施记录）｜`QUICK_CMDS.md`（快速指令文件格式）｜`FRONTEND_LAYOUT.md`｜`ARCHITECTURE.md`｜
   `CODE_REVIEW_FULL_2026-09.md`｜`BLE_VERIFICATION.md`（主机方向真机验证）｜`BLE_PERIPHERAL.md`（已归档）｜

@@ -19,8 +19,19 @@ const appVersion = computed(() => String(theme.value.appVersion || '').replace(/
 const hasVersion = computed(() => /^\d+\.\d+\.\d+$/.test(appVersion.value))
 const downloadPage = computed(() => `${MIRROR}${RELEASES}`)
 
-/* 版本下拉：默认最新（RELEASES_LIST 是构建时从 git tag 生成的，倒序） */
-const versions = computed(() => (RELEASES_LIST.length ? RELEASES_LIST : hasVersion.value ? [appVersion.value] : []))
+/* 版本下拉：**当前版本优先**，其后接构建时从 git tag 生成的历史版本。
+   ⚠️ 当前版本必须取 `appVersion`（构建时读仓库根 package.json），不能取 RELEASES_LIST[0]：
+   Cloudflare Pages 的 Git 构建是浅克隆、而且在「打 tag 之前」就已经构建了（tag 推送不会触发新的
+   构建），所以 RELEASES_LIST 往往比 package.json 旧 —— 用它当当前版本，首页会停在上一个版本
+   （v0.5.23 发完 tag 后首页仍显示 0.5.22，就是这个原因）。 */
+const versions = computed(() => {
+  const list: string[] = []
+  if (hasVersion.value) list.push(appVersion.value)
+  for (const v of RELEASES_LIST) {
+    if (!list.includes(v)) list.push(v)
+  }
+  return list
+})
 const selectedVersion = ref(versions.value[0] || appVersion.value)
 const downloadAsset = computed(() => {
   const v = selectedVersion.value
