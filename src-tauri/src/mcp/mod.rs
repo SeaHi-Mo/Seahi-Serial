@@ -296,7 +296,9 @@ impl McpCore {
                 "reported": report::stats().0,
                 "deduped": report::stats().1,
                 "dedupWindowSecs": report::DEDUP_WINDOW_SECS,
-                "sinkConfigured": std::env::var("ERROR_SERVER_URL").map(|s| !s.trim().is_empty()).unwrap_or(false),
+                // 不能只盯环境变量：默认上报地址是编译期烘进包的（CI 注入），
+                // 只看 env 会把"其实开着"误报成"没配置"
+                "sinkConfigured": crate::error_report_active(),
             },
             "toolCount": protocol::exposed_tools(self).len(),
             "builtinToolCount": protocol::tool_defs().len(),

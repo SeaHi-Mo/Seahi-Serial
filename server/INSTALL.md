@@ -51,21 +51,28 @@ set RATE_LIMIT_PER_MIN=60
 >
 > 也就是说：**忘配 key 不会裸奔**，但公网部署会因此收不到上报 —— 请务必配置。
 
-**客户端**（构建 Tauri 应用前设置）：
+**客户端**（构建 Tauri 应用前设置 —— 注意是**编译期**变量，不是运行时环境变量）：
 
 ```bash
 # Windows (CMD)
-set ERROR_SERVER_URL=http://localhost:3000
-set ERROR_API_KEY=<与服务端相同的随机串>
+set SEAHI_ERROR_SERVER_URL=https://seahi-error-server.seahi-mo.workers.dev
+set SEAHI_ERROR_API_KEY=<与服务端相同的随机串>
 
 # Windows (PowerShell)
-$env:ERROR_SERVER_URL="http://localhost:3000"
-$env:ERROR_API_KEY="<与服务端相同的随机串>"
+$env:SEAHI_ERROR_SERVER_URL="https://seahi-error-server.seahi-mo.workers.dev"
+$env:SEAHI_ERROR_API_KEY="<与服务端相同的随机串>"
 
 # Linux/Mac
-export ERROR_SERVER_URL=http://localhost:3000
-export ERROR_API_KEY=<与服务端相同的随机串>
+export SEAHI_ERROR_SERVER_URL=https://seahi-error-server.seahi-mo.workers.dev
+export SEAHI_ERROR_API_KEY=<与服务端相同的随机串>
 ```
+
+> 运行时仍可覆盖 / 关闭（不用重编）：
+> - 覆盖地址与 Key：`ERROR_SERVER_URL` / `ERROR_API_KEY`（本机自测、连自建服务时用）；
+> - 关闭联网上报：`SEAHI_ERROR_REPORT=0`（`false` / `off` 同义）。
+>
+> Debug 构建默认不上报（避免开发时往生产库灌数据），除非显式设了运行时 `ERROR_SERVER_URL`。
+> CI 里这两个变量由 `build.yml` 的 build step 注入（Key 读 GitHub secret `SEAHI_ERROR_API_KEY`）。
 
 ### 构建应用
 

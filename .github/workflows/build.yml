@@ -112,10 +112,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "npm 安装器自测失败" }
           Write-Host "三套测试全部通过"
 
+      - name: Check error reporting key
+        shell: pwsh
+        # 发布版默认上报错误，而 Cloudflare Worker 对缺少/错误 X-API-Key 一律 401（fail-closed）。
+        # 少了 secret 就等于「发了版却一条错误都收不到」，宁可在构建时失败。
+        run: |
+          if (-not '${{ secrets.SEAHI_ERROR_API_KEY }}') {
+            throw "缺少 SEAHI_ERROR_API_KEY：错误上报会被 Worker 拒绝（401）。请在仓库 Settings → Secrets and variables → Actions 添加。"
+          }
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 错误上报地址/密钥是**编译期**注入的（main.rs 的 option_env!），不在这里给就永远不上报。
+          # URL 是公开的写入端点；Key 走 secret（仓库公开，绝不写进源码）。
+          SEAHI_ERROR_SERVER_URL: https://seahi-error-server.seahi-mo.workers.dev
+          SEAHI_ERROR_API_KEY: ${{ secrets.SEAHI_ERROR_API_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}

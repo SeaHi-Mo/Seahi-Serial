@@ -32,15 +32,28 @@ node error-server.js
 
 ### 2. 配置应用程序
 
-在构建时设置环境变量：
+⚠️ **URL/Key 是编译期注入的，不是运行时环境变量**（2026-11 修正：此前文档写「构建时 set 环境变量」，
+但客户端读的是运行时 env，`cargo build` 时设的值进不了 exe，等于永远不上报）。
 
 ```bash
-# Windows
-set ERROR_SERVER_URL=http://localhost:3000
+# 构建时（CI 里也是这两个变量；不设则用 main.rs 里的内置默认地址）
+set SEAHI_ERROR_SERVER_URL=https://seahi-error-server.seahi-mo.workers.dev
+set SEAHI_ERROR_API_KEY=<与服务端相同的随机串>
 cargo build --release
-
-# 或使用 .env 文件
 ```
+
+运行时仍可覆盖 / 关闭：
+
+```bash
+# 覆盖（本机自测、连自建服务）
+set ERROR_SERVER_URL=http://localhost:3000
+set ERROR_API_KEY=<与服务端相同的随机串>
+
+# 关闭联网上报
+set SEAHI_ERROR_REPORT=0
+```
+
+Debug 构建默认不上报（不往生产库灌数据），除非显式设了运行时 `ERROR_SERVER_URL`。
 
 ### 3. 测试上报
 

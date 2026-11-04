@@ -29,6 +29,13 @@ No, and there are no short-term plans to add support. Serial port enumeration us
 
 MCP settings and call records are stored separately; `config.json` does not contain AI data.
 
+## Does the app report errors?
+
+Yes. Panics, backend runtime errors and frontend JS exceptions are sent to a self-hosted error collection service together with the app version, OS, error message/stack and a context tag, so problems can be diagnosed and fixed.
+
+- Serial traffic, log contents and device data are **never** sent. Stack traces may contain source file paths (used to locate the fault).
+- It is on by default and has no UI switch; to opt out, set `SEAHI_ERROR_REPORT=0` before launching the app (a system environment variable works too).
+
 ## Does the app lose window geometry after it closes?
 
 No. Position and size are stored in `window.json`: outer position for the window and the content-area size. Minimised or maximised windows do not overwrite the normal geometry. When upgrading from an older version, the size is migrated once from `config.json`.

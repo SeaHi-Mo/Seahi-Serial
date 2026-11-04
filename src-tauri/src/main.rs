@@ -105,6 +105,122 @@ fn dbg_log(msg: &str) {
 /// 全局错误上报通道（单线程消费，避免每次 spawn 新线程）
 static ERROR_SENDER: std::sync::OnceLock<std::sync::mpsc::Sender<(String, String)>> = std::sync::OnceLock::new();
 
+/// 错误上报服务地址的**编译期默认值**：CI 用 `SEAHI_ERROR_SERVER_URL` 注入，没有就用内置地址。
+/// 这是公开的写入端点（不是密钥）；运行时 `ERROR_SERVER_URL` 优先于它（自建服务/本机调试）。
+const DEFAULT_ERROR_SERVER_URL: &str = match option_env!("SEAHI_ERROR_SERVER_URL") {
+    Some(v) => v,
+    None => "https://seahi-error-server.seahi-mo.workers.dev",
+};
+
+/// 上报接口的鉴权 Key：**编译期**从 `SEAHI_ERROR_API_KEY` 注入（CI secret）。
+/// 源码里不写它 —— 仓库是公开的；运行时 `ERROR_API_KEY` 优先（本机自测）。
+const DEFAULT_ERROR_API_KEY: &str = match option_env!("SEAHI_ERROR_API_KEY") {
+    Some(v) => v,
+    None => "",
+};
+
+/// 客户端去重窗口（秒）。服务端已按 `error+stack` 分组，但串口收发这类高频路径一分钟能打出
+/// 几十条，会撞服务端「每 IP 60 次/分钟」的限速（429）把别的错误挤掉。
+/// 与 `mcp/report.rs` 的 `DEDUP_WINDOW_SECS` 同口径（5 分钟）。
+const REPORT_DEDUP_WINDOW_SECS: u64 = 300;
+/// 去重表上限；到顶整体清空 —— 上报路径不能吃内存，也不能阻塞调用方。
+const REPORT_DEDUP_MAX_ENTRIES: usize = 256;
+
+/// 去重表：key = hash(context + 错误首行)，value = (上次放行时间, 被合并的条数)
+static REPORT_DEDUP: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<u64, (std::time::Instant, u32)>>,
+> = std::sync::OnceLock::new();
+
+/// 显式关闭开关：`SEAHI_ERROR_REPORT=0/false/off`（给不想要联网上报的用户）。
+fn error_report_enabled() -> bool {
+    !matches!(
+        std::env::var("SEAHI_ERROR_REPORT").ok().as_deref(),
+        Some("0") | Some("false") | Some("off") | Some("OFF")
+    )
+}
+
+/// 解析上报目标；`None` = 不上报。
+///
+/// 优先级：运行时 `ERROR_SERVER_URL` > 编译期默认值。
+/// ⚠️ **Debug 构建不带编译期默认值**（开发时不能往生产库灌数据）：只有显式设了运行时
+/// `ERROR_SERVER_URL` 才上报 —— 与此前既有行为一致。
+fn error_report_target() -> Option<(String, String)> {
+    if !error_report_enabled() {
+        return None;
+    }
+    let runtime_url = std::env::var("ERROR_SERVER_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let url = match runtime_url {
+        Some(u) => u,
+        None if cfg!(debug_assertions) => return None,
+        None => DEFAULT_ERROR_SERVER_URL.trim().to_string(),
+    };
+    if url.is_empty() {
+        return None;
+    }
+    let key = std::env::var("ERROR_API_KEY")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_ERROR_API_KEY.trim().to_string());
+    Some((url, key))
+}
+
+/// 上报是否启用（给 `mcp_status.sinkConfigured` 用 —— 那里不能只盯环境变量，
+/// 否则编译期烘进去的默认地址会被误判成"没配置"）。
+pub(crate) fn error_report_active() -> bool {
+    error_report_target().is_some()
+}
+
+/// 去重判定：同一 (context, 错误首行) 在窗口期内只放行一次。
+fn report_dedup_allows(context: &str, error: &str) -> bool {
+    let now = std::time::Instant::now();
+    let key = report_dedup_key(context, error);
+    let map = REPORT_DEDUP.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() >= REPORT_DEDUP_MAX_ENTRIES {
+        map.clear();
+    }
+    match map.get_mut(&key) {
+        Some((last, merged)) if now.duration_since(*last).as_secs() < REPORT_DEDUP_WINDOW_SECS => {
+            *merged = merged.saturating_add(1);
+            // 只记一次（同一错误在窗口里被合并 N 条时不再重复刷日志）
+            if *merged == 1 {
+                dbg_log(&format!(
+                    "[report] 5 分钟内同类错误只上报一次，后续静默合并（{}）",
+                    context
+                ));
+            }
+            false
+        }
+        _ => {
+            map.insert(key, (now, 0));
+            true
+        }
+    }
+}
+
+/// 去重 key：只取 (context, 错误首行)，**不取堆栈** ——
+/// 同一错误的堆栈里行号会随版本变化，带上堆栈等于让去重随版本失效。
+fn report_dedup_key(context: &str, error: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    context.hash(&mut h);
+    error.split('\n').next().unwrap_or("").hash(&mut h);
+    h.finish()
+}
+
+/// 把「消息 + 堆栈」拆开：服务端有独立的 `stack` 字段，整段塞进 `error` 会先被 8K 截断
+/// （最先丢的恰好是堆栈）。
+fn split_error_stack(error: &str) -> (&str, &str) {
+    match error.split_once('\n') {
+        Some((head, rest)) => (head.trim_end(), rest.trim_start()),
+        None => (error.trim(), ""),
+    }
+}
+
 /// 最近一次检查更新得到的安装包信息缓存（download_url, sha256, size）。
 /// 用于 download_update 校验，防止前端传入任意 URL / 任意大小值 → 任意代码下载。
 static UPDATE_INFO_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(String, Option<String>, Option<u64>)>>> = std::sync::OnceLock::new();
@@ -113,34 +229,48 @@ static UPDATE_INFO_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(String, O
 static LAST_LOG_DIR: std::sync::OnceLock<std::sync::Mutex<Option<String>>> = std::sync::OnceLock::new();
 
 fn init_error_reporter() {
+    let Some((server_url, api_key)) = error_report_target() else {
+        dbg_log("[report] 未启用联网错误上报（未配置地址 / SEAHI_ERROR_REPORT 关闭 / Debug 构建未设 ERROR_SERVER_URL）");
+        return;
+    };
+    dbg_log(&format!(
+        "[report] 错误上报已启用：{}（鉴权 Key：{}）",
+        server_url,
+        if api_key.is_empty() {
+            "缺失，服务端会 401"
+        } else {
+            "已配置"
+        }
+    ));
     let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
     std::thread::spawn(move || {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
             .build()
             .ok();
-        if let Some(client) = client {
-            while let Ok((error, context)) = rx.recv() {
-                // 未显式配置 ERROR_SERVER_URL 时不上报（隐私：不默认发往公网端点）
-                let Ok(server_url) = std::env::var("ERROR_SERVER_URL") else {
-                    continue;
-                };
-                if server_url.trim().is_empty() {
-                    continue;
-                }
-                let api_key = std::env::var("ERROR_API_KEY").unwrap_or_default();
-                let payload = serde_json::json!({
-                    "app_version": env!("CARGO_PKG_VERSION"),
-                    "os": std::env::consts::OS,
-                    "error": error,
-                    "context": context,
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                });
-                let mut req = client.post(format!("{}/report", server_url.trim_end_matches('/'))).json(&payload);
-                if !api_key.is_empty() {
-                    req = req.header("X-API-Key", &api_key);
-                }
-                let _ = req.send();
+        let Some(client) = client else {
+            return;
+        };
+        while let Ok((error, context)) = rx.recv() {
+            if !report_dedup_allows(&context, &error) {
+                continue;
+            }
+            let (message, stack) = split_error_stack(&error);
+            let payload = serde_json::json!({
+                "app_version": env!("CARGO_PKG_VERSION"),
+                "os": std::env::consts::OS,
+                "error": message,
+                "stack": stack,
+                "context": context,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            });
+            let mut req = client.post(format!("{}/report", server_url.trim_end_matches('/'))).json(&payload);
+            if !api_key.is_empty() {
+                req = req.header("X-API-Key", &api_key);
+            }
+            // 网络失败 / 401 / 429 都只记本地日志：上报路径自己绝不能制造错误
+            if req.send().map(|r| !r.status().is_success()).unwrap_or(true) {
+                dbg_log(&format!("[report] 上报失败（{}）", context));
             }
         }
     });
@@ -163,20 +293,66 @@ fn report_error_to_sentry(error: &str, context: &str) {
     );
 }
 
-/// 上报错误到自建服务
+/// 把错误投进上报线程的队列（是否真的联网上报，由 `init_error_reporter` 决定；
+/// Debug 不往生产库灌数据的判断也已经在 `error_report_target` 里）。
 fn report_to_self_hosted(error: &str, context: &str) {
-    // Debug 模式不发往生产，除非显式设置了 ERROR_SERVER_URL
-    #[cfg(debug_assertions)]
-    {
-        if std::env::var("ERROR_SERVER_URL").is_err() {
-            dbg_log("[SKIP] Debug 模式未设置 ERROR_SERVER_URL，跳过上报");
-            return;
-        }
-    }
-
-    // 通过通道发送到上报线程，避免每次 spawn 新线程
     if let Some(tx) = ERROR_SENDER.get() {
         let _ = tx.send((error.to_string(), context.to_string()));
+    }
+}
+
+#[cfg(test)]
+mod error_report_tests {
+    use super::*;
+
+    #[test]
+    fn split_error_stack_keeps_head_and_stack() {
+        let (msg, stack) = split_error_stack("发送失败: e\n    at foo (main.rs:10)\n    at bar");
+        assert_eq!(msg, "发送失败: e", "error 字段只留首行");
+        assert!(stack.starts_with("at foo"), "堆栈进独立字段");
+        // 单行错误：stack 为空串（不是不发这个字段）
+        assert_eq!(split_error_stack("单行错误"), ("单行错误", ""));
+        // 首行尾随空白要清掉（日志里常见 "xxx \n..."）
+        let (m, _) = split_error_stack("末尾有空格 \n堆栈");
+        assert_eq!(m, "末尾有空格");
+    }
+
+    #[test]
+    fn dedup_key_ignores_stack_lines() {
+        // 同一个错误首行、堆栈行号不同（版本升级后行号变了）→ 必须算同一条
+        assert_eq!(
+            report_dedup_key("send_data", "发送失败: x\nat a.rs:1"),
+            report_dedup_key("send_data", "发送失败: x\nat a.rs:99"),
+        );
+        // 首行不同 → 不同 key
+        assert_ne!(
+            report_dedup_key("send_data", "发送失败: x"),
+            report_dedup_key("send_data", "发送失败: y"),
+        );
+        // context 不同 → 不同 key（同一个错误文本出现在两条代码路径上要分开统计）
+        assert_ne!(
+            report_dedup_key("send_data", "同一句"),
+            report_dedup_key("read_data", "同一句"),
+        );
+    }
+
+    #[test]
+    fn dedup_allows_first_then_merges_in_window() {
+        // 用唯一 context，避免与其它用例共享全局去重表
+        let ctx = "dedup_test_窗口内合并";
+        assert!(report_dedup_allows(ctx, "错误 A"), "首次必须放行");
+        assert!(!report_dedup_allows(ctx, "错误 A"), "窗口内同类错误应被合并");
+        assert!(report_dedup_allows(ctx, "错误 B"), "换一条错误照常放行");
+    }
+
+    #[test]
+    fn report_stays_off_without_target() {
+        // 未设 ERROR_SERVER_URL 时：Debug 构建必须不上报（测试就是 Debug 构建）
+        // 注意：不改环境变量 —— `error_report_target` 在 Debug 下只要 runtime env 为空就返回 None，
+        // 这里只验证"没配就是 None"这一条，不依赖 DEFAULT_ERROR_SERVER_URL 的值。
+        if std::env::var("ERROR_SERVER_URL").map(|s| s.trim().is_empty()).unwrap_or(true) {
+            assert!(error_report_target().is_none(), "Debug 构建不得使用编译期默认地址");
+        }
     }
 }
 

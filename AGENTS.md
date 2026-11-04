@@ -514,8 +514,29 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
 
 ## 错误上报系统
 
-两条通道：**自建服务**（`server/error-server.js` + SQLite，推荐）与 **Sentry + GitHub Webhook**
-（`server/sentry-webhook.js` → 自动建 GitHub Issue，带 `bug` / `auto-reported` 标签）；Cloudflare Workers 版在
-`cloudflare-worker/`（免费全球部署）。环境变量 `ERROR_SERVER_URL` / `SENTRY_DSN`，部署步骤与字段说明见
-`server/INSTALL.md` 与 `server/README.md`。特性：自动捕获 panic 与运行期错误、去重、详细上下文（堆栈/环境/操作记录）、
-离线缓存后补报。
+两条通道：**自建服务**（`server/error-server.js` + SQLite，或 `cloudflare-worker/` 的 Workers + D1）
+与 **Sentry + GitHub Webhook**（`server/sentry-webhook.js` → 自动建 GitHub Issue）。
+
+**客户端默认是开的**（2026-11 起），几条别改回去：
+
+1. **地址与 Key 都是编译期注入**：`main.rs` 顶部 `DEFAULT_ERROR_SERVER_URL` / `DEFAULT_ERROR_API_KEY`
+   走 `option_env!("SEAHI_ERROR_SERVER_URL" / "SEAHI_ERROR_API_KEY")`；`src-tauri/build.rs` 里有对应的
+   `cargo:rerun-if-env-changed`（少了它，cargo 缓存会让包里留着上一次的值）。源码里的兜底地址是
+   `https://seahi-error-server.seahi-mo.workers.dev`；运行时 `ERROR_SERVER_URL` / `ERROR_API_KEY` 优先。
+   ⚠️ 别再写成"构建时 set `ERROR_SERVER_URL`"：那是运行时变量，`cargo build` 时设的进不了 exe（旧文档的错）。
+2. **CI 缺 Key 必须失败**：Worker 对缺少/错误 `X-API-Key` 一律 401。`build.yml` 的 `Check error reporting key`
+   在 secret 缺失时直接 `throw` —— 不能让「发了版却一条错误都收不到」悄悄发生。
+3. **Debug 构建不用编译期默认地址**（开发时不能往生产库灌数据）：只有显式设了运行时 `ERROR_SERVER_URL`
+   才上报。终端用户的 Release 构建才默认上报。
+4. **客户端自己做 5 分钟同类去重**（`REPORT_DEDUP_WINDOW_SECS`，key = context + 错误**首行**、**不含堆栈**）：
+   服务端虽按 `error+stack` 分组，但串口收发这类高频路径一分钟能打出几十条，会撞服务端「每 IP 60 次/分钟」
+   限速（429）把别的错误挤掉。MCP 那一层另有 `mcp/report.rs` 的 `DEDUP_WINDOW_SECS`，两者不要合并。
+5. **`stack` 必须独立送**（`split_error_stack`）：服务端 `error` 字段只留 8K，整段塞进去先丢的就是堆栈；
+   去重 key 也不能含堆栈（行号随版本变化 → 去重随版本失效）。
+6. 用户侧关闭开关：`SEAHI_ERROR_REPORT=0/false/off`（FAQ 里写明；**没有 UI 开关**，这是明确取舍）。
+7. Sentry 仍是**可选 feature**（`sentry`），默认不编进发布包；要开就 `--features sentry` + `SENTRY_DSN`。
+8. ⚠️ **不要写「离线缓存后补报」**：当前实现没有离线队列，网络失败只在本地日志记一行 `[report] 上报失败`。
+   要补必须先做有界队列 + 重试退避，别只改文档。
+
+字段与上限：`app_version/os/error/stack/context`，服务端截断为 64/128/8K/32K/16K 字节；
+部署与鉴权（`ERROR_API_KEY` 必配、每 IP 限速）见 `server/INSTALL.md` 与 `server/README.md`。
