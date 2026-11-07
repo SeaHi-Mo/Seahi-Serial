@@ -1,116 +1,116 @@
 # Quick commands
 
-The quick command panel sits on the right side of the output area and starts collapsed. Click to expand it, then drag the tab left to widen it: at least 300px, at most 60% of the pane, always leaving 160px for the output area. It is meant for sequences that need a request and a response, such as network setup, calibration or writing parameter blocks.
+The quick command panel is located on the right side of the output area and is collapsed by default. Click to expand it; drag the tab to the left to adjust the width, with a minimum of 300px, a maximum of 60% of the pane and 160px always reserved for the output area. The panel executes a sequence of commands that require interaction, such as network configuration, calibration or batch parameter writes.
 
 <GuideMedia
   src="/img/guide/qcmd.mp4"
   poster="/img/guide/qcmd.png"
-  caption="Expanding the quick command panel and collapsing a group."
+  caption="Expanding the quick command panel and collapsing or expanding groups. Table data comes from the application configuration."
 />
 
-The header has the Loop sending switch on the left and + New loop group, Import and Export on the right. After importing a file, a source row appears under the header with the file name, Reload and Disconnect. Without a file, the list is stored in the local config. Once a file is attached, the file is the storage; the config keeps a cache that is used when the file cannot be read.
+The left side of the header contains the Loop sending switch; the right side contains + New loop group, Import and Export. After a file is imported, a source row appears below the header with the file name, Reload and Disconnect. Without an associated file, the list is stored in the local configuration. With a file, the file serves as storage, the configuration keeps a cache, and the cache is used when the file cannot be read.
 
 ## Groups
 
-Commands are organised into loop groups. Each group is its own table: group header, column header row, then data rows, matching the "one table per group" shape of the file.
+Commands are managed in loop groups. Each group is an independent table containing a group header, a column header row and data rows, matching the one-table-per-group structure in the file.
 
-- Rename a group directly in its header. When a file is attached, this line rewrites the `## group name` heading in the file. For an old file without headings, the rename only affects the panel; no heading is added to the file.
-- Drag the dotted grip on the left of the header up or down to reorder groups. The topmost group is the loop start, and the table order in the file follows.
-- The fold arrow only hides rows; it does not affect the loop.
-- The slider switch on the header controls whether the group takes part in the loop. Turn it off to skip the whole group without changing sequence numbers; turn it back on to restore it. The switch and fold states live in the local config, not in an external file: there is no group-level switch column.
-- The header shows the number of commands in the group. The × at the far right deletes the group and its commands. The last remaining group cannot be deleted; delete its commands instead.
-- + Add is at the far right of the column header row and appends an empty command to that group. A new group is added at the bottom, named "循环 N" by default, and starts with one empty command. With a file attached, the group's heading, table header and first row are also appended to the file.
+- Click a group name to edit it. When a file is associated, the operation rewrites the `## group name` heading in the file. For an old file without headings, only the panel is changed and no heading is added to the file.
+- Hold the dotted grip on the left of the group header and drag it up or down to reorder groups. The topmost group is the loop start, and the table order in the file changes accordingly.
+- The fold arrow only collapses the display and does not affect loop sending.
+- The slider switch on the group header controls whether the group participates in loop sending. When it is turned off, the whole group is skipped and sequence numbers remain unchanged; turning it back on restores participation. The switch and fold states are stored in the local configuration; the external file has no group-level switch column.
+- The group header shows the number of commands in the group. The × at the far right deletes the whole group and its commands. When only one group remains, deletion is rejected and commands can be deleted individually.
+- + Add at the far right of the column header row appends an empty command to the end of the group. A new group is appended at the end with the default name "循环 N" and one empty command. When a file is associated, the group heading, table header and data row are added to the end of the file.
 
-## Fields
+## Command fields
 
 | Field | Description |
 |---|---|
-| Sequence | Up to 4 digits. `0` means the command is not part of the loop; values greater than `0` are sent in ascending order inside the group, ties by row order |
-| Command | Sent as written; escapes such as `\r\n` and `\t` work. Pressing Enter in the input is the same as clicking this row's send button |
-| Timeout (ms) | Time occupied by this command, default 3000, maximum 600000 (10 minutes); see the next section |
-| HEX | Send this command as hexadecimal, independent of the current text/HEX mode of the main send bar |
-| Send / Delete | Send this row once (disabled while disconnected), or delete it |
+| Sequence | Up to 4 digits. `0` means the command does not participate in the loop; values greater than `0` are sent in ascending numeric order within the group, with ties handled by row order |
+| Command | Sent as written; escape sequences such as `\r\n` and `\t` take effect; pressing Enter in the input is equivalent to clicking the send button of the command |
+| Timeout (ms) | Time occupied by the command, default 3000, maximum 600000 (10 minutes); see the next section for details |
+| HEX | The command is parsed and sent as hexadecimal, independent of the current text/HEX mode of the main send bar |
+| Send / Delete | Send the command once (unavailable while disconnected) or delete it |
 
-There is no name field in the panel: a name column in the file is preserved as-is, but export copies omit it. Expected, Retry and the two jumps are also file-only. When they are present, the timeout cell gets a faint outline; hover it to see the values, and the import shows a message once.
+The panel does not provide a name field: the name column in the file is preserved as-is and export copies omit it. Expected, Retry, Success jump and Failure jump are configured only in the file. When these settings are present, the timeout cell displays a light border and the content can be viewed on hover; the import operation also reports once.
 
 ## Timeout and Expected
 
-The Timeout value works in two ways, decided by whether Expected has a value:
+The interpretation of Timeout depends on whether Expected is empty:
 
-- Expected non-empty and timeout greater than 0: the timeout is the maximum wait for a reply. A success word moves on early; running out of time takes the failure branch.
-- Expected empty: the command does not check replies, and the timeout is the interval before the next command. 3000 sends one command every 3 seconds.
-- Timeout 0: no waiting (even with Expected set), send with the 20ms minimum interval.
-- Clearing the timeout input resets it to 3000, not 0.
+- When Expected is non-empty and the timeout is greater than 0, the timeout is the maximum wait for a reply after sending. A success word moves the loop to the next command early; reaching the timeout enters the failure branch.
+- When Expected is empty, the command does not check replies and the timeout is the interval before the next command. For example, 3000 sends one command every 3 seconds.
+- When the timeout is 0, the command does not wait for a reply (even if Expected is set) and sends continuously at the minimum interval of 20ms.
+- Clearing the timeout input restores the default value 3000 and does not set it to 0.
 
-A row only waits for a reply when the file header declares an Expected column and that cell has a value. Without a success word there is nothing to match, and the built-in OK is not used as a fallback. To wait for the built-in OK, write `OK` in the Expected column.
+A command waits for a reply only when the file header declares an Expected column and the cell is non-empty. Without a success word there is no basis for a success decision, and the built-in OK is not used as a default criterion. To wait for the built-in OK, write `OK` in the Expected column.
 
-## How replies are judged
+## Reply judgement
 
-Replies are judged line by line in the backend. The frontend only sends, waits, and follows the verdict:
+Replies are judged line by line in the backend. The frontend sends commands, waits for the result and proceeds according to the verdict.
 
-- A reply must contain a line ending (`\r` or `\n`) to be split into lines. A partial line split across reads is joined; data with no line ending at all waits until the timeout.
-- The line contains `busy`: keep waiting. It is not a verdict, does not resend, and does not extend the timeout.
-- The line contains `error`: failure, resend this command. A line that also contains `busy` is treated as busy and keeps waiting.
-- The line is exactly `OK`, or ends with ` OK` (such as `SEND OK`): success.
-- The line exactly equals one of the words in Expected: success. Separate multiple words with `|`, for example `WIFI GOT IP|OK`. Comparison trims whitespace at both ends and ignores case, but it is whole-line equality, not contains.
-- Lines that match nothing produce no verdict; the app keeps waiting.
+- A reply must contain a line ending (`\r` or `\n`) to be split into lines. A partial line split across read operations is joined; data without a line ending is waited on until the timeout.
+- The line contains `busy`: continue waiting. No verdict is produced, the command is not resent, and the timeout is not extended.
+- The line contains `error`: judged as a failure and the command is resent. A line that also contains `busy` is treated as busy and waiting continues.
+- The line is exactly `OK`, or ends with ` OK` (for example `SEND OK`): judged as success.
+- The line exactly equals any success word in Expected: judged as success. Separate multiple success words with `|`, for example `WIFI GOT IP|OK`. Comparison trims leading and trailing whitespace and ignores case; it uses whole-line equality and does not support substring matching.
+- Unrecognised lines produce no verdict and waiting continues.
 
-For rows that wait, the built-in `OK` / `error` / `busy` are always active; Expected adds to them and cannot disable them. So "accept WIFI GOT IP but not OK" is not possible. When you need a contains match or a regex, use a workflow rule (More settings → Workflows, where the condition types include string contains, regex and exact bytes).
+For commands that wait for replies, the built-in `OK`, `error` and `busy` criteria are always active; Expected adds success words on top of them and cannot disable the built-in criteria. It is therefore not possible to accept only `WIFI GOT IP` and reject `OK`. When substring matching or regular-expression matching is required, use a workflow rule (More settings → Workflows; condition types include string contains, regular expression and exact bytes).
 
-Retry: after ERROR, resend after 300ms. The default is 3 resends (up to 4 attempts in total), the maximum is 10, and `0` means no resend. Running out of time also counts as a failure. A failure follows the failure jump; without one, the whole chain stops. The stop message names the group and command and how long it waited; when retries run out it says "N consecutive ERROR replies".
+After ERROR, the command is resent after 300ms. The default is 3 resends (up to 4 attempts), the maximum is 10, and `0` means no resend. Reaching the timeout is also judged as a failure. A failure enters the failure jump; when no failure jump is configured, the whole chain is terminated. The termination dialog reports the group, command and waiting time; when retries are exhausted it shows "连续 N 次收到 ERROR".
 
-The frontend asks the backend for a verdict every 60ms. The backend settles the timeout when queried, and the frontend adds a 400ms grace period so it does not answer ahead of the backend.
+The frontend queries the backend for a verdict every 60ms. The backend settles the timeout when queried, and the frontend adds a 400ms grace period to avoid an early verdict.
 
 ## Loop sending
 
-Starting the loop checks two things: the monitor is connected, and at least one command with a sequence number greater than 0 exists in a participating group. If not, the app refuses and explains why; it never leaves the switch on while sending nothing.
+Two conditions are checked before starting: the monitor is connected, and at least one command with a sequence number greater than 0 exists in a participating group. If either condition is not met, startup is rejected with a reason; the switch is never left on while nothing is being sent.
 
-- The order is groups top to bottom, then sequence numbers inside a group. After the last group the loop returns to the top group. Sequence `0` is skipped and takes no slot.
-- The plan is rebuilt on every step: changing sequence numbers, dragging groups, adding or removing commands, or editing timeout/expected/jumps applies to the next step without restarting.
-- A success jump runs after a success word; a failure jump runs after a timeout or after retries are exhausted. Empty or `next` means sequential order, a number jumps to that sequence number (across groups too), and `end` stops. An empty failure jump stops the whole chain.
-- There is no "next group" jump; crossing groups is done with sequence numbers. Jumps look up sequence numbers, so if two groups use the same number, the first match in the plan wins.
-- A jump target that does not exist is reported once at import. If the loop reaches that point, a success jump falls back to "next" and a failure jump to "stop", with the reason written to the console.
-- Unrecognised jump values are treated as "next" and reported at import.
-- More than 200 consecutive jumps stop the loop automatically (one sequential step resets the count). This guards against a loop that only circles between a few commands.
+- The loop order is groups from top to bottom, then sequence numbers in ascending order within a group; after the last group, the loop returns to the topmost group. Sequence number `0` is skipped and occupies no position.
+- The execution plan is rebuilt on every step. Changes to sequence numbers, group order, commands, timeout, Expected or jumps made while the loop is running take effect on the next step without a restart.
+- A success jump is executed after a success word; a failure jump is executed after a timeout or after ERROR retries are exhausted. Empty or "next" means sequential execution, a number means jumping to the corresponding sequence number (including across groups), and "end" means stop. An empty failure jump terminates the whole chain by default.
+- A "next group" jump is not supported; crossing groups is performed through sequence numbers. Jumps are resolved by sequence number; when different groups use the same sequence number, the first matching command in the execution plan is selected.
+- When a target sequence number does not exist, a message is shown once at import. If execution reaches that step, a success jump falls back to "next" and a failure jump falls back to "stop", with the reason written to the console.
+- Unrecognised values in a jump column are treated as "next" and reported once at import.
+- More than 200 consecutive jumps stop the loop automatically (one sequential step resets the count), preventing repeated circulation among a small number of commands.
 
-### Single sends and failures
+### Command sending and failure handling
 
-Clicking a row's send button, or pressing Enter in the command input, sends that one command without starting the loop or waiting for a reply. It uses the same send path as the loop: the row's HEX switch chooses text or hexadecimal, text appends the panel's line ending, HEX does not, and an empty command is not sent. A failed manual send writes an error line to the output area.
+Clicking a command's send button or pressing Enter in the command input sends only that command, without starting the loop or waiting for a reply. The operation uses the same send path as loop sending: the command's HEX switch determines text or hexadecimal sending; text appends the panel line ending and HEX does not; empty content is not sent. When a manual send fails, an error line is written to the output area.
 
-The loop handles these cases separately:
+Loop sending handles the following cases separately:
 
-- Empty command: skip it and continue. Skipping a full round's worth of commands means the chain has nothing to send, so the loop stops with a message.
-- Disconnected, device write failure, or invalid HEX content: the send failed, so the whole chain stops immediately instead of jumping to another command.
-- Normal finish (success jump set to "end"): stops silently, with no message.
+- Empty command: the command is skipped and execution continues. When the number of consecutive skips reaches the number of commands in a full round, the chain has no content to send, and the loop stops with a message.
+- Disconnected, device write failure or invalid HEX content: the send failed, the whole chain stops immediately, and no other command is jumped to.
+- Normal finish (success jump set to "end"): the loop stops silently without a message.
 
-While the loop runs, the output area gets nothing: sent, received OK, busy, resends, jumps, normal finish and skips are all omitted. Visibility is the panel only: the lit Loop sending switch and the blinking dot on the collapsed panel tab. To see whether a row waits for a reply, hover its timeout cell.
+While the loop is running, no loop status information is written to the output area, including sent, OK received, busy, resend, jump, normal finish and skip. The visible state is limited to the Loop sending switch on the panel and the blinking status dot on the collapsed tab; whether a command waits for a reply can be confirmed through the hover text of its timeout cell.
 
-The loop stops itself on: disconnect (including three consecutive WSL read failures), send failure (disconnected, device write error, invalid HEX), a whole round with nothing to send, no commands with sequence greater than 0, a jump loop, retries exhausted, or a timeout. These stops show one message; the reason is in the message and details go to the console. Turning the switch off yourself shows nothing; closing the monitor just tears down the timers.
+The loop stops automatically in the following situations: connection loss (including three consecutive WSL read polling failures), send failure (disconnection, device write error, invalid HEX format), a full round with no content to send, no commands with sequence numbers greater than 0, a jump loop, ERROR retries exhausted and a wait timeout. A single dialog is displayed on stop, the dialog contains the stop reason, and exception details are written to the console. Manually turning off the switch shows no message; closing the monitor terminates the related timers.
 
-The Loop sending switch state is not saved, so the app never starts sending on launch. The quick command panel also always starts collapsed.
+The Loop sending switch state is not saved, so the application does not start sending automatically after launch. The quick command panel also remains collapsed each time it is opened.
 
 ## External files
 
-Import opens a native file picker and attaches the list to a file. After that, every add, edit and delete is written back (debounced 600ms); the file is the storage. Allowed extensions are md, markdown, txt, tsv and csv, but the format is detected from the content, not the extension.
+Import opens a native file selection dialog. After a file is selected, additions, edits and deletions in the pane are written back to the file (600ms debounce), and the file becomes the storage. Supported extensions are md, markdown, txt, tsv and csv; the format is determined by content and is unrelated to the extension.
 
-- Only paths you picked in the native file dialog are accepted: the backend keeps its own allow-list (the 50 most recent), so the frontend cannot pass an arbitrary path.
-- The same file cannot be mounted by two monitors. A second Import is rejected and tells you which pane to Disconnect first.
-- Reload on the source row re-reads the file. A failed reload keeps the current list and shows a message instead of clearing it. On the next launch the file is re-read automatically; if it cannot be read, the cached config is kept.
-- Before the window closes, a write-back still inside the 600ms debounce is flushed immediately.
+- Only paths selected in the native file selection dialog are accepted. The backend maintains an allow-list of the 50 most recent paths; an arbitrary path passed by the frontend is rejected.
+- The same file cannot be associated with two monitors at the same time. A second Import is rejected and identifies the pane where Disconnect must be performed first.
+- Reload on the source row re-reads the file. When reloading fails, the current list is retained with a message instead of being cleared. On the next launch the file is read again automatically; when reading fails, the cached configuration is used.
+- Before the window closes, a write-back still waiting in the 600ms debounce is executed immediately.
 
 ### File format
 
-A `## group name` heading starts a loop group (two or more `#`). A single `#` and `//` still start comments; comments, blank lines and table headers keep their original positions. An old file without headings is read as one group: no heading is added on read, and write-back does not change your table structure. The carrier is detected from the content (a `##` heading means Markdown is used), and write-back uses the detected one:
+A `## group name` heading separates loop groups (two or more `#`). A single `#` and `//` still denote comments; comments, blank lines and table headers keep their original positions. An old file without headings is read as one group: no heading is added on read, and write-back does not change the table structure. The carrier is detected from content (a `##` heading means Markdown processing), and write-back uses the detected carrier:
 
-| Carrier | Looks like |
+| Carrier | Form |
 |---|---|
-| Markdown table | Contains `\|`; recommended. Columns and groups are expressed with the header row and `##` headings |
-| TSV | Tab-separated, for example pasted from Excel |
+| Markdown table | Contains `\|`; recommended. Columns and groups are expressed through the header row and `##` headings |
+| TSV | Tab-separated, for example pasted directly from Excel |
 | Plain command lines | One command per line |
 
-Line endings are written as CRLF. Parsing never splits on commas: `AT+CWJAP="ssid","pwd"` is one complete send, even if the file is named .csv.
+Line endings are written as CRLF. Parsing does not split on commas: `AT+CWJAP="ssid","pwd"` is sent as one complete command, and a file with the .csv extension is not split into multiple columns.
 
-A column is treated as a parameter only when the header declares it; undeclared columns are notes and are preserved as-is. Column names ignore case and strip spaces and annotations such as `(ms)`:
+A column is treated as a parameter only when the header declares its name; undeclared columns are notes and are preserved as-is. Column names are case-insensitive and ignore spaces and annotations such as `(ms)`:
 
 - Name: 名称, 名字, 标签, 指令名, name, label, title
 - Command: 指令, 命令, 内容, 指令内容, 发送内容, cmd, command, value, data
@@ -122,85 +122,77 @@ A column is treated as a parameter only when the header declares it; undeclared 
 - Failure jump: 失败跳转, 失败后, 失败, err跳转, errgoto, fail, onfail, ongoto
 - HEX: hex, hex开关, 十六进制, 格式, format, mode
 
-Names such as `编号`, `no`, `num` and `index` are deliberately not recognised, so your ID column is not read as a sequence number and rewritten to `0`. The old column name 延时 is read as Timeout: the number stays, the meaning changes, and import says so once. When both columns exist, Timeout wins.
+Column names such as `编号`, `no`, `num` and `index` are not recognised, which prevents an ID column from being read as a sequence number and rewritten to `0`. The old column name 延时 is parsed as Timeout: the value is unchanged, the meaning differs, and a message is shown once at import. When both columns exist, Timeout takes precedence.
 
-An old file without a header row: column 1 is the name, column 2 the command, and column 3 onward are notes. Columns are never mapped by position.
+An old file without a header row is read as follows: column 1 is the name, column 2 is the command, and column 3 onward are notes; parameters are never mapped by column position.
 
-When the file starts with `---` (YAML) or `+++` (TOML), everything up to the matching closing line is kept as-is but is not interpreted by this version (YAML closing lines are `---` or `...`, TOML uses `+++`). The keys `baud`, `mode`, `lineEnding`, `delay`, `expect`, `timeout` and `hex` produce a "not applied yet" message: per-command parameters belong in declared columns (Timeout / Expected / Retry / HEX), while baud rate and line ending are set in the panel. A missing closing line is reported and the first line alone is treated as front matter; the rest is parsed normally.
+When the file starts with `---` (YAML) or `+++` (TOML), the block through the matching closing line is preserved as-is and is not interpreted by this version (YAML closing lines are `---` or `...`; TOML uses `+++`). Keys such as `baud`, `mode`, `lineEnding`, `delay`, `expect`, `timeout` and `hex` trigger the "not applied yet" message: per-command parameters must be written in declared columns (Timeout / Expected / Retry / HEX), while baud rate and line ending are configured in the panel. A missing closing line produces a message and is handled as "only the first line is front matter"; the rest of the content is parsed normally.
 
-### What import reports
+### Import messages
 
-A successful import shows no message (the list is visible and the source row shows the file name). These cases are reported once so nothing changes silently:
+A successful import shows no message by default; the list and source row already reflect the result. The following cases each show one message to avoid silently changing semantics:
 
-- Skipped rows: over 500 commands, or an over-long name or command. The first line number and reason are shown.
-- Front matter keys that do not take effect, or front matter with no closing line.
-- The old column name 延时.
-- Expected / Retry values in the file (the panel does not show these fields; edit the file to change them).
-- Success jump / failure jump values, or unrecognised jump values.
-- Jumps pointing at sequence numbers that do not exist: success jumps fall back to "next", failure jumps to "stop".
-- A header that recognises columns but omits some of Sequence / Timeout / HEX: those fields live only in the local config.
-- Several tables in the file, read as several loop groups.
+- Skipped rows: more than 500 commands, or an over-long name or command; the first line number and reason are shown.
+- The front matter contains the unsupported keys described above, or the front matter has no matching closing line.
+- The old column name 延时 is used.
+- The file contains Expected or Retry (the panel does not display these fields; the file must be edited directly).
+- The file contains Success jump or Failure jump, or a jump column contains an unrecognised value.
+- A jump points to a non-existent sequence number: a success jump is handled as "next" and a failure jump as "stop".
+- The header recognises columns but omits Sequence, Timeout or HEX: these fields are stored only in the local configuration.
+- The file contains multiple tables and is read as multiple loop groups.
 
 ### Write-back rules
 
-- Comments, headers, separator rows and extra columns keep their positions; only the command cells are rewritten.
-- Untouched parameter cells are echoed as written: `0`, `是` or blank stays as it was. Only changed values, rows created in the panel and export copies are normalised to `0 / 3000 / true|false`. Cells that were empty stay empty; defaults are not filled in.
-- Columns are never added: if the header has no Sequence / Timeout / HEX, nothing is added and those three live only in the local config (reported at import). Use Export for a self-contained file.
-- With one group, write-back does not add a `##` heading (an existing heading is preserved as-is). Dragging, renaming or deleting groups edits the matching section in the file.
-- A completely empty row is not written. In a file whose header declares Sequence / Timeout / HEX, a row with no command but with parameter values is kept; otherwise the panel and the file would disagree on the count.
-- Before writing, the content hash is compared. If another editor changed the file, write-back reports a conflict instead of overwriting. Only a mount that has been read successfully once, with a known hash, is allowed to write.
-- Writing is atomic (temporary file plus rename). The encoding from the read is kept: UTF-8 (including BOM) first, GBK as a fallback, and characters GBK cannot encode fall back to UTF-8.
+- Comments, headers, separator rows and extra columns keep their original positions; only cells belonging to commands are rewritten.
+- Unmodified parameter cells are written back with their original text: `0`, `是` or blank remains unchanged; only modified values, rows created in the panel and export copies are normalised to `0 / 3000 / true|false`. Cells that were originally empty remain empty and are not filled with defaults.
+- Columns are not added automatically: when the header does not contain Sequence, Timeout or HEX, write-back adds no columns and these three fields are stored only in the local configuration (a message is shown at import). Use Export when a self-contained file is required.
+- With one group, write-back does not add a `##` heading (an existing heading in the file is preserved). Dragging, renaming or deleting groups modifies the corresponding table in the file.
+- A row that is empty in all cells is not written back. In a file whose header declares Sequence, Timeout or HEX, a row without a command but with parameter values is retained so that the number of commands in the panel and the file remains consistent.
+- The content hash is compared before writing: if the file has been modified by another editor, a conflict is reported and the file is not overwritten. Only an associated file that has been read successfully once and has a known hash is allowed to be written back.
+- Writing uses an atomic temporary-file and rename operation. The encoding from the read operation is retained: UTF-8 (including BOM) takes precedence, GBK is used as a fallback, and characters that GBK cannot encode fall back to UTF-8.
 
-### Export vs write-back
+### Export and write-back
 
-| | Write-back to the mounted file | Export copy |
+| | Write-back to the associated file | Export copy |
 |---|---|---|
-| Columns | Your header only, never added | Filled in: Sequence / Command / Timeout (ms) / HEX / Expected / Retry / Success jump / Failure jump |
-| Name column | Preserved as-is | Omitted |
+| Columns | Per the file header; no columns are added | Filled in: Sequence / Command / Timeout (ms) / HEX / Expected / Retry / Success jump / Failure jump |
+| Name column | Preserved as-is | Not written |
 | Group headings | Not written with one group | Always written for Markdown / TSV copies; a plain-line single-group copy has no heading |
-| Carrier | The original carrier | Markdown / TSV by default; a plain-line single-group copy stays one command per line, while multiple groups upgrade to a Markdown table with a message |
-| Notes | Your file is untouched | Markdown / TSV copies start with a `#` comment block of usage notes and examples; plain-line copies do not |
+| Carrier | The original carrier | Markdown / TSV by default; a plain-line single-group copy remains one command per line, while multiple groups upgrade to a Markdown table with a message |
+| Notes | The associated file is not modified | Markdown / TSV copies start with a `#` comment block containing usage notes and examples; plain-line copies do not |
 
-The comment block at the top of a Markdown / TSV copy includes a table example, a DSL example with only the Command column, a HEX example and the meaning of each column. It works as a self-documenting template when you export one and open it. Those notes appear only in export copies; write-back never adds a word to your mounted file.
+The comment block at the start of a Markdown / TSV copy contains a table example, a DSL example with only the Command column, a HEX example and the meaning of each column, and can be used as a syntax reference. The comment block appears only in export copies; write-back adds nothing to the associated file.
 
-Export writes the file directly and does not go through write-back's hash conflict check. If the target happens to be a file mounted by another monitor, that pane's content is replaced; the panel warns you, and you can Reload there or pick another file name.
+Export writes the file directly and does not perform the hash conflict check used by write-back. If the target file is currently associated with another monitor, its content is replaced; the panel shows an immediate message, and Reload can be used in the corresponding pane or a different file name can be chosen.
 
-Default file names differ per monitor so double-clicking Export twice does not overwrite the first copy: the main pane uses `quick-cmds.md` (`quick-cmds.tsv` for TSV), while the WSL pane, extra panes and the embedded Bluetooth monitor add their own suffix (for example `quick-cmds-wsl.md`, `quick-cmds-extra-1.md`).
+Default file names differ by monitor to prevent a second export from overwriting the first: the main pane uses `quick-cmds.md` (`quick-cmds.tsv` for TSV), while the WSL pane, extra panes and the embedded Bluetooth monitor add their own identifiers (for example `quick-cmds-wsl.md` and `quick-cmds-extra-1.md`).
 
 ## Limits
 
-| Item | Limit | What happens past it |
+| Item | Limit | Behaviour when exceeded |
 |---|---|---|
-| File size | 256 KB | Reads and writes are rejected by the backend |
-| Commands | 500 | Extra rows are skipped at import with a message; the panel refuses to add more and asks you to delete some |
+| File size | 256 KB | Reads and writes are rejected by the backend with a message |
+| Commands | 500 | Rows beyond the limit are skipped at import with a message; the panel rejects further additions and prompts to delete commands first |
 | Name | 64 characters | Truncated at import with a message |
-| Group name | 64 characters | Truncated silently |
-| Command text | 4096 characters | Truncated at import with a message; changes via MCP are rejected with a message |
+| Group name | 64 characters | Truncated directly |
+| Command text | 4096 characters | Truncated at import with a message; changes through MCP are rejected with a message |
 
 ## Common problems
 
-**A command is sent only once and then the loop stops.**
-It probably has Expected set, but the device does not reply with a whole line equal to `OK` or your success word. The timeout counts as a failure, and the default failure branch stops the chain. Either write the exact line the device sends into Expected (separate multiple words with `|`), or leave Expected empty so the row sends at the timeout interval without checking replies.
+A command is sent only once and then the loop stops: the command has Expected configured, but the device reply does not match the whole line `OK` or the configured success word. The wait timeout is judged as a failure, and the default failure jump terminates the whole chain. The resolution is to write the exact line returned by the device into Expected (separate multiple words with `|`), or to leave Expected empty so that the command is sent at the timeout interval without reply checking.
 
-**The loop keeps sending; how do I stop it?**
-Click the Loop sending switch on the left of the header. The loop also stops itself on disconnect, monitor close, send failure or when nothing is left to send. The switch state is not saved, so restarting the app never starts it again.
+The loop needs to be stopped: click the Loop sending switch on the left side of the header. The loop also stops automatically on connection loss, monitor close, send failure or when there are no commands to send. The switch state is not saved, so the application does not start it automatically after a restart.
 
-**I changed something in the panel but the file did not change.**
-Write-back needs a successful read baseline. If the file was never read successfully (deleted, path changed, larger than 256 KB), the app refuses to write rather than rewriting your file from the in-memory list. Click Reload on the source row. A conflict on reload means another editor changed the file; reload and edit again.
+Panel changes are not written to the file: write-back requires a successful read baseline. When the file has not been read successfully (deleted, path changed, larger than 256 KB), the program does not write and does not rewrite the file from the in-memory list. In this case click Reload on the source row; if a conflict is reported, the file has been modified by another editor and can be edited again after reloading.
 
-**A command is missing after import.**
-Rows that are entirely empty are skipped. A row with no command but with parameter values (for example sequence 0 and timeout 3000) is kept.
+Commands are missing after import: rows that are empty in all cells are skipped. Rows without a command but with parameter values (for example sequence 0 and timeout 3000) are retained.
 
-**Why did the export gain columns and `##` headings?**
-A Markdown / TSV export is a self-contained copy: columns are filled in and headings are written. Write-back to the mounted file does neither. A plain-line single-group export stays one command per line and keeps only the command text; use a Markdown or TSV carrier to export the parameters.
+An export copy contains additional columns and `##` headings: a Markdown / TSV export is a self-contained copy; columns are filled in and headings are written. Write-back to the associated file does neither. A plain-line single-group export remains one command per line and contains only command content; to include parameters such as sequence and timeout, export with the Markdown or TSV carrier.
 
-**I put `baud: 115200` in the front matter and it had no effect.**
-Front matter is preserved but not interpreted. `baud` / `mode` / `lineEnding` / `delay` / `expect` / `timeout` / `hex` produce a "not applied yet" message. Set baud rate and line ending in the panel, and put per-command parameters in declared columns.
+The front matter key `baud: 115200` has no effect: front matter is preserved as-is but is not interpreted. `baud`, `mode`, `lineEnding`, `delay`, `expect`, `timeout` and `hex` trigger the "not applied yet" message; baud rate and similar settings are configured in the panel, and per-command parameters are written in declared columns.
 
-**What does the old 延时 column mean now?**
-It is read as Timeout: with Expected set it is the maximum wait for a reply; without Expected it is the interval before the next command. The numbers stay the same and import reports the change once. Rename it to 超时(ms) to avoid confusion.
+The old 延时 column is read as Timeout: with Expected configured it is the maximum wait for a reply; without Expected it is the interval before the next command. The value is unchanged and a message is shown once at import; renaming the column to 超时(ms) is recommended.
 
-**The device replies `+CWJAP:WIFI GOT IP` and Expected `WIFI GOT IP` does not match.**
-Expected is whole-line equality, not contains. Use a workflow rule for a contains or regex match, or write the exact line the device replies into Expected.
+Expected does not match the device reply: Expected uses whole-line equality and does not support substring matching. When substring or regular-expression matching is required, use a workflow rule, or write the exact line returned by the device into Expected.
 
 See [QUICK_CMDS.md](https://github.com/SeaHi-Mo/Seahi-Serial/blob/main/doc/QUICK_CMDS.md) for the complete column, front matter, write-back and limit reference.

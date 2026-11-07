@@ -1,6 +1,6 @@
 # Terminal mode
 
-The terminal button in the toolbar switches the output area to an xterm.js canvas. Cursor movement, screen clearing, colours and full-screen programs are handled by xterm, so `vim` and `top` work normally over the serial connection.
+The terminal button in the toolbar switches the output area to an xterm.js canvas. Cursor movement, screen clearing, colours and full-screen programs are handled by xterm, so programs such as `vim` and `top` on the other end of the serial link display and operate normally.
 
 <GuideMedia
   src="/img/landing/terminal.mp4"
@@ -10,36 +10,40 @@ The terminal button in the toolbar switches the output area to an xterm.js canva
 
 ## When to use terminal mode
 
-- The other end of the serial link is a Linux console or shell, and you need readline editing, completion and full-screen programs.
-- The program moves the cursor, clears the screen or switches to the alternate screen, as `vim`, `top` and `less` do.
-- The normal output view strips cursor and erase sequences and shows text line by line, so these screens only render correctly in terminal mode.
+Terminal mode applies to the following cases:
 
-For reading logs, saving them, or adding line numbers and timestamps, the normal output view is the better fit.
+- The other end of the serial link is a Linux console or shell that requires readline editing, completion and full-screen programs.
+- The program controls the cursor position, clears the screen or switches to the alternate screen, as `vim`, `top` and `less` do.
+
+The normal output area strips cursor and erase control sequences and shows text line by line, so these screens can only be reproduced in terminal mode. When the task is limited to reading logs, saving logs or adding line numbers and timestamps, the normal output view is sufficient.
 
 ## Entering and leaving
 
-- Click the terminal icon in the toolbar. The normal output area and the bottom send bar are hidden and keystrokes go straight to the canvas; leave terminal mode to use the send input again.
-- Each pane owns one xterm instance. Switching away and back reuses it; closing the pane disposes it. Terminal mode is not restored on restart, and the canvas starts empty: terminal history is not saved.
-- **Clear output** also clears the canvas, the normal output buffer and the session cache on disk.
-- `Ctrl+Shift+C` copies the selected text. `Ctrl+C` does not copy; it is sent to the device as `0x03`.
-- The canvas scrolls up, and xterm keeps the last 5000 lines. New data scrolls to the bottom automatically.
-- Entering terminal mode sends one carriage return (`CR`) to the device, so it prints a fresh prompt and the canvas has something to show immediately. Nothing is sent when the port is disconnected, and old output from the normal view is not replayed. No local notice is shown either.
+Clicking the terminal icon in the toolbar enters terminal mode; the normal output area and the bottom send bar are hidden and keystrokes are sent directly to the terminal canvas. To use the send input box, leave terminal mode first.
+
+Each pane owns an independent xterm instance; switching panes or pages reuses the instance, and closing the pane disposes it. Terminal mode is not restored after a restart, the canvas starts empty, and terminal history is not saved.
+
+Clear output clears the canvas, the normal output buffer and the disk session cache at the same time. `Ctrl+Shift+C` copies the selected text; `Ctrl+C` is not a copy shortcut and is sent to the device as `0x03`.
+
+The canvas scrolls upward and xterm keeps the last 5000 lines; new data scrolls to the bottom automatically. On entering terminal mode, if the port is connected, the app sends one carriage return (`CR`) and the device prints a fresh prompt; the app does not replay old log lines from the normal output area and does not show a local notice.
 
 ## Keyboard and canvas
 
-- The canvas takes focus automatically when terminal mode is entered, so you can start typing; click it again if focus moved elsewhere.
-- The mouse wheel and scrollbar act on xterm's own scrollback and do not move the normal output area.
-- Selection is made by dragging with the mouse; copying uses `Ctrl+Shift+C` only.
-- Full-screen programs work: entering and leaving the alternate screen is handled by xterm, and the previous screen returns when the program exits.
+The canvas takes focus automatically after terminal mode is entered and accepts input directly; if focus moves elsewhere, clicking the canvas restores it.
+
+The mouse wheel and scrollbar act on xterm's own scrollback and do not affect the normal output area's scroll position. A selection is created by dragging with the mouse, and copying uses `Ctrl+Shift+C`.
+
+Full-screen programs rely on xterm to enter and restore the alternate screen, and the previous screen returns when the program exits. The app does not implement local Tab completion; the Tab key is sent to the device and completion is handled by the shell on the device.
 
 ## Size and layout
 
-- The canvas recalculates its columns and rows when the pane or window is resized, so it adapts after switching pages or widening a pane.
-- Serial ports have no PTY line discipline, so this size only decides how the canvas is laid out. The device is not told that the window size changed, so full-screen programs draw at defaults or at sizes they assume.
+The canvas recalculates its columns and rows when the pane width or window size changes, and adapts after page switches or pane width adjustments.
+
+Serial ports have no PTY line discipline, so this size only determines the canvas layout. The device is not notified of window size changes, and full-screen programs draw at default or preset sizes.
 
 ## Direct send and line buffering
 
-The **Line buffering** button in the toolbar controls how keystrokes are sent. It is on by default for serial panes and off for WSL panes. Toggling it clears any half-typed line.
+The Line buffering button in the toolbar determines how keystrokes are sent. It is on by default for serial panes and off for WSL panes; toggling it clears input that has not been submitted.
 
 | | Direct (buffer off) | Line buffer (buffer on) |
 |---|---|---|
@@ -53,75 +57,74 @@ The **Line buffering** button in the toolbar controls how keystrokes are sent. I
 
 ## Direct send
 
-- Keys go to the device unchanged: Enter is `0x0D`, Tab is `0x09`, arrow keys are `ESC[A` sequences, and Ctrl combinations are sent as they are.
-- No line ending is appended and no key is intercepted. This is what full-screen programs such as `vi` and `top`, and a shell's readline, expect.
-- Pasted text is sent as-is, including any line breaks it contains.
+- Keys are sent to the device unchanged: Enter is `0x0D`, Tab is `0x09`, arrow keys are sequences such as `ESC[A`, and Ctrl combinations are also sent unchanged.
+- No line ending is appended and no key is intercepted; full-screen programs and the shell readline depend on this mode.
+- Pasted content is sent as-is, including line breaks.
 
 ## Line buffering
 
-- Printable characters go into a local buffer and are echoed; Enter sends the whole line plus the line ending in one go. Pressing Enter on an empty line sends only the line ending.
-- Backspace (`0x7F` / `0x08`) deletes locally and is not sent.
-- Left and right arrows move the cursor, Home and End jump to the start or end of the line, Delete removes the character at the cursor, and up/down browse local command history. None of these keys are sent.
-- History holds up to 200 entries; identical consecutive commands are stored once. It belongs to this pane only and is cleared when the pane closes or the app exits.
-- `Ctrl+C` flushes the half-typed line first and then sends `0x03`; `Ctrl+U` erases the line without sending anything.
-- Tab and other control keys are still sent directly, and function keys such as F1–F12, PgUp and PgDn are forwarded unchanged.
-- A single line is capped at 8192 characters. At the cap the buffer is sent without a line ending and does not enter history. Split long data into several sends instead.
-- Local echo counts one column per character, so wide characters such as CJK or emoji will misalign. Line buffering targets ASCII content such as AT commands; use direct send when wide characters must display correctly.
+- Printable characters first enter a local buffer and are echoed; Enter sends the whole line plus the line ending in one pass, and Enter on an empty line sends only the line ending.
+- Backspace (`0x7F` / `0x08`) deletes characters locally and is not sent to the device.
+- Left and right arrows move the cursor, Home and End move to the start or end of the line, Delete removes the character at the cursor, and up/down browse local command history; these keys are not sent to the device.
+- History holds at most 200 entries, and consecutive duplicates are stored once; history exists only in the current pane and is cleared when the pane closes or the app exits.
+- `Ctrl+C` clears the unsubmitted input first and then sends `0x03`; `Ctrl+U` clears the current line without sending anything to the device.
+- Tab and other control keys are sent directly, and function keys such as F1 to F12, PgUp and PgDn are sent to the device unchanged.
+- A single line is limited to 8192 characters; at the limit the app sends the buffer directly without a line ending, and the content does not enter history. Long data should be sent in several parts.
+- Local echo counts one column per character, so wide characters such as CJK and emoji misalign; line buffering targets ASCII content such as AT commands, and direct send should be used when wide characters must display correctly.
 
-Line buffering suits AT commands. Sending key by key, pressing Enter with only `\r`, and sending backspace as `0x7F` can all break AT command input. Line buffering collects the full line and appends the configured line ending, which is what modules expect.
+Line buffering suits AT commands. Sending key by key, sending only `\r` on Enter, and sending backspace as `0x7F` all prevent modules from parsing AT commands correctly. Line buffering caches the whole line and appends the line ending, which modules recognize correctly.
 
-If the device has echo enabled (`ATE1`), typed text appears twice. This is expected; use `ATE0` to disable echo on the device.
+When the device enables echo (`ATE1`), input appears twice; this is expected, and disabling device echo (`ATE0`) resolves it.
 
 ## Paste and command logging
 
-Logging every keystroke would flood the log, so terminal mode records commands only:
+Terminal mode records command-level operations only, because per-character logging makes the log difficult to read:
 
-- One entry when a line is submitted with Enter, and one entry per line when text is pasted. Both go to the `serial:<pane>:tx` channel with the source set to `ui`.
-- A burst of several printable characters is treated as a paste. Pure escape sequences such as arrow keys are not recorded, so `[A` is never mistaken for typed text.
-- Commands recalled from the device-side readline history with `↑` were never received by the app, so they are not recorded. Missing an entry is better than inventing one.
-- If sending fails, a red `[Send failed]` line appears in the canvas; details stay in the developer console.
-- A line submitted with Enter in line buffering, and the key stream in direct send, both use the same send command as the normal send bar, with a 5 second timeout.
+- One entry is recorded when a line is submitted with Enter, and one entry per line when text is pasted; entries are written to the `serial:<pane>:tx` channel with the source marked `ui`.
+- Multiple printable characters in one input are treated as a paste; pure escape sequences such as arrow keys are not recorded, and `[A` is not treated as user input.
+- Commands recalled from the device-side readline history with `↑` were not received by the app, so they are not recorded.
+- On a send failure, the canvas displays a red `[Send failed]` line and the detailed reason is written to the developer console.
+- A line submitted with Enter in line buffering and the key stream in direct send use the same send command, with a timeout of 5 seconds.
 
 ## Terminal mode in WSL panes
 
-WSL panes use the same terminal button and xterm canvas, with different defaults:
+WSL panes use the same terminal button and xterm canvas with different defaults:
 
-- Line buffering starts off, so keys go out one by one and the Linux shell keeps readline, completion and arrow keys.
-- Turn line buffering on manually when sending AT-style whole-line commands.
-- The normal output area is hidden in the same way, and the WSL pane's log and log hub keep working.
+- Line buffering is off by default, keys are sent one by one, and the Linux shell's readline, completion and arrow keys are preserved.
+- Line buffering can be enabled manually when sending AT-style whole-line commands.
+- The normal output area is hidden in the same way, and the WSL pane's log and log hub continue to work.
 
 ## Terminal mode and the normal output area
 
-- The normal output area is only hidden in terminal mode. Log lines are still generated and line numbers and timestamps are still computed; they are just not visible, and leaving terminal mode shows the full history.
-- The session cache, the log hub and MCP `serial_get_output` read the text from the normal output area. The terminal canvas is not written to disk separately.
-- **Clear output** clears both: the canvas, the output buffer and the session cache file.
-- Leaving terminal mode does not replay the canvas into the output area. Each side keeps its own display history.
+The normal output area is only hidden in terminal mode; log lines are still generated and line numbers and timestamps are still computed, and the full history is visible after leaving terminal mode.
+
+Session cache, log hub and MCP `serial_get_output` all read the normal output area's text, and the terminal canvas is not written to disk separately.
+
+Clear output clears the canvas, the output buffer and the disk cache file together. Leaving terminal mode does not replay canvas content into the output area; the canvas and the output area maintain their own display content.
 
 ## Controls in terminal mode
 
-| Control | Behaviour in terminal mode |
+| Control | Behavior in terminal mode |
 |---|---|
 | Clear output | Clears the canvas, the normal output buffer and the current session cache |
 | Line numbers / timestamps / message echo | Greyed out; they apply only to the normal output view |
-| Line buffering | Available; decides whether keys are sent one by one or as whole lines |
-| Send input | Hidden; type directly on the canvas |
-| Save log / copy all | Unchanged; they still use the full text from the normal output area |
-| More settings (log directory, workflows) | Still available |
+| Line buffering | Available; determines whether keys are sent directly or as whole lines |
+| Send input | Hidden; keys are entered directly on the canvas |
+| Save log / copy all | Unchanged; they operate on the full text of the normal output area |
+| More settings (log directory, workflows) | Available as usual |
 
 ## Colours
 
 - The 16 ANSI colours follow the current theme and share the normal output area's colour definitions; all 12 themes have their own set.
-- Background and foreground come from the actual output area colours; the cursor and selection use the theme accent colour, with a translucent selection.
-- Switching theme or light/dark rebuilds the palette immediately, so the terminal already has the right colours when you switch back.
+- Background and foreground come from the output area's actual colours; the cursor and selection use the theme accent colour, and the selection is translucent.
+- Switching theme or light/dark mode rebuilds the palette immediately, so colours are current when terminal mode is re-entered.
 
 ## Colour in the normal output view
 
-The normal output view only parses 16-colour ANSI escapes (30–37, 90–97, bold). 256-colour and true-colour escapes are shown as plain text. Full colour support is available only in terminal mode.
+The normal output view parses only the 16-colour ANSI escapes carried by the log (30–37, 90–97 and bold); 256-colour and true-colour output is displayed as plain text, and colour support is provided in terminal mode only.
 
 ## Greyed-out controls
 
-**Line numbers**, **timestamps** and **message echo** apply only to the normal output view, so they are greyed out in terminal mode; hovering over them explains why.
+Line numbers, timestamps and message echo apply only to the normal output view; they are greyed out in terminal mode and a hover tooltip explains the reason.
 
-Greying out changes appearance only. Your previous switch states are kept and take effect again when you leave terminal mode.
-
-The reverse also holds: **Line buffering** only matters in terminal mode and is greyed out while terminal mode is off.
+Greying out changes appearance only and does not modify the existing switch states, which continue to apply after leaving terminal mode. Conversely, line buffering applies only to terminal mode and is greyed out while terminal mode is off.
