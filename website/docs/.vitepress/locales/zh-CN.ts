@@ -29,7 +29,10 @@ export const zhCN: LocaleContent = {
     '/guide/': [
       {
         text: '开始',
-        items: [{ text: '快速开始', link: '/guide/quick-start' }],
+        items: [
+          { text: '快速开始', link: '/guide/quick-start' },
+          { text: '界面与设置', link: '/guide/interface' },
+        ],
       },
       {
         text: '串口',

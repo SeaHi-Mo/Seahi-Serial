@@ -32,7 +32,10 @@ export const enUS: LocaleContent = {
     '/en/guide/': [
       {
         text: 'Get started',
-        items: [{ text: 'Quick start', link: '/en/guide/quick-start' }],
+        items: [
+          { text: 'Quick start', link: '/en/guide/quick-start' },
+          { text: 'App interface and settings', link: '/en/guide/interface' },
+        ],
       },
       {
         text: 'Serial',
