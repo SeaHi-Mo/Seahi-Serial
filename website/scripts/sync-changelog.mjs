@@ -89,11 +89,10 @@ function sanitizeLinks(md, ref) {
   })
 }
 
-/** 版本倒序：当前版本在最前（它可能还没打 tag），随后是已有的 tag */
-function collectVersions() {
-  let tags = []
+/** 读本地 tag（本地仓库 / CI 全量克隆时能拿到） */
+function readLocalTags() {
   try {
-    tags = execSync('git tag -l "v*" --sort=-v:refname', {
+    return execSync('git tag -l "v*" --sort=-v:refname', {
       cwd: repoRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -103,7 +102,44 @@ function collectVersions() {
       .filter((t) => /^v\d+\.\d+\.\d+$/.test(t))
       .slice(0, MAX_VERSIONS)
   } catch {
-    tags = []
+    return []
+  }
+}
+
+/**
+ * 浅克隆（Cloudflare Pages 的 Git 构建等）通常**没有 tag**：不补的话更新日志只剩当前版本。
+ * 这里在构建时从远端补一次 tag；`git show <tag>:RELEASE_NOTES.md` 需要 tag 指向的提交对象，
+ * 所以依次尝试三种 fetch（普通 / 深度 1 / 解除浅克隆），哪种成功用哪种。
+ */
+function ensureTags() {
+  let tags = readLocalTags()
+  if (tags.length) return tags
+
+  const attempts = [
+    'git fetch --tags --force --quiet',
+    'git fetch --tags --force --depth=1 --quiet',
+    'git fetch --tags --force --unshallow --quiet',
+  ]
+  for (const cmd of attempts) {
+    try {
+      execSync(cmd, { cwd: repoRoot, stdio: ['ignore', 'ignore', 'ignore'] })
+    } catch {
+      continue
+    }
+    tags = readLocalTags()
+    if (tags.length) {
+      console.log(`[changelog] 本地没有 tag，已通过「${cmd}」补齐 ${tags.length} 个`)
+      return tags
+    }
+  }
+  return tags
+}
+
+/** 版本倒序：当前版本在最前（它可能还没打 tag），随后是已有的 tag */
+function collectVersions() {
+  const tags = ensureTags()
+  if (!tags.length) {
+    console.warn('[changelog] 没有可用 tag：只生成当前版本页（浅克隆且 fetch 失败时会这样）')
   }
 
   const versions = []

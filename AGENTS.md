@@ -329,6 +329,8 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
   （英文同构在 `docs/en/changelog/`），**没有「全部版本」索引页** —— 顶部「更新日志」标签由 `config.mts` 的
   `changelogLatest` + `DocsTabs.vue` 直接指向最新版本页，历史版本从侧栏进（`locales/index.ts` 从生成目录读列表）；
   旧版发布说明里的仓库相对链接（`./doc/...`）会被改写成该 tag 的 GitHub 链接，别再让它们变成站点死链。生成物同样不入库。
+  ⚠️ 旧版本页依赖 git tag：Cloudflare 的浅克隆没有 tag，`sync-changelog.mjs` 会在本地 tag 为空时**自动 `git fetch --tags` 补齐**
+  （失败才只生成当前版本，并在日志里打 `[changelog] 没有可用 tag`）。改这个脚本时别把这段兜底删掉。
   `doc/` 仍是开发者内部文档，**不整目录发布**；部署见 `doc/DEPLOY_CLOUDFLARE.md`：
   **Cloudflare Pages 的 Git 集成在推 `main` 时自动构建部署**，`.github/workflows/docs.yml` 只做构建校验。
   两条别改回去：① **不要往 docs.yml 加 `wrangler pages deploy`**（Direct Upload 与 Git 集成是两种项目，

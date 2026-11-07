@@ -32,6 +32,13 @@ Cloudflare Dashboard → **Workers & Pages** → 选中文档站项目 → **Set
 > 发版顺序因此是：**先 bump 版本号提交并推 `main`（Cloudflare 会重新构建，首页显示新版本号）→ 再打 tag 出安装包**。
 > 中间会有几分钟「首页写着新版本、Release 还没上」的窗口，属正常。
 
+### 更新日志的旧版本页也依赖 tag
+
+`website/scripts/sync-changelog.mjs` 为每个版本生成一页，旧版本内容取自 `git show <tag>:RELEASE_NOTES.md`。
+Cloudflare 的浅克隆没有 tag，所以脚本在**本地 tag 为空时会在 prebuild 阶段自动 `git fetch --tags` 补齐**
+（依次尝试普通 fetch / `--depth=1` / `--unshallow`）。补不到时只会生成当前版本页，并在构建日志里打一行
+`[changelog] 没有可用 tag` —— 更新日志只剩最新一版时先看这一行，而不是去怀疑生成器。
+
 ## 三、GitHub Actions 的 `Docs` 只做校验
 
 - `pull_request`（改 `website/**` 或 `doc/MCP_TOOLS.md`）：只构建，不部署；
