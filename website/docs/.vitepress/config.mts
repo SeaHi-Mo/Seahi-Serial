@@ -5,6 +5,7 @@ import { defineConfig } from 'vitepress'
 import type { DefaultTheme } from 'vitepress'
 import { locales } from './locales/index.ts'
 import { APP_VERSION as APP_VERSION_RAW } from './download.ts'
+import { CHANGELOG_VERSIONS } from './changelog-versions.ts'
 
 const DOCS_ROOT = resolve(process.cwd(), 'docs')
 
@@ -24,10 +25,12 @@ const REPO = 'https://github.com/SeaHi-Mo/Seahi-Serial'
  * 各语言的 nav / sidebar / 文案在 locales/*.ts 里，由 locales/index.ts 组装；
  * VitePress 按属性合并两者（语言包覆盖同名键，其余继承这里）。
  */
-const themeConfig: DefaultTheme.Config & { appVersion: string } = {
+const themeConfig: DefaultTheme.Config & { appVersion: string; changelogLatest: string } = {
   logo: '/logo.png',
   siteTitle: 'SeaHi Serial',
   appVersion: APP_VERSION,
+  /* 更新日志没有索引页：顶部「更新日志」标签直接落到最新版本页（DocsTabs 读这个值） */
+  changelogLatest: CHANGELOG_VERSIONS[0] || '',
   socialLinks: [{ icon: 'github', link: REPO }],
   // 本地搜索：索引在构建时生成。provider 必须写在**根** themeConfig 里，
   // 只放语言包不会触发索引生成（搜索框会是空的）。

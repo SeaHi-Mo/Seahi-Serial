@@ -90,7 +90,7 @@ docs(dev): 新增开发指南与 skills 使用指引
 
 **不要提交**：
 
-- 生成物：`node_modules/`、`dist/`、`website/docs/mcp/tools.md`、`website/docs/changelog.md`、`*.generated.ts`（构建时自动生成，`.gitignore` 已覆盖）；
+- 生成物：`node_modules/`、`dist/`、`website/docs/mcp/tools.md`、`website/docs/changelog/`（更新日志每版一页）、`*.generated.ts`（构建时自动生成，`.gitignore` 已覆盖）；
 - 本机路径、令牌、`config.json` 这类带个人环境的内容；
 - 与本次改动无关的重新格式化。
 

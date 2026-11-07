@@ -76,7 +76,7 @@ docs(dev): add development guide and skills walkthrough
 
 **Do not commit**:
 
-- generated files: `node_modules/`, `dist/`, `website/docs/mcp/tools.md`, `website/docs/changelog.md`, `*.generated.ts` (built automatically and covered by `.gitignore`);
+- generated files: `node_modules/`, `dist/`, `website/docs/mcp/tools.md`, `website/docs/changelog/` (one page per release), `*.generated.ts` (built automatically and covered by `.gitignore`);
 - machine-specific paths, tokens, or `config.json` contents;
 - reformatting unrelated to the change.
 

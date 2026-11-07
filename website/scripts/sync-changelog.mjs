@@ -1,10 +1,13 @@
 /**
- * 生成「更新日志」：**索引页 + 每个版本一个独立页**，版本倒序（最新在最上面）。
+ * 生成「更新日志」的**版本页**：每个版本一个独立页，最新在最上面。
  *
  * 产物（生成物不入库，见 .gitignore；`predev` / `prebuild` 自动跑）：
- *  - `docs/changelog.md`（/changelog）—— 索引，列出全部版本 + 一句摘要；
- *  - `docs/changelog/<vX.Y.Z>.md`（/changelog/vX.Y.Z）—— 单个版本的完整说明；
- *  - 英文在 `docs/en/changelog.md` 与 `docs/en/changelog/<vX.Y.Z>.md`（内容与中文同源）。
+ *  - `docs/changelog/<vX.Y.Z>.md` → /changelog/vX.Y.Z
+ *  - `docs/en/changelog/<vX.Y.Z>.md` → /en/changelog/vX.Y.Z
+ *
+ * ⚠️ **没有「全部版本」索引页**：顶部「更新日志」标签由 `config.mts`（读生成目录的最新版本）
+ * + `DocsTabs.vue` 直接指向最新版本页；历史版本从侧栏进（`locales/index.ts` 同一个目录读列表）。
+ * 以前生成过 `docs/changelog.md` / `docs/en/changelog.md`，这里会顺手删掉，避免残留孤儿页。
  *
  * 数据来源：
  *  - 当前版本：仓库根的 RELEASE_NOTES.md（发布说明只保留当前版本）；
@@ -66,17 +69,6 @@ function sectionBody(md) {
   return md.replace(/^##\s+v\d+\.\d+\.\d+[^\n]*\r?\n?/, '').trim()
 }
 
-/** 索引页的一句摘要：正文第一个「普通段落」行，去掉链接/强调标记后截断 */
-function summary(md) {
-  const line = md
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .find((s) => s && !/^(#|>|\||```|[-*+]\s|\d+\.\s|<)/.test(s))
-  if (!line) return ''
-  const plain = line.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[*_`]/g, '')
-  return plain.length > 90 ? `${plain.slice(0, 88)}…` : plain
-}
-
 function placeholder(version, isEn) {
   const url = `${REPO}/releases/tag/${version}`
   return isEn
@@ -131,45 +123,33 @@ function collectVersions() {
   return versions
 }
 
-function writeVersionPages(baseDir, urlPrefix, isEn) {
+function writeVersionPages(baseDir, isEn) {
   const dir = resolve(baseDir, 'changelog')
   // 目录整体重建：版本列表变了以后不留旧版本的孤儿页
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
   for (const { version, notes, ref } of versions) {
     const body = (notes && sectionBody(notes)) || placeholder(version, isEn)
-    const back = isEn
-      ? `[← Back to changelog](${urlPrefix}/changelog)`
-      : `[← 返回更新日志](${urlPrefix}/changelog)`
-    const md = `---\ntitle: ${version}\npageClass: changelog\n---\n\n# ${version}\n\n${sanitizeLinks(body, ref)}\n\n---\n\n${back}\n`
+    const md = `---\ntitle: ${version}\npageClass: changelog\n---\n\n# ${version}\n\n${sanitizeLinks(body, ref)}\n`
     writeFileSync(resolve(dir, `${version}.md`), md, 'utf8')
   }
 }
 
-function writeIndex(file, title, urlPrefix, isEn) {
-  const items = versions.map(({ version, notes }) => {
-    const excerpt = (notes && summary(sectionBody(notes))) || placeholder(version, isEn)
-    return `## [${version}](${urlPrefix}/changelog/${version})\n\n${excerpt}`
-  })
-  const intro = isEn
-    ? 'Release notes for every version. The newest release is at the top — click a version for the full notes.'
-    : '每个版本的发布说明。最新版本在最上面，点版本号看该版本的完整说明。'
-  const md = `---\ntitle: ${title}\npageClass: changelog\n---\n\n# ${title}\n\n${intro}\n\n${items.join('\n\n')}\n`
-  writeFileSync(file, md, 'utf8')
-}
-
 const versions = collectVersions()
 
-writeIndex(resolve(docsRoot, 'changelog.md'), '更新日志', '', false)
-writeVersionPages(docsRoot, '', false)
+// 旧版生成过「全部版本」索引页，现在不再生成：顺手删掉，避免残留孤儿页
+for (const file of [resolve(docsRoot, 'changelog.md'), resolve(docsEnRoot, 'changelog.md')]) {
+  rmSync(file, { force: true })
+}
+
+writeVersionPages(docsRoot, false)
 
 mkdirSync(docsEnRoot, { recursive: true })
-writeIndex(resolve(docsEnRoot, 'changelog.md'), 'Changelog', '/en', true)
-writeVersionPages(docsEnRoot, '/en', true)
+writeVersionPages(docsEnRoot, true)
 
 console.log(
-  `[changelog] ${versions.length} 个版本：索引 2 页 + 每版一页（${versions
+  `[changelog] ${versions.length} 个版本页（每版一页，最新在最上）：${versions
     .slice(0, 3)
     .map((v) => v.version)
-    .join(', ')}${versions.length > 3 ? ' …' : ''}）`,
+    .join(', ')}${versions.length > 3 ? ' …' : ''}`,
 )

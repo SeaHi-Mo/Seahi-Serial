@@ -10,9 +10,18 @@ import { useData } from 'vitepress'
  */
 const props = withDefaults(defineProps<{ variant?: 'bar' | 'side' }>(), { variant: 'bar' })
 
-const { lang, page } = useData()
+const { lang, page, theme } = useData()
 const isEn = computed(() => lang.value.toLowerCase().startsWith('en'))
 const rel = computed(() => page.value.relativePath || '')
+
+/* 更新日志直接落到最新版本页（没有单独的「全部版本」索引页）：
+   版本号由构建时的 config.mts 从生成的 changelog 目录里读出来注入 themeConfig。 */
+const changelogHref = computed(() => {
+  const latest = String((theme.value as { changelogLatest?: string }).changelogLatest || '')
+  const prefix = isEn.value ? '/en' : ''
+  // 还没有生成版本页时退回操作指南，别链到不存在的 /changelog
+  return latest ? `${prefix}/changelog/${latest}` : `${prefix}/guide/quick-start`
+})
 
 const tabs = computed(() => [
   {
@@ -27,7 +36,7 @@ const tabs = computed(() => [
   },
   {
     label: isEn.value ? 'Changelog' : '更新日志',
-    href: isEn.value ? '/en/changelog' : '/changelog',
+    href: changelogHref.value,
     active: /^(en\/)?changelog(\/.*)?\.md$/.test(rel.value),
   },
 ])
