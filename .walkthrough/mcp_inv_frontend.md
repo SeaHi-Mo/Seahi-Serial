@@ -544,8 +544,9 @@ function makeQcmdItem(mid, idx, label, value) {
 | `toggleTheme()` | 5704 | 深↔浅 + `scheduleConfigSave()` |
 | `toggleThemeStyleDrop(e)` | 5709 | 展开风格下拉 |
 | `selectThemeStyle(style)` | 5715 | 切风格 + 持久化 |
-| `matchMedia(...).addEventListener('change')` | 5737 | 跟随系统深浅 |
-| 启动时 | 5745 / 5752 / 5753 | 初始 `applyTheme(getSystemTheme())`，500ms/1500ms 再补两次标题栏色 |
+| 启动时 | 5745 / 5752 / 5753 | 初始 `applyTheme(getSystemTheme())`（只有尚无保存选择时才看得见），500ms/1500ms 再补两次标题栏色 |
+
+> 2026-11：深浅色**不再跟随系统变化**（`prefers-color-scheme` 的 `change` 监听已删）——运行中自动切换会覆盖用户已保存的选择，与「下次启动沿用」矛盾。
 
 ### 5.3 CSS 变量命名规律（`:root` 共 **35** 个）
 

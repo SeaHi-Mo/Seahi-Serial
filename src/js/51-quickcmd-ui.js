@@ -309,10 +309,15 @@ function makeQcmdItem(mid, gid, idx, label, value) {
     valInp.type = 'text';
     valInp.value = value;
     valInp.placeholder = '指令内容...';
+    // 与后端 MAX_QUICK_CMD_VALUE_CHARS / 导入解析的 QCMD_FILE_MAX_VALUE 同一口径：
+    // 以前只有文件导入与 MCP 修改会拦，面板手输可以无限长，写回/保存时才被截断（两端不一致）。
+    valInp.maxLength = QCMD_FILE_MAX_VALUE;
     valInp.setAttribute('autocomplete', 'off');
     valInp.setAttribute('spellcheck', 'false');
     valInp.addEventListener('click', function(e) { e.stopPropagation(); });
     valInp.addEventListener('input', function() {
+        // 程序化写入（MCP 的 ui_set 先赋值再派发 input）不走 maxlength 限制，这里兜底截断
+        if (this.value.length > QCMD_FILE_MAX_VALUE) this.value = this.value.slice(0, QCMD_FILE_MAX_VALUE);
         var it = qcmdItemAt(mid, gid, idx);
         // 名称不再有界面入口，但 label 仍原样留在数据/文件里（写回时那一列不会被抹掉）
         if (it) it.value = this.value;

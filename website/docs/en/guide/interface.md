@@ -68,7 +68,7 @@ The dialog provides the following operations: enable or disable the server, togg
 
 The theme style dropdown list provides 6 styles: Default, Ukiyo-e, Poetic East, Ink Wash, Peach Blossom and Golden Wind. Each style contains a light and a dark variant, for 12 themes in total.
 
-The dropdown options switch the colour style, and the light/dark switch on the right toggles between light and dark. Switching updates the output area, terminal, sidebar and buttons at the same time, and the title-bar background colour changes accordingly. The selection is written to config.json and restored on the next launch; on the first launch with no saved selection, the system light/dark setting is used. If the system light/dark setting changes while the application is running, the application follows the change.
+The dropdown options switch the colour style, and the light/dark switch on the right toggles between light and dark. Switching updates the output area, terminal, sidebar and buttons at the same time, and the title-bar background colour changes accordingly. The selection is written to config.json and restored on the next launch; on the first launch with no saved selection, the system light/dark setting is used. Changes to the system setting while the application is running do not switch the theme, so a saved selection is never overwritten.
 
 See [Themes](/en/guide/theme) for the full description.
 

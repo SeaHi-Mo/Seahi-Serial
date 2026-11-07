@@ -4,7 +4,7 @@
 /* ===== 自动更新 ===== */
 var _updateInfo = null;
 
-// 检查更新（启动时调用，之后每 30 分钟轮询）
+// 检查更新（启动 2 秒后调用，之后每 10 分钟轮询；间隔在 90-init.js 里设置）
 async function checkForUpdate() {
     // 已经发现更新且按钮可见，无需重复检查
     if (_updateInfo && _updateInfo.has_update) return;
@@ -339,12 +339,20 @@ function applyMonitorConfig(mid, mc) {
     if (mc.qcmdSideWidth) setQcmdSideWidth(mid, mc.qcmdSideWidth);
     // 快速指令外部文件：记下路径与编码/风格，并按文件重读一遍（文件才是存储）
     if (mc.quickCmdsFile && monitors[mid]) {
-        monitors[mid].quickCmdsFile = mc.quickCmdsFile;
-        monitors[mid].quickCmdsFileEnc = mc.quickCmdsFileEnc || 'utf-8';
-        monitors[mid].quickCmdsFileStyle = mc.quickCmdsFileStyle || 'md';
-        monitors[mid].quickCmdsFileVerified = false;   // 读完之前不许写回
-        renderQcmdSource(mid);
-        qcmdReloadFile(mid, true);   // 读不到就保留配置里的缓存并提示，绝不清空
+        // 配置恢复也查重（以前只有导入路径查）：两个分栏保存了同一路径时，两边写回会互相覆盖，
+        // 后写的一方必然撞哈希。这里跳过后来者的关联，列表仍从配置里的缓存恢复。
+        var qcmdMountedBy = qcmdFileMountedBy(mc.quickCmdsFile, mid);
+        if (qcmdMountedBy) {
+            console.warn('快速指令文件关联冲突:', mc.quickCmdsFile, '已被', qcmdMountedBy, '挂载');
+            showToast('「' + qcmdBaseName(mc.quickCmdsFile) + '」已被「' + qcmdMountedBy + '」挂载，本分栏未恢复该文件关联', 'error');
+        } else {
+            monitors[mid].quickCmdsFile = mc.quickCmdsFile;
+            monitors[mid].quickCmdsFileEnc = mc.quickCmdsFileEnc || 'utf-8';
+            monitors[mid].quickCmdsFileStyle = mc.quickCmdsFileStyle || 'md';
+            monitors[mid].quickCmdsFileVerified = false;   // 读完之前不许写回
+            renderQcmdSource(mid);
+            qcmdReloadFile(mid, true);   // 读不到就保留配置里的缓存并提示，绝不清空
+        }
     }
     // 发送历史
     if (mc.sendHistory && mc.sendHistory.length > 0 && monitors[mid]) {
@@ -493,12 +501,10 @@ document.addEventListener('click', function(e) {
     if (drop && wrap && !wrap.contains(e.target)) drop.classList.remove('open');
 });
 
-try {
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function() {
-        applyTheme(getSystemTheme());
-        scheduleConfigSave();
-    });
-} catch (_) { console.warn('matchMedia 监听注册失败:', _); }
+// 深浅色只以用户选择为准：切换会写入 config.json，下次启动沿用；首次启动且没有保存值时
+// 才用系统设置（见下方 applyTheme(getSystemTheme())）。
+// ⚠️ 不要再监听 prefers-color-scheme 变化自动切换：那会在运行中悄悄覆盖用户的保存选择，
+// 与「下次启动沿用」自相矛盾（2026-11 去掉；要跟随系统，就保持启动前没有保存过的选择）。
 
 // 启动时跟随系统主题
 try {

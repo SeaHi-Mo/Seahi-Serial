@@ -94,7 +94,7 @@ The Loop sending switch state is not saved, so the application does not start se
 Import opens a native file selection dialog. After a file is selected, additions, edits and deletions in the pane are written back to the file (600ms debounce), and the file becomes the storage. Supported extensions are md, markdown, txt, tsv and csv; the format is determined by content and is unrelated to the extension.
 
 - Only paths selected in the native file selection dialog are accepted. The backend maintains an allow-list of the 50 most recent paths; an arbitrary path passed by the frontend is rejected.
-- The same file cannot be associated with two monitors at the same time. A second Import is rejected and identifies the pane where Disconnect must be performed first.
+- The same file cannot be associated with two monitors at the same time. A second Import is rejected and identifies the pane where Disconnect must be performed first. If the same path appears twice when restoring configuration, the later monitor keeps its cached list but does not restore the file association, and a message is shown once.
 - Reload on the source row re-reads the file. When reloading fails, the current list is retained with a message instead of being cleared. On the next launch the file is read again automatically; when reading fails, the cached configuration is used.
 - Before the window closes, a write-back still waiting in the 600ms debounce is executed immediately.
 
@@ -175,7 +175,7 @@ Default file names differ by monitor to prevent a second export from overwriting
 | Commands | 500 | Rows beyond the limit are skipped at import with a message; the panel rejects further additions and prompts to delete commands first |
 | Name | 64 characters | Truncated at import with a message |
 | Group name | 64 characters | Truncated directly |
-| Command text | 4096 characters | Truncated at import with a message; changes through MCP are rejected with a message |
+| Command text | 4096 characters | The panel input enforces this length; longer values are truncated at import with a message; changes through MCP are rejected with a message |
 
 ## Common problems
 
