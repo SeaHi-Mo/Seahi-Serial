@@ -28,7 +28,7 @@ const tabs = computed(() => [
   {
     label: isEn.value ? 'Changelog' : '更新日志',
     href: isEn.value ? '/en/changelog' : '/changelog',
-    active: /changelog\.md$/.test(rel.value),
+    active: /^(en\/)?changelog(\/.*)?\.md$/.test(rel.value),
   },
 ])
 </script>

@@ -61,3 +61,6 @@ website/docs/.vitepress/theme/components/landing/releases.generated.ts
 
 website/docs/changelog.md
 website/docs/en/changelog.md
+# 更新日志的「每版一页」（由 website/scripts/sync-changelog.mjs 生成）
+website/docs/changelog/
+website/docs/en/changelog/
