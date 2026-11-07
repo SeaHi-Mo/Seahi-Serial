@@ -1,21 +1,51 @@
 import type { DefaultTheme, LocaleSpecificConfig } from 'vitepress'
 import type { LocaleContent } from './types.ts'
+import { readdirSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { zhCN } from './zh-CN.ts'
 import { enUS } from './en-US.ts'
 
 /**
+ * 更新日志的版本页：由 `website/scripts/sync-changelog.mjs` 生成在 `docs/changelog/<vX.Y.Z>.md`，
+ * 这里**从生成的目录里读**，而不是再维护一份版本清单（两份必然漂移）。
+ * 目录不存在（还没跑 prebuild）时退化为只有索引链接。
+ */
+function changelogVersions(): string[] {
+  try {
+    return readdirSync(resolve(process.cwd(), 'docs/changelog'))
+      .filter((f) => f.endsWith('.md'))
+      .map((f) => f.replace(/\.md$/, ''))
+      .filter((v) => /^v\d+\.\d+\.\d+$/.test(v))
+      .sort((a, b) => {
+        const pa = a.slice(1).split('.').map(Number)
+        const pb = b.slice(1).split('.').map(Number)
+        return pb[0] - pa[0] || pb[1] - pa[1] || pb[2] - pa[2]
+      })
+  } catch {
+    return []
+  }
+}
+
+const CHANGELOG_VERSIONS = changelogVersions()
+
+/**
  * 更新日志不在指南的章节树里，但排版要和指南页一致（左侧要有导航）。
- * 语言包只声明了 `/guide/`（英文是 `/en/guide/`），这里给它派生一个只含
- * 「更新日志」一条的侧栏 —— 不用把整棵指南目录搬过来。
+ * 语言包只声明了 `/guide/`（英文是 `/en/guide/`），这里给它派生一个侧栏：
+ * 「全部版本」（索引页）+ 每个版本一页，**最新在最上面**。
  */
 function withChangelogSidebar(sidebar: DefaultTheme.Sidebar | undefined, lang: string) {
   if (!sidebar || Array.isArray(sidebar)) return sidebar
   const out: Record<string, unknown> = { ...sidebar }
-  const label = lang.toLowerCase().startsWith('en') ? 'Changelog' : '更新日志'
+  const isEn = lang.toLowerCase().startsWith('en')
+  const label = isEn ? 'Changelog' : '更新日志'
   for (const key of Object.keys(sidebar)) {
     if (!key.endsWith('/guide/')) continue
     const prefix = key.slice(0, -'/guide/'.length) // '' 或 '/en'
-    out[`${prefix}/changelog`] = [{ text: label, link: `${prefix}/changelog` }]
+    const items: DefaultTheme.SidebarItem[] = [
+      { text: isEn ? 'All releases' : '全部版本', link: `${prefix}/changelog` },
+      ...CHANGELOG_VERSIONS.map((v) => ({ text: v, link: `${prefix}/changelog/${v}` })),
+    ]
+    out[`${prefix}/changelog`] = [{ text: label, items }]
   }
   return out as DefaultTheme.Sidebar
 }
