@@ -14,7 +14,7 @@ Each report contains the following fields:
 
 | Field | Content |
 |---|---|
-| App version | For example `0.5.23` |
+| App version | For example `0.5.24` |
 | Operating system | For example `windows` |
 | Error message | Error text, truncated when too long |
 | Stack | Fault location; a JavaScript call stack for the frontend, or file and line for the backend |

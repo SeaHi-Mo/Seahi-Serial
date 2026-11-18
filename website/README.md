@@ -144,7 +144,7 @@ website/
 **只有打 tag 才会部署**（`.github/workflows/docs.yml`）：
 
 ```bash
-git tag v0.5.22 && git push origin v0.5.22
+git tag v0.5.24 && git push origin v0.5.24
 ```
 
 版本号来自 tag（`APP_VERSION`），不需要改任何文件。文档改急了、又不想发版：Actions → **Docs** → Run workflow。
