@@ -1490,6 +1490,83 @@ BLE 面板有两套完全不同的东西：**主机**（当中央去连别人的
 
 ## 17. 实施记录
 
+### 2026-11-18 · 传输改为**单档**（取消共存）+ 会话显示/回收的收尾 ✅
+
+**用户要求**："共存模式调整成单模式运行，要么 http 要么 SSE"，并把上一轮评审剩下的项一起改掉。
+
+**一、传输单档（不兼容变更）**
+
+- `aiconfig::TransportMode` 只剩 `Http` / `Sse`，`both` 删除；默认 `Http`。
+- 迁移在 `load_in` 里：`transport: "sse"` / `streamableHttp: false` → `Sse`；其余（缺失、`streamableHttp: true`、
+  三档时代写下的 `"transport":"both"`）→ `Http`。`both` 与认不出的值由 `de_transport` + `parse_legacy` 兜住，
+  **绝不让整份 `ai-config.json` 解析失败**（失败会连带丢掉 token / 端口）。
+- `TransportMode::parse`（界面 / `mcp_config_set` 走的那条）**不认 `both`**：否则调用方以为切到了"两个都提供"，
+  实际只跑一条。
+- 界面下拉框只有 `HTTP` / `SSE`；`mcp_client_config` 的安装提示词只剩一种（不再出现"任选一条"）。
+- 端点发现文件的 `transport` 只会是 `http` / `sse`；另一条 URL 仍是空串。
+- npm 安装器的报错文案去掉「两种都提供」这条出路。
+
+**二、评审遗留项**
+
+| 编号 | 做法 |
+|---|---|
+| M4 | `open_sse` 表满时先 `evict_idle_http`（只淘汰最久未活动的 HTTP 会话），腾不出位置才 429；429 统一带 `Retry-After: 60` 与 hint（`too_many_sessions()`） |
+| M5/R5 | `status_json` 新增 `sessionsDetail: [{id(前 8 位), kind, idleSecs, hasStream}]`；`sessions` 仍只是数字（契约不变） |
+| 三态点 | 前端 `_mcpDotClass`：有 `hasStream` 或 5 分钟内活动过 → `live`；只剩空闲表项 → 新增的 `idle`（空心环）；无会话 → `on`。tooltip 追加"其中 K 个挂着推送流" |
+| 巡检 | `serve()` 起一个 60 秒 `idle_reaper`：清过期表项并推状态；用 `generation` 防止停服后立刻重启时出现两个巡检 |
+
+**三、验证**
+
+- `cargo test` **298 passed / 0 failed / 1 ignored**（+3：`sse_connect_at_capacity_evicts_an_idle_http_session`、
+  `idle_sweep_removes_expired_sessions_and_pushes_status`、`status_lists_sessions_detail`）。
+- 前端断言集 **2003 passed**（+4：三态点 3 条 + 空心环样式 1 条）；npm 自测 **94 passed**。
+- 对正在跑的应用跑 `mcp_smoke.js`：54 工具有结果、14 安全跳过、0 硬失败；扫描链路 25 台。
+- 真机 `mcp_status` 实测：`transport=http / streamableHttp=true / sessions=2`，
+  `sessionsDetail=[{"id":"e1ae22f8","kind":"http","idleSecs":0,"hasStream":false}, …]`。
+
+**四、已知代价**：默认 `http` 之后，只认 `/sse` 的老客户端需要用户手动把档位切到 SSE（`both` 时代是自动兼容）。
+这是用户明确要求的取舍；迁移规则与界面说明都写清楚了。
+
+### 2026-11-17 · 界面「N 个会话」与真实会话状态不一致（状态点假 live / 活流被误回收）✅
+
+**现象**（静态评审发现，用户要求按"连接状态显示 vs 实际会话超时"这条线查）：标题栏状态点与弹窗
+「监听中 · … · N 个会话」来自 `status_json` 的 `sessions`，而它是 `map.len()`；回收又是**惰性**的
+（只有新会话建立/使用时才 `retain`）。于是一个崩溃/关闭、又没发 `DELETE /mcp` 的客户端，在没有新客户端
+来的情况下会**无限期**被算作在线 —— 重开弹窗也没用（`mcp_status` 读数本身不做过期过滤）。
+
+**同一处根因的第二个方向**：`last_seen` 只在**协议请求**时刷新，心跳不刷新，`retain` 又不区分会话类型。
+所以"挂着长连接、只是 30 分钟没发工具调用"的 SSE 客户端，会被**另一个客户端建会话**时顺手当空闲会话删掉；
+那条流不会立刻关，客户端下一次 `POST /messages` 收到一句没头没尾的 404。这正是 R6 登记的那条，
+但当时只把它记成"客户端一般自动重连，可接受"，没记"这段时间界面与客户端对是否在线的判断是相反的"。
+
+**修法**（P0，四处，102 行）：
+
+1. `Session::stale(now)`：判据改成「**没有推送流** 且 超过 TTL」。本服务只监听回环，对端进程一死 OS
+   立刻发 FIN、`SseBody::drop` 当场回收，所以「`tx` 还在」在回环上就是「连接还活着」，不该拿请求空闲兜底。
+2. `Sessions::active_len()`：`status_json.sessions` 改用它（只数仍可服务的会话）。`sessions` 仍是数字，
+   `mcp_status` 的返回值契约不变。
+3. `sweep_idle(core)`：把原来散在 `open_sse` / `resolve_http_session` 里的 `retain` 收口成一处，
+   **真清掉了就推一次状态**（顺手修掉"带过期 sid 的请求 early-return、回收了却不推"那条路）。
+4. `deliver` / `broadcast` 删会话后补 `emit_status()`：这两处是仅剩的"删表不吭声"路径，
+   界面上的会话数会一直偏大（与 09-22 修的那族同源）。
+5. 心跳 `try_send` 成功后刷新 `last_seen`：`sessionsDetail` 类展示以后要按它算"空闲多久"。
+
+**测试**（先红后绿，三条都是"旧实现必然 fail"）：
+
+| 测试 | 旧实现的现象 |
+|---|---|
+| `status_does_not_count_expired_sessions` | `sessions` 读到 1（过期表项被算成在线） |
+| `idle_sse_session_with_a_live_stream_survives_another_client` | 另一个客户端 initialize 后会话被删 |
+| `session_removal_in_deliver_and_broadcast_pushes_status` | 会话没了但 `statusEmits` 不变 |
+
+**验证**：`cargo test` **295 passed / 0 failed / 1 ignored**（原 292，+3）；前端断言集 **1999 passed /
+0 failed**；对**正在跑的应用**跑 `node .walkthrough/mcp_smoke.js` —— 54 个工具有结果、14 个按安全模式
+跳过、0 硬失败；扫描链路拿到 30 台设备。
+
+**仍未修**（本轮只做 P0，别当成已解决）：R5（`sessions` 仍是总数，界面看不出"谁占着坑"）、
+M4（4 个"<30 分钟的僵尸 HTTP 会话"仍会让新 SSE 客户端吃 429 —— HTTP 路径会淘汰、SSE 路径不会）、
+以及没有后台巡检任务（过期表项要等下一次会话事件才清；读数已过滤，但标题栏状态点不会自己回落）。
+
 ### 2026-09-22 · 「MCP 服务区的会话监控没有实时刷新」——09-13 那次只修了 SSE 一条路 ✅
 
 用户报的现象。查下来**09-13 那次修得不全**：当时补的是 SSE 路径（`open_sse` 建会话推一次、

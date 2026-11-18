@@ -96,6 +96,20 @@ pub struct Session {
 }
 
 impl Session {
+    /// 这条会话是否**已经不可用**（超过空闲 TTL，且没有挂活的推送流）。
+    ///
+    /// 判据必须是「没有推送流 **且** 超过 TTL」：
+    /// ① `last_seen` 只在**协议请求**时刷新，挂机不动的 SSE 客户端照样连着 —— 只看 `last_seen`
+    ///    会把"在用但没说话"的客户端当死会话顺手清掉（2026-11 评审 M2，客户端下一次请求拿到
+    ///    一句没头没尾的 404）；
+    /// ② 本服务**只监听回环**：对端进程一死，OS 立刻发 FIN，`SseBody::drop` 当场回收，所以
+    ///    「`tx` 还在」在本机就是「连接还活着」，不需要拿 TTL 兜底（半开连接是网络的产物，
+    ///    回环上基本不存在）。
+    fn stale(&self, now: Instant) -> bool {
+        self.tx.is_none()
+            && now.duration_since(self.last_seen) >= Duration::from_secs(super::IDLE_TIMEOUT_SECS)
+    }
+
     fn rate_ok(&mut self, now: Instant) -> bool {
         if now.duration_since(self.window_start) >= Duration::from_secs(60) {
             self.window_start = now;
@@ -113,13 +127,112 @@ pub struct Sessions {
 }
 
 impl Sessions {
+    /// 表里的**条目数**（含已过期但还没被回收的）。只给测试用：对外展示一律用
+    /// `active_len` —— 直接拿它当「在线会话数」就会把死客户端的表项算进去。
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.map.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    /// 仍然**可服务**的会话数（不含已过期、只是还没被顺手清掉的表项）。
+    ///
+    /// 界面上的「N 个会话」与 `mcp_status.sessions` 都用它。用 `map.len()` 会把死客户端的
+    /// 表项算成「在线」：回收是惰性的（只有新会话建立/使用时才 `retain`），所以没有新客户端
+    /// 来的时候，读数可以在旧值上停**任意久**（2026-11 评审 M1：状态点假 live）。
+    pub fn active_len(&self) -> usize {
+        let now = Instant::now();
+        self.map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|s| !s.stale(now))
+            .count()
     }
 
     pub fn clear(&self) {
         self.map.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
+
+    /// 逐会话快照（只含**仍可服务**的会话），给界面 / `mcp_status` 用。
+    ///
+    /// 为什么需要它：`sessions` 只是个总数，界面分不出「有活跃推送流的客户端」和「只是一条
+    /// 可能已经没人用的表项」—— 前者是真在线，后者可能几十分钟后就被回收（2026-11 评审 M5）。
+    /// 只暴露 sid 前 8 位：足够人/模型对照，不把完整 `Mcp-Session-Id` 递出去。
+    pub fn detail(&self) -> Vec<serde_json::Value> {
+        let now = Instant::now();
+        let map = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<serde_json::Value> = map
+            .iter()
+            .filter(|(_, s)| !s.stale(now))
+            .map(|(sid, s)| {
+                serde_json::json!({
+                    "id": &sid[..8.min(sid.len())],
+                    "kind": match s.kind {
+                        SessionKind::Http => "http",
+                        SessionKind::Sse => "sse",
+                    },
+                    "idleSecs": now.duration_since(s.last_seen).as_secs(),
+                    // 有推送流 = 连接本身还在（SSE 长连接 / HTTP 的 GET /mcp 流）
+                    "hasStream": s.tx.is_some(),
+                })
+            })
+            .collect();
+        // 活跃的在前：界面挑"有没有活跃流"时不用先自己排序
+        out.sort_by_key(|v| v["idleSecs"].as_u64().unwrap_or(u64::MAX));
+        out
+    }
+}
+
+/// 回收已过期的会话；**真清掉了就推一次状态**（界面上的数字才会回落）。
+///
+/// 回收是惰性的 —— 只在有人来建会话 / 用会话时发生（没有后台巡检任务）。所以推送也挂在这里，
+/// 宁可多推一次，也不要让界面停在「3 个会话」而其实一个都没有。
+pub(crate) fn sweep_idle(core: &Arc<McpCore>) -> usize {
+    let now = Instant::now();
+    let removed = {
+        let mut map = core.sessions.map.lock().unwrap_or_else(|e| e.into_inner());
+        let before = map.len();
+        map.retain(|_, s| !s.stale(now));
+        before - map.len()
+    };
+    // 锁必须已经释放：`emit_status` 内部要读 `sessions.active_len()`，持锁调它会死锁
+    if removed > 0 {
+        core.emit_status();
+    }
+    removed
+}
+
+/// 表满时腾一个位置：淘汰**最久未活动的 HTTP 会话**（返回被淘汰的 sid）。
+///
+/// 不碰 SSE 会话：那条长连接已经建立，删表项只会让它变成收不到东西的僵尸。全表都是 SSE 时
+/// 返回 `None`（调用方再决定回 429 还是 NoCapacity）。
+fn evict_idle_http(map: &mut HashMap<String, Session>) -> Option<String> {
+    let victim = map
+        .iter()
+        .filter(|(_, s)| s.kind == SessionKind::Http)
+        .min_by_key(|(_, s)| s.last_seen)
+        .map(|(k, _)| k.clone())?;
+    map.remove(&victim);
+    Some(victim)
+}
+
+/// 会话表满且腾不出位置时的统一回包（429 + `Retry-After`）。
+///
+/// 光给一个 429，客户端只能干等：`Retry-After` 至少让它知道"退避多久再来"，`hint` 说清
+/// 成因（多半是几个老客户端占着、等空闲回收）。
+fn too_many_sessions() -> Response<RespBody> {
+    let mut resp = json_resp(
+        StatusCode::TOO_MANY_REQUESTS,
+        serde_json::json!({
+            "error": "too many sessions",
+            "max": super::MAX_SESSIONS,
+            "hint": "会话表已满且都是 SSE 长连接：关掉一个客户端，或等空闲会话回收（最多 30 分钟）后重连。"
+        }),
+    );
+    if let Ok(v) = hyper::header::HeaderValue::from_str("60") {
+        resp.headers_mut().insert(hyper::header::RETRY_AFTER, v);
+    }
+    resp
 }
 
 // ===== 绑定 =====
@@ -197,7 +310,7 @@ async fn handle(
     let path = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
     let headers = req.headers().clone();
-    // 传输形态（三档：both / http / sse）。每次请求都读一次配置 —— 所以改它是**立即生效**的，
+    // 传输形态（单档：http / sse）。每次请求都读一次配置 —— 所以改它是**立即生效**的，
     // 不需要重启服务器；没被选中的那条传输落进 `_` 分支回 404（"这个端点不存在"）。
     let mode = core.transport_mode();
     let resp = match (method, path.as_str()) {
@@ -207,7 +320,7 @@ async fn handle(
         (Method::GET, "/status") => {
             let given = token_from(&query, &headers).unwrap_or_default();
             if !constant_time_eq(&given, &core.token()) {
-                unauthorized()
+                unauthorized(&core, "/status")
             } else {
                 json_resp(StatusCode::OK, core.status_json_public())
             }
@@ -219,10 +332,43 @@ async fn handle(
         (Method::POST, "/mcp") if mode.serves_http() => post_mcp(req, &core, &query).await,
         (Method::GET, "/mcp") if mode.serves_http() => get_mcp(&core, &query, &headers),
         (Method::DELETE, "/mcp") if mode.serves_http() => delete_mcp(&core, &query, &headers),
-        _ => json_resp(
-            StatusCode::NOT_FOUND,
-            serde_json::json!({ "error": "not found" }),
-        ),
+        _ => {
+            // 端点**存在但当前档位没开** → 仍然 404（规范），但要说清原因并记账：
+            // "升级后老客户端突然连不上 / 时不时断"最常见的成因就是客户端还配着另一条传输的地址。
+            let requested = match path.as_str() {
+                "/sse" | "/messages" if !mode.serves_sse() => Some("sse"),
+                "/mcp" if !mode.serves_http() => Some("http"),
+                _ => None,
+            };
+            match requested {
+                Some(want) => {
+                    let current = if want == "sse" { "http" } else { "sse" };
+                    core.note_rejection(
+                        "transport_disabled",
+                        &path,
+                        &format!("请求 {}，当前只提供 {}", want, current),
+                    );
+                    json_resp(
+                        StatusCode::NOT_FOUND,
+                        serde_json::json!({
+                            "error": "transport disabled",
+                            "requested": want,
+                            "current": current,
+                            "hint": format!(
+                                "程序当前只提供 {}。要用 {}，请在程序弹窗里把「传输」切到 {}。",
+                                current.to_uppercase(),
+                                want,
+                                want.to_uppercase()
+                            ),
+                        }),
+                    )
+                }
+                None => json_resp(
+                    StatusCode::NOT_FOUND,
+                    serde_json::json!({ "error": "not found" }),
+                ),
+            }
+        }
     };
     Ok(resp)
 }
@@ -234,21 +380,32 @@ async fn handle(
 /// 它没有推送通道，这不是"死会话"，不能顺手把它从表里删掉。
 pub fn broadcast(core: &Arc<McpCore>, payload: serde_json::Value) -> usize {
     let msg = format!("event: message\ndata: {}\n\n", payload);
-    let mut map = core.sessions.map.lock().unwrap_or_else(|e| e.into_inner());
-    let mut dead: Vec<String> = Vec::new();
-    let mut sent = 0usize;
-    for (sid, s) in map.iter_mut() {
-        let Some(mut tx) = s.tx.clone() else {
-            continue;
-        };
-        match tx.try_send(msg.clone()) {
-            Ok(()) => sent += 1,
-            Err(_) => dead.push(sid.clone()),
+    let (sent, removed) = {
+        let mut map = core.sessions.map.lock().unwrap_or_else(|e| e.into_inner());
+        let mut dead: Vec<String> = Vec::new();
+        let mut sent = 0usize;
+        for (sid, s) in map.iter_mut() {
+            let Some(mut tx) = s.tx.clone() else {
+                continue;
+            };
+            match tx.try_send(msg.clone()) {
+                Ok(()) => sent += 1,
+                Err(_) => dead.push(sid.clone()),
+            }
         }
-    }
-    for sid in dead {
-        map.remove(&sid);
-        core.dropped.fetch_add(1, Ordering::Relaxed);
+        let mut removed = 0usize;
+        for sid in dead {
+            if map.remove(&sid).is_some() {
+                removed += 1;
+            }
+            core.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        (sent, removed)
+    };
+    // 广播顺手删掉的死会话也要**推一次状态**（与其它删除路径同一口径）：
+    // 否则界面上的会话数只增不减，用户会以为那个客户端还连着。
+    if removed > 0 {
+        core.emit_status();
     }
     sent
 }
@@ -286,10 +443,11 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     diff == 0
 }
 
-fn unauthorized() -> Response<RespBody> {
+fn unauthorized(core: &Arc<McpCore>, path: &str) -> Response<RespBody> {
     // 鉴权失败既要回 401，也要留下痕迹：客户端配置里的 token 过期/粘错是最常见的
     // "连不上"原因，光看界面是看不出来的。已按 kind+detail 去重（5 分钟一条），
     // 不会因为客户端每秒重试而刷爆错误库。
+    core.note_rejection("unauthorized", path, "token 不匹配");
     super::report::report("unauthorized", "收到 token 不匹配的请求（客户端配置可能过期，需重新复制连接地址）");
     json_resp(
         StatusCode::UNAUTHORIZED,
@@ -307,7 +465,8 @@ fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn forbidden() -> Response<RespBody> {
+fn forbidden(core: &Arc<McpCore>, path: &str) -> Response<RespBody> {
+    core.note_rejection("origin_forbidden", path, "Origin 不是回环来源");
     json_resp(
         StatusCode::FORBIDDEN,
         serde_json::json!({ "error": "origin not allowed" }),
@@ -316,7 +475,11 @@ fn forbidden() -> Response<RespBody> {
 
 /// 会话不认识的统一回包。**必须是 404**：规范里客户端拿到 404 才会重新 `initialize`；
 /// 回 400/401 它只会一路失败（这正是"连不上但不知道为什么"的典型来源）。
-fn session_not_found() -> Response<RespBody> {
+///
+/// 同时记一笔 `session_not_found`：客户端"时不时断"若能在这里看到记录，说明是会话被回收/
+/// 淘汰之后它**没有重新 initialize** 就直接又发了请求。
+fn session_not_found(core: &Arc<McpCore>, path: &str) -> Response<RespBody> {
+    core.note_rejection("session_not_found", path, "会话 id 不在表里（过期 / 被淘汰 / 服务器重启过）");
     json_resp(
         StatusCode::NOT_FOUND,
         serde_json::json!({
@@ -369,7 +532,8 @@ fn protocol_version_problem(headers: &HeaderMap) -> Option<String> {
     }
 }
 
-fn bad_protocol_version(v: &str) -> Response<RespBody> {
+fn bad_protocol_version(core: &Arc<McpCore>, path: &str, v: &str) -> Response<RespBody> {
+    core.note_rejection("bad_protocol_version", path, &format!("不支持的版本 {}", v));
     // 把"我们支持哪些"写进错误消息：否则调用方只看到一句 400，只能靠猜
     json_resp(
         StatusCode::BAD_REQUEST,
@@ -400,23 +564,27 @@ fn with_session_header(mut resp: Response<RespBody>, sid: &str, is_new: bool) ->
 fn open_sse(core: &Arc<McpCore>, query: &str, _port: u16) -> Response<RespBody> {
     let given = query_param(query, "token").unwrap_or_default();
     if !constant_time_eq(&given, &core.token()) {
-        return unauthorized();
+        return unauthorized(core, "/sse");
     }
 
     let now = Instant::now();
-    let idle = Duration::from_secs(super::IDLE_TIMEOUT_SECS);
+    // 回收空闲会话（防"客户端崩了没发 RST"长期占位）。放在锁外：它自己会推状态。
+    // ⚠️ 判据是 `Session::stale`（没有推送流 **且** 超过 TTL）—— 挂着长连接的会话
+    // 不按"请求空闲"回收。
+    let _ = sweep_idle(core);
+    let mut evicted: Option<String> = None;
     let id = {
         let mut map = core.sessions.map.lock().unwrap_or_else(|e| e.into_inner());
-        // 回收空闲会话（防"客户端崩了没发 RST"长期占位）
-        map.retain(|_, s| now.duration_since(s.last_seen) < idle);
         if map.len() >= super::MAX_SESSIONS {
-            // ⚠️ SSE 路径**保持 429、不做淘汰**：它的会话就是一条已经建立的长连接，
-            // 把表项删掉并不会关掉那条流，只会让它变成一条再也收不到东西的僵尸连接。
-            // HTTP 会话的同类问题走「淘汰最久未活动」（见 `resolve_http_session`）。
-            return json_resp(
-                StatusCode::TOO_MANY_REQUESTS,
-                serde_json::json!({ "error": "too many sessions", "max": super::MAX_SESSIONS }),
-            );
+            // 先腾位置：**只淘汰最久未活动的 HTTP 会话**（它被淘汰是干净可恢复的：客户端下次
+            // 请求得 404、重新 initialize）。绝不淘汰 SSE 会话 —— 那条长连接已经建立，删表项
+            // 只会让它变成"再也收不到东西"的僵尸连接。
+            // 一个都腾不出来（表里全是 SSE 长连接）才回 429；客户端至少能按 Retry-After 退避，
+            // 不至于完全无从下手。
+            match evict_idle_http(&mut map) {
+                Some(v) => evicted = Some(v),
+                None => return too_many_sessions(),
+            }
         }
         let id = uuid::Uuid::new_v4().simple().to_string();
         // 先以"没有通道"的形态落表，随后由 attach_outbound 挂上长连接。
@@ -434,6 +602,20 @@ fn open_sse(core: &Arc<McpCore>, query: &str, _port: u16) -> Response<RespBody> 
         );
         id
     };
+    if let Some(v) = evicted {
+        crate::dbg_log(&format!(
+            "mcp: 会话数已达上限 {}，为新建的 SSE 会话淘汰了最久未活动的 HTTP 会话 {}",
+            super::MAX_SESSIONS,
+            &v[..8.min(v.len())]
+        ));
+        super::report::report(
+            "http_session_evicted",
+            &format!(
+                "SSE 客户端接入时表已满，淘汰了最久未活动的 HTTP 会话（客户端会在下次请求得到 404 并重新 initialize；上限 {}）",
+                super::MAX_SESSIONS
+            ),
+        );
+    }
     crate::dbg_log(&format!("mcp: 会话 {} 已建立", &id[..8.min(id.len())]));
     // 会话数变了要**立刻告诉界面**，否则弹窗里的"会话"数字会一直停在打开弹窗那一刻的值
     core.emit_status();
@@ -473,7 +655,7 @@ fn attach_outbound(
         let mut map = core.sessions.map.lock().unwrap_or_else(|e| e.into_inner());
         match map.get_mut(sid) {
             Some(s) => s.tx = Some(tx.clone()),
-            None => return session_not_found(),
+            None => return session_not_found(core, "/sse"),
         }
     }
 
@@ -490,12 +672,23 @@ fn attach_outbound(
             // 会话已经不在表里（`DELETE /mcp`、或 `/sse` 流断开后被回收）→ 这个心跳再转下去
             // 也没人收。**以前没有这一步**：会话被删掉后心跳会一直转到队列写满为止
             // （15s × 256 ≈ 1 小时），等于每断开一次就漏一个后台任务。
-            let alive = core_hb
-                .sessions
-                .map
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains_key(&sid_hb);
+            //
+            // 同时**刷新 `last_seen`**：ping 能塞进队列 = 对端 `rx` 还在 = 这条连接活着。
+            // 不刷的话"挂着长连接但一直没发请求"的会话会显示成一小时没活动，回收/展示两头都误解。
+            let alive = {
+                let mut map = core_hb
+                    .sessions
+                    .map
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                match map.get_mut(&sid_hb) {
+                    Some(s) => {
+                        s.last_seen = Instant::now();
+                        true
+                    }
+                    None => false,
+                }
+            };
             if !alive {
                 break;
             }
@@ -599,7 +792,7 @@ async fn post_message(
     let headers = req.headers().clone();
     let given = token_from(query, &headers).unwrap_or_default();
     if !constant_time_eq(&given, &core.token()) {
-        return unauthorized();
+        return unauthorized(core, "/messages");
     }
     let sid = match query_param(query, "sessionId") {
         Some(s) => s,
@@ -674,41 +867,50 @@ async fn post_message(
 
 /// 把一条 SSE 报文投递给会话。**非阻塞**：队列满就丢并计数，断开则回收会话。
 fn deliver(core: &Arc<McpCore>, sid: &str, payload: String) {
-    let mut map = core.sessions.map.lock().unwrap_or_else(|e| e.into_inner());
-    let mut drop_session = false;
-    if let Some(s) = map.get_mut(sid) {
-        // Streamable HTTP 会话如果没挂 `GET /mcp` 流（`tx == None`），就没有可投递的地方：
-        // 直接返回。**不能**把它当"死会话"删掉 —— 那个会话还要继续给 POST 用。
-        let Some(mut sender) = s.tx.clone() else {
-            return;
-        };
-        match sender.try_send(format!("event: message\ndata: {}\n\n", payload)) {
-            Ok(()) => {}
-            Err(e) if e.is_disconnected() => drop_session = true,
-            Err(_) => {
-                // 队列满 = 慢消费者。丢这一条并计数；响应也丢说明连接不可用，直接断开会话。
-                core.dropped.fetch_add(1, Ordering::Relaxed);
-                drop_session = true;
-                let age = s.created.elapsed().as_secs(); // 注意：不能再借用 map（s 还在借）
-                crate::dbg_log(&format!(
-                    "mcp: 会话 {} 队列满（慢消费者，存活 {}s），已断开",
-                    &sid[..8.min(sid.len())],
-                    age
-                ));
-                // 慢消费者被断开是真实的运行期故障（客户端卡住/网络中断），进错误库
-                super::report::report(
-                    "session_slow_consumer_dropped",
-                    &format!(
-                        "会话队列满（深度 {}），已断开该会话；存活 {}s",
-                        super::SESSION_QUEUE,
+    let mut removed = false;
+    {
+        let mut map = core.sessions.map.lock().unwrap_or_else(|e| e.into_inner());
+        let mut drop_session = false;
+        if let Some(s) = map.get_mut(sid) {
+            // Streamable HTTP 会话如果没挂 `GET /mcp` 流（`tx == None`），就没有可投递的地方：
+            // 直接返回。**不能**把它当"死会话"删掉 —— 那个会话还要继续给 POST 用。
+            let Some(mut sender) = s.tx.clone() else {
+                return;
+            };
+            match sender.try_send(format!("event: message\ndata: {}\n\n", payload)) {
+                Ok(()) => {}
+                Err(e) if e.is_disconnected() => drop_session = true,
+                Err(_) => {
+                    // 队列满 = 慢消费者。丢这一条并计数；响应也丢说明连接不可用，直接断开会话。
+                    core.dropped.fetch_add(1, Ordering::Relaxed);
+                    drop_session = true;
+                    let age = s.created.elapsed().as_secs(); // 注意：不能再借用 map（s 还在借）
+                    crate::dbg_log(&format!(
+                        "mcp: 会话 {} 队列满（慢消费者，存活 {}s），已断开",
+                        &sid[..8.min(sid.len())],
                         age
-                    ),
-                );
+                    ));
+                    // 慢消费者被断开是真实的运行期故障（客户端卡住/网络中断），进错误库
+                    super::report::report(
+                        "session_slow_consumer_dropped",
+                        &format!(
+                            "会话队列满（深度 {}），已断开该会话；存活 {}s",
+                            super::SESSION_QUEUE,
+                            age
+                        ),
+                    );
+                }
             }
         }
+        if drop_session {
+            removed = map.remove(sid).is_some();
+        }
     }
-    if drop_session {
-        map.remove(sid);
+    // 删了会话就**必须**推一次状态（与 `SseBody::drop` / `resolve_http_session` 同一口径）：
+    // 否则界面会一直显示这条已经不存在的会话，直到下一次别的会话事件（2026-11 评审 M3）。
+    // 锁已经释放 —— `emit_status` 内部要读会话数，持锁调它会死锁。
+    if removed {
+        core.emit_status();
     }
 }
 
@@ -821,7 +1023,6 @@ enum HttpSession {
 /// 区别只在 `tx`：SSE 会话有一条出站长连接，HTTP 会话平时没有。
 fn resolve_http_session(core: &Arc<McpCore>, headers: &HeaderMap) -> HttpSession {
     let now = Instant::now();
-    let idle = Duration::from_secs(super::IDLE_TIMEOUT_SECS);
     let mut evicted: Option<String> = None;
     // 会话数**只要变了就得推一次状态**：新建、淘汰、空闲回收这三件事都会改数字。
     // 2026-09 用户报的"MCP 服务区的会话监控没有实时刷新"就是这里 —— SSE 那条路建会话时推了
@@ -829,16 +1030,12 @@ fn resolve_http_session(core: &Arc<McpCore>, headers: &HeaderMap) -> HttpSession
     // 新版客户端（VS Code / Cline / Claude Code 默认）连上了，界面上的「N 个会话」
     // 也永远停在打开弹窗那一刻的值。
     let mut count_changed = false;
+    // 顺手回收空闲会话（HTTP 会话**没有**"连接断开"这个信号可依赖，客户端进程没了也不会
+    // 通知我们）。放在锁外：`sweep_idle` 清掉了会话就会自己推一次状态 —— 这一步也顺手修掉了
+    // 以前"带过期 sid 的请求会 early-return，于是回收了却不推"的那条路。
+    let _ = sweep_idle(core);
     let out = {
         let mut map = core.sessions.map.lock().unwrap_or_else(|e| e.into_inner());
-        let len_before = map.len();
-        // 顺手回收空闲会话。HTTP 会话**没有**"连接断开"这个信号可依赖（客户端进程没了
-        // 也不会通知我们），所以不在这里收，就只能等下一次建会话时才收。
-        map.retain(|_, s| now.duration_since(s.last_seen) < idle);
-        // 收回来的那些也要让界面知道（否则数字只增不减）
-        if map.len() != len_before {
-            count_changed = true;
-        }
 
         if let Some(sid) = header_str(headers, MCP_SESSION_HEADER) {
             match map.get_mut(&sid) {
@@ -867,16 +1064,11 @@ fn resolve_http_session(core: &Arc<McpCore>, headers: &HeaderMap) -> HttpSession
             // 4 个占满后第 5 个直接吃 429（2026-09 实测证实；回归测试
             // `http_sessions_with_a_get_stream_are_still_evictable` 守着）。
             if map.len() >= super::MAX_SESSIONS {
-                let victim = map
-                    .iter()
-                    .filter(|(_, s)| s.kind == SessionKind::Http)
-                    .min_by_key(|(_, s)| s.last_seen)
-                    .map(|(k, _)| k.clone());
-                match victim {
+                match evict_idle_http(&mut map) {
                     Some(v) => {
-                        map.remove(&v);
                         evicted = Some(v);
-                        count_changed = true;
+                        // 计数变化统一由下面"新建"那一步收口（淘汰后一定会插入新会话），
+                        // 这里不再重复置位 —— 否则编译器会报"赋值后没读过"。
                     }
                     None => return HttpSession::NoCapacity,
                 }
@@ -913,7 +1105,7 @@ fn resolve_http_session(core: &Arc<McpCore>, headers: &HeaderMap) -> HttpSession
             ),
         );
     }
-    // 锁**已经释放**才推：`emit_status()` 内部要读 `sessions.len()`，持锁调它会死锁
+    // 锁**已经释放**才推：`emit_status()` 内部要读 `sessions.active_len()`，持锁调它会死锁
     // （同 `delete_mcp` 那条注释）。上面三种"会话数变了"的情况在这里统一收口，
     // 免得以后再加一条增删路径时又漏掉推送。
     if count_changed {
@@ -935,14 +1127,14 @@ fn resolve_http_session(core: &Arc<McpCore>, headers: &HeaderMap) -> HttpSession
 async fn post_mcp(req: Request<Incoming>, core: &Arc<McpCore>, query: &str) -> Response<RespBody> {
     let headers = req.headers().clone();
     if !origin_allowed(&headers) {
-        return forbidden();
+        return forbidden(core, "/mcp");
     }
     if let Some(v) = protocol_version_problem(&headers) {
-        return bad_protocol_version(&v);
+        return bad_protocol_version(core, "/mcp", &v);
     }
     let given = token_from(query, &headers).unwrap_or_default();
     if !constant_time_eq(&given, &core.token()) {
-        return unauthorized();
+        return unauthorized(core, "/mcp");
     }
     let body = match read_body_limited(req).await {
         Ok(b) => b,
@@ -969,13 +1161,8 @@ async fn post_mcp(req: Request<Incoming>, core: &Arc<McpCore>, query: &str) -> R
             }
             return with_session_header(resp, &sid, is_new);
         }
-        HttpSession::Unknown => return session_not_found(),
-        HttpSession::NoCapacity => {
-            return json_resp(
-                StatusCode::TOO_MANY_REQUESTS,
-                serde_json::json!({ "error": "too many sessions", "max": super::MAX_SESSIONS }),
-            )
-        }
+        HttpSession::Unknown => return session_not_found(core, "/mcp"),
+        HttpSession::NoCapacity => return too_many_sessions(),
     };
 
     let text = String::from_utf8_lossy(&body).to_string();
@@ -1004,14 +1191,14 @@ async fn post_mcp(req: Request<Incoming>, core: &Arc<McpCore>, query: &str) -> R
 /// - **流断开只摘通道、不删会话**（见 `SseBody::keep_session`），会话还要继续给 POST 用。
 fn get_mcp(core: &Arc<McpCore>, query: &str, headers: &HeaderMap) -> Response<RespBody> {
     if !origin_allowed(headers) {
-        return forbidden();
+        return forbidden(core, "/mcp");
     }
     if let Some(v) = protocol_version_problem(headers) {
-        return bad_protocol_version(&v);
+        return bad_protocol_version(core, "/mcp", &v);
     }
     let given = token_from(query, headers).unwrap_or_default();
     if !constant_time_eq(&given, &core.token()) {
-        return unauthorized();
+        return unauthorized(core, "/mcp");
     }
     let Some(sid) = header_str(headers, MCP_SESSION_HEADER) else {
         return json_resp(
@@ -1026,7 +1213,7 @@ fn get_mcp(core: &Arc<McpCore>, query: &str, headers: &HeaderMap) -> Response<Re
     {
         let mut map = core.sessions.map.lock().unwrap_or_else(|e| e.into_inner());
         match map.get_mut(&sid) {
-            None => return session_not_found(),
+            None => return session_not_found(core, "/mcp"),
             Some(s) => {
                 if s.tx.is_some() {
                     return json_resp(
@@ -1048,14 +1235,14 @@ fn get_mcp(core: &Arc<McpCore>, query: &str, headers: &HeaderMap) -> Response<Re
 /// （`MAX_SESSIONS = 4`，占满后所有连接吃 429，还要等 30 分钟空闲回收）。
 fn delete_mcp(core: &Arc<McpCore>, query: &str, headers: &HeaderMap) -> Response<RespBody> {
     if !origin_allowed(headers) {
-        return forbidden();
+        return forbidden(core, "/mcp");
     }
     if let Some(v) = protocol_version_problem(headers) {
-        return bad_protocol_version(&v);
+        return bad_protocol_version(core, "/mcp", &v);
     }
     let given = token_from(query, headers).unwrap_or_default();
     if !constant_time_eq(&given, &core.token()) {
-        return unauthorized();
+        return unauthorized(core, "/mcp");
     }
     let Some(sid) = header_str(headers, MCP_SESSION_HEADER) else {
         return json_resp(
@@ -1063,7 +1250,7 @@ fn delete_mcp(core: &Arc<McpCore>, query: &str, headers: &HeaderMap) -> Response
             serde_json::json!({ "error": "missing Mcp-Session-Id" }),
         );
     };
-    // 锁必须在**这一句结束时**释放：`emit_status()` 内部要读 `sessions.len()`，持锁调它会死锁
+    // 锁必须在**这一句结束时**释放：`emit_status()` 内部要读 `sessions.active_len()`，持锁调它会死锁
     let removed = {
         let mut map = core.sessions.map.lock().unwrap_or_else(|e| e.into_inner());
         // **只允许删 HTTP 会话**：SSE 会话不是 HTTP 客户端该管的东西（它的 sid 只下发给建立它的
@@ -1080,7 +1267,7 @@ fn delete_mcp(core: &Arc<McpCore>, query: &str, headers: &HeaderMap) -> Response
         }
     };
     if !removed {
-        return session_not_found();
+        return session_not_found(core, "/mcp");
     }
     crate::dbg_log(&format!(
         "mcp: 会话 {} 被客户端主动终止（DELETE /mcp）",
@@ -1221,5 +1408,74 @@ mod tests {
             super::super::protocol::E_RATE_LIMITED
         );
         assert!(v["error"]["message"].as_str().unwrap().contains("放慢"));
+    }
+
+    /// 在 `deliver` / `broadcast` 里被删掉的会话**也要推状态**。
+    ///
+    /// 会话表的删除路径里，`open_sse` / `SseBody::drop` / `resolve_http_session` 都推了状态，
+    /// 只有 `deliver`（队列满 / 对端已断开）与 `broadcast`（死会话）删了不吭声 —— 界面于是
+    /// 继续显示一条已经不存在的会话，直到下一次别的会话事件（2026-11 评审 M3）。
+    #[test]
+    fn session_removal_in_deliver_and_broadcast_pushes_status() {
+        let core = std::sync::Arc::new(McpCore::new());
+        let now = Instant::now();
+        // 建一个"对端已经断了"的会话：sender 还在表里，receiver 已被丢掉
+        let mk_dead = || {
+            let (tx, rx) = mpsc::channel::<String>(4);
+            drop(rx);
+            Session {
+                kind: SessionKind::Sse,
+                tx: Some(tx),
+                created: now,
+                last_seen: now,
+                count: 0,
+                window_start: now,
+            }
+        };
+
+        // ① deliver：投递失败 → 断开该会话 → 必须推状态
+        core.sessions
+            .map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert("dead0001".to_string(), mk_dead());
+        let before = core.status_emits.load(Ordering::Relaxed);
+        deliver(&core, "dead0001", "too late".to_string());
+        assert!(
+            !core
+                .sessions
+                .map
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key("dead0001"),
+            "投递不进去的会话应被断开"
+        );
+        assert!(
+            core.status_emits.load(Ordering::Relaxed) > before,
+            "`deliver` 删了会话就必须推一次状态（否则界面一直显示这条死会话）"
+        );
+
+        // ② broadcast：顺手清掉的死会话同样要推
+        core.sessions
+            .map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert("dead0002".to_string(), mk_dead());
+        let before2 = core.status_emits.load(Ordering::Relaxed);
+        let sent = broadcast(&core, serde_json::json!({ "jsonrpc": "2.0", "method": "x" }));
+        assert_eq!(sent, 0, "死会话收不到广播");
+        assert!(
+            !core
+                .sessions
+                .map
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key("dead0002"),
+            "死会话应被广播清理掉"
+        );
+        assert!(
+            core.status_emits.load(Ordering::Relaxed) > before2,
+            "`broadcast` 删了会话也必须推一次状态"
+        );
     }
 }

@@ -2431,7 +2431,7 @@ try {
     '新会话下发 Mcp-Session-Id（客户端后续请求必须带回来）');
   check(/None => Response::builder\(\)[\s\S]{0,80}?\.status\(StatusCode::ACCEPTED\)/.test(mcpSrc),
     '通知回 202 + 空体（规范要求；回 200 加空 JSON 是错的）');
-  check(/fn session_not_found\(\)/.test(mcpSrc) && /StatusCode::NOT_FOUND/.test(mcpSrc),
+  check(/fn session_not_found\(/.test(mcpSrc) && /StatusCode::NOT_FOUND/.test(mcpSrc),
     '不认识的会话回 404（客户端据此重新 initialize；回 400 会让它一路失败）');
   check(/fn origin_allowed\(/.test(mcpSrc) && /origin_host_is_loopback/.test(mcpSrc),
     'Origin 只放行回环来源（防 DNS rebinding）');
@@ -2454,8 +2454,9 @@ try {
     '两个回归测试都在：挂了 GET 流的 HTTP 会话仍可淘汰、DELETE 删不掉 SSE 会话');
   check(/keep_session_on_drop/.test(mcpSrc) && /keep_session: bool/.test(mcpSrc),
     'GET /mcp 的流断开只摘通道、不删会话（会话还要继续给 POST 用）');
-  check(/transport_mode\(\)/.test(mcpSrc) && /serves_http\(\)/.test(mcpSrc) && /serves_sse\(\)/.test(mcpSrc),
-    '传输是**三档**的（both / http / sse），路由按档决定哪条端点存在');
+  check(/transport_mode\(\)/.test(mcpSrc) && /serves_http\(\)/.test(mcpSrc) && /serves_sse\(\)/.test(mcpSrc)
+    && !/TransportMode::Both/.test(mcpSrc) && /pub enum TransportMode[\s\S]{0,160}?Http,[\s\S]{0,40}?Sse,/.test(mcpSrc),
+    '传输是**单档**的（http / sse；`both` 已删除 —— 两条不再同时提供）');
   check(/\(Method::GET, "\/sse"\) if mode\.serves_sse\(\)/.test(mcpSrc)
     && /\(Method::POST, "\/mcp"\) if mode\.serves_http\(\)/.test(mcpSrc),
     '/sse 与 /mcp 各自被档位守着（不在档里的端点落进 404 分支）');
@@ -2587,6 +2588,15 @@ try {
   check(sbMcp._mcpDotClass({ running: false, lastError: 'x' }) === 'mcp-dot err', '启动失败是红的');
   check(sbMcp._mcpDotClass({ running: true, sessions: 0 }) === 'mcp-dot on', '监听中无会话是绿的');
   check(sbMcp._mcpDotClass({ running: true, sessions: 2 }) === 'mcp-dot live', '有会话是蓝的');
+  // 三态（2026-11）：有推送流 / 刚活动过 = 真在线；只剩空闲表项 = 空心环
+  check(sbMcp._mcpDotClass({ running: true, sessions: 1, sessionsDetail: [{ hasStream: true, idleSecs: 9999 }] }) === 'mcp-dot live',
+    '挂着推送流的会话 = 真在线（蓝）');
+  check(sbMcp._mcpDotClass({ running: true, sessions: 1, sessionsDetail: [{ hasStream: false, idleSecs: 12 }] }) === 'mcp-dot live',
+    '刚活动过的 HTTP 会话仍算在线（它没有推送流，但随时可用）');
+  check(sbMcp._mcpDotClass({ running: true, sessions: 1, sessionsDetail: [{ hasStream: false, idleSecs: 900 }] }) === 'mcp-dot idle',
+    '只剩空闲表项 → 空心环（别再声称在线）');
+  check(/\.mcp-dot\.idle \{[^}]*box-shadow/.test(fs.readFileSync(path.join(root, 'src', 'css', '02-global.css'), 'utf8')),
+    '空心环有对应样式（否则 status 有值、画面上看不出来）');
 
   sbMcp.renderMcpStatus({
     running: false, enabled: true, host: '127.0.0.1', port: 7777, sessions: 0,
@@ -2771,7 +2781,7 @@ try {
         return Promise.resolve(sbSt._mcpStatus);
       },
     };
-    sbSt._mcpStatus = { transport: 'both' };
+    sbSt._mcpStatus = { transport: 'http' };
     sbSt.refreshMcpStatus = function() { sbSt.renderMcpStatus(sbSt._mcpStatus); };
     vm.createContext(sbSt);
     vm.runInContext([
@@ -2785,44 +2795,45 @@ try {
     ].join('\n'), sbSt);
 
     sbSt.renderMcpStatus(sbSt._mcpStatus);
-    check(mcpEl('mcpTransportSel').value === 'both',
-      '默认选中 All（与后端默认值一致）', mcpEl('mcpTransportSel').value);
+    check(mcpEl('mcpTransportSel').value === 'http',
+      '默认选中 HTTP（与后端默认值一致）', mcpEl('mcpTransportSel').value);
     check(mcpEl('mcpTransportSel').disabled === false, '非在途时下拉框可操作');
     check(mcpEl('mcpStreamableField').style.display === 'block'
-      && mcpEl('mcpSseField').style.display === 'block', 'All 时两块连接方式都展示');
+      && mcpEl('mcpSseField').style.display === 'none',
+      '单档：默认 HTTP，只展示那一条连接方式（另一条必然 404，不该摆出来）');
 
-    // 选 HTTP：另一条要藏起来
-    sbSt.mcpTransportPicked('http');
+    // 选 SSE：另一条要藏起来
+    sbSt.mcpTransportPicked('sse');
     check(mcpEl('mcpTransportSel').disabled === true, '在途时禁用（挡连点）');
-    check(mcpEl('mcpTransportSel').value === 'http', '**在途就先把选中态画过去**（反馈要快）');
+    check(mcpEl('mcpTransportSel').value === 'sse', '**在途就先把选中态画过去**（反馈要快）');
     await flush();
-    check(sbSt._mcpStatus.transport === 'http', '切到 HTTP');
+    check(sbSt._mcpStatus.transport === 'sse', '切到 SSE');
     check(mcpEl('mcpTransportSel').disabled === false,
       '**切完必须解禁**（漏掉这一句，下拉框就再也动不了了）');
-    check(mcpEl('mcpTransportSel').value === 'http', '选中态跟着回执走');
-    check(mcpEl('mcpStreamableField').style.display === 'block'
-      && mcpEl('mcpSseField').style.display === 'none',
-      'HTTP 时隐藏 SSE 那一块（展示一个只会 404 的地址等于让人白配一遍）');
-
-    // 再选 SSE
-    sbSt.mcpTransportPicked('sse');
-    await flush();
-    check(mcpEl('mcpTransportSel').value === 'sse', '切到 SSE');
+    check(mcpEl('mcpTransportSel').value === 'sse', '选中态跟着回执走');
     check(mcpEl('mcpStreamableField').style.display === 'none'
-      && mcpEl('mcpSseField').style.display === 'block', 'SSE 时反过来');
+      && mcpEl('mcpSseField').style.display === 'block',
+      'SSE 时只展示 SSE 那一块（展示一个只会 404 的地址等于让人白配一遍）');
+
+    // 再选 HTTP
+    sbSt.mcpTransportPicked('http');
+    await flush();
+    check(mcpEl('mcpTransportSel').value === 'http', '切到 HTTP');
+    check(mcpEl('mcpStreamableField').style.display === 'block'
+      && mcpEl('mcpSseField').style.display === 'none', 'HTTP 时反过来');
 
     // 选当前项 = 不发 IPC（别白写一次盘）
     const toastsBefore = sbToasts.length;
-    sbSt.mcpTransportPicked('sse');
+    sbSt.mcpTransportPicked('http');
     await flush();
     check(sbToasts.length === toastsBefore, '选已选中的项什么都不做');
 
     // 失败路径
     sbSt._fail = true;
-    sbSt.mcpTransportPicked('both');
+    sbSt.mcpTransportPicked('sse');
     await flush();
     check(mcpEl('mcpTransportSel').disabled === false, '**命令失败也要解禁**（一次抖动不能锁死它）');
-    check(mcpEl('mcpTransportSel').value === 'sse',
+    check(mcpEl('mcpTransportSel').value === 'http',
       '失败时下拉框**拨回真实值**（不留在"选了但没成"的样子）', mcpEl('mcpTransportSel').value);
     check(sbToasts.some((m) => /传输切换失败/.test(m)), '失败时把原因说出来', sbToasts.join(' / '));
   }
@@ -2854,12 +2865,12 @@ try {
     const selMatch = /<select[^>]*id="mcpTransportSel"[\s\S]*?<\/select>/.exec(html);
     check(!!selMatch, '用的是原生 <select>（不是一排按钮）');
     const sel = selMatch ? selMatch[0] : '';
-    check(/<option value="http">HTTP<\/option>/.test(sel)
+    check(/<option value="http" selected>HTTP<\/option>/.test(sel)
       && /<option value="sse">SSE<\/option>/.test(sel)
-      && /<option value="both" selected>All<\/option>/.test(sel),
-      '三个选项 HTTP / SSE / All，值对应后端的 http / sse / both', sel);
-    check(/id="mcpTransportSel"[^>]*data-mcp-tip="[^"]*All —— 两条都提供/.test(html),
-      '下拉框的悬停说明讲清了三个选项各自的后果（灰字没了，这条信息不能也丢）');
+      && !/value="both"/.test(sel),
+      '只有两个选项 HTTP / SSE（单档；All 已删）', sel);
+    check(/id="mcpTransportSel"[^>]*data-mcp-tip="[^"]*单档：只能二选一/.test(html),
+      '下拉框的悬停说明讲清了两个选项各自的后果，并写明单档（灰字没了，这条信息不能也丢）');
     // 宽度：用固定像素，别让原生 select 按内容自适应（切选项时会抖）或被 min-width 撑宽
     check(/id="mcpTransportSel"[^>]*style="[^"]*width:\d+px/.test(html)
       && !/id="mcpTransportSel"[^>]*style="[^"]*min-width:9/.test(html)
@@ -2908,7 +2919,7 @@ try {
       clearTimeout() { timers.length = 0; },
     };
     mcpEl('mcpToggleBtn').setAttribute('data-mcp-tip', '开启 MCP 服务器 —— 只监听本机 127.0.0.1。');
-    mcpEl('mcpTransportSel').setAttribute('data-mcp-tip', '传输形态：\n· HTTP …\n· SSE …\n· All …');
+    mcpEl('mcpTransportSel').setAttribute('data-mcp-tip', '传输形态：\n· HTTP …\n· SSE …');
     vm.createContext(sbTip);
     vm.runInContext([
       'var _mcpTipTimer = null;',
@@ -4029,7 +4040,7 @@ try {
   check(/\(Method::GET, "\/status"\)/.test(mcpSrc), '有 /status 详情端点');
   check(/"\/status"[\s\S]{0,320}?constant_time_eq\(&given, &core\.token\(\)\)/.test(mcpSrc),
     '/status 先验 token 才回详情（未授权只回 401）');
-  check(/if !constant_time_eq\(&given, &core\.token\(\)\) \{[\s\S]{0,120}?unauthorized\(\)[\s\S]{0,120}?status_json_public\(\)/
+  check(/if !constant_time_eq\(&given, &core\.token\(\)\) \{[\s\S]{0,140}?unauthorized\(&core, "\/status"\)[\s\S]{0,140}?status_json_public\(\)/
     .test(mcpSrc), '/status 的未授权分支与授权分支分得很清楚');
   check(/pub fn status_json_public\(/.test(mcpSrc), '有「对外可见」的状态序列化函数');
   // 两个带 token 的 URL 都要摘掉：**新增传输时最容易漏的就是这里** ——

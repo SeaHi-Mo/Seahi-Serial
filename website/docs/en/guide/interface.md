@@ -62,7 +62,7 @@ Click the MCP icon in the title bar to open the dialog. The status dot at the lo
 | Theme accent colour | Enabled with at least one client connected |
 | Red | Not enabled, and the last run encountered an error |
 
-The dialog provides the following operations: enable or disable the server, toggle read-only mode, select the transport (HTTP / SSE / All), copy both connection addresses and the corresponding client configurations, copy the installation prompt, reset the access token, and view status and the last error. The error reason is displayed in the "last error" field. See [MCP setup](/en/guide/mcp) for connection and configuration steps.
+The dialog provides the following operations: enable or disable the server, toggle read-only mode, select the transport (HTTP / SSE, one at a time), copy the corresponding connection address and client configuration, copy the installation prompt, reset the access token, and view status and the last error. The error reason is displayed in the "last error" field. See [MCP setup](/en/guide/mcp) for connection and configuration steps.
 
 ## Theme style and light/dark
 

@@ -5051,7 +5051,7 @@ mod tests {
                     "builtinToolCount", "callLog", "configFile", "dropped", "enabled", "endpointFile",
                     "errorReports", "hasUi", "host", "lastError", "limits", "logHub", "maxSessions",
                     "nextSteps",
-                    "port", "readOnly", "registry", "requests", "running", "sessions", "stateChanges",
+                    "port", "readOnly", "recentRejections", "registry", "requests", "running", "sessions", "sessionsDetail", "stateChanges",
                     "statusEmits", "streamableHttp", "tokenMasked", "toolCalls", "toolCount", "transport",
                     "uiInFlight", "uptimeSecs", "version",
                 ], &["urlMasked", "streamableUrlMasked"])),

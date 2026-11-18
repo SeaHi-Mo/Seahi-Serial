@@ -23,7 +23,7 @@ Hover the status text to see the version, tool count, request count, dropped cou
 | Control | What it does |
 |---|---|
 | `启用 MCP 服务器` / `关闭 MCP 服务器` | The same button. Its label says what clicking it will do, not the current state |
-| Transport dropdown: `HTTP` / `SSE` / `All` | Takes effect immediately. HTTP serves only `/mcp`; SSE serves only `/sse` and `/messages`; All serves both. In a single-transport mode the other endpoint returns 404 |
+| Transport dropdown: `HTTP` / `SSE` | One transport at a time, takes effect immediately. HTTP serves only `/mcp`; SSE serves only `/sse` and `/messages`. The other endpoint returns 404 |
 | `只读模式` (read-only) | The label is fixed; state and consequences are in the hover hint. While enabled every write tool returns `-32007`, and only the UI can turn it off |
 | `重置令牌` (reset token) | Generates a new token. The old token stops working immediately; client configs that were already pasted must be copied again |
 | `Streamable HTTP（新版客户端用这个）` | Connection URL + copy button, then the client config JSON + copy button. Use `type: "http"` normally; Cline and some clients need `streamableHttp` |
@@ -33,9 +33,8 @@ Hover the status text to see the version, tool count, request count, dropped cou
 
 The window shows only the section for the selected transport:
 
-- `HTTP`: Streamable HTTP only
+- `HTTP` (default): Streamable HTTP only
 - `SSE`: legacy SSE only
-- `All`: both
 
 The URLs contain a `token`. Treat it as a password; do not share it or paste it into a public page.
 

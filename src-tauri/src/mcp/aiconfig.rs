@@ -26,17 +26,19 @@ pub const AI_CONFIG_VERSION: u32 = 1;
 /// 端点发现文件 schema 版本
 pub const ENDPOINT_VERSION: u32 = 1;
 
-/// 传输形态。**三档**，因为"同时提供两种"和"只提供一种"是两个不同的诉求：
-/// - `Both`：老客户端走 SSE、新客户端走 `/mcp`，兼容性最好（**默认**，升级上来的配置不受影响）；
-/// - `Http`：只服务 `/mcp`（`/sse` + `/messages` 返回 404）；
-/// - `Sse`：只服务遗留 SSE（`/mcp` 返回 404）。
+/// 传输形态。**单档**（2026-11 用户要求：不同时提供两种 —— 要么 `/mcp`，要么遗留 SSE）：
+/// - `Http`：只服务 Streamable HTTP（`/mcp`），`/sse` + `/messages` 返回 404（**默认**）；
+/// - `Sse`：只服务遗留 SSE，`/mcp` 返回 404。
 ///
-/// 后两档是"我就要一种"时用的，代价是另一种客户端会连不上 —— 所以它必须是**用户主动选的**，
-/// 不能是升级带来的副作用（这正是默认取 `Both` 的原因）。
+/// 为什么默认 `Http`：新版客户端（VS Code / Cline / 新版 Cursor / Claude Code）默认走它，
+/// 遗留 SSE 只服务"只认 `/sse`"的老客户端 —— 那类客户端本来就要用户显式去配。
+///
+/// ⚠️ 三档时代的 `both` 已经删除。老配置里出现的 `"transport": "both"`（或缺失/`streamableHttp`
+/// 为 true）在 `load_in` 里迁移成 `Http`，**不会**因为解析失败而丢掉 token/端口
+/// （见 `parse_legacy` 与 `de_transport`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TransportMode {
-    Both,
     Http,
     Sse,
 }
@@ -44,7 +46,6 @@ pub enum TransportMode {
 impl TransportMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            TransportMode::Both => "both",
             TransportMode::Http => "http",
             TransportMode::Sse => "sse",
         }
@@ -52,23 +53,47 @@ impl TransportMode {
 
     /// 是否提供 Streamable HTTP（`/mcp`）
     pub fn serves_http(self) -> bool {
-        matches!(self, TransportMode::Both | TransportMode::Http)
+        matches!(self, TransportMode::Http)
     }
 
     /// 是否提供遗留 SSE（`/sse` + `/messages`）
     pub fn serves_sse(self) -> bool {
-        matches!(self, TransportMode::Both | TransportMode::Sse)
+        matches!(self, TransportMode::Sse)
     }
 
+    /// 解析**当前**合法的档位（`http` / `sse`）。三档时代的 `both` 不在这里认 ——
+    /// 那是"老配置"的事，走 `parse_legacy`，免得新界面/工具把 `both` 当成有效值再写回去。
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "both" => Some(TransportMode::Both),
             "http" => Some(TransportMode::Http),
             "sse" => Some(TransportMode::Sse),
             _ => None,
         }
     }
+
+    /// 兼容解析：把三档时代的 `both` 迁到单档目标（`Http`）。
+    ///
+    /// 只在**读老配置 / 老发现文件**时用。为什么不直接让 `parse` 认 `both`：那会让
+    /// `mcp_set_transport("both")` 也悄悄成功，而界面已经没有这个档了 —— 调用方以为
+    /// 切到了"两个都提供"，实际只有一条在跑。
+    pub fn parse_legacy(s: &str) -> Option<Self> {
+        if s.trim().eq_ignore_ascii_case("both") {
+            return Some(TransportMode::Http);
+        }
+        Self::parse(s)
+    }
 }
+
+/// `transport` 字段的容错反序列化：认不出的值回落到 `None`（再由 `transport_mode()` 推断），
+/// **绝不让整份配置解析失败** —— 失败会连带丢掉用户存的 token / 端口 / 其它设置。
+fn de_transport<'de, D>(d: D) -> Result<Option<TransportMode>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(d)?;
+    Ok(raw.and_then(|s| TransportMode::parse_legacy(&s)))
+}
+
 
 /// MCP 服务器设置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,9 +104,9 @@ pub struct ServerCfg {
     pub port: u16,
     /// 访问令牌；为空时会自动生成
     pub token: String,
-    /// 提供哪种传输（`both` / `http` / `sse`）。`None` 只可能出现在**老配置**里，
+    /// 提供哪种传输（`http` / `sse`）。`None` 只可能出现在**老配置**里，
     /// 此时由 `legacy_streamable_http` 推断（见 `transport_mode()`）。
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_transport")]
     pub transport: Option<TransportMode>,
     /// **兼容字段**：本项目 0.5.7 之前只有这个 bool（`true` = 提供 `/mcp`）。
     /// 只参与反序列化推断，**写出时不再产生**（`skip_serializing`），配置里只会留 `transport`。
@@ -90,15 +115,16 @@ pub struct ServerCfg {
 }
 
 impl ServerCfg {
-    /// 实际生效的传输形态。
+    /// 实际生效的传输形态（**单档**，只有 `Http` / `Sse`）。
     ///
-    /// 迁移规则（升级上来的 `ai-config.json` 只有 `streamableHttp`）：
-    /// - `false` → `Sse`（用户当年主动关过 `/mcp`，这个意愿要保留）；
-    /// - `true` / 字段缺失 → `Both`（**不能**因为升级就把某类客户端挡在门外）。
+    /// 迁移规则（升级上来的 `ai-config.json`）：
+    /// - `transport: "sse"` / `streamableHttp: false` → `Sse`（用户当年主动选过 SSE，这个意愿要保留）；
+    /// - `transport: "http"` / `streamableHttp: true` / 字段缺失 / 三档时代的 `both` → `Http`
+    ///   （新版客户端的默认形态；`both` 已删除，只能落成一条）。
     pub fn transport_mode(&self) -> TransportMode {
         self.transport.unwrap_or(match self.legacy_streamable_http {
             Some(false) => TransportMode::Sse,
-            _ => TransportMode::Both,
+            _ => TransportMode::Http,
         })
     }
 
@@ -116,7 +142,7 @@ impl Default for ServerCfg {
             host: "127.0.0.1".to_string(),
             port: DEFAULT_PORT,
             token: String::new(),
-            transport: Some(TransportMode::Both),
+            transport: Some(TransportMode::Http),
             legacy_streamable_http: None,
         }
     }
@@ -220,7 +246,7 @@ pub fn load_in(dir: &Path) -> AiConfig {
                 // **落成**新字段 `transport` 的实际值，并清掉兼容字段。
                 //
                 // 为什么必须放在读入口、而不是只在序列化端处理：只有这里同时看得到两个字段。
-                // 否则「写成 `transport: null` → 读回来还是 None → 又推断成 Both」——
+                // 否则「写成 `transport: null` → 读回来还是 None → 又推断成默认值」——
                 // 用户当年主动关掉 `/mcp`（或将来改成只 SSE）的意愿会在一次读写之间被**静默丢掉**。
                 let mode = cfg.server.transport_mode();
                 cfg.server.set_transport_mode(mode);
@@ -261,9 +287,9 @@ pub fn save(cfg: &AiConfig) -> Result<(), String> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Endpoint {
     pub version: u32,
-    /// 应用当前提供的传输：`both` / `http` / `sse`。
-    /// 老版本的发现文件里没有这一项，`default` 保证外部工具读到旧文件也能解析
-    /// （那时按"两个 URL 哪个非空"判断即可）。
+    /// 应用当前提供的传输：`http` / `sse`（单档）。
+    /// 老版本的发现文件里可能是三档时代的 `both`，也**没有**这一项 —— `default` 保证外部工具
+    /// 读到旧文件也能解析（那时按"两个 URL 哪个非空"判断即可）。
     #[serde(default)]
     pub transport: String,
     /// 遗留 SSE 传输：`GET /sse?token=…`。**不提供 SSE 时是空串**。
@@ -473,13 +499,13 @@ mod tests {
     #[test]
     fn endpoint_file_carries_url_and_pid() {
         let dir = tmp("endpoint");
-        write_endpoint_in(&dir, "127.0.0.1", 7777, "tok", TransportMode::Both).unwrap();
+        write_endpoint_in(&dir, "127.0.0.1", 7777, "tok", TransportMode::Http).unwrap();
         let s = std::fs::read_to_string(dir.join(ENDPOINT_FILE)).unwrap();
         let ep: Endpoint = serde_json::from_str(&s).unwrap();
-        assert_eq!(ep.url, "http://127.0.0.1:7777/sse?token=tok");
-        // Streamable HTTP 也要写进发现文件：npm 安装器要按它生成 `"type":"http"` 的客户端配置
+        // Streamable HTTP 要写进发现文件：npm 安装器要按它生成 `"type":"http"` 的客户端配置
         assert_eq!(ep.url_streamable, "http://127.0.0.1:7777/mcp?token=tok");
-        assert_eq!(ep.transport, "both");
+        assert_eq!(ep.url, "", "单档：不提供 SSE 时不能留一个必然 404 的地址");
+        assert_eq!(ep.transport, "http");
         assert_eq!(ep.port, 7777);
         assert_eq!(ep.pid, std::process::id());
         assert_eq!(ep.version, ENDPOINT_VERSION);
@@ -545,23 +571,28 @@ mod tests {
 
     #[test]
     fn transport_mode_helpers_agree() {
-        assert!(TransportMode::Both.serves_http() && TransportMode::Both.serves_sse());
         assert!(TransportMode::Http.serves_http() && !TransportMode::Http.serves_sse());
         assert!(!TransportMode::Sse.serves_http() && TransportMode::Sse.serves_sse());
         assert_eq!(TransportMode::parse(" HTTP "), Some(TransportMode::Http));
         assert_eq!(TransportMode::parse("sse"), Some(TransportMode::Sse));
         assert_eq!(TransportMode::parse("ws"), None);
+        // 三档时代的 both 只能由 `parse_legacy` 认，而且落到单档目标 Http；
+        // `parse` 必须不认 —— 否则 `mcp_set_transport("both")` 会"成功"但只跑一条。
+        assert_eq!(TransportMode::parse("both"), None);
+        assert_eq!(TransportMode::parse_legacy("both"), Some(TransportMode::Http));
+        assert_eq!(TransportMode::parse_legacy(" SSE "), Some(TransportMode::Sse));
+        assert_eq!(TransportMode::parse_legacy("ws"), None);
     }
 
-    /// **升级路径**：老配置只有 `streamableHttp` 这个 bool，读进来要正确迁移。
-    /// 关键有两条：① 不能因为升级就把某类客户端挡在门外（所以默认是 `Both`）；
-    /// ② 用户当年主动关过 `/mcp` 的意愿**不能在写回一轮之后丢掉**。
+    /// **升级路径**：老配置只有 `streamableHttp` 这个 bool，读进来要正确迁移到**单档**。
+    /// 两条纪律：① 迁移目标必须是确定的（`both` 已删除，只能落成一条）；
+    /// ② 用户当年主动选过 SSE 的意愿**不能在写回一轮之后丢掉**。
     #[test]
     fn old_config_migrates_transport_mode() {
         let dir = tmp("migrate-transport");
         let path = dir.join(AI_CONFIG_FILE);
 
-        // ① 完全没有这个字段（0.5.7 之前的老配置）→ 两种都提供
+        // ① 完全没有这个字段（0.5.7 之前的老配置）→ 默认单档 Http
         std::fs::write(
             &path,
             r#"{"version":1,"server":{"enabled":true,"host":"127.0.0.1","port":7777,"token":"t"}}"#,
@@ -569,19 +600,31 @@ mod tests {
         .unwrap();
         assert_eq!(
             load_in(&dir).server.transport_mode(),
-            TransportMode::Both,
-            "升级不能悄悄关掉任何一条传输"
+            TransportMode::Http,
+            "缺失字段 → 默认单档 Http（新版客户端的形态）"
         );
 
-        // ② 显式 true → Both
+        // ② 显式 true → Http
         std::fs::write(
             &path,
             r#"{"version":1,"server":{"enabled":true,"host":"127.0.0.1","port":7777,"token":"t","streamableHttp":true}}"#,
         )
         .unwrap();
-        assert_eq!(load_in(&dir).server.transport_mode(), TransportMode::Both);
+        assert_eq!(load_in(&dir).server.transport_mode(), TransportMode::Http);
 
-        // ③ 用户主动关过 /mcp → 必须是 Sse，**而且写回一轮后还得是 Sse**
+        // ③ 三档时代写下的 `"transport":"both"` → 迁到 Http，**而且不能让整份配置解析失败**
+        //   （解析失败会连带丢掉 token / 端口 / 其它设置）
+        std::fs::write(
+            &path,
+            r#"{"version":1,"server":{"enabled":true,"host":"127.0.0.1","port":1234,"token":"keepme","transport":"both"}}"#,
+        )
+        .unwrap();
+        let cfg = load_in(&dir);
+        assert_eq!(cfg.server.transport_mode(), TransportMode::Http);
+        assert_eq!(cfg.server.token, "keepme", "老值认不出时不能把整份配置丢掉");
+        assert_eq!(cfg.server.port, 1234);
+
+        // ④ 用户主动选过 SSE → 必须是 Sse，**而且写回一轮后还得是 Sse**
         std::fs::write(
             &path,
             r#"{"version":1,"server":{"enabled":true,"host":"127.0.0.1","port":7777,"token":"t","streamableHttp":false}}"#,
@@ -596,7 +639,7 @@ mod tests {
         assert_eq!(
             load_in(&dir).server.transport_mode(),
             TransportMode::Sse,
-            "第二轮读取必须还是 sse —— 这里丢过一次就会变成 both"
+            "第二轮读取必须还是 sse —— 这里丢过一次就会变成 http"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -604,7 +647,7 @@ mod tests {
     #[test]
     fn transport_mode_roundtrips_and_clears_the_legacy_field() {
         let dir = tmp("transport-roundtrip");
-        for mode in [TransportMode::Both, TransportMode::Http, TransportMode::Sse] {
+        for mode in [TransportMode::Http, TransportMode::Sse] {
             let mut cfg = AiConfig::default();
             cfg.server.set_transport_mode(mode);
             save_in(&dir, &cfg).unwrap();

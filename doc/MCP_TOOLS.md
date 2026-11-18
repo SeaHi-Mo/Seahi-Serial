@@ -27,7 +27,7 @@
 | 握手顺序（Streamable HTTP）| `POST /mcp` `initialize`（不带会话头）→ 从响应头拿 `Mcp-Session-Id` → 后续请求都带上它 → `notifications/initialized`（回 202）→ `tools/list` |
 | 握手顺序（遗留 SSE）| 客户端必须先 `GET /sse` 拿到 endpoint，再 `POST` `initialize` → `notifications/initialized` → `tools/list` |
 | 地址从哪来 | 程序弹窗里的「Streamable HTTP / 遗留 SSE」两块地址，或 `%APPDATA%\seahi-serial\mcp-endpoint.json`（`url` 与 `urlStreamable` 两个字段）|
-| 传输档位 | 弹窗里的「传输」三档：**两种都提供**（默认，兼容性最好）/ **仅 /mcp** / **仅 SSE**。配置键是 `server.transport`（老的 `server.streamableHttp` 布尔写法仍然认）。选单档时**另一条端点立刻返回 404**（切换立即生效，不用重启服务器）|
+| 传输档位 | 弹窗里的「传输」是**单档**（2026-11 起两条不同时提供）：**HTTP**（只服务 `/mcp`，默认）/ **SSE**（只服务 `/sse` + `/messages`）。配置键是 `server.transport`（老的 `server.streamableHttp` 布尔写法仍然认；三档时代的 `both` 读到即迁到 http）。切到哪一档，**另一条端点立刻返回 404**（切换立即生效，不用重启服务器）|
 
 ## 2. 怎么拿工具列表
 
@@ -44,7 +44,7 @@
 | [`serial_set_baud`](#serial-set-baud) | **写** | 设置波特率（110..4000000）。等价于在「波特率」输入框里填值。 |
 | [`serial_set_frame`](#serial-set-frame) | **写** | 设置帧格式（dataBits / stopBits / parity，至少给一个）。**只在未连接时有意义**，连接中请先 serial_close。 |
 | [`serial_set_lines`](#serial-set-lines) | **写** | 设置 DTR / RTS 电平（布尔）。常用于让目标板复位（DTR 拉低）或进入下载模式。 |
-| [`serial_set_display`](#serial-set-display) | **写** | 设置显示与行为开关（viewMode / lineEnding / echo / lineNum / timestamp / autoScroll / autoReconnect / terminalMode / advOpen，至少给一个）。serial_get_state 报出来的每个开关这里都能设。⚠️ 终端模式下「行号 / 时间戳 / 回显」是置灰的：设它们不算失败，返回里带 `skipped:true`（当前状态本来就不生效），别重试。 |
+| [`serial_set_display`](#serial-set-display) | **写** | 设置显示与行为开关（viewMode / lineEnding / echo / lineNum / timestamp / autoScroll / autoReconnect / terminalMode / lineBuf / advOpen，至少给一个）。serial_get_state 报出来的每个开关这里都能设。⚠️ 终端模式下「行号 / 时间戳 / 回显」是置灰的：设它们不算失败，返回里带 `skipped:true`（当前状态本来就不生效），别重试。⚠️ `lineBuf`（命令行缓冲：整行发送 + 本地回显，AT 指令用）只对终端模式生效，终端模式关着时同样回 `skipped:true`。 |
 | [`serial_open`](#serial-open) | **写** | **开始监控**（=点「开始监控」按钮）。可同时给 port/baud，省两次调用。返回前**确认真的连上**（最多 6 秒），失败会说明可能原因（端口被占用 / 设备拔出 / 驱动异常）。 |
 | [`serial_close`](#serial-close) | **写** | 停止监控（等价于点「停止监控」），返回前确认已断开。 |
 | [`serial_send`](#serial-send) | **写** | 往该分栏发数据（**需已在监控中**）。mode=hex 时 data 按十六进制解析（如 "01 03 00 00 00 02"），否则按文本；lineEnding 会覆盖该分栏的行尾并留在界面上。单次最多 64K 字符，大块数据请分批。 |
@@ -629,8 +629,8 @@
 
 - **作用**：**不确定从我这儿怎么下手就先调它**：MCP 服务器自身状态（是否运行、监听端点、会话数、请求数与限流/丢弃计数），外加一份 `nextSteps` —— 按「有没有界面 / 用户是不是开了只读模式」给出下一步该调什么。只读。
 - **读/写**：只读，无副作用
-- **返回**：打码后的服务器状态：`running/enabled/host/port/streamableHttp/tokenMasked/sessions/statusEmits/readOnly/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/version/uptimeSecs`
-- **注意**：**不含 token 与完整 URL**（`urlMasked` 与 `streamableUrlMasked` 只在服务器通过界面启动、确实绑定了端口时出现；**两条 URL 都打码**）；`streamableHttp` 为 false 时 `/mcp` 返回 404、只剩遗留 SSE；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新；**`readOnly` 必须先看** —— 为 true 时所有写操作会被拒（-32007）
+- **返回**：打码后的服务器状态：`running/enabled/host/port/streamableHttp/tokenMasked/sessions/sessionsDetail/statusEmits/readOnly/requests/dropped/toolCalls/registry/logHub/errorReports/callLog/limits/recentRejections/version/uptimeSecs`
+- **注意**：**不含 token 与完整 URL**（`urlMasked` 与 `streamableUrlMasked` 只在服务器通过界面启动、确实绑定了端口时出现；**两条 URL 都打码**）；`streamableHttp` 为 false 时 `/mcp` 返回 404（当前只提供遗留 SSE）；**`sessions` 是"仍可服务的会话数"，`sessionsDetail` 才分得清「有活跃推送流」与「只是表项」（后者空闲 30 分钟后会被回收）**；`statusEmits` 是"往前端推过多少次状态"，用来判断界面上的会话数是不是在更新；**`readOnly` 必须先看** —— 为 true 时所有写操作会被拒（-32007）
 
 **入参**
 

@@ -12,7 +12,7 @@ var _mcpBusy = false;
 // 同上，只读模式那颗按钮自己的在途标志。**必须独立一份**：共用一个标志的话，
 // 一边在处理中会把另一颗按钮也连带置灰（两个开关本来就是互不相干的命令）。
 var _mcpReadOnlyBusy = false;
-// 同上，传输档位（both / http / sse）自己的在途标志（同理：不能与上两个共用）
+// 同上，传输档位（http / sse）自己的在途标志（同理：不能与上两个共用）
 var _mcpTransportBusy = false;
 // 在途期间用户点了哪一档：用来**立刻**把高亮画过去（反馈要快），
 // 后端状态回来后由 renderMcpStatus 统一覆盖。失败时就清掉，回到真实状态。
@@ -83,9 +83,21 @@ function mcpMaskClick(e) {
     _mcpPressOnMask = false;
 }
 
+/* 状态点三态（2026-11）：
+ *   live = 有会话**正在用**（挂着推送流，或最近 5 分钟内有请求）
+ *   idle = 只剩表项：会话都空闲到接近回收，界面不该再声称"在线"
+ *   on   = 在跑但没有会话；err = 上次启动失败
+ * 没有 `sessionsDetail` 时退回旧口径（有会话就算 live），兼容老后端/老断言。 */
 function _mcpDotClass(st) {
     if (!st) return 'mcp-dot';
     if (!st.running) return st.lastError ? 'mcp-dot err' : 'mcp-dot';
+    var d = st.sessionsDetail;
+    if (d && d.length) {
+        var active = d.some(function(s) {
+            return s && (s.hasStream || (typeof s.idleSecs === 'number' && s.idleSecs < 300));
+        });
+        return active ? 'mcp-dot live' : 'mcp-dot idle';
+    }
     return st.sessions > 0 ? 'mcp-dot live' : 'mcp-dot on';
 }
 
@@ -96,10 +108,14 @@ function renderMcpStatus(st) {
         if (d) d.className = cls;
     });
     var running = !!(st && st.running);
+    // 逐会话快照：tooltip 里说清"几个是真在用"，别让「N 个会话」被当成 N 个在线客户端
+    var detail = (st && st.sessionsDetail) || [];
+    var streaming = detail.filter(function(s) { return s && s.hasStream; }).length;
+    var detailNote = detail.length ? ('，其中 ' + streaming + ' 个挂着推送流') : '';
     var btn = document.getElementById('mcpBtn');
     if (btn) {
         btn.title = !st ? 'MCP 服务器：点开可让本机 AI 客户端操作本程序'
-            : (running ? ('MCP 服务器：监听 ' + st.host + ':' + st.port + '（' + st.sessions + ' 个会话）· 点开查看连接地址')
+            : (running ? ('MCP 服务器：监听 ' + st.host + ':' + st.port + '（' + st.sessions + ' 个会话' + detailNote + '）· 点开查看连接地址')
                        : 'MCP 服务器：已关闭 · 点开可让本机 AI 客户端操作本程序');
     }
     var stText = document.getElementById('mcpStateText');
@@ -153,11 +169,11 @@ function renderMcpStatus(st) {
             : (on ? '只读模式：开 —— AI 只能看。写操作一律被拒（错误码 -32007），界面与配置文件一个字都不变。点一下放开设限。'
                   : '只读模式：关 —— AI 可以改界面、发串口。点一下打开只读模式（AI 只能看，写操作全被拒）。'));
     }
-    // 传输形态**下拉框**（`http` / `sse` / `both`，界面显示 HTTP / SSE / All）。
+    // 传输形态**下拉框**（`http` / `sse`，界面显示 HTTP / SSE；**单档**，只能二选一）。
     // 只有被选中的传输才展示连接方式 —— 一屏同时摆两套地址+两份配置，用户不知道该复制哪份。
     // 在途时先用用户选的那个画（反馈要快），状态回来后由这里统一覆盖；
     // 失败时 `_mcpTransportCur` 会被清掉，于是这一句把下拉框**拨回真实值**。
-    var shownTransport = _mcpTransportCur || (st && st.transport) || 'both';
+    var shownTransport = _mcpTransportCur || (st && st.transport) || 'http';
     var sel = document.getElementById('mcpTransportSel');
     if (sel) {
         sel.disabled = !!_mcpTransportBusy;
@@ -250,17 +266,18 @@ function mcpToggleReadOnly() {
     });
 }
 
-/* 传输形态：下拉框选 HTTP / SSE / All（值分别是 http / sse / both）。
+/* 传输形态：下拉框选 HTTP / SSE（值分别是 http / sse）。**单档**，两条不能同开。
  *
- * 切换**立即生效**（后端路由每次请求都读配置），所以选单档时另一条传输会立刻变成 404 ——
- * 三个选项各自的后果写在 select 的悬停说明里，切完还有一条 toast 说明结果。 */
+ * 切换**立即生效**（后端路由每次请求都读配置），而且传输是**单档**（只能二选一）——
+ * 切到哪一条，另一条就立刻变成 404。两个选项各自的后果写在 select 的悬停说明里，
+ * 切完还有一条 toast 说明结果。 */
 function mcpTransportPicked(mode) {
     if (_mcpTransportBusy) {
         // 在途时又拨了一下：按真实状态画回去，别让下拉框停在"没生效的值"上
         renderMcpStatus(_mcpStatus);
         return;
     }
-    var cur = (_mcpStatus && _mcpStatus.transport) || 'both';
+    var cur = (_mcpStatus && _mcpStatus.transport) || 'http';
     // 选到当前档 = 什么都不做：别白写一次盘、也别白发一次 IPC
     if (cur === mode) return;
     // 与 mcpToggleReadOnly 同一套：**禁用态的唯一来源就是 _mcpTransportBusy**，
@@ -275,9 +292,9 @@ function mcpTransportPicked(mode) {
         renderMcpStatus(st);
         // 地址区块要跟着刷新（换档会换掉展示的连接方式）
         refreshMcpStatus();
-        showToast(mode === 'both' ? '两条传输都在提供：老客户端走 /sse、新客户端走 /mcp'
-            : mode === 'http' ? '只提供 Streamable HTTP：/mcp 可用，/sse 与 /messages 已变成 404'
-                              : '只提供遗留 SSE：/sse 可用，/mcp 已变成 404', 'info');
+        showToast(mode === 'http'
+            ? '只提供 Streamable HTTP：/mcp 可用，/sse 与 /messages 已变成 404'
+            : '只提供遗留 SSE：/sse 可用，/mcp 已变成 404', 'info');
     }).catch(function(e) {
         _mcpTransportBusy = false;
         _mcpTransportCur = null; // 失败就回到真实状态（下拉框会被拨回去）

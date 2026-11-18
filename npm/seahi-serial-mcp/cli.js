@@ -245,8 +245,8 @@ function desiredEntry(url, transport) {
  * 按传输类型从发现文件里挑 URL。
  * 返回 `{ ok, url }` 或 `{ ok:false, reason }`（reason 要能让人看懂下一步做什么）。
  *
- * 应用侧现在是**三档**（`both` / `http` / `sse`，见弹窗里的"传输"），所以只提供一种时，
- * 另一条 URL 是**空串**。这时不能只说"缺字段"—— 得说清是"应用被设成了只提供另一种"，
+ * 应用侧现在是**单档**（`http` / `sse`，见弹窗里的"传输"；三档时代的 `both` 已取消），
+ * 所以另一条 URL 是**空串**。这时不能只说"缺字段"—— 得说清是"应用被设成了另一种"，
  * 并给出两条可操作的出路（换 --transport 或去弹窗里改档位）。
  */
 function pickUrl(ep, transport) {
@@ -259,10 +259,10 @@ function pickUrl(ep, transport) {
         ok: false,
         reason:
           (mode === 'sse'
-            ? '应用当前**只提供遗留 SSE**（弹窗里的"传输"选了「仅 SSE」），没有 /mcp 端点。\n'
+            ? '应用当前**只提供遗留 SSE**（弹窗里的"传输"选了「SSE」），没有 /mcp 端点。\n'
             : '这个应用没有给出 Streamable HTTP 端点（发现文件里缺 urlStreamable）。\n' +
               '  两种可能：① 应用版本旧（升级到最新版即可）；② 弹窗里把传输设成了只提供一种。\n') +
-          '  出路：改用 --transport sse，或到应用弹窗里把传输切成「两种都提供」/「仅 /mcp」。',
+          '  出路：改用 --transport sse，或到应用弹窗里把传输切成「HTTP」（单档）。',
       };
     }
     return { ok: true, url: ep.urlStreamable };
@@ -271,8 +271,8 @@ function pickUrl(ep, transport) {
     return {
       ok: false,
       reason:
-        '应用当前**只提供 Streamable HTTP**（弹窗里的"传输"选了「仅 /mcp」），没有 /sse 端点。\n' +
-        '  出路：改用 --transport http（新版客户端推荐），或到弹窗里把传输切成「两种都提供」/「仅 SSE」。',
+        '应用当前**只提供 Streamable HTTP**（弹窗里的"传输"选了「HTTP」），没有 /sse 端点。\n' +
+        '  出路：改用 --transport http（新版客户端推荐），或到弹窗里把传输切成「SSE」（单档）。',
     };
   }
   return { ok: true, url: ep.url };
@@ -491,7 +491,7 @@ function printStatus(s) {
   if (s.app.endpoint) console.log(`  端点：${s.app.endpoint}（pid ${s.app.pid}${s.app.pidAlive ? '，存活' : '，已退出'}）`);
   if (s.app.endpointStreamable) console.log(`  Streamable HTTP 端点：${s.app.endpointStreamable}`);
   if (s.app.transport) {
-    const label = { both: '两种都提供', http: '仅 Streamable HTTP（/mcp）', sse: '仅遗留 SSE' }[s.app.transport] || s.app.transport;
+    const label = { both: '两种都提供（旧版本）', http: 'Streamable HTTP（/mcp）', sse: '遗留 SSE' }[s.app.transport] || s.app.transport;
     console.log(`  应用提供的传输：${label}`);
   }
   if (s.app.appVersion) console.log(`  应用版本：${s.app.appVersion}`);

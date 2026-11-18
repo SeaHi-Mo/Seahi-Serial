@@ -545,6 +545,9 @@
            display:inline-block; flex-shrink:0; }
 .mcp-dot.on { background:var(--accent-green); }
 .mcp-dot.live { background:var(--accent-focus); }
+/* 有会话、但都空闲到接近回收：空心环。别用红色 —— 那代表"出错了"，
+   这里只是"客户端可能已经走了，别再把它当成在线"（2026-11 状态点三态）。 */
+.mcp-dot.idle { background:transparent; box-shadow:inset 0 0 0 1.5px var(--accent-green); }
 .mcp-dot.err { background:var(--accent-red); }
 /* 左/右间距都交给 .global-bar 的 gap，这里不再自带 margin
    （以前是 margin-left/right:12px，与「提交issue/更新」的 8px、「主题开关」的 10px
