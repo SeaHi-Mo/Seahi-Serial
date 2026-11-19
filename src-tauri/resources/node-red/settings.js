@@ -76,7 +76,14 @@ module.exports = {
 
   editorTheme: {
     tours: false,
-    projects: { enabled: false }
+    projects: { enabled: false },
+    palette: {
+      /** 分类顺序：把本程序的「串口」放在最上面 —— 用户打开调色板第一眼要看到的是
+       *  serial in / serial out，而不是 31 个 Node-RED 自带节点（2026-11 反馈"不知道从哪开始"）。 */
+      categories: {
+        order: ["串口", "common", "function", "sequence", "parser"]
+      }
+    }
   },
 
   logging: {
