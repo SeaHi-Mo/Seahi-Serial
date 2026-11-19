@@ -564,3 +564,25 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
 
 字段与上限：`app_version/os/error/stack/context`，服务端截断为 64/128/8K/32K/16K 字节；
 部署与鉴权（`ERROR_API_KEY` 必配、每 IP 限速）见 `server/INSTALL.md` 与 `server/README.md`。
+
+## Node-RED 集成（自动化画布）—— 别改回去的六条
+
+完整说明见 `doc/NODERED_INTEGRATION.md`。要点：
+
+1. **画布是内嵌的真 Node-RED，不是自绘的**：`src/js/85-nodeflow.js` 只负责调 `nodered_open`、
+   设 iframe、展示错误。**别再往它里面写节点/画布逻辑**（第一版就是自绘的，已删）。
+2. **串口由 Rust 独占**：`serial in` / `serial out` 两个节点不 open COM 口，走回环 TCP 桥
+   （`main.rs` 里搜 `bridge_`）。谁再让节点自己开串口，就会和监视器抢口、把数据分走一半。
+3. **`settings.js` 里 `uiHost` 必须是 `127.0.0.1`**：不设就绑 0.0.0.0 —— Windows 防火墙每次弹窗，
+   而且把**没有 adminAuth 的编辑器**（能跑任意 function 代码）暴露给整个局域网。
+4. **要删/改名一个节点文件，三处都要干净**：`src-tauri/resources/node-red/local-nodes/`、
+   `target\debug\resources\...\local-nodes/`（Tauri 只覆盖不删）、`%APPDATA%\...\node-red\nodes/`
+   （投递目标）。Rust 每次启动会清理目标目录里源中已不存在的 `.js/.html`，但 **target 那份要自己删**——
+   dev 构建现在优先读仓库 resources，所以正常情况下不会再犯。
+5. **别用 `execFileSync('npm.cmd')`**：Windows 上 Node ≥18.20 会 `spawn EINVAL`。用
+   `process.execPath + npm_execpath`（见 `scripts/prepare-nodered.mjs`）。
+6. **Tauri 的资源路径带 `\\?\` 前缀**，不能直接喂给 node（会报 `EISDIR ... lstat 'D:'`），
+   统一走 `nodered_plain_path()`。
+
+构建顺序：`npm run prep:nodered -- --slim` → `npm run dev`。不跑第一步会报「缺少 node.exe」。
+`prep` 产出约 80 MB（node.exe + 依赖树），随安装包分发，这是固定成本。
