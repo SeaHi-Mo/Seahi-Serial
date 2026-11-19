@@ -702,10 +702,13 @@ pub fn tool_defs() -> Vec<Value> {
                     "toIndex": { "type": "number", "description": "action=group 且 op=move 时的目标组序号（0 起；组的上下顺序就是循环顺序）" },
                     "value": { "type": "string", "description": "action=add/update 时的指令内容（原样发送，不按逗号切分）" },
                     "seq": { "type": "number", "description": "action=add/update 时的顺序号：0 = 不参与循环，>0 在**组内**按数字升序发" },
-                    "timeoutMs": { "type": "number", "description": "action=add/update 时的超时（毫秒）：有 `expect` 时是**等回应的上限**（等满按失败跳转）；没写 `expect` 时它就是发下一条的间隔。缺省 3000，上限 600000，填 0 = 20ms 最小间隔" },
-                    "delayMs": { "type": "number", "description": "⚠️ **旧拼写**：与 timeoutMs 同一个值（这一项的语义是「超时」，不是「发送间隔」）。新调用请用 timeoutMs —— 两个都给时以 timeoutMs 为准" },
-                    "expect": { "type": "string", "description": "action=add/update 时的成功词，多个用 `|` 分隔。⚠️ **它同时是「这条要不要等回应」的开关**：留空 = 这条**不等回应**（`timeoutMs` 变成发下一条的间隔）；写了才等，且内置 OK / ERROR / busy 仍认（`expect` 是追加）。想等内置 OK 就显式写 `OK`。⚠️ 面板上没有这个入口，改这里会同时写进指令文件" },
-                    "retry": { "type": "number", "description": "action=add/update 时：收到 ERROR 后最多重发几次（缺省 3，上限 10；0 = 不重发，直接终止）" },
+                    "timeoutMs": { "type": "number", "description": "action=add/update 时的超时（毫秒）：这一条发出去后隔多久发下一条。缺省 3000，上限 600000，填 0 = 20ms 最小间隔" },
+                    "delayMs": { "type": "number", "description": "⚠️ **旧拼写**：与 timeoutMs 同一个值。新调用请用 timeoutMs —— 两个都给时以 timeoutMs 为准" },
+                    // ⚠️ DSL（等回话/期望/重试/跳转）2026-11 停用：`expect` / `retry` / `okGoto` / `errGoto`
+                    // 四个字段从 schema 撤下，调用方若仍传会收到 -32602（见 check_quick_cmd_item_params）。
+                    // 原定义保留在注释里，恢复时取消注释即可：
+                    // "expect": { ... 成功词，同时是「这条要不要等回应」的开关 ... },
+                    // "retry": { ... 收到 ERROR 后最多重发几次 ... },
                     "hex": { "type": "boolean", "description": "action=add/update 时：这一条是否按 HEX 解析后发送（默认 false）" },
                     "pane": { "type": "string", "description": PANE_DESC }
                 },
@@ -2119,7 +2122,9 @@ fn check_workflow_args(args: &Value) -> Result<(), RpcError> {
 /// 表现是"工具回了 ok、参数却没生效"，比报错更坑）。
 fn quick_cmd_item_payload(args: &Value) -> Value {
     let mut p = json!({});
-    for k in ["value", "seq", "timeoutMs", "delayMs", "expect", "retry", "okGoto", "errGoto", "hex"] {
+    // ⚠️ DSL 停用（2026-11）：`expect` / `retry` / `okGoto` / `errGoto` 不再往下游转发。
+    //    原键表：["value", "seq", "timeoutMs", "delayMs", "expect", "retry", "okGoto", "errGoto", "hex"]
+    for k in ["value", "seq", "timeoutMs", "delayMs", "hex"] {
         if let Some(v) = args.get(k) { p[k] = v.clone(); }
     }
     p
@@ -2144,26 +2149,35 @@ fn check_quick_cmd_item_params(args: &Value) -> Result<(), RpcError> {
                 "retry 超出上限 {MAX_QUICK_CMD_RETRY}（再高就是\"设备一直报错、循环永远停不下来\"）")));
         }
     }
-    check_text_len(args, "expect", MAX_QUICK_CMD_EXPECT_CHARS, "期望词")?;
-    // 跳转两列：只认 留空 / `下一条` / `end`（结束）/ 顺序号（1..=9999）。
-    // 别让"随便写点什么"进去 —— 前端会把它归一成"下一条"，那等于用户以为配了跳转、实际没配（静默失效）。
-    for key in ["okGoto", "errGoto"] {
-        if let Some(v) = args.get(key) {
-            let s = v.as_str().ok_or_else(|| RpcError::new(
-                E_INVALID_PARAMS,
-                format!("{key} 要是字符串：留空/下一条 = 顺序走、数字 = 跳到的顺序号、结束 = 收尾")))?;
-            let t = s.trim();
-            if t.is_empty() { continue; }
-            let low = t.to_lowercase();
-            let is_end = matches!(low.as_str(), "end" | "stop" | "结束" | "终止");
-            let is_next = matches!(low.as_str(), "next" | "-" | "下一条" | "继续");
-            let is_seq = t.parse::<u32>().map(|n| n >= 1 && n <= 9999).unwrap_or(false);
-            if !(is_end || is_next || is_seq) {
-                return Err(RpcError::new(E_INVALID_PARAMS, format!(
-                    "{key}「{t}」认不出来：只认 留空/下一条、数字 = 顺序号、结束")));
-            }
+    // ⚠️ DSL（等回话/期望/重试/跳转）2026-11 停用：这四个字段不再被接受。
+    //    显式拒绝而不是静默忽略 —— 调用方传了却"看起来成功了"，比报错更坑。
+    //    原实现（期望词长度 / 重试上限 / 跳转取值校验）保留在下面注释里，恢复时取消注释即可。
+    for key in ["expect", "retry", "okGoto", "errGoto"] {
+        if args.get(key).is_some() {
+            return Err(RpcError::new(E_INVALID_PARAMS, format!(
+                "{key} 已停用：等回话/期望/重试/跳转这套 DSL 当前不提供，请改用 timeoutMs 控制发送节奏")));
         }
     }
+    // check_text_len(args, "expect", MAX_QUICK_CMD_EXPECT_CHARS, "期望词")?;
+    // // 跳转两列：只认 留空 / `下一条` / `end`（结束）/ 顺序号（1..=9999）。
+    // // 别让"随便写点什么"进去 —— 前端会把它归一成"下一条"，那等于用户以为配了跳转、实际没配（静默失效）。
+    // for key in ["okGoto", "errGoto"] {
+    //     if let Some(v) = args.get(key) {
+    //         let s = v.as_str().ok_or_else(|| RpcError::new(
+    //             E_INVALID_PARAMS,
+    //             format!("{key} 要是字符串：留空/下一条 = 顺序走、数字 = 跳到的顺序号、结束 = 收尾")))?;
+    //         let t = s.trim();
+    //         if t.is_empty() { continue; }
+    //         let low = t.to_lowercase();
+    //         let is_end = matches!(low.as_str(), "end" | "stop" | "结束" | "终止");
+    //         let is_next = matches!(low.as_str(), "next" | "-" | "下一条" | "继续");
+    //         let is_seq = t.parse::<u32>().map(|n| n >= 1 && n <= 9999).unwrap_or(false);
+    //         if !(is_end || is_next || is_seq) {
+    //             return Err(RpcError::new(E_INVALID_PARAMS, format!(
+    //                 "{key}「{t}」认不出来：只认 留空/下一条、数字 = 顺序号、结束")));
+    //         }
+    //     }
+    // }
     Ok(())
 }
 
@@ -5631,28 +5645,31 @@ mod tests {
                     pre_connected: None,
                     calls: vec![("serial", json!({ "action": "quickLoop", "on": true }))],
                     keys: &["pane", "loop", "planLength", "changed"] },
-                // 加一条：group 给组序号/组名，其余字段是这一条自己的等待参数。
+                // 加一条：group 给组序号/组名，其余字段是这一条自己的发送参数。
                 // ⚠️ 期望里**必须列出这些字段** —— `serial_call` 只转发 extra，
                 // 只校验不转发就是"工具回了 ok、参数却没生效"（batch 4 这么漏过一次）
+                // ⚠️ DSL 停用（2026-11）：expect/retry 已从参数表撤下（传了会 -32602），
+                //    这里只验剩下的 value/seq/timeoutMs/hex 是否如实转发。
                 Case { tool: "serial_quick_cmd",
                     args: json!({ "action": "add", "group": 0, "value": "AT+GMR", "seq": 1,
-                                  "timeoutMs": 500, "expect": "WIFI GOT IP|OK", "retry": 2, "hex": true }),
+                                  "timeoutMs": 500, "hex": true }),
                     pre_connected: None,
                     calls: vec![("serial", json!({ "action": "quickAdd", "value": "AT+GMR", "seq": 1,
-                                                   "timeoutMs": 500, "expect": "WIFI GOT IP|OK",
-                                                   "retry": 2, "hex": true }))],
+                                                   "timeoutMs": 500, "hex": true }))],
                     keys: &["pane", "index", "group", "groupIndex", "itemIndex", "applied"] },
                 // 旧拼写 delayMs：仍然转发（语义是超时），免得按旧写法调用的人静默失效
                 Case { tool: "serial_quick_cmd", args: json!({ "action": "update", "index": 0, "delayMs": 8000 }),
                     pre_connected: None,
                     calls: vec![("serial", json!({ "action": "quickUpdate", "delayMs": 8000 }))],
                     keys: &["pane", "index", "group", "itemIndex", "applied"] },
-                // 跳转（分支与循环）：两列面板上没有入口，但必须**转发到前端**（只校验不转发=永远收不到）
-                Case { tool: "serial_quick_cmd", args: json!({ "action": "update", "index": 0,
-                        "okGoto": "2", "errGoto": "end" }),
-                    pre_connected: None,
-                    calls: vec![("serial", json!({ "action": "quickUpdate", "okGoto": "2", "errGoto": "end" }))],
-                    keys: &["pane", "index", "group", "itemIndex", "applied"] },
+                // 跳转（分支与循环）：DSL 停用（2026-11），这两个字段不再被接受 ——
+                // 传了会得到 -32602（见 invalid_quick_cmd_item_params 那组用例）。
+                // 原用例（校验 + 转发）保留在这里，恢复 DSL 时取消注释：
+                // Case { tool: "serial_quick_cmd", args: json!({ "action": "update", "index": 0,
+                //         "okGoto": "2", "errGoto": "end" }),
+                //     pre_connected: None,
+                //     calls: vec![("serial", json!({ "action": "quickUpdate", "okGoto": "2", "errGoto": "end" }))],
+                //     keys: &["pane", "index", "group", "itemIndex", "applied"] },
                 Case { tool: "serial_quick_cmd", args: json!({ "action": "update", "index": 0, "value": "AT+RST", "seq": 2 }),
                     pre_connected: None,
                     calls: vec![("serial", json!({ "action": "quickUpdate" }))],
@@ -7523,12 +7540,15 @@ mod tests {
                 r
             );
 
-            // ③.5 每条指令的等待参数也要有上限（2026-09 教训：在 limits 里报出来 ≠ 被执行）
+            // ③.5 每条指令的发送参数也要有上限（2026-09 教训：在 limits 里报出来 ≠ 被执行）
+            // ⚠️ DSL 停用（2026-11）：retry / expect 已从参数表撤下，下面两条改成"传了就 -32602"。
             for (bad, what) in [
                 (json!({ "action": "update", "index": 0, "timeoutMs": MAX_QUICK_CMD_TIMEOUT_MS + 1 }), "timeoutMs 超限"),
-                (json!({ "action": "update", "index": 0, "retry": MAX_QUICK_CMD_RETRY + 1 }), "retry 超限"),
-                (json!({ "action": "update", "index": 0, "expect": "A".repeat(MAX_QUICK_CMD_EXPECT_CHARS + 1) }), "期望词超长"),
                 (json!({ "action": "update", "index": 0, "delayMs": MAX_QUICK_CMD_TIMEOUT_MS + 1 }), "旧拼写 delayMs 同样受超时上限约束"),
+                (json!({ "action": "update", "index": 0, "expect": "OK" }), "expect 已停用"),
+                (json!({ "action": "update", "index": 0, "retry": 2 }), "retry 已停用"),
+                (json!({ "action": "update", "index": 0, "okGoto": "2" }), "okGoto 已停用"),
+                (json!({ "action": "update", "index": 0, "errGoto": "end" }), "errGoto 已停用"),
             ] {
                 let r = call(&c, &raw_call("serial_quick_cmd", &bad)).await;
                 assert_eq!(

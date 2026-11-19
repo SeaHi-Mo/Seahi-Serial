@@ -402,6 +402,12 @@ function makeQcmdItem(mid, gid, idx, label, value) {
 /// 并**明确说清这一格到底生不生效、不生效时它是什么** —— 没写「期望」的条目不等回话，
 /// 此时这一格是"发下一条前的间隔"（填 0 才是 20ms 兜底），只看数字很容易误解成"它在等回话"
 function qcmdTimeoutTitle(it) {
+    /* DSL 关闭时（QCMD_DSL_UI_ENABLED=false）这一格只有"间隔"一种含义：
+       不再提「期望 / 重试 / 跳转」—— 那些入口已经收了，再讲就是给用户指路去一个不存在的地方。 */
+    if (!QCMD_DSL_UI_ENABLED) {
+        return '超时（毫秒）：这一条发出去后，隔多久发下一条（填 0 = 按 '
+             + QCMD_LOOP_MIN_GAP_MS + 'ms 最小间隔连发）。';
+    }
     var base = '超时（毫秒）：这一条占用的时间。等到 OK 就发下一条；等到 ERROR 就重发本条（默认最多 '
              + QCMD_RETRY_DEFAULT + ' 次）；等满这个时间还没等到 OK 就走「失败跳转」（没配就终止整条循环）。';
     if (qcmdItemWaits(it)) {
@@ -426,6 +432,9 @@ function qcmdTimeoutTitle(it) {
 /// 这一格有没有"只在文件里配得到的额外条件"→ 描一层淡边标出来，别让它静默生效
 function syncQcmdTimeoutMark(el, it) {
     if (!el) return;
+    /* DSL 关闭时不做"这一格还有文件里才有的条件"的淡边标记 ——
+       描了边就是在暗示"这里有东西可配"，而那些入口已经收了。 */
+    if (!QCMD_DSL_UI_ENABLED) { el.classList.remove('has-extra'); return; }
     el.classList.toggle('has-extra', !!qcmdItemExpect(it) || qcmdItemRetry(it) !== QCMD_RETRY_DEFAULT
         || !!qcmdItemOkGoto(it) || !!qcmdItemErrGoto(it));
 }

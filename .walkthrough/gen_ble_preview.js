@@ -128,6 +128,11 @@ sandbox._bleFilterText = '';
 vm.runInContext('renderBleDeviceList()', sandbox);
 
 let pass = 0, fail = 0;
+// DSL（等回话/期望/重试/跳转）2026-11 停用：下面有些用例守的是一条**已经不再运行**的路。
+// 它们不算失败也不算通过，单独计数跳过 —— 把 QCMD_DSL_UI_ENABLED 改回 true 就自动恢复执行。
+let skippedDsl = 0;
+const DSL_ON = /var QCMD_DSL_UI_ENABLED = true;/.test(html);
+const checkDsl = (ok, label, extra) => { if (!DSL_ON) { skippedDsl++; return; } check(ok, label, extra); };
 const check = (ok, label, extra) => {
   ok ? pass++ : fail++;
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${extra !== undefined && !ok ? '   -> ' + extra : ''}`);
@@ -4580,6 +4585,8 @@ try {
        /var WF_MAX_RULES[\s\S]*?var WF_MAX_ACTION_DATA = \d+;/.exec(html)[0],
        // 跳转（分支与循环）的常量与取值表：`qcmdGotoNorm` 读它们，少了就在沙箱里 ReferenceError
        /var QCMD_GOTO_MAX[\s\S]*?var QCMD_GOTO_END = \[[^\]]*\];/.exec(html)[0],
+       // 快速指令 DSL 入口的总开关：qcmdSideHtml 读它决定「循环发送」露不露出来
+       /var QCMD_DSL_UI_ENABLED = (?:true|false);/.exec(html)[0],
        // `mcpSerialOp` 是本节的"真函数入口"（MCP 的 serial_* 都走它）。它体内引用了十来个函数，
        // 但**只有被执行到的分支才会去解析**，所以只补 wf 那条路要用到的几个就够。
        extractVarObject('MCP_SERIAL_WRITE_ACTIONS'),
@@ -5121,13 +5128,23 @@ try {
       check(sideById['main-qcmdi-gA-0-val'].value === 'AT+GMR'
         && sideById['main-qcmdi-gA-0-seq'].value === '3'
         && sideById['main-qcmdi-gA-0-delay'].value === '500'
-        && sideById['main-qcmdi-gA-0-delay'].classList.contains('has-extra')
+        // 描边跟随 DSL 开关：开着才为"文件里另有条件"描边；关着就不该指路去一个收掉的入口
+        && sideById['main-qcmdi-gA-0-delay'].classList.contains('has-extra') === !!sbSide.QCMD_DSL_UI_ENABLED
         && sideById['main-qcmdi-gA-0-hex'].classList.contains('on'),
-        '四格控件都跟着变了（超时格还带上"另有文件级条件"的描边标记）');
-      check(sideById['main-qcmdi-gA-0-delay'].title.indexOf('期望 = WIFI GOT IP|OK') >= 0
-        && sideById['main-qcmdi-gA-0-delay'].title.indexOf('重试 = 2') >= 0,
-        '超时格悬停说明里写清"本条另有 期望/重试"（面板没有它们的入口，不能静默）',
-        sideById['main-qcmdi-gA-0-delay'].title);
+        '四格控件都跟着变了（超时格的"另有文件级条件"描边跟随 DSL 开关）');
+      if (sbSide.QCMD_DSL_UI_ENABLED) {
+        check(sideById['main-qcmdi-gA-0-delay'].title.indexOf('期望 = WIFI GOT IP|OK') >= 0
+          && sideById['main-qcmdi-gA-0-delay'].title.indexOf('重试 = 2') >= 0,
+          '超时格悬停说明里写清"本条另有 期望/重试"（面板没有它们的入口，不能静默）',
+          sideById['main-qcmdi-gA-0-delay'].title);
+      } else {
+        // DSL 入口收掉之后，超时格只剩"间隔"一种含义：再提 期望/重试/跳转 就是给用户指路去空气
+        check(sideById['main-qcmdi-gA-0-delay'].title.indexOf('期望') < 0
+          && sideById['main-qcmdi-gA-0-delay'].title.indexOf('重试') < 0
+          && sideById['main-qcmdi-gA-0-delay'].title.indexOf('跳转') < 0,
+          'DSL 关闭时超时格不再提 期望/重试/跳转',
+          sideById['main-qcmdi-gA-0-delay'].title);
+      }
       // 历史拼写：delayMs 仍然认（那一项的语义已变成超时，但改名会让按旧写法调用的人静默失效）
       const appliedLegacy = sbSide.qcmdApplyItemPatch('main', 'gA', 0, { delayMs: 8000 });
       check(JSON.stringify(appliedLegacy) === '["timeoutMs"]' && patched.timeout === 8000,
@@ -5180,7 +5197,7 @@ try {
         '重试读法：缺省 3 / 0 = 不重发 / 超限夹到 10 / 非数字回缺省');
       // ★ 等回话的判据：**超时 > 0 且「期望」非空**（2026-10 用户报的 bug —— 没写期望却仍按
       //   内置 OK 判定，设备不回 OK 的指令全被判超时，整条链停在第一条上："只能发送一次"）
-      check(sbSide.qcmdItemWaits({ timeout: 3000, expect: 'OK' }) === true
+      checkDsl(sbSide.qcmdItemWaits({ timeout: 3000, expect: 'OK' }) === true
         && sbSide.qcmdItemWaits({ timeout: 3000 }) === false            // 没写期望 → 不等
         && sbSide.qcmdItemWaits({}) === false                           // 缺省超时 3000，仍不等
         && sbSide.qcmdItemWaits({ timeout: 0, expect: 'OK' }) === false // 超时 0 → 不等
@@ -5220,7 +5237,7 @@ try {
         '| 2 | AT+X | 3000 | OK | 3 |',     // 正常：等回话
         '| 3 | AT+Y | 0 | OK | 3 |',        // 超时 0 → 期望也白配
       ].join('\r\n'));
-      check(dw.deadWaitCount === 2,
+      checkDsl(dw.deadWaitCount === 2,
         '★ "配了却不生效"的等待参数被计数（导入时提示一次，不做静默 no-op）',
         String(dw.deadWaitCount));
       // 跳转（分支与循环）：取值归一化 —— '' = 下一条 / 'end' = 结束 / '数字' = 顺序号
@@ -5673,9 +5690,9 @@ try {
       check(/没写成功词的条目不等回应，此时 `timeoutMs` 就是/.test(def),
         '★ MCP 主描述写明"没写成功词 → 不等回应，`timeoutMs` 变成间隔"（AI 看不到 doc/ 下的文档）',
         def.length ? '' : '没抓到 serial_quick_cmd 的定义');
-      check(/留空 = 这条\*\*不等回应\*\*/.test(def),
+      checkDsl(/留空 = 这条\*\*不等回应\*\*/.test(def),
         '★ `expect` 字段描述写明了"留空 = 这条不等回应"');
-      check(/没写 `expect` 时[\s\S]{0,40}?间隔/.test(def),
+      checkDsl(/没写 `expect` 时[\s\S]{0,40}?间隔/.test(def),
         '★ `timeoutMs` 字段描述写明了"没写 expect 时它就是间隔"');
     }
     // ---- YAML / TOML 文件头（front matter）：原样保留，且**不能**被当成指令 ----
@@ -7635,13 +7652,13 @@ try {
               { label: '', value: 'AT+GMR', seq: 2, timeout: 2000, expect: 'OK' }]);
     script = [{ state: 'ok' }, { state: 'ok' }];
     sb.setQcmdLoop('main', true);
-    check(await waitFor(() => sent.length >= 2, 1500),
-      '真状态机：收到 OK 才发下一条（两条都发出去了）', JSON.stringify(sent.map(x => x.idx)));    check(JSON.stringify(sent.map(x => x.idx).slice(0, 2)) === '[0,1]',
+    checkDsl(await waitFor(() => sent.length >= 2, 1500),
+      '真状态机：收到 OK 才发下一条（两条都发出去了）', JSON.stringify(sent.map(x => x.idx)));    checkDsl(JSON.stringify(sent.map(x => x.idx).slice(0, 2)) === '[0,1]',
       '按组内顺序号走（1 → 2）', JSON.stringify(sent.map(x => x.idx)));
-    check(sent.every(x => x.armBefore >= 1),
+    checkDsl(sent.every(x => x.armBefore >= 1),
       '每条都在 arm 之后才 send（"回话归属"的前提：反了就会把回话当上一条的迟到数据）',
       JSON.stringify(sent.map(x => x.armBefore)));
-    check(calls.some(c => c.cmd === 'qcmd_hs_arm' && c.args && c.args.timeoutMs === 2000),
+    checkDsl(calls.some(c => c.cmd === 'qcmd_hs_arm' && c.args && c.args.timeoutMs === 2000),
       'arm 带上了本条自己的超时', JSON.stringify(calls.filter(c => c.cmd === 'qcmd_hs_arm').map(c => c.args)));
     check(!logs.some(t => /收到 OK/.test(t)) && !logs.some(t => /条已发出/.test(t)),
       '★ 等回话的流水（已发出 / 收到 OK）也不写监视窗口（用户 2026-10："都需要删除"）',
@@ -7652,7 +7669,7 @@ try {
     setItems([{ label: '', value: 'AT+CWJAP', seq: 1, timeout: 2000, expect: 'OK', retry: 2 }]);
     script = [{ state: 'err' }, { state: 'err' }, { state: 'ok' }];
     sb.setQcmdLoop('main', true);
-    check(await waitFor(() => sent.length >= 3, 1500),
+    checkDsl(await waitFor(() => sent.length >= 3, 1500),
       'ERROR 后重发本条（重试上限 2 → 一共发 3 次）', JSON.stringify(sent.map(x => x.idx)));
     check(sent.every(x => x.idx === 0), '重发的还是同一条', JSON.stringify(sent.map(x => x.idx)));
     check(!logs.some(t => /重发（第/.test(t)),
@@ -7664,25 +7681,25 @@ try {
     setItems([{ label: '', value: 'AT+CWJAP', seq: 1, timeout: 2000, expect: 'OK', retry: 1 }]);
     script = [{ state: 'err' }, { state: 'err' }];
     sb.setQcmdLoop('main', true);
-    check(await waitFor(() => !sb.qcmdLoopRunning('main'), 1500), 'ERROR 重试用尽 → 终止整条链');
-    check(sent.length === 2, '上限 1 → 一共发 2 次（首次 + 1 次重发）', String(sent.length));
-    check(/连续 2 次收到 ERROR/.test(toasts.join(' | ')), '终止原因写清"连续几次 ERROR"', toasts.join(' | '));
+    checkDsl(await waitFor(() => !sb.qcmdLoopRunning('main'), 1500), 'ERROR 重试用尽 → 终止整条链');
+    checkDsl(sent.length === 2, '上限 1 → 一共发 2 次（首次 + 1 次重发）', String(sent.length));
+    checkDsl(/连续 2 次收到 ERROR/.test(toasts.join(' | ')), '终止原因写清"连续几次 ERROR"', toasts.join(' | '));
 
     // ④ 等满超时（Rust 一直说"还没结论"）→ 终止整条链
     setItems([{ label: '', value: 'AT+RST', seq: 1, timeout: 60, expect: 'OK' }]);
     script = []; stateDefault = 'waiting';
     sb.setQcmdLoop('main', true);
-    check(await waitFor(() => !sb.qcmdLoopRunning('main'), 3000), '等满超时 → 终止整条链');
-    check(/超时终止/.test(toasts.join(' | ')) && /60ms/.test(toasts.join(' | ')),
+    checkDsl(await waitFor(() => !sb.qcmdLoopRunning('main'), 3000), '等满超时 → 终止整条链');
+    checkDsl(/超时终止/.test(toasts.join(' | ')) && /60ms/.test(toasts.join(' | ')),
       '终止原因写清"哪一条 + 等多久"', toasts.join(' | '));
 
     // ⑤ busy 只算"继续等"：不算结论、也不重发（脚本永远回 busy，免得它中途收到 OK 又发下一条）
     setItems([{ label: '', value: 'AT+CWJAP', seq: 1, timeout: 2000, expect: 'OK' }]);
     script = []; stateDefault = 'busy';
     sb.setQcmdLoop('main', true);
-    check(await waitFor(() => sent.length >= 1, 800), '（前置）busy 用例：已经发出去这一条');
+    checkDsl(await waitFor(() => sent.length >= 1, 800), '（前置）busy 用例：已经发出去这一条');
     await new Promise(r => setTimeout(r, 300));    // 在 busy 上多转几圈（轮询 60ms/次）
-    check(sent.length === 1, 'busy 期间不重发（还是那一条）', JSON.stringify(sent.map(x => x.idx)));
+    checkDsl(sent.length === 1, 'busy 期间不重发（还是那一条）', JSON.stringify(sent.map(x => x.idx)));
     check(!logs.some(t => /busy|收到 OK|已发出/.test(t)),
       '★ busy 只是"继续等"，也不再写监视窗口', logs.join(' | ') || '(一个字都没有)');
     sb.stopQcmdLoop('main');
@@ -7805,9 +7822,9 @@ try {
               { label: '', value: 'C', seq: 3, timeout: 2000, expect: 'OK' }]);
     script = [{ state: 'ok' }, { state: 'ok' }];
     sb.setQcmdLoop('main', true);
-    check(await waitFor(() => sent.length >= 2, 1500),
+    checkDsl(await waitFor(() => sent.length >= 2, 1500),
       '成功跳转：第 1 条收到 OK → 跳到顺序号 3', JSON.stringify(sent.map(x => x.idx)));
-    check(sent[1] && sent[1].idx === 2, '中间那条（顺序号 2）被跳过', JSON.stringify(sent.map(x => x.idx)));
+    checkDsl(sent[1] && sent[1].idx === 2, '中间那条（顺序号 2）被跳过', JSON.stringify(sent.map(x => x.idx)));
     check(!logs.some(t => /跳转到顺序号 3/.test(t)),
       '★ 跳转也不写监视窗口（用户 2026-10："都需要删除"）', logs.join(' | ') || '(一个字都没有)');
     sb.stopQcmdLoop('main');
@@ -7820,13 +7837,13 @@ try {
     check(await waitFor(() => sent.length >= 2, 3000),
       '失败跳转：**超时也算失败**（配网失败多半是超时而不是 ERROR，只认 ERROR 这功能就没用）',
       JSON.stringify(sent.map(x => x.idx)));
-    check(sent[1] && sent[1].idx === 2, '超时后跳到顺序号 3', JSON.stringify(sent.map(x => x.idx)));
+    checkDsl(sent[1] && sent[1].idx === 2, '超时后跳到顺序号 3', JSON.stringify(sent.map(x => x.idx)));
     sb.stopQcmdLoop('main');
 
     setItems([{ label: '', value: 'A', seq: 1, timeout: 2000, expect: 'OK', okgoto: 'end' }]);
     script = [{ state: 'ok' }];
     sb.setQcmdLoop('main', true);
-    check(await waitFor(() => !sb.qcmdLoopRunning('main'), 1500),
+    checkDsl(await waitFor(() => !sb.qcmdLoopRunning('main'), 1500),
       '「成功跳转 = 结束」→ 正常收尾（循环停下）');
     check(toasts.length === 0, '正常收尾不弹错误 toast（它不是失败）', toasts.join(' | '));
     check(!logs.some(t => /收尾/.test(t)),
@@ -7836,9 +7853,9 @@ try {
               { label: '', value: 'B', seq: 2, timeout: 2000, expect: 'OK' }]);
     script = [{ state: 'ok' }, { state: 'ok' }];
     sb.setQcmdLoop('main', true);
-    check(await waitFor(() => sent.length >= 2, 1500),
+    checkDsl(await waitFor(() => sent.length >= 2, 1500),
       '跳转目标不在计划里 → 降级按「下一条」走（绝不静默乱跳）', JSON.stringify(sent.map(x => x.idx)));
-    check(sent[1] && sent[1].idx === 1, '降级后发的是下一条', JSON.stringify(sent.map(x => x.idx)));
+    checkDsl(sent[1] && sent[1].idx === 1, '降级后发的是下一条', JSON.stringify(sent.map(x => x.idx)));
     check(!logs.some(t => /已经不在计划里/.test(t)),
       '★ 降级说明也不写监视窗口（细节留给 console.warn）', logs.join(' | ') || '(一个字都没有)');
     sb.stopQcmdLoop('main');
@@ -8616,7 +8633,7 @@ try {
   }
 
   runQcmdLoopAsyncTests().then(runWslMapStopAsyncTests).then(function () {
-    console.log(`\n结果: ${pass} passed, ${fail} failed`);
+    console.log(`\n结果: ${pass} passed, ${fail} failed` + (skippedDsl ? `（另有 ${skippedDsl} 条 DSL 用例跳过：等回话/期望/重试/跳转已停用）` : ''));
     process.exit(fail ? 1 : 0);
   }, function (e) {
     console.error('异步断言段（循环发送真状态机）崩了：', e);

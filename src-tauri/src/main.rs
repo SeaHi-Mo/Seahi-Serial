@@ -1059,7 +1059,10 @@ impl PortReader {
                         // 快速指令的"等回话"：判定在 Rust，读线程把同一块数据顺手喂进去。
                         // 锁只在此刻短暂持有（判定就是几行字符串比较），拿不到就丢这一块 ——
                         // 绝不为了等回话把读取线程堵住（串口收发热路径优先）。
-                        hs_feed(&hs_for_read, &tmp[..n]);
+                        // ⚠️ DSL（等回话/期望/重试/跳转）2026-11 停用：这一喂也一起停，
+                        //    否则状态机会被喂成"有回话"，而前端已经不再查它的结论。
+                        // hs_feed(&hs_for_read, &tmp[..n]);
+                        let _ = &hs_for_read;
                     }
                     _ if should_break => break,
                     // 无数据时轻微退避（1ms→2ms），减少空转，对读取延迟影响可忽略
@@ -2173,6 +2176,15 @@ fn close_port(state: tauri::State<'_, PortState>, monitor_id: String) -> Result<
    ⚠️ **arm 必须排在 send 之前**：反过来的话，设备的回话可能赶在 arm 之前到达，
    被当成"上一条的迟到数据"丢掉 —— 那这一条就必然白等到超时。 */
 
+/* ⚠️ DSL（等回话 / 期望 / 重试 / 跳转）2026-11 停用。
+   用户要求把"等回话/期望/重试/跳转"这套机制注释掉，于是**四个 qcmd_hs_* 命令的实现整段注释**，
+   只保留命令签名（前端 invoke 的白名单不必跟着改，恢复时取消注释即可）。
+   停用期间：
+     · qcmd_hs_arm 永远返回 armed=false —— 前端即便调了也不会进入"等回话"；
+     · qcmd_hs_state 永远 idle；
+     · feed / stop 是空操作。
+   `QcmdHs` / `hs_slot` / `hs_feed` 三个定义**留着**（含它们的单测），将来放回来直接接上。 */
+
 /// 开始等一条指令的回话。`expect` 是自定义成功词（`|` 分隔，与文件里的「期望」列同一套写法）
 #[tauri::command]
 fn qcmd_hs_arm(
@@ -2181,50 +2193,55 @@ fn qcmd_hs_arm(
     expect: String,
     timeout_ms: u64,
 ) -> Result<serde_json::Value, String> {
-    if expect.len() > HS_MAX_EXPECT * HS_MAX_EXPECT_LEN {
-        return Err(format!("期望词太长（上限 {} 字符）", HS_MAX_EXPECT * HS_MAX_EXPECT_LEN));
-    }
-    let timeout_ms = timeout_ms.min(600_000);        // 与面板的上限一致
-    let hs = hs_slot(&state.qcmd_hs, &monitor_id);
-    let list: Vec<String> = expect.split('|').map(|s| s.to_string()).collect();
-    let mut g = hs.lock().map_err(|_| "等待状态锁不可用".to_string())?;
-    g.arm(list, timeout_ms);
-    Ok(serde_json::json!({ "armed": true, "timeoutMs": timeout_ms }))
+    // ---- 原实现（DSL 停用，注释保留）----
+    // if expect.len() > HS_MAX_EXPECT * HS_MAX_EXPECT_LEN {
+    //     return Err(format!("期望词太长（上限 {} 字符）", HS_MAX_EXPECT * HS_MAX_EXPECT_LEN));
+    // }
+    // let timeout_ms = timeout_ms.min(600_000);        // 与面板的上限一致
+    // let hs = hs_slot(&state.qcmd_hs, &monitor_id);
+    // let list: Vec<String> = expect.split('|').map(|s| s.to_string()).collect();
+    // let mut g = hs.lock().map_err(|_| "等待状态锁不可用".to_string())?;
+    // g.arm(list, timeout_ms);
+    // Ok(serde_json::json!({ "armed": true, "timeoutMs": timeout_ms }))
+    let _ = (state, monitor_id, expect, timeout_ms);
+    Ok(serde_json::json!({ "armed": false, "disabled": true }))
 }
 
 /// 问一句"这条有结论了吗"。**超时也在这里结算** —— 不另起定时器，也就没有悬挂状态。
 #[tauri::command]
 fn qcmd_hs_state(state: tauri::State<'_, PortState>, monitor_id: String) -> serde_json::Value {
-    let hs = hs_slot(&state.qcmd_hs, &monitor_id);
-    let mut g = hs.lock().unwrap_or_else(|e| e.into_inner());
-    let st = g.poll();
-    let elapsed = g.armed_at.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);
-    serde_json::json!({
-        "state": st.as_str(),
-        "busy": g.busy,
-        "elapsedMs": elapsed,
-        "lastLines": g.last_lines.clone(),
-    })
+    // ---- 原实现（DSL 停用，注释保留）----
+    // let hs = hs_slot(&state.qcmd_hs, &monitor_id);
+    // let mut g = hs.lock().unwrap_or_else(|e| e.into_inner());
+    // let st = g.poll();
+    // let elapsed = g.armed_at.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);
+    // serde_json::json!({ "state": st.as_str(), "busy": g.busy, "elapsedMs": elapsed, "lastLines": g.last_lines.clone() })
+    let _ = (state, monitor_id);
+    serde_json::json!({ "state": "idle", "busy": false, "elapsedMs": 0, "lastLines": [], "disabled": true })
 }
 
 /// 喂一块收到的数据（**WSL 路径用**：数据只有前端拉得到，而判定要留在 Rust 这一份）。
 /// 串口路径**不走这里** —— 它的读线程直接喂，免得同一块数据被喂两遍、把一个 OK 算成两次。
 #[tauri::command]
 fn qcmd_hs_feed(state: tauri::State<'_, PortState>, monitor_id: String, data: Vec<u8>) -> Result<(), String> {
-    if data.len() > HS_MAX_FEED {
-        return Err(format!("一次喂进来的数据太多（上限 {} 字节）", HS_MAX_FEED));
-    }
-    let hs = hs_slot(&state.qcmd_hs, &monitor_id);
-    hs_feed(&hs, &data);
+    // ---- 原实现（DSL 停用，注释保留）----
+    // if data.len() > HS_MAX_FEED {
+    //     return Err(format!("一次喂进来的数据太多（上限 {} 字节）", HS_MAX_FEED));
+    // }
+    // let hs = hs_slot(&state.qcmd_hs, &monitor_id);
+    // hs_feed(&hs, &data);
+    let _ = (state, monitor_id, data);
     Ok(())
 }
 
 /// 停掉等待（用户关循环 / 断开连接时清干净，不留"还在等"的悬挂状态）
 #[tauri::command]
 fn qcmd_hs_stop(state: tauri::State<'_, PortState>, monitor_id: String) {
-    let hs = hs_slot(&state.qcmd_hs, &monitor_id);
-    // 尾分号不是多余的：不写它，这一句就是尾表达式，临时 guard 会比 `hs` 晚析构（E0597）
-    if let Ok(mut g) = hs.lock() { g.stop(); };
+    // ---- 原实现（DSL 停用，注释保留）----
+    // let hs = hs_slot(&state.qcmd_hs, &monitor_id);
+    // // 尾分号不是多余的：不写它，这一句就是尾表达式，临时 guard 会比 `hs` 晚析构（E0597）
+    // if let Ok(mut g) = hs.lock() { g.stop(); };
+    let _ = (state, monitor_id);
 }
 
 /// 从缓冲区读取数据（毫秒级，不阻塞）

@@ -10,15 +10,37 @@
 var QCMD_LOOP_TITLE_OFF = '循环发送已关闭：点击开启（顺序号大于 0 的指令按数字从小到大依次发送）';
 var QCMD_LOOP_TITLE_ON  = '循环发送进行中：点击停止';
 
+/* ⚠️ **DSL 界面开关**（用户 2026-11：只收 DSL，循环发送要留着）。
+ *
+ * 这里关掉的是「等回话 / 期望 / 重试 / 跳转」这层能力在界面上的**可发现性**：
+ *   · 超时格的悬停说明不再讲"等 OK/重发/跳转"，只说它是"发下一条前的间隔"；
+ *   · 超时格不再为"文件里配了期望/重试/跳转"描淡边（那等于指路去一个删掉的入口）；
+ *   · 导入文件时不再弹"这个文件写了 期望/重试/跳转"的提示。
+ * 界面上本来就没有这些列的编辑入口，所以"删 UI"就是这三处提示。
+ *
+ * **不动的部分**（动了会出事）：
+ *   · 「循环发送」——独立能力：按顺序定时发，不等回话。它在上面照常渲染；
+ *   · 文件解析与写回 —— 已有的 期望/重试/跳转 列照旧读、照旧写回，否则会静默改写用户文件；
+ *   · `QcmdHs` 引擎与断言集里那 140 处回归用例 —— 修真实 bug 攒下来的。
+ *
+ * 要整条放回来：改成 true 即可（本仓库先例：84-ble-ota.js 的 BLE_OTA_UI_ENABLED）。 */
+var QCMD_DSL_UI_ENABLED = false;
+
 /// 列标题里那四格（纯静态文案）。单独拆出来是因为 rebuildQcmdList 要**逐个组建元素**：
 /// 直接 `el.innerHTML = '<div class="qcmd-cols">…</div>'` 在真实浏览器里没问题，
 /// 但在无头断言用的假 DOM 里 innerHTML 不解析 → 拿不到那个 .qcmd-cols 元素（断言就测不到它）。
 /// ⚠️ `＋ 添加` **不在**这里：它要绑到"这一组"，由 rebuildQcmdList 建成真元素后挂到这一行的最右
 /// （用户 2026-09 要求："＋添加 按钮应该放在 顺序、指令那一栏最右侧"）。
 function qcmdColsInnerHtml() {
+    /* 「超时」这一格的悬停说明按 DSL 开关分两版：
+       · 开着：这一格有两种含义（等回话的上限 / 发下一条前的间隔），必须说清是哪一种；
+       · 关着（QCMD_DSL_UI_ENABLED=false）：只剩"间隔"一种含义，再提「期望/跳转」等于给删掉的入口指路。 */
+    var delayTitle = QCMD_DSL_UI_ENABLED
+        ? '超时（毫秒）：这一条占用的时间。写了「期望」= 等回话的上限（等到 OK 就发下一条；等到 ERROR 就重发本条（默认最多 3 次）；等满还没等到 OK 就终止整条循环 / 走失败跳转）；没写「期望」= 不校验回话，这一格就是发下一条前的间隔。填 0 = 按 20ms 最小间隔连发'
+        : '超时（毫秒）：这一条发出去后，隔多久发下一条。填 0 = 按 20ms 最小间隔连发';
     return '<span class="qcmd-col-seq">顺序</span>' +
         '<span class="qcmd-col-val">指令</span>' +
-        '<span class="qcmd-col-delay" title="超时（毫秒）：这一条占用的时间。写了「期望」= 等回话的上限（等到 OK 就发下一条；等到 ERROR 就重发本条（默认最多 3 次）；等满还没等到 OK 就终止整条循环 / 走失败跳转）；没写「期望」= 不校验回话，这一格就是发下一条前的间隔。填 0 = 按 20ms 最小间隔连发">超时' +
+        '<span class="qcmd-col-delay" title="' + delayTitle + '">超时' +
             '<span class="qcmd-col-unit">(ms)</span></span>' +
         '<span class="qcmd-col-hex" title="本条按 HEX 格式发送（默认关闭）">HEX</span>';
 }
@@ -243,6 +265,8 @@ function qcmdSideHtml(mid) {
             '<div class="qcmd-side-hd">' +
                 // 左边是状态（循环发送开关），右边是动作（新建循环组 / 导入 / 导出）。
                 // 「＋ 添加」不再在这里：它属于**某个组**，所以挪到每个组的抬头里去了。
+                // ⚠️ 「循环发送」**是独立能力，不受 QCMD_DSL_UI_ENABLED 影响**：
+                //    它只是"按顺序定时发"，与"等回话/期望/重试/跳转"那套 DSL 无关。
                 '<button class="qcmd-dh-loop" id="' + mid + '-btnQcmdLoop"' +
                     ' onclick="toggleQcmdLoop(\'' + mid + '\')"' +
                     ' title="' + QCMD_LOOP_TITLE_OFF + '">循环发送</button>' +
@@ -810,17 +834,19 @@ function qcmdApplyParsed(mid, parsed, res, quiet) {
         showToast('这个文件的「延时」列现在按「超时」解读：那条指令发出去最多等这么久，等不到 OK 就终止循环（想自己掌控可以把它改名成「超时(ms)」）', 'info');
     }
     // 「期望 / 重试」面板上没有入口：文件里有它们就必须告诉用户去哪改
-    if (parsed.customCondCount) {
+    // —— 但 DSL 入口收掉之后（QCMD_DSL_UI_ENABLED=false）就不提示了：
+    //    那等于告诉用户"你有东西配在面板上改不到的地方"，而我们又故意不给入口。
+    if (parsed.customCondCount && QCMD_DSL_UI_ENABLED) {
         showToast('这个文件里有 ' + parsed.customCondCount + ' 条写了 期望 / 重试（面板不显示这两项，改它请直接编辑文件）', 'info');
     }
     // 配了却不会生效的等待参数：**等回话 = 期望非空 且 超时 > 0**，缺一头这些配置就白写了。
     // 不提示的话用户会以为"它还在等 OK / 还会重试"（静默 no-op 比报错更坑）
-    if (parsed.deadWaitCount) {
+    if (parsed.deadWaitCount && QCMD_DSL_UI_ENABLED) {
         showToast('有 ' + parsed.deadWaitCount + ' 条配了 期望/重试/跳转 但不会生效：要等回话必须同时有「期望」'
             + '（成功词，写 OK 就是等内置的 OK）和「超时 > 0」—— 否则这条发完就走', 'error');
     }
     // 跳转（分支与循环）：面板上同样没有入口 —— 有就提示在哪改、以及哪里没被理解
-    if (parsed.gotoCount && !quiet) {
+    if (parsed.gotoCount && !quiet && QCMD_DSL_UI_ENABLED) {
         showToast('这个文件里有 ' + parsed.gotoCount + ' 条写了 成功跳转 / 失败跳转（面板不显示这两项，改它请直接编辑文件）', 'info');
     }
     if (parsed.gotoUnknown && !quiet) {
@@ -1364,7 +1390,12 @@ function qcmdItemExpect(it) {
 /// 只有填 `0` 才落回 QCMD_LOOP_MIN_GAP_MS 那个兜底下限。
 /// 判定本身仍在 Rust 侧（见 `qcmd_hs_*`），这里只决定"要不要 arm"。
 function qcmdItemWaits(it) {
-    return qcmdItemTimeout(it) > 0 && !!qcmdItemExpect(it);
+    /* ⚠️ DSL（等回话 / 期望 / 重试 / 跳转）2026-11 停用：这里**恒为 false**。
+       后果（有意为之）：循环发送永远走"发完就等间隔"那条路 —— 不 arm、不等回话、不重试、不跳转。
+       「循环发送」本身不受影响：它照旧按顺序号发，节奏由「超时」决定。
+       原判据（超时 > 0 且「期望」非空）保留在下面，恢复 DSL 时取消注释即可。 */
+    // return qcmdItemTimeout(it) > 0 && !!qcmdItemExpect(it);
+    return false;
 }
 
 /// 收到 ERROR 之后最多重发几次（`0` = 不重发，直接终止）。同样写在文件的「重试」列里。
