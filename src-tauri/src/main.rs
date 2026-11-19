@@ -747,18 +747,17 @@ fn nodered_spawn_and_wait(app: tauri::AppHandle) -> Result<String, String> {
             .map_err(|e| format!("定位 node-red 资源目录失败：{e}"))?,
     );
 
-    // 开发态（`npm run dev`）：Tauri 会把 resources 拷到 target\debug\resources，
-    // 而 `npm run prep:nodered` 产出的是 src-tauri\resources。两边择其有 node.exe 的那个，
-    // 免得每次改完都要重新走一遍构建拷文件。
+    // 开发态（`npm run dev`）：**优先用仓库里的 resources**，而不是 target\debug\resources。
+    // 原因：Tauri 只在构建时把 resources 拷过去，**删掉的文件不会从 target 里消失** ——
+    // 于是"源码里删了、运行时还在"（2026-11 实测：at-suite 删了，dev 里仍然出现）。
+    // 指向仓库目录后，dev 始终看到当前代码的真实状态；打包走的是 installer / bundle.resources，不受影响。
     #[cfg(debug_assertions)]
     {
-        if !dir.join("node.exe").exists() {
-            let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("resources")
-                .join("node-red");
-            if dev.join("node.exe").exists() {
-                dir = dev;
-            }
+        let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("node-red");
+        if dev.join("node.exe").exists() {
+            dir = dev;
         }
     }
 
