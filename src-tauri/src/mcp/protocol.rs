@@ -673,7 +673,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "serial_get_output",
-            "description": "读串口分栏**实际收发的内容** —— 设备回了什么就用它（不用 log_tail，也不用猜通道名）。默认收+发按时间归并，`dir` 区分收发、`src` 区分 ai/ui/none（追溯谁发的）。**优先 `format:\"text\"`**：一行一条，比 json 省一半以上 token；要逐行字段时才用 json。还没数据时回空列表，不报错。",
+            "description": "读串口分栏**实际收发的内容** —— 设备回了什么就用它（不用 log_tail，也不用猜通道名）。默认收+发按时间归并，`dir` 区分收发、`src` 区分 ai/ui/auto/none（追溯谁发的：AI / 用户手点 / Node-RED 自动化 / 未标记）。**优先 `format:\"text\"`**：一行一条，比 json 省一半以上 token；要逐行字段时才用 json。还没数据时回空列表，不报错。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1057,7 +1057,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "log_tail",
-            "description": "读某个日志通道的尾部。**优先 `format:\"text\"`**（一行一条，比 json 省一半以上 token）；要逐行结构化字段（含来源 `src`：ai/ui/none）时才用 json。增量拉给 `sinceSeq`，下次用返回的 `nextSinceSeq`（别直接跳 `seqTo`，会跳过 `missed` 的行）；`mayBeIncomplete=true` = 该通道丢过最旧的行，别把它当完整证据。通道名见 log_channels。",
+            "description": "读某个日志通道的尾部。**优先 `format:\"text\"`**（一行一条，比 json 省一半以上 token）；要逐行结构化字段（含来源 `src`：ai/ui/auto/none）时才用 json。增量拉给 `sinceSeq`，下次用返回的 `nextSinceSeq`（别直接跳 `seqTo`，会跳过 `missed` 的行）；`mayBeIncomplete=true` = 该通道丢过最旧的行，别把它当完整证据。通道名见 log_channels。",
             "inputSchema": {
                 "type": "object",
                 "properties": {

@@ -168,6 +168,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     invoke('mcp_ui_ack', ack).catch(function() {});
                 });
             });
+            // Node-RED（自动化）通过桥写串口：回显开着才写进监视窗口（见 85-nodeflow.js 的 nfOnSent）
+            window.__TAURI__.event.listen('nodered-sent', function(ev) {
+                if (typeof nfOnSent === 'function') nfOnSent(ev && ev.payload);
+            });
             // MCP 服务器状态变化（启用/停用/会话增减）：更新标题栏图标上的状态点
             window.__TAURI__.event.listen('mcp-status-changed', function(ev) {
                 _mcpStatus = ev && ev.payload;

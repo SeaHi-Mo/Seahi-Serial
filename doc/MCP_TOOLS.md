@@ -50,7 +50,7 @@
 | [`serial_send`](#serial-send) | **写** | 往该分栏发数据（**需已在监控中**）。mode=hex 时 data 按十六进制解析（如 "01 03 00 00 00 02"），否则按文本；lineEnding 会覆盖该分栏的行尾并留在界面上。单次最多 64K 字符，大块数据请分批。 |
 | [`serial_clear`](#serial-clear) | **写** | 清空该分栏的输出区（=点「清除内容」）。**连带清掉磁盘上的会话日志缓存** —— `%APPDATA%\seahi-serial\log-cache` 下属于该分栏的 session 文件会被截断；界面上不要了的内容，磁盘上也别留着。 |
 | [`serial_get_history`](#serial-get-history) | 读 | 读该分栏的发送历史（最近的在前）。用来回看刚才发过什么，或复用上一条指令。 |
-| [`serial_get_output`](#serial-get-output) | 读 | 读串口分栏**实际收发的内容** —— 设备回了什么就用它（不用 log_tail，也不用猜通道名）。默认收+发按时间归并，`dir` 区分收发、`src` 区分 ai/ui/none（追溯谁发的）。**优先 `format:"text"`**：一行一条，比 json 省一半以上 token；要逐行字段时才用 json。还没数据时回空列表，不报错。 |
+| [`serial_get_output`](#serial-get-output) | 读 | 读串口分栏**实际收发的内容** —— 设备回了什么就用它（不用 log_tail，也不用猜通道名）。默认收+发按时间归并，`dir` 区分收发、`src` 区分 ai/ui/auto/none（追溯谁发的：AI / 用户手点 / Node-RED 自动化 / 未标记）。**优先 `format:"text"`**：一行一条，比 json 省一半以上 token；要逐行字段时才用 json。还没数据时回空列表，不报错。 |
 | [`serial_quick_cmd`](#serial-quick-cmd) | 读 | 面板「快速指令」列表（按循环组分段）。**不带参数**=列出（含 index/组/值/发送参数/groups/loop）；**给 index**=执行那一条（**index 从 0 起，用户口语的「第 N 条」= index N-1**）；**action=loop**=开/关整条循环链；**action=add|update|remove|group**=改列表（会写回它挂载的外部文件）。⚠️ 循环里只有同时配了 `expect` 且 `timeoutMs>0` 的条目才等回应；没写成功词的条目不等回应，此时 `timeoutMs` 就是发下一条的间隔。 |
 | [`serial_workflow`](#serial-workflow) | 读 | 串口/WSL 面板的**自动化工作流规则**（收到匹配数据就自动执行动作：发数据 / 切 DTR-RTS / 存日志）。省略 action=列出；add/update/remove=改规则（新规则一律 running=false，改动立刻写进配置）。⚠️ 规则一旦 running 就会自动往设备发数据 —— 要启动必须用 serial_workflow_run（带 confirm），别用 ui_click 绕开确认。 |
 | [`serial_workflow_run`](#serial-workflow-run) | **写** ⚠️ | 开始/停止一条工作流规则的**运行**（running）。⚠️ 危险动作：开始之后，这条规则一收到匹配的数据就会**自动往设备发数据**（动作里可能还有存日志文件），必须带 confirm:true；不带时**不会执行**并返回 -32006 说明后果。停止（on=false）同样需要 confirm —— 它属于同一条工具。 |
@@ -85,7 +85,7 @@
 | [`ui_click`](#ui-click) | **写** | 点一个按钮/开关（等价于 ui_set 传 true，但语义更清楚）。⚠️ 同 ui_set：WSL 端口映射那种「点了才开始跑」的控件会在结果里带 `mapRequest.settled=false`，别重试，去 ui_get_state{section:"wslDevices"} 复查。 |
 | [`ui_get_state`](#ui-get-state) | 读 | 读界面状态快照（随用户配置持久化的那份：各监视器的端口/波特率/行尾/显示模式/开关、主题、蓝牙选中项）。用 section 只取子树；**两张运行时设备表**（`bleDevices` / `wslDevices`）只有这里能读到。 |
 | [`log_channels`](#log-channels) | 读 | **不确定日志在哪时先调它**：列出所有日志通道（条数 / 字节 / seq 区间 / 被丢弃条数 / 最后一条时间）。 |
-| [`log_tail`](#log-tail) | 读 | 读某个日志通道的尾部。**优先 `format:"text"`**（一行一条，比 json 省一半以上 token）；要逐行结构化字段（含来源 `src`：ai/ui/none）时才用 json。增量拉给 `sinceSeq`，下次用返回的 `nextSinceSeq`（别直接跳 `seqTo`，会跳过 `missed` 的行）；`mayBeIncomplete=true` = 该通道丢过最旧的行，别把它当完整证据。通道名见 log_channels。 |
+| [`log_tail`](#log-tail) | 读 | 读某个日志通道的尾部。**优先 `format:"text"`**（一行一条，比 json 省一半以上 token）；要逐行结构化字段（含来源 `src`：ai/ui/auto/none）时才用 json。增量拉给 `sinceSeq`，下次用返回的 `nextSinceSeq`（别直接跳 `seqTo`，会跳过 `missed` 的行）；`mayBeIncomplete=true` = 该通道丢过最旧的行，别把它当完整证据。通道名见 log_channels。 |
 | [`log_search`](#log-search) | 读 | 在日志里检索（子串或正则；不给 channel 就搜全部）。**按需要的信息量选 `mode`**：count 只回计数（「出现几次」用它）、matches 只回匹配片段、lines（默认）回命中行并可带前后 context 行。命中都带 channel/seq，便于接着 log_tail。⚠️ 要成段读某个通道别用它，用 log_tail{format:"text"}。 |
 | [`log_stats`](#log-stats) | 读 | 各通道的概览：条数、字节、被丢弃条数、告警/错误数、时间跨度与平均行/秒。用来判断"是不是在刷屏"。 |
 | [`log_clear`](#log-clear) | **写** | 清空某个通道，或省略 channel 清空全部。⚠️ **这是销毁证据的动作**：清掉的行回不来了（用户想复盘设备行为就只能让他复现）—— 只在确认这份记录不再需要时用，别为「看起来干净」随手清。 |
@@ -270,7 +270,7 @@
 
 #### `serial_get_output`
 
-- **作用**：读串口分栏**实际收发的内容** —— 设备回了什么就用它（不用 log_tail，也不用猜通道名）。默认收+发按时间归并，`dir` 区分收发、`src` 区分 ai/ui/none（追溯谁发的）。**优先 `format:"text"`**：一行一条，比 json 省一半以上 token；要逐行字段时才用 json。还没数据时回空列表，不报错。
+- **作用**：读串口分栏**实际收发的内容** —— 设备回了什么就用它（不用 log_tail，也不用猜通道名）。默认收+发按时间归并，`dir` 区分收发、`src` 区分 ai/ui/auto/none（追溯谁发的：AI / 用户手点 / Node-RED 自动化 / 未标记）。**优先 `format:"text"`**：一行一条，比 json 省一半以上 token；要逐行字段时才用 json。还没数据时回空列表，不报错。
 - **读/写**：只读，无副作用
 - **返回**：{pane, direction, format, isConnected, channels:{rx,tx}, count, items:[{seq,ts,dir,text,bytes}], truncated, note?}（`format:"text"` 时改为 `{…, text}`，**没有再给 items**）
 - **注意**：**串口监视器的核心：读设备回了什么**。默认收+发按时间归并；数据与 `log_tail` 同一份存储，但**不需要你知道通道名**，且"还没收到数据"返回空列表 + note 而不是报错。**优先用 `format:"text"`**（一行一条 `[时刻] [rx|tx] 正文`，比 json 省一半以上 token；头部那行带着两通道各自的 dropped/mayBeIncomplete，正文在 content 文本里）
@@ -303,10 +303,8 @@
 | `toIndex` | number | 否 | action=group 且 op=move 时的目标组序号（0 起；组的上下顺序就是循环顺序） |
 | `value` | string | 否 | action=add/update 时的指令内容（原样发送，不按逗号切分） |
 | `seq` | number | 否 | action=add/update 时的顺序号：0 = 不参与循环，>0 在**组内**按数字升序发 |
-| `timeoutMs` | number | 否 | action=add/update 时的超时（毫秒）：有 `expect` 时是**等回应的上限**（等满按失败跳转）；没写 `expect` 时它就是发下一条的间隔。缺省 3000，上限 600000，填 0 = 20ms 最小间隔 |
-| `delayMs` | number | 否 | ⚠️ **旧拼写**：与 timeoutMs 同一个值（这一项的语义是「超时」，不是「发送间隔」）。新调用请用 timeoutMs —— 两个都给时以 timeoutMs 为准 |
-| `expect` | string | 否 | action=add/update 时的成功词，多个用 `|` 分隔。⚠️ **它同时是「这条要不要等回应」的开关**：留空 = 这条**不等回应**（`timeoutMs` 变成发下一条的间隔）；写了才等，且内置 OK / ERROR / busy 仍认（`expect` 是追加）。想等内置 OK 就显式写 `OK`。⚠️ 面板上没有这个入口，改这里会同时写进指令文件 |
-| `retry` | number | 否 | action=add/update 时：收到 ERROR 后最多重发几次（缺省 3，上限 10；0 = 不重发，直接终止） |
+| `timeoutMs` | number | 否 | action=add/update 时的超时（毫秒）：这一条发出去后隔多久发下一条。缺省 3000，上限 600000，填 0 = 20ms 最小间隔 |
+| `delayMs` | number | 否 | ⚠️ **旧拼写**：与 timeoutMs 同一个值。新调用请用 timeoutMs —— 两个都给时以 timeoutMs 为准 |
 | `hex` | boolean | 否 | action=add/update 时：这一条是否按 HEX 解析后发送（默认 false） |
 | `pane` | string | 否 | 分栏：main / extra-N（Windows）、wsl / wsl-xN（WSL），省略=main。写操作会把该面板切到前台；WSL 分栏是懒创建的，写操作会顺带建出来 |
 
@@ -757,7 +755,7 @@
 
 #### `log_tail`
 
-- **作用**：读某个日志通道的尾部。**优先 `format:"text"`**（一行一条，比 json 省一半以上 token）；要逐行结构化字段（含来源 `src`：ai/ui/none）时才用 json。增量拉给 `sinceSeq`，下次用返回的 `nextSinceSeq`（别直接跳 `seqTo`，会跳过 `missed` 的行）；`mayBeIncomplete=true` = 该通道丢过最旧的行，别把它当完整证据。通道名见 log_channels。
+- **作用**：读某个日志通道的尾部。**优先 `format:"text"`**（一行一条，比 json 省一半以上 token）；要逐行结构化字段（含来源 `src`：ai/ui/auto/none）时才用 json。增量拉给 `sinceSeq`，下次用返回的 `nextSinceSeq`（别直接跳 `seqTo`，会跳过 `missed` 的行）；`mayBeIncomplete=true` = 该通道丢过最旧的行，别把它当完整证据。通道名见 log_channels。
 - **读/写**：只读，无副作用
 - **返回**：`{channel, format, lines:[{seq, ts, level, dir, text, rawBytes}], returned, dropped, seqFrom, seqTo, missed, nextSinceSeq, mayBeIncomplete, truncated}`（`format:"text"` 时是 `{…, text}`，**没有再给 lines**）
 - **注意**：**读日志优先用 `format:"text"`**：一行一条纯文本（头部一行元信息 + `[时刻] [级别] 正文`），同样数据比 json 省一半以上 token —— 实测 200 条短行 **101 字节/行 → 29 字节/行（3.5 倍）**，行越长省得越少。增量跟进用 `sinceSeq`，并把**返回里的 `nextSinceSeq`** 当下次的入参（**别直接跳到 `seqTo`**，那会跳过 `missed` 那些行）；`missed>0` = 这一段还有行没给你（含已被裁掉的），`mayBeIncomplete=true` = 该通道丢过最旧的行。text 格式的**正文在 content 文本里**，structuredContent 只给元信息（要逐行字段就用默认 json）。渠道名见 `log_channels`

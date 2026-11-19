@@ -8632,6 +8632,59 @@ try {
       '映射前停监控：本来就没打开的分栏不会被多断一次');
   }
 
+  /* ===== Node-RED 自动化发送 → 串口监视窗口（用户 2026-11："发送的指令也应该出现，
+     除非关闭了消息回显"）===== */
+  check(/function nfOnSent\(payload\)/.test(html),
+    'Node-RED 发出的数据有统一入口 nfOnSent（不另起一套渲染）');
+  check(/listen\('nodered-sent'/.test(html),
+    '前端订阅宿主发出的 nodered-sent 事件');
+  check(/function nfOnSent[\s\S]{0,1500}btnEcho[\s\S]{0,200}contains\('on'\)[\s\S]{0,200}return/.test(html),
+    '消息回显关掉时 Node-RED 发送不写进监视窗口（判据就是手动发送那个按钮）');
+  check(/appendOutput\(mid, 'send', printable \? text : 'HEX: ' \+ bytesToHex\(bytes\), \{ src: 'auto' \}\)/.test(html),
+    'Node-RED 发送按 send 行落进输出区与日志中心，来源标 auto（不是 ui / ai）');
+
+  const mainRsForNf = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+  check(/fn bridge_write[\s\S]{0,1400}emit\(\s*"nodered-sent"/.test(mainRsForNf),
+    '宿主在桥写成功后发 nodered-sent（带 monitor + hex，不替前端决定文本/HEX）');
+  const loghubRsForNf = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'loghub.rs'), 'utf8');
+  check(/SRC_AUTO => "auto"/.test(loghubRsForNf) && /"auto" => SRC_AUTO/.test(loghubRsForNf),
+    '日志来源 auto 双向可映射（写进去能读回来）');
+
+  /* 行为断言：把真函数放进假沙箱跑一遍（源码正则证明不了"关掉回显就真的不写"） */
+  (function nfSentBehaviour() {
+    const sent = [];
+    let echoOn = true;
+    const ctx = {
+      monitors: { main: { isConnected: true } },
+      document: {
+        getElementById: function () { return { classList: { contains: function () { return echoOn; } } }; }
+      },
+      hexToBytes: function (s) { return Array.from(Buffer.from(s, 'hex')); },
+      decodeRaw: function (b) { return Buffer.from(b).toString('utf8'); },
+      bytesToHex: function (b) {
+        return Buffer.from(b).toString('hex').toUpperCase().match(/../g).join(' ');
+      },
+      appendOutput: function (mid, type, text, opts) { sent.push({ mid: mid, type: type, text: text, opts: opts }); }
+    };
+    vm.createContext(ctx);
+    vm.runInContext(extractFunction('nfOnSent'), ctx);
+
+    ctx.nfOnSent({ monitor: 'main', hex: '41540d0a' });
+    check(sent.length === 1 && sent[0].type === 'send' && sent[0].opts && sent[0].opts.src === 'auto',
+      'Node-RED 发送：回显开着时按 send 行写进监视窗口（来源 auto）');
+    check(sent[0] && sent[0].text === 'AT\r\n', 'Node-RED 发送：文本帧原样显示（AT + CRLF）');
+
+    sent.length = 0;
+    echoOn = false;
+    ctx.nfOnSent({ monitor: 'main', hex: '41540d0a' });
+    check(sent.length === 0, 'Node-RED 发送：关掉消息回显后一行都不写');
+
+    sent.length = 0;
+    echoOn = true;
+    ctx.nfOnSent({ monitor: 'main', hex: '000102' });
+    check(sent[0] && sent[0].text === 'HEX: 00 01 02', 'Node-RED 发送：含控制字节的帧退回 HEX 显示（不吞成乱码）');
+  })();
+
   runQcmdLoopAsyncTests().then(runWslMapStopAsyncTests).then(function () {
     console.log(`\n结果: ${pass} passed, ${fail} failed` + (skippedDsl ? `（另有 ${skippedDsl} 条 DSL 用例跳过：等回话/期望/重试/跳转已停用）` : ''));
     process.exit(fail ? 1 : 0);

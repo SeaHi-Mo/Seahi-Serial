@@ -1,4 +1,4 @@
-<!-- seahi-serial：宿主串口 ↔ Node-RED 的两个节点（serial in / serial out） -->
+<!-- seahi-serial：宿主串口 ↔ Node-RED 的三个节点（serial in / serial out / serial request） -->
 
 <script type="text/html" data-template-name="serial out">
   <div class="form-row">
@@ -7,29 +7,41 @@
   </div>
   <div class="form-row">
     <label for="node-input-monitor"><i class="fa fa-plug"></i> 监视器</label>
-    <input type="text" id="node-input-monitor" placeholder="main">
+    <select id="node-input-monitor" style="width:60%"></select>
+    <button type="button" id="node-input-monitor-refresh" class="red-ui-button red-ui-button-small" style="margin-left:6px">刷新</button>
   </div>
   <div class="form-row">
-    <label for="node-input-eol">行尾</label>
-    <select id="node-input-eol">
+    <label for="node-input-format">格式</label>
+    <select id="node-input-format" style="width:110px">
+      <option value="text">文本</option>
+      <option value="hex">HEX</option>
+    </select>
+    <label for="node-input-eol" style="width:auto;margin-left:8px">行尾</label>
+    <select id="node-input-eol" style="width:96px">
       <option value="crlf">CRLF</option>
       <option value="cr">CR</option>
       <option value="lf">LF</option>
       <option value="none">不加</option>
     </select>
-    <label for="node-input-asHex" style="width:auto;margin-left:8px">HEX</label>
-    <input type="checkbox" id="node-input-asHex" style="display:inline-block;width:auto;vertical-align:top">
   </div>
 </script>
 
 <script type="text/html" data-help-name="serial out">
   <p>把 <code>msg.payload</code> 写进宿主程序里**已经打开**的那个串口。</p>
   <p>⚠️ 它不自己开串口：COM 口由宿主独占（监视器、DTR/RTS、WSL 映射都在用）。
-     这里填的「监视器」是宿主里那个分栏的 id，默认 <code>main</code> 就是第一个分栏。</p>
+     「监视器」下拉列出宿主里当前**已经打开**的串口分栏（<code>main</code> 是主监视器，
+     <code>extra-N</code> 是额外分栏）；端口有增减时点「刷新」重新读取。
+     已保存但当前没打开的分栏会标「当前未打开」，配置不会被悄悄改掉。</p>
   <h3>参数</h3>
   <ul>
-    <li><b>行尾</b>：文本模式下追加在内容后面。设备不认行尾就永远不回话，这是最常见的坑。</li>
-    <li><b>HEX</b>：勾上表示 payload 本身就是十六进制串（<code>4154</code>），会按字节解析后发送。</li>
+    <li><b>格式</b>：
+      <ul>
+        <li><code>文本</code>（默认）：payload 按 UTF-8 编码，并在末尾追加「行尾」。</li>
+        <li><code>HEX</code>：payload 本身是十六进制串（<code>4154</code>，空格会被忽略），按字节发送，
+             <b>不追加行尾</b>。</li>
+      </ul>
+    </li>
+    <li><b>行尾</b>：只在文本模式下生效。设备不认行尾就永远不回话，这是最常见的坑。</li>
   </ul>
   <h3>输出</h3>
   <p>成功后原样往下游传，另附 <code>msg.sent</code> = 实际写入的字节数。失败会走 catch。</p>
@@ -42,26 +54,264 @@
   </div>
   <div class="form-row">
     <label for="node-input-monitor"><i class="fa fa-plug"></i> 监视器</label>
-    <input type="text" id="node-input-monitor" placeholder="main">
+    <select id="node-input-monitor" style="width:60%"></select>
+    <button type="button" id="node-input-monitor-refresh" class="red-ui-button red-ui-button-small" style="margin-left:6px">刷新</button>
   </div>
   <div class="form-row">
-    <label for="node-input-pollMs">轮询 ms</label>
+    <label for="node-input-format">格式</label>
+    <select id="node-input-format" style="width:110px">
+      <option value="text">文本</option>
+      <option value="hex">HEX</option>
+      <option value="buffer">Buffer</option>
+    </select>
+    <label for="node-input-pollMs" style="width:auto;margin-left:8px">轮询 ms</label>
     <input type="number" id="node-input-pollMs" min="20" step="20" style="width:90px" placeholder="100">
   </div>
 </script>
 
 <script type="text/html" data-help-name="serial in">
-  <p>把宿主那个串口**收到的数据**变成消息：<code>msg.payload</code> 是 Buffer（与 Node-RED 的串口节点一致）。</p>
-  <p>数据来自宿主程序的读线程 —— 它与监视器各读各的，不会互相抢。</p>
+  <p>把宿主那个串口**收到的数据**变成消息。数据来自宿主程序的读线程 ——
+     它与监视器各读各的，不会互相抢。</p>
+  <p>「监视器」下拉列出宿主里当前**已经打开**的串口分栏；端口有增减时点「刷新」重新读取。</p>
+  <h3>参数</h3>
+  <ul>
+    <li><b>格式</b>：
+      <ul>
+        <li><code>文本</code>（默认）：<code>msg.payload</code> 是按 UTF-8 解码的字符串。
+            跨数据块被切断的半个汉字会留到下一块再拼，不会变成乱码。</li>
+        <li><code>HEX</code>：<code>msg.payload</code> 是小写十六进制串（<code>4f4b0d0a</code>），无分隔符。</li>
+        <li><code>Buffer</code>：<code>msg.payload</code> 是原始字节（与 Node-RED 官方串口节点一致），
+            适合二进制协议。</li>
+      </ul>
+    </li>
+    <li><b>轮询 ms</b>：宿主侧按这个间隔取一次数据，默认 100；越小延迟越低，空闲开销越大。</li>
+  </ul>
+  <p>无论选哪种格式，消息上都有 <code>msg.raw</code> = 本次的原始 Buffer，
+     需要按字节核对（CRC、二进制头）时直接用它。</p>
   <h3>怎么用</h3>
   <ul>
-    <li>要按内容分支：后面接 <code>switch</code>，条件写 <code>msg.payload</code> 的字符串形式（或先接 <code>function</code> 转成字符串）</li>
-    <li>要按行处理：接 <code>function</code> 做行缓冲，或直接在 <code>switch</code> 里用正则</li>
-    <li>轮询间隔越小延迟越低，但空闲时的开销也越大；默认 100ms 对 AT 指令足够</li>
+    <li>文本模式下要按行处理：接 <code>function</code> 做行缓冲，或直接在 <code>switch</code> 里用正则。</li>
+    <li>HEX 模式适合把原始帧转给别的协议解析节点，也可以直接喂回 <code>serial out</code> 的 HEX 模式。</li>
+    <li><b>同一个监视器只放一个 <code>serial in</code></b>：宿主的接收队列取走即清，两个节点会互相分走数据。</li>
   </ul>
 </script>
 
+<script type="text/html" data-template-name="serial request">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> 名称</label>
+    <input type="text" id="node-input-name" placeholder="AT 请求">
+  </div>
+  <div class="form-row">
+    <label for="node-input-monitor"><i class="fa fa-plug"></i> 监视器</label>
+    <select id="node-input-monitor" style="width:60%"></select>
+    <button type="button" id="node-input-monitor-refresh" class="red-ui-button red-ui-button-small" style="margin-left:6px">刷新</button>
+  </div>
+  <div class="form-row">
+    <label for="node-input-sendFormat">发送</label>
+    <select id="node-input-sendFormat" style="width:90px">
+      <option value="text">文本</option>
+      <option value="hex">HEX</option>
+    </select>
+    <label for="node-input-eol" style="width:auto;margin-left:8px">行尾</label>
+    <select id="node-input-eol" style="width:86px">
+      <option value="crlf">CRLF</option>
+      <option value="cr">CR</option>
+      <option value="lf">LF</option>
+      <option value="none">不加</option>
+    </select>
+    <label for="node-input-recvFormat" style="width:auto;margin-left:8px">回复</label>
+    <select id="node-input-recvFormat" style="width:90px">
+      <option value="text">文本</option>
+      <option value="hex">HEX</option>
+      <option value="buffer">Buffer</option>
+    </select>
+  </div>
+  <div class="form-row">
+    <label for="node-input-timeoutMs">最长 ms</label>
+    <input type="number" id="node-input-timeoutMs" min="50" step="50" style="width:90px" placeholder="1000">
+    <label for="node-input-quietMs" style="width:auto;margin-left:8px">静默 ms</label>
+    <input type="number" id="node-input-quietMs" min="10" step="10" style="width:90px" placeholder="80">
+  </div>
+  <div class="form-row" style="display:block">
+    <label style="width:auto">结果分支</label>
+  </div>
+  <div class="form-row" style="display:block">
+    <ol id="node-input-rules" style="list-style:none;padding:0;margin:0;min-height:76px"></ol>
+    <button type="button" id="node-input-add-rule" class="red-ui-button red-ui-button-small" style="margin-top:6px">＋ 添加条件</button>
+  </div>
+  <input type="hidden" id="node-input-outputs">
+</script>
+
+<script type="text/html" data-help-name="serial request">
+  <p>发一条命令，然后收一段窗口，最后输出一条结果。顺序固定为
+     <b>清空旧数据 → 写串口 → 收窗口</b>，所以这次收到的回复一定属于这次发出去的命令。</p>
+  <p>⚠️ 它不自己开串口（与 serial in/out 一样走宿主桥）。「监视器」下拉列出当前已打开的串口分栏。</p>
+  <h3>输入</h3>
+  <p><code>msg.payload</code> 是要发的命令。文本模式下会追加「行尾」；HEX 模式下按十六进制解析，不追加行尾。</p>
+  <h3>结果分支（一个条件一个连接点）</h3>
+  <p>与 switch 同样的用法：列表里每个条件对应一个输出口，按从上到下的顺序匹配，**命中哪个就从哪个口出去**。
+     默认两条：<code>OK</code> 与 <code>ERROR</code>（都是「包含」）。点「添加条件」会增加一行，同时增加一个连接点。</p>
+  <ul>
+    <li><b>包含</b> / <b>等于</b> / <b>正则</b>：按已收到的整段文本匹配；「等于」会先 <code>trim()</code>。</li>
+    <li><b>未匹配/超时</b>：兜底条件，只有前面所有文本条件都没命中时才走它；不需要填内容。</li>
+  </ul>
+  <p>⚠️ 没有配置兜底条件时，未匹配/超时的结果会被丢弃（节点状态标黄并 <code>node.warn</code> 说明），
+     不会静默假装成功。</p>
+  <h3>收口条件（谁先满足谁结束）</h3>
+  <ul>
+    <li>命中任一结果分支 → 立即收口</li>
+    <li>收到过字节后，连续「静默 ms」没有新数据 → 收口（走兜底口）</li>
+    <li>从发出命令起超过「最长 ms」 → 强制收口（走兜底口，<code>timedOut=true</code>）</li>
+  </ul>
+  <h3>输出</h3>
+  <ul>
+    <li><code>msg.payload</code>：收到的内容（按「回复」格式转成文本 / HEX / Buffer）</li>
+    <li><code>msg.raw</code>：原始 Buffer；<code>msg.cmd</code>：这次发的命令；<code>msg.bytes</code>：收到多少字节</li>
+    <li><code>msg.matched</code>：命中的条件内容；<code>msg.matchedIndex</code>：第几个条件（0 起）；
+        <code>msg.matchedType</code>：条件类型（<code>cont</code> / <code>eq</code> / <code>regex</code>）</li>
+    <li><code>msg.timedOut</code>：到最长 ms 还没命中；<code>msg.reason</code>：<code>rule</code> / <code>timeout</code> / <code>quiet</code></li>
+  </ul>
+  <p>⚠️ 同一个监视器上**不要再放 serial in**：桥的接收队列是单消费者，两边会互相分走数据。
+     需要持续监控时，用 serial in 的流程，不要和本节点共用分栏。</p>
+  <p>⚠️ 设备回显（ATE1）会把命令原样回显，可能提前命中标记 —— 建议 <code>ATE0</code>，
+     或把标记写成只在回复里出现的特征（如 <code>^OK$</code> 配合多行模式不合适，优先用设备侧关回显）。</p>
+</script>
+
 <script type="text/javascript">
+    /* 「监视器」下拉：列出宿主里**当前真的打开着**的串口分栏。
+       Node-RED 编辑器和宿主不是同一个 origin、拿不到桥令牌，所以由侧车代问一次：
+       /seahi-serial/monitors（见 seahi-serial.js 的 registerAdminRoutes）。 */
+    function seahiMonitorLabel(m) {
+        var name = m.id;
+        if (m.id === 'main') {
+            name = 'main · 主监视器';
+        } else if (/^extra-(\d+)$/.test(m.id)) {
+            name = m.id + ' · 分栏 ' + RegExp.$1;
+        }
+        var info = [];
+        if (m.port) info.push(m.port);
+        if (m.baud) info.push(m.baud + ' bps');
+        return info.length ? name + '（' + info.join(' / ') + '）' : name;
+    }
+
+    function seahiFillMonitorSelect($select, saved) {
+        var current = saved || 'main';
+        $select.empty().append($('<option>').val(current).text(current + '（读取中…）'));
+        $select.val(current);
+        $.getJSON('seahi-serial/monitors')
+            .done(function (list) {
+                var opts = [];
+                var found = false;
+                (list || []).forEach(function (m) {
+                    if (!m || !m.id) return;
+                    if (m.id === current) found = true;
+                    opts.push($('<option>').val(m.id).text(seahiMonitorLabel(m)));
+                });
+                /* 已保存的 id 现在没打开：保留它并说明，别让一次打开对话框就把配置改成别的口 */
+                if (!found) {
+                    var note = (list && list.length) ? '（当前未打开）' : '（当前没有已打开的串口）';
+                    opts.unshift($('<option>').val(current).text(current + note));
+                }
+                $select.empty().append(opts).val(current);
+            })
+            .fail(function () {
+                /* 侧车还是旧版 / 桥断了：保留原值，并提示可以刷新，而不是给一个空下拉 */
+                $select.empty()
+                    .append($('<option>').val(current).text(current + '（读取失败，保留原值）'))
+                    .val(current);
+            });
+    }
+
+    function seahiBindMonitorSelect(saved) {
+        var $select = $('#node-input-monitor');
+        seahiFillMonitorSelect($select, saved);
+        $('#node-input-monitor-refresh').off('click.seahi').on('click.seahi', function (e) {
+            e.preventDefault();
+            seahiFillMonitorSelect($select, $select.val());
+        });
+    }
+
+    /* ===== serial request 的结果分支编辑器（一个条件一个输出口，像 switch 那样） ===== */
+    var SEAHI_RULE_TYPES = [
+        ['cont', '包含'],
+        ['eq', '等于'],
+        ['regex', '正则'],
+        ['timeout', '未匹配/超时']
+    ];
+
+    function seahiRuleTypeLabel(t) {
+        for (var i = 0; i < SEAHI_RULE_TYPES.length; i++) {
+            if (SEAHI_RULE_TYPES[i][0] === t) return SEAHI_RULE_TYPES[i][1];
+        }
+        return '包含';
+    }
+
+    function seahiRuleRow(rule) {
+        var t = rule && rule.t ? rule.t : 'cont';
+        var $li = $('<li>').css({ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '4px' });
+        var $type = $('<select>').css({ width: '112px' });
+        SEAHI_RULE_TYPES.forEach(function (opt) {
+            $type.append($('<option>').val(opt[0]).text(opt[1]));
+        });
+        $type.val(t);
+        var $val = $('<input type="text">').css({ flex: '1', minWidth: '80px' })
+            .attr('placeholder', '要匹配的内容').val((rule && rule.v) || '');
+        function syncDisabled() {
+            if ($type.val() === 'timeout') $val.prop('disabled', true).attr('placeholder', '（不需要内容）');
+            else $val.prop('disabled', false).attr('placeholder', '要匹配的内容');
+        }
+        $type.on('change', syncDisabled);
+        syncDisabled();
+        var $up = $('<button type="button" class="red-ui-button red-ui-button-small">↑</button>');
+        var $down = $('<button type="button" class="red-ui-button red-ui-button-small">↓</button>');
+        var $del = $('<button type="button" class="red-ui-button red-ui-button-small">✕</button>');
+        $up.on('click', function (e) {
+            e.preventDefault();
+            var $prev = $li.prev();
+            if ($prev.length) { $li.insertBefore($prev); seahiSyncRuleOutputs(); }
+        });
+        $down.on('click', function (e) {
+            e.preventDefault();
+            var $next = $li.next();
+            if ($next.length) { $li.insertAfter($next); seahiSyncRuleOutputs(); }
+        });
+        $del.on('click', function (e) {
+            e.preventDefault();
+            if ($('#node-input-rules').children().length <= 1) return;  // 至少留一条
+            $li.remove();
+            seahiSyncRuleOutputs();
+        });
+        $li.append($type).append($val).append($up).append($down).append($del);
+        $li.data('seahi-rule', true);
+        return $li;
+    }
+
+    /* 规则条数 = 输出口数：隐藏的 node-input-outputs 用**数字**形式（Node-RED 两种都认） */
+    function seahiSyncRuleOutputs() {
+        var n = $('#node-input-rules').children().length;
+        $('#node-input-outputs').val(n);
+    }
+
+    function seahiRenderRules(rules) {
+        var $ol = $('#node-input-rules');
+        $ol.empty();
+        (rules && rules.length ? rules : [{ t: 'cont', v: 'OK' }, { t: 'cont', v: 'ERROR' }]).forEach(function (r) {
+            $ol.append(seahiRuleRow(r));
+        });
+        seahiSyncRuleOutputs();
+    }
+
+    function seahiReadRules() {
+        var rules = [];
+        $('#node-input-rules').children().each(function () {
+            var $li = $(this);
+            var t = $li.find('select').val();
+            var v = $li.find('input[type=text]').val();
+            rules.push({ t: t, v: t === 'timeout' ? '' : String(v == null ? '' : v) });
+        });
+        return rules.length ? rules : [{ t: 'cont', v: 'OK' }];
+    }
+
     RED.nodes.registerType('serial out', {
         category: '串口',
         color: '#b8c8b8',
@@ -69,12 +319,18 @@
             name: { value: '' },
             monitor: { value: 'main' },
             eol: { value: 'crlf' },
+            /* '' = 老流程没这个字段：构造函数按 asHex 回退，编辑器打开时再补成 text/hex */
+            format: { value: '' },
             asHex: { value: false }
         },
         inputs: 1,
         outputs: 1,
         icon: 'font-awesome/fa-arrow-right',
-        label: function () { return this.name || 'serial out'; }
+        label: function () { return this.name || 'serial out'; },
+        oneditprepare: function () {
+            seahiBindMonitorSelect(this.monitor);
+            $('#node-input-format').val(this.format || (this.asHex === true ? 'hex' : 'text'));
+        }
     });
 
     RED.nodes.registerType('serial in', {
@@ -83,11 +339,56 @@
         defaults: {
             name: { value: '' },
             monitor: { value: 'main' },
+            format: { value: '' },
             pollMs: { value: 100 }
         },
         inputs: 0,
         outputs: 1,
         icon: 'font-awesome/fa-arrow-left',
-        label: function () { return this.name || 'serial in'; }
+        label: function () { return this.name || 'serial in'; },
+        oneditprepare: function () {
+            seahiBindMonitorSelect(this.monitor);
+            $('#node-input-format').val(this.format || 'text');
+        }
+    });
+
+    RED.nodes.registerType('serial request', {
+        category: '串口',
+        color: '#c8b8b8',
+        defaults: {
+            name: { value: '' },
+            monitor: { value: 'main' },
+            sendFormat: { value: 'text' },
+            eol: { value: 'crlf' },
+            recvFormat: { value: 'text' },
+            timeoutMs: { value: 1000 },
+            quietMs: { value: 80 },
+            rules: { value: [{ t: 'cont', v: 'OK' }, { t: 'cont', v: 'ERROR' }] },
+            outputs: { value: 2 }
+        },
+        inputs: 1,
+        outputs: 2,
+        outputLabels: function (index) {
+            var r = this.rules && this.rules[index];
+            if (!r) return '';
+            if (r.t === 'timeout') return '未匹配/超时';
+            return seahiRuleTypeLabel(r.t) + ' ' + r.v;
+        },
+        icon: 'font-awesome/fa-exchange',
+        label: function () { return this.name || 'serial request'; },
+        oneditprepare: function () {
+            seahiBindMonitorSelect(this.monitor);
+            seahiRenderRules(this.rules);
+            $('#node-input-add-rule').off('click.seahi').on('click.seahi', function (e) {
+                e.preventDefault();
+                $('#node-input-rules').append(seahiRuleRow({ t: 'cont', v: '' }));
+                seahiSyncRuleOutputs();
+            });
+        },
+        oneditsave: function () {
+            this.rules = seahiReadRules();
+            this.outputs = this.rules.length;
+            $('#node-input-outputs').val(this.rules.length);
+        }
     });
 </script>

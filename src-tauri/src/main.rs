@@ -590,6 +590,14 @@ fn bridge_write(app: &tauri::AppHandle, mid: &str, data: &[u8]) -> Result<usize,
     let mut port = lock_port_with_timeout(&port_arc, 500)?;
     port.write_all(data).map_err(|e| format!("写入失败: {e}"))?;
     port.flush().ok();
+    /* 让串口监视窗口也能看见自动化发出去的数据（用户 2026-11 要求）。
+       这里只发事件：**显不显示由前端按该分栏的「消息回显」开关决定**，
+       回显关掉就不往窗口/日志中心写 —— 与手动发送完全同一条口径。
+       事件带 hex 而不是文本：二进制帧不会被解码歧义吞掉，前端自己决定怎么呈现。 */
+    let _ = app.emit(
+        "nodered-sent",
+        serde_json::json!({ "monitor": mid, "hex": bridge_hex_encode(data) }),
+    );
     Ok(data.len())
 }
 
@@ -672,6 +680,9 @@ fn bridge_serve(stream: std::net::TcpStream, app: tauri::AppHandle, token: Strin
 
         let mid = v.get("monitor").and_then(|x| x.as_str()).unwrap_or("main");
         let reply = match op {
+            // ⚠️ 每个分支返回的回执都要带请求里的 id（下面统一由 bridge_attach_id 补），
+            //    否则 node 侧按 id 匹配不上 —— 握手能成、所有调用却都超时。
+
             "send" => {
                 let hex = v.get("hex").and_then(|x| x.as_str()).unwrap_or("");
                 match bridge_hex_decode(hex) {
@@ -686,11 +697,113 @@ fn bridge_serve(stream: std::net::TcpStream, app: tauri::AppHandle, token: Strin
                 let bytes = bridge_take_rx(mid);
                 serde_json::json!({"ok": true, "rx": bridge_hex_encode(&bytes)})
             }
+            /* node-red 编辑器的「监视器」下拉：列当前**真的打开的**串口分栏。
+               只列 Rust 侧有 reader 的（串口分栏 main / extra-N）—— WSL 分栏的读在 Python 侧，
+               桥本来也写不进去，列出来只会让用户选到一个必然失败的 id。 */
+            "monitors" => serde_json::json!({
+                "ok": true,
+                "monitors": bridge_list_monitors(&app),
+            }),
             _ => serde_json::json!({"ok": false, "error": format!("未知 op: {op}")}),
         };
+        let reply = bridge_attach_id(reply, v.get("id"));
         if writeln!(out, "{reply}").is_err() {
             break;
         }
+    }
+}
+
+/// 给桥回执补上请求里的 `id`。
+///
+/// node 侧（`resources/node-red/local-nodes/seahi-serial.js` 的 `bridgeCall`）按 `id` 匹配回执：
+/// 没有 id 的行被当成不相干的输出**直接丢弃**，于是每个请求都等到超时（send 3s / read 2s）。
+/// 2026-11 真机验证第一坑：握手本身是通的（hello 回执没有 id，node 侧专门认 `ok && !ready`），
+/// 所以现象不是"连不上"，而是"连上了、串口也开着，但所有调用都超时"。
+///
+/// 请求没带 id（人工用 nc 探桥）时不凭空造字段。
+fn bridge_attach_id(
+    mut reply: serde_json::Value,
+    req_id: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    if let (Some(obj), Some(id)) = (reply.as_object_mut(), req_id) {
+        obj.insert("id".to_string(), id.clone());
+    }
+    reply
+}
+
+/// 列出宿主里当前打开的串口监视器（node-red 编辑器的「监视器」下拉用）。
+///
+/// 只列 Rust 侧真有 reader 的：串口分栏 `main` / `extra-N`。WSL 分栏的读在 Python 侧，
+/// 桥也写不进去（`bridge_write` 查的就是这张 readers 表），列出来只会让人选到一个必然失败的 id。
+fn bridge_list_monitors(app: &tauri::AppHandle) -> Vec<serde_json::Value> {
+    use tauri::Manager;
+    let state = app.state::<PortState>();
+    let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
+    let mut rows: Vec<serde_json::Value> = map
+        .iter()
+        .map(|(mid, reader)| {
+            /* try_lock：读线程可能正卡在 read() 上（串口超时是毫秒级），
+               不能为了填一个下拉框把它堵住。拿不到锁就只回 id，前端会显示成
+               「main（端口信息暂不可用）」。 */
+            let (port, baud) = match reader.port.try_lock() {
+                Ok(p) => (p.name().unwrap_or_default(), p.baud_rate().ok()),
+                Err(_) => (String::new(), None),
+            };
+            serde_json::json!({"id": mid, "port": port, "baud": baud})
+        })
+        .collect();
+    rows.sort_by_key(|v| {
+        bridge_monitor_sort_key(v.get("id").and_then(|x| x.as_str()).unwrap_or(""))
+    });
+    rows
+}
+
+/// 下拉顺序：主监视器 → 额外分栏（按数字，`extra-2` 在 `extra-10` 前面）→ 其它。
+fn bridge_monitor_sort_key(id: &str) -> (u8, u32, String) {
+    if id == "main" {
+        return (0, 0, String::new());
+    }
+    if let Some(rest) = id.strip_prefix("extra-") {
+        if let Ok(n) = rest.parse::<u32>() {
+            return (1, n, String::new());
+        }
+    }
+    (2, 0, id.to_string())
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+
+    #[test]
+    fn bridge_reply_echoes_request_id() {
+        // node 侧按 id 匹配回执；漏了这个字段时握手照旧成功，但每个调用都超时
+        // （2026-11 真机验证报的「桥请求超时：send」就是这个）。
+        let req = serde_json::json!({"op":"send","id":7,"monitor":"main","hex":"41"});
+        let reply = bridge_attach_id(serde_json::json!({"ok":true,"written":1}), req.get("id"));
+        assert_eq!(reply["id"], 7, "回执必须原样带回请求 id");
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["written"], 1);
+
+        // 失败回执同样要有 id，否则 node 侧只能等到超时，看不到真正的原因
+        let err = bridge_attach_id(
+            serde_json::json!({"ok":false,"error":"监视器 main 没有打开的串口"}),
+            req.get("id"),
+        );
+        assert_eq!(err["id"], 7);
+        assert_eq!(err["error"], "监视器 main 没有打开的串口");
+
+        // 请求本来没带 id（人工探桥）时不要凭空造一个
+        let no_id = bridge_attach_id(serde_json::json!({"ok":true}), None);
+        assert!(no_id.get("id").is_none());
+    }
+
+    #[test]
+    fn bridge_monitor_order_puts_main_first_then_numeric_extras() {
+        // 字符串排序会把 extra-10 排在 extra-2 前面 —— 下拉框里那样很怪
+        let mut ids = vec!["extra-10", "extra-2", "main", "zzz", "extra-1"];
+        ids.sort_by_key(|id| bridge_monitor_sort_key(id));
+        assert_eq!(ids, vec!["main", "extra-1", "extra-2", "extra-10", "zzz"]);
     }
 }
 

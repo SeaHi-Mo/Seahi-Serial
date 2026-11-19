@@ -180,7 +180,7 @@ var _typeMap = {recv: 0, send: 1, sys: 2, err: 3};
 var _typeNames = ['recv', 'send', 'sys', 'err'];
 
 // 写入一行到紧凑存储
-// `srcHint`：这条日志的来源（'ui' = 用户手动、'ai' = AI；省略 = 未标记）。
+// `srcHint`：这条日志的来源（'ui' = 用户手动、'ai' = AI、'auto' = 自动化流程；省略 = 未标记）。
 // 终端模式的按键发送没有经过 MCP 的 `_mcpAiSend` 认领，由它显式标 'ui'。
 function bufferPush(mid, type, ts, text, srcHint) {
     var m = monitors[mid];

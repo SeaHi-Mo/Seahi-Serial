@@ -61,6 +61,11 @@ pub const SRC_NONE: u8 = 0;
 pub const SRC_UI: u8 = 1;
 /// AI 通过 MCP 工具触发
 pub const SRC_AI: u8 = 2;
+/// 用户编排的自动化流程触发（Node-RED 的 `serial out` 节点）
+///
+/// 为什么单独一档（2026-11）：它既不是"AI 发的"也不是"用户这一下亲手发的"，
+/// 标成 `ui` 会让复盘时把脚本发的 AT 当成手敲的；标成 `none` 又等于放弃追溯。
+pub const SRC_AUTO: u8 = 3;
 
 /// 读日志时的**输出编码**。两种编码里的**数据完全一样**，只是写法不同：
 ///
@@ -268,19 +273,21 @@ fn src_name(s: u8) -> &'static str {
     match s {
         SRC_UI => "ui",
         SRC_AI => "ai",
+        SRC_AUTO => "auto",
         _ => "none",
     }
 }
 
 /// [`src_name`] 的反向映射（字符串 → 常量）。
 ///
-/// 存在的理由：`"ai"` / `"ui"` 这两个字面量要在**三个地方**解析（前端回灌的入参、
+/// 存在的理由：`"ai"` / `"ui"` / `"auto"` 这几个字面量要在**三个地方**解析（前端回灌的入参、
 /// 文本编码的渲染、将来别处）—— 各自写一遍 `match` 就是三次漂移机会。
 /// 认不出的值一律 `SRC_NONE`（保守：宁可不标，也不要瞎标成 AI）。
 pub fn src_of(name: &str) -> u8 {
     match name {
         "ui" => SRC_UI,
         "ai" => SRC_AI,
+        "auto" => SRC_AUTO,
         _ => SRC_NONE,
     }
 }
@@ -335,7 +342,7 @@ fn render_text_page(meta: &Value, picked: &[&LogLine]) -> String {
 /// （`rx`/`tx` —— 那边两个方向是**归并在一起**的，不标就分不清谁说的）。
 /// ⚠️ 转义规则必须有且只有这一处（见 [`push_escaped`]），否则"一行一条"两个工具就会漂移。
 ///
-/// `src`（来源）**只在是 `ui`/`ai` 时才写**：绝大多数行都是"未标记"（Rust 侧那几路本来就
+/// `src`（来源）**只在是 `ui`/`ai`/`auto` 时才写**：绝大多数行都是"未标记"（Rust 侧那几路本来就
 /// 有通道名可区分），逐行写个 `[none]` 纯属烧 token。而它不能像方向那样省掉 ——
 /// `dir` 能从通道名推出来（`serial:<分栏>:rx|tx`），`src` 推不出来，
 /// 省掉就等于"text 编码下看不出这条是 AI 发的"。
@@ -345,7 +352,7 @@ pub fn push_text_line(out: &mut String, ts_ms: i64, tag: &str, body: &str, src: 
     out.push_str("] [");
     out.push_str(tag);
     out.push_str("] ");
-    if src == SRC_UI || src == SRC_AI {
+    if src == SRC_UI || src == SRC_AI || src == SRC_AUTO {
         out.push('[');
         out.push_str(src_name(src));
         out.push_str("] ");
@@ -379,7 +386,7 @@ pub struct LogLine {
     pub ts_ms: i64,
     pub level: u8,
     pub dir: u8,
-    /// 谁产生的（`SRC_NONE` / `SRC_UI` / `SRC_AI`）。只有一个字节 —— 每条日志都带。
+    /// 谁产生的（`SRC_NONE` / `SRC_UI` / `SRC_AI` / `SRC_AUTO`）。只有一个字节 —— 每条日志都带。
     pub src: u8,
     /// 正文（独占字符串）。
     ///
@@ -1305,6 +1312,7 @@ mod tests {
         h.push_at_src("serial:main:tx", LEVEL_INFO, DIR_TX, 1000, "AT+GMR", 7, SRC_AI);
         h.push_at_src("serial:main:tx", LEVEL_INFO, DIR_TX, 1001, "AT", 2, SRC_UI);
         h.push_at_src("serial:main:tx", LEVEL_INFO, DIR_TX, 1002, "OK", 2, SRC_NONE);
+        h.push_at_src("serial:main:tx", LEVEL_INFO, DIR_TX, 1003, "AT+RST", 6, SRC_AUTO);
 
         // json：每条都带 src
         let j = h.tail("serial:main:tx", None, 10).unwrap();
@@ -1312,18 +1320,21 @@ mod tests {
         assert_eq!(lines[0]["src"], "ai", "AI 发出去的那条要标出来: {}", lines[0]);
         assert_eq!(lines[1]["src"], "ui");
         assert_eq!(lines[2]["src"], "none");
+        assert_eq!(lines[3]["src"], "auto", "Node-RED 自动化发的那条要能区分开: {}", lines[3]);
 
-        // text：只有 ai/ui 才写标记 —— 逐行写个 `[none]` 纯属白烧 token
+        // text：只有 ai/ui/auto 才写标记 —— 逐行写个 `[none]` 纯属白烧 token
         let t = h.tail_fmt("serial:main:tx", None, 10, LogFormat::Text).unwrap();
         let text = t["text"].as_str().unwrap();
         assert!(text.contains("[ai] AT+GMR"), "AI 的来源必须写在行里: {}", text);
         assert!(text.contains("[ui] AT"), "用户的来源必须写在行里: {}", text);
+        assert!(text.contains("[auto] AT+RST"), "自动化的来源必须写在行里: {}", text);
         assert!(!text.contains("[none]"), "未标记的行不该写 [none]: {}", text);
 
         // `src_of` 是"字符串 → 常量"的唯一映射；认不出的值必须**保守**
         // （宁可不标，也不要瞎标成 AI —— 那会让用户以为 AI 动过手）
         assert_eq!(src_of("ai"), SRC_AI);
         assert_eq!(src_of("ui"), SRC_UI);
+        assert_eq!(src_of("auto"), SRC_AUTO);
         assert_eq!(src_of("none"), SRC_NONE);
         assert_eq!(src_of("AI"), SRC_NONE, "大小写不同就当认不出（不猜）");
         assert_eq!(src_of("whatever"), SRC_NONE);

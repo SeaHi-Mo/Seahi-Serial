@@ -12,9 +12,10 @@
 npm install                                       # 前端依赖 (@tauri-apps/cli)
 npm run dev                                       # 开发模式（热重载）
 npm run build                                     # 发布构建 → src-tauri/target/release/seahi-serial.exe
-cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（272 条 + 1 条 #[ignore] 手工联调用例）
+cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（301 条 + 1 条 #[ignore] 手工联调用例）
 node .walkthrough/gen_ble_preview.js              # 前端无头断言集（改前端后必跑）
 node .walkthrough/mcp_smoke.js                    # 对**正在跑的应用**逐个真调工具（改 MCP 后必跑）
+node .walkthrough/nodered_nodes_test.js           # serial in/out/request 节点断言（假桥 + 假 RED；改 local-nodes 后必跑）
 
 # 文档站（website/，VitePress；依赖只装在 website/ 里，别在根目录装）
 # 以下在**仓库根目录**执行。`--prefix website` 是相对当前目录的 ——
@@ -33,7 +34,7 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
 
 - ⛔ **BLE 从机（外设）方向 2026-09 整条删除**（用户："实现不了了"）：适配器自报支持外设角色，实测**广播起不来**
   （`Aborted`）。别再往这个方向加功能；证据见 `doc/BLE_PERIPHERAL.md`（已归档）。BLE 只剩**主机方向**。
-- 前端断言集 `.walkthrough/gen_ble_preview.js`（**1991 条**，随代码增补）：`vm` 沙箱抽真函数断言（源码正则 +
+- 前端断言集 `.walkthrough/gen_ble_preview.js`（**2013 条**，随代码增补）：`vm` 沙箱抽真函数断言（源码正则 +
   假 DOM 行为断言）；`readFrontendSource()` 按标签顺序把 css/js **内联回"逻辑单文件"**再跑，所以跨 CSS/JS 的正则
   照旧有效，加新前端文件不用改断言集（只要标签写进 `index.html`）。改了 MCP 工具定义后重跑
   `node .walkthrough/gen_mcp_tools_doc.js` 生成 `doc/MCP_TOOLS.md`（断言守着"文档必须列出全部内置工具"）。
@@ -168,7 +169,7 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
    四路都要传回界面/工具并提示一行（只有 LogHub 内部的 `channelSkips`/`lockSkips` 是纯内部计数）。不做的后果不是
    "少几条日志"，而是**工具明确告诉调用方"日志是完整的"**（`mayBeIncomplete:false`），于是 AI 拿被截断的证据下结论。
    ⚠️ **每条日志还带一个「来源」`src`**（用户 2026-09："AI 发送的数据在日志里要和接收的区分开"）：`ai` = AI 通过 MCP
-   触发、`ui` = 用户手动、`none` = 未标记。因为 MCP 发送与用户点按钮**走的是同一条路**（`serial_send` 就是"填进输入框 +
+   触发、`ui` = 用户手动、`auto` = 用户编排的自动化（Node-RED 的 `serial out`）、`none` = 未标记。因为 MCP 发送与用户点按钮**走的是同一条路**（`serial_send` 就是"填进输入框 +
    点发送按钮"，见 #3），光看内容分不出是谁发的。三条别改回去：① **前端三处必须成对** —— `mcpSerialOp` 的 send 分支先挂
    `_mcpAiSend` 标记（**必须早于 `click()`**：click 是同步派发，反了 sendData 已经跑完、认领不到）→ `bufferPush` 认领它
    （认领到就把那条标 `ai`）→ **没被认领就补记一条**（echo 关着 / 输出区没渲染时那次发送本来完全不进日志中心；
@@ -565,7 +566,7 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
 字段与上限：`app_version/os/error/stack/context`，服务端截断为 64/128/8K/32K/16K 字节；
 部署与鉴权（`ERROR_API_KEY` 必配、每 IP 限速）见 `server/INSTALL.md` 与 `server/README.md`。
 
-## Node-RED 集成（自动化画布）—— 别改回去的六条
+## Node-RED 集成（自动化画布）—— 别改回去的八条
 
 完整说明见 `doc/NODERED_INTEGRATION.md`。要点：
 
@@ -583,6 +584,18 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
    `process.execPath + npm_execpath`（见 `scripts/prepare-nodered.mjs`）。
 6. **Tauri 的资源路径带 `\\?\` 前缀**，不能直接喂给 node（会报 `EISDIR ... lstat 'D:'`），
    统一走 `nodered_plain_path()`。
+7. **Node-RED 发出去的数据必须出现在串口监视窗口**（用户 2026-11："发送的指令也应该出现，除非关闭了消息回显"）：
+   `bridge_write` 成功后宿主 `emit('nodered-sent', {monitor, hex})`，前端 `nfOnSent()` 走**与手动发送同一条**
+   `appendOutput(mid,'send',…)` —— 行号、时间戳、日志中心 `serial:<分栏>:tx`、MCP `serial_get_output` 全都有，
+   来源标 `auto`。**是否显示只看该分栏 `#<mid>-btnEcho` 的 `.on`**（回显关掉 = 窗口和日志中心都不写，与手动发送
+   完全一致）；事件里只给 hex、不替前端决定文本/HEX，**别另写一套渲染**（两套必然漂移）。
+8. **请求/应答用 `serial request`，别在流程里手搓"发完再读"**：它内部固定 **清空旧数据 → 写串口 → 收窗口**，
+   顺序在节点里保证（反过来先发后清会把刚到的回复吃掉）；一条输入只输出一条结果 —— **结果分支是动态输出口**
+   （默认 `OK` / `ERROR` 两个连接点，加一个条件就多一个口；条件类型 包含/等于/正则/未匹配或超时），
+   命中后从对应连接点出去，消息带 `matched` / `matchedIndex` / `matchedType` / `timedOut` / `reason`。
+   队列串行（上限 32）。⚠️ 没配「未匹配/超时」兜底条件时，未匹配结果会被丢弃（状态标黄 + `node.warn`），
+   不要依赖"没输出就是成功"。⚠️ 它自己读桥的接收队列，**同一个监视器上不要再放 `serial in`**（单消费者，
+   互相分数据）；设备开着回显时命令会被原样回显，建议 `ATE0` 或用只在回复里出现的条件。
 
 构建顺序：`npm run prep:nodered -- --slim` → `npm run dev`。不跑第一步会报「缺少 node.exe」。
 `prep` 产出约 80 MB（node.exe + 依赖树），随安装包分发，这是固定成本。

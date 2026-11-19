@@ -47,6 +47,35 @@ function resolveConsts(text) {
   return out;
 }
 
+/**
+ * 去掉 schema 文本里**字符串之外**的 `//` 行注释。
+ *
+ * 为什么需要：`tool_defs()` 里是 Rust 的 `json!({...})`，`//` 注释在那里完全合法，
+ * 但抽出来的文本要喂给 `JSON.parse` —— 一条 `// "expect": …（已停用）` 就会让整个生成器抛
+ * `Expected double-quoted property name`。DSL 停用时就是往 schema 里加了几行这种注释，
+ * 于是文档生成器当场罢工（2026-11）。字符串里的 `//`（URL）必须原样保留。
+ */
+function stripLineComments(text) {
+  let out = '', inStr = false;
+  for (let k = 0; k < text.length; k++) {
+    const c = text[k];
+    if (inStr) {
+      out += c;
+      if (c === '\\') { out += text[k + 1] || ''; k++; continue; }
+      if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; out += c; continue; }
+    if (c === '/' && text[k + 1] === '/') {
+      while (k < text.length && text[k] !== '\n') k++;
+      out += '\n';
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
 /** 读一个 JSON 字符串字面量（honor 转义），返回 [值, 结束下标] */
 function readStr(s, from) {
   const q = s.indexOf('"', from);
@@ -88,7 +117,7 @@ for (;;) {
   const [desc] = readStr(body, d + 14);
   const sch = body.indexOf('"inputSchema":', d);
   const [schemaText] = readObj(body, sch + 14);
-  tools.push({ name, desc, schema: JSON.parse(resolveConsts(schemaText)) });
+  tools.push({ name, desc, schema: JSON.parse(resolveConsts(stripLineComments(schemaText))) });
   pos = sch + 14;
 }
 

@@ -20,6 +20,33 @@ var NF_URL = '';
 var NF_BUILT = false;
 var NF_MID = null;
 
+/* ===== 自动化发出去的数据也要能在监视窗口看见 =====
+ *
+ * 宿主把 Node-RED 通过桥写串口的数据用 `nodered-sent` 事件送过来（payload: {monitor, hex}，
+ * 见 main.rs 的 bridge_write）。这里只负责呈现，三条口径：
+ *   ① **与手动发送完全相同**：走 `appendOutput(mid,'send',…)`，所以输出区、行号、时间戳、
+ *      日志中心（`serial:<分栏>:tx`）、MCP 的 serial_get_output 全都照旧；
+ *   ② **消息回显关掉就不写**（用户 2026-11 明确要求："除非关闭了消息回显"）——
+ *      判据与 sendData 一样是 `#<mid>-btnEcho` 的 `.on`，不另设开关；
+ *   ③ 来源标 `auto`（不是 ui、也不是 ai）：它是用户编排的流程发的，复盘时要能区分。
+ */
+function nfOnSent(payload) {
+    var p = payload || {};
+    var mid = p.monitor ? String(p.monitor) : 'main';
+    var hex = p.hex ? String(p.hex) : '';
+    if (!hex || !monitors[mid]) return;
+    var echoBtn = document.getElementById(mid + '-btnEcho');
+    if (!echoBtn || !echoBtn.classList.contains('on')) return;
+    var bytes;
+    try { bytes = hexToBytes(hex); } catch (e) { return; }
+    if (!bytes.length) return;
+    var text = decodeRaw(bytes);
+    /* 能当文本读就照原样显示（AT 指令就是这种）；含控制字节时退回 HEX，
+       否则二进制帧在输出区等于看不见。 */
+    var printable = !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text);
+    appendOutput(mid, 'send', printable ? text : 'HEX: ' + bytesToHex(bytes), { src: 'auto' });
+}
+
 /* ---------- 入口 ---------- */
 function openNodeFlow(mid) {
     var pane = document.getElementById('nodeflow-pane');
