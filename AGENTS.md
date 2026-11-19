@@ -598,4 +598,4 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
    互相分数据）；设备开着回显时命令会被原样回显，建议 `ATE0` 或用只在回复里出现的条件。
 
 构建顺序：`npm run prep:nodered -- --slim` → `npm run dev`。不跑第一步会报「缺少 node.exe」。
-`prep` 产出约 80 MB（node.exe + 依赖树），随安装包分发，这是固定成本。
+`prep` 产出约 172 MB / 9600 个文件（node.exe 81 MB + node_modules 90 MB），随安装包分发，这是固定成本。

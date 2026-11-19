@@ -46,7 +46,7 @@ Tauri 主窗口（WebView2）
 ## 4. 构建与运行
 
 ```bash
-npm run prep:nodered -- --slim   # 一次性：装 node-red 依赖 + 拷当前 node.exe（约 80 MB）
+npm run prep:nodered -- --slim   # 一次性：装 node-red 依赖 + 拷当前 node.exe（约 172 MB / 9600 个文件）
 npm run dev                      # 之后正常开发
 ```
 
