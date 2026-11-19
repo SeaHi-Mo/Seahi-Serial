@@ -4,3 +4,5 @@ node.exe
 package-lock.json
 local-nodes/at-suite.js
 local-nodes/at-suite.html
+# 旧的节点包目录（已并入 local-nodes/）
+at-suite/
