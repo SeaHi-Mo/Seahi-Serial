@@ -512,6 +512,188 @@ static NODERED_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16
 /// 没有这把锁就会起两个 node.exe（抢同一个用户目录，flows 互相覆盖）。
 static NODERED_START_LOCK: Mutex<()> = Mutex::new(());
 
+// ===== node-red ↔ 串口 桥（回环 TCP，换行分隔 JSON）=====
+//
+// 为什么需要它：串口由**本进程独占**（监视器、DTR/RTS、WSL 映射、BLE 都在用）。让 Node-RED 的节点
+// 自己去 open COM 口会直接失败，或者把数据分走一半。所以节点不碰串口，只跟这里说话：
+//
+//   {"op":"hello","token":"<随机>"}                     握手（令牌由启动时的环境变量给）
+//   {"op":"send","monitor":"main","hex":"41540d0a"}     往这个监视器的串口写字节
+//   {"op":"read","monitor":"main"}                       取走自上次以来收到的数据（hex）
+//
+// 回流是 `{"ok":true,...}` / `{"ok":false,"error":"..."}`，一行一条。
+// 走 TCP 而不是 HTTP：不用解析请求头，也不用和 MCP 服务器抢端口/开关状态。
+static BRIDGE_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+static BRIDGE_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// 每个监视器一份「已被桥取走」的接收队列。读线程往里复制一份，**不动前端那份**（各读各的）。
+static BRIDGE_RX: std::sync::OnceLock<Mutex<HashMap<String, std::collections::VecDeque<u8>>>> =
+    std::sync::OnceLock::new();
+/// 单监视器的桥缓冲上限：Node-RED 侧的 `serial in` 是轮询的，卡住时不能把内存吃满
+const BRIDGE_RX_CAP: usize = 64 * 1024;
+
+fn bridge_rx_map() -> &'static Mutex<HashMap<String, std::collections::VecDeque<u8>>> {
+    BRIDGE_RX.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn bridge_push_rx(mid: &str, data: &[u8]) {
+    let mut m = bridge_rx_map().lock().unwrap_or_else(|e| e.into_inner());
+    let q = m.entry(mid.to_string()).or_default();
+    q.extend(data.iter().copied());
+    while q.len() > BRIDGE_RX_CAP {
+        q.pop_front();
+    }
+}
+
+fn bridge_take_rx(mid: &str) -> Vec<u8> {
+    let mut m = bridge_rx_map().lock().unwrap_or_else(|e| e.into_inner());
+    match m.get_mut(mid) {
+        Some(q) => q.drain(..).collect(),
+        None => Vec::new(),
+    }
+}
+
+fn bridge_hex_encode(b: &[u8]) -> String {
+    let mut s = String::with_capacity(b.len() * 2);
+    for x in b {
+        s.push_str(&format!("{x:02x}"));
+    }
+    s
+}
+
+fn bridge_hex_decode(s: &str) -> Option<Vec<u8>> {
+    let t: Vec<char> = s.chars().filter(|c| !c.is_whitespace()).collect();
+    if t.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(t.len() / 2);
+    let mut i = 0;
+    while i < t.len() {
+        let hi = t[i].to_digit(16)? as u8;
+        let lo = t[i + 1].to_digit(16)? as u8;
+        out.push((hi << 4) | lo);
+        i += 2;
+    }
+    Some(out)
+}
+
+/// 把一段字节写到指定监视器的串口（与 `send_data` 同一条路，锁也带超时）
+fn bridge_write(app: &tauri::AppHandle, mid: &str, data: &[u8]) -> Result<usize, String> {
+    use tauri::Manager;
+    let state = app.state::<PortState>();
+    let port_arc = {
+        let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
+        match map.get(mid) {
+            Some(reader) => reader.port.clone(),
+            None => return Err(format!("监视器 {mid} 没有打开的串口")),
+        }
+    };
+    let mut port = lock_port_with_timeout(&port_arc, 500)?;
+    port.write_all(data).map_err(|e| format!("写入失败: {e}"))?;
+    port.flush().ok();
+    Ok(data.len())
+}
+
+/// 起桥服务器（只起一次），返回端口。令牌写进 `BRIDGE_TOKEN`，子进程用环境变量取。
+fn bridge_start(app: tauri::AppHandle) -> u16 {
+    let existing = BRIDGE_PORT.load(Ordering::SeqCst);
+    if existing != 0 {
+        return existing;
+    }
+    // 令牌：时间 + pid，够本地用了（本来就只监听回环，且只有我们自己拉起的进程知道端口）
+    let token = format!(
+        "{:x}{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+        std::process::id()
+    );
+    let _ = BRIDGE_TOKEN.set(token.clone());
+
+    let listener = match std::net::TcpListener::bind(("127.0.0.1", 0)) {
+        Ok(l) => l,
+        Err(e) => {
+            dbg_log(&format!("node-red 桥：绑定端口失败 {e}"));
+            return 0;
+        }
+    };
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    BRIDGE_PORT.store(port, Ordering::SeqCst);
+
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(s) = stream else { continue };
+            let app = app.clone();
+            let token = token.clone();
+            std::thread::spawn(move || bridge_serve(s, app, token));
+        }
+    });
+    port
+}
+
+/// 单个连接：先握手校验令牌，然后逐行处理请求
+fn bridge_serve(stream: std::net::TcpStream, app: tauri::AppHandle, token: String) {
+    use std::io::{BufRead, BufReader, Write};
+    let mut out = match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let reader = BufReader::new(stream);
+    let mut authed = false;
+
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = writeln!(out, "{}", serde_json::json!({"ok": false, "error": format!("JSON 解析失败: {e}")}));
+                continue;
+            }
+        };
+        let op = v.get("op").and_then(|x| x.as_str()).unwrap_or("");
+
+        if op == "hello" {
+            if v.get("token").and_then(|x| x.as_str()) == Some(token.as_str()) {
+                authed = true;
+                let _ = writeln!(out, "{}", serde_json::json!({"ok": true}));
+            } else {
+                let _ = writeln!(out, "{}", serde_json::json!({"ok": false, "error": "令牌不对"}));
+                break;
+            }
+            continue;
+        }
+        if !authed {
+            let _ = writeln!(out, "{}", serde_json::json!({"ok": false, "error": "未握手"}));
+            break;
+        }
+
+        let mid = v.get("monitor").and_then(|x| x.as_str()).unwrap_or("main");
+        let reply = match op {
+            "send" => {
+                let hex = v.get("hex").and_then(|x| x.as_str()).unwrap_or("");
+                match bridge_hex_decode(hex) {
+                    Some(bytes) => match bridge_write(&app, mid, &bytes) {
+                        Ok(n) => serde_json::json!({"ok": true, "written": n}),
+                        Err(e) => serde_json::json!({"ok": false, "error": e}),
+                    },
+                    None => serde_json::json!({"ok": false, "error": "hex 不是合法的十六进制串"}),
+                }
+            }
+            "read" => {
+                let bytes = bridge_take_rx(mid);
+                serde_json::json!({"ok": true, "rx": bridge_hex_encode(&bytes)})
+            }
+            _ => serde_json::json!({"ok": false, "error": format!("未知 op: {op}")}),
+        };
+        if writeln!(out, "{reply}").is_err() {
+            break;
+        }
+    }
+}
+
 fn nodered_alive(port: u16) -> bool {
     if port == 0 {
         return false;
@@ -624,6 +806,10 @@ fn nodered_spawn_and_wait(app: tauri::AppHandle) -> Result<String, String> {
         .try_clone()
         .map_err(|e| format!("复制日志句柄失败：{e}"))?;
 
+    // 桥：node-red 的节点通过它与本进程的串口说话（回环 TCP + 一次性令牌）。
+    // 端口/令牌通过环境变量交给子进程 —— 不写进命令行（命令行在进程列表里可见）。
+    let bridge_port = bridge_start(app.clone());
+
     let mut cmd = std::process::Command::new(&exe);
     cmd.arg(&red)
         .arg("-u")
@@ -633,6 +819,11 @@ fn nodered_spawn_and_wait(app: tauri::AppHandle) -> Result<String, String> {
         .arg("--port")
         .arg(port.to_string())
         .current_dir(&dir)
+        .env("SEAHI_BRIDGE_PORT", bridge_port.to_string())
+        .env(
+            "SEAHI_BRIDGE_TOKEN",
+            BRIDGE_TOKEN.get().map(|s| s.as_str()).unwrap_or(""),
+        )
         .stdout(std::process::Stdio::from(log_out))
         .stderr(std::process::Stdio::from(log_err));
     #[cfg(windows)]
@@ -698,7 +889,7 @@ fn nodered_plain_path(p: std::path::PathBuf) -> std::path::PathBuf {
 ///
 /// 每次启动都覆盖一次（两个文件、十几 KB）—— 这样升级安装包后节点定义也会跟着更新。
 fn nodered_install_local_nodes(dir: &std::path::Path, userdir: &std::path::Path) {
-    let src = dir.join("at-suite");
+    let src = dir.join("local-nodes");
     if !src.exists() {
         return;
     }
@@ -706,10 +897,22 @@ fn nodered_install_local_nodes(dir: &std::path::Path, userdir: &std::path::Path)
     if std::fs::create_dir_all(&dst).is_err() {
         return;
     }
-    for f in ["at-suite.js", "at-suite.html"] {
-        let s = src.join(f);
-        if s.exists() {
-            let _ = std::fs::copy(&s, dst.join(f));
+    // 目录里所有 .js/.html 都投递过去（Node-RED 按同名配对加载）：
+    //   · seahi-serial.js/.html —— 本仓库自带（serial in / serial out 桥接节点）
+    //   · at-suite.js/.html    —— 由 scripts/prepare-nodered.mjs 从 prototypes 复制过来
+    let Ok(entries) = std::fs::read_dir(&src) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        if !p.is_file() {
+            continue;
+        }
+        match p.extension().and_then(|s| s.to_str()) {
+            Some("js") | Some("html") => {
+                if let Some(name) = p.file_name() {
+                    let _ = std::fs::copy(&p, dst.join(name));
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -998,7 +1201,7 @@ impl PortReader {
     /// `hs` 由读线程 clone 走（收到数据时喂进去）；PortReader 自己不留字段 ——
     /// 那份状态的生命周期归 `PortState::qcmd_hs` 那张表（WSL 也要用它，见 `hs_slot`）。
     fn new(port: Box<dyn SerialPort>, regex_cache: std::sync::Arc<RegexCache>,
-           hs: std::sync::Arc<std::sync::Mutex<QcmdHs>>) -> Self {
+           hs: std::sync::Arc<std::sync::Mutex<QcmdHs>>, mid: String) -> Self {
         let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::with_capacity(8192)));
         let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1030,6 +1233,7 @@ impl PortReader {
         let tx_clone = tx.clone();
         let port_for_read = port_arc.clone();
         let hs_for_read = hs.clone();
+        let mid_for_bridge = mid;
         let read_handle = std::thread::spawn(move || {
             let mut tmp = [0u8; 4096];
             loop {
@@ -1063,6 +1267,9 @@ impl PortReader {
                         //    否则状态机会被喂成"有回话"，而前端已经不再查它的结论。
                         // hs_feed(&hs_for_read, &tmp[..n]);
                         let _ = &hs_for_read;
+                        // node-red 桥：把同一块数据**复制**一份进它的队列（前端那份照旧走 tx，
+                        // 两边各读各的，谁也不会把对方的数据吃掉）。
+                        bridge_push_rx(&mid_for_bridge, &tmp[..n]);
                     }
                     _ if should_break => break,
                     // 无数据时轻微退避（1ms→2ms），减少空转，对读取延迟影响可忽略
@@ -2105,7 +2312,7 @@ fn open_port(
 
     // 创建读取线程，同步已有的工作流规则
     let hs = hs_slot(&state.qcmd_hs, &monitor_id);    // 快速指令的等待状态：读线程与前端共用这一份
-    let reader = PortReader::new(port, wf_state.regex_cache.clone(), hs);
+    let reader = PortReader::new(port, wf_state.regex_cache.clone(), hs, monitor_id.clone());
     {
         let rules_map = wf_state.rules.lock().unwrap_or_else(|e| e.into_inner());
         let dirs_map = wf_state.log_dirs.lock().unwrap_or_else(|e| e.into_inner());

@@ -1,5 +1,6 @@
 # 由 scripts/prepare-nodered.mjs 生成，不入库
 node_modules/
 node.exe
-at-suite/
 package-lock.json
+local-nodes/at-suite.js
+local-nodes/at-suite.html

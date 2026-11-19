@@ -56,7 +56,7 @@ if (!fs.existsSync(atSrc)) {
   console.error("[nodered] 找不到 " + atSrc + "（节点包原型缺失）");
   process.exit(1);
 }
-const atDir = path.join(resDir, "at-suite");
+const atDir = path.join(resDir, "local-nodes");
 fs.mkdirSync(atDir, { recursive: true });
 for (const f of ["at-suite.js", "at-suite.html"]) {
   fs.copyFileSync(path.join(protoDir, f), path.join(atDir, f));
@@ -76,7 +76,7 @@ fs.writeFileSync(
     2
   )
 );
-log("节点包已复制 → resources/node-red/at-suite/");
+log("节点包已复制 → resources/node-red/local-nodes/");
 
 // 2) 依赖
 //
