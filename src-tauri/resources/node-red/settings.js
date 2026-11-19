@@ -11,7 +11,7 @@
  *   3. credentialSecret=false
  *      → 不加密凭据文件，避免换机器/重装后 flows 凭据读不出来。
  *
- *  ⚠️ 本程序自带的 at-suite 节点**不在这里配**：Node-RED 启动时只扫 coreNodesDir 与
+ *  ⚠️ 本程序自带的节点（seahi-serial 的 serial in/out）**不在这里配**：Node-RED 启动时只扫 coreNodesDir 与
  *     `<userDir>/nodes`，而 `nodesDir` 只用于模块查找、不参与调色板加载（实测无效）。
  *     节点文件由 Rust 侧在启动前复制到 `%APPDATA%\...\node-red\nodes\`（见 main.rs 的
  *     nodered_install_local_nodes）。

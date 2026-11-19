@@ -9,7 +9,7 @@
  *     node.exe        ← 从当前 Node 复制（固定版本：用哪个 Node 跑这个脚本，就打哪个版本）
  *     settings.js     ← 仓库里的离线固化配置
  *     package.json
- *     at-suite/       ← 从 prototypes/node-red-at-test 复制（节点包的唯一真源还在那儿）
+ *     local-nodes/    ← 本仓库自带的节点（seahi-serial.js/.html），随包分发、启动时投递到 userDir/nodes
  *     node_modules/   ← npm install 产物
  *
  * ⚠️ 只跑 `npm install --omit=dev`，不要 `--ignore-scripts` 之外的花活：
@@ -24,7 +24,6 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
 const resDir = path.join(root, "src-tauri", "resources", "node-red");
-const protoDir = path.join(root, "prototypes", "node-red-at-test");
 const slim = process.argv.includes("--slim");
 const clean = process.argv.includes("--clean");
 
@@ -43,45 +42,16 @@ function sizeOf(p) {
 }
 
 if (clean) {
-  for (const t of ["node_modules", "node.exe", "at-suite", "package-lock.json"]) {
+  for (const t of ["node_modules", "node.exe", "package-lock.json"]) {
     fs.rmSync(path.join(resDir, t), { recursive: true, force: true });
   }
   log("已清理");
 }
 
-// 1) 节点包：从原型目录复制（唯一真源在那边，别在这儿复制一份改）
-const atSrc = path.join(protoDir, "at-suite.js");
-const atHtml = path.join(protoDir, "at-suite.html");
-if (!fs.existsSync(atSrc)) {
-  console.error("[nodered] 找不到 " + atSrc + "（节点包原型缺失）");
-  process.exit(1);
-}
-const atDir = path.join(resDir, "local-nodes");
-fs.mkdirSync(atDir, { recursive: true });
-for (const f of ["at-suite.js", "at-suite.html"]) {
-  fs.copyFileSync(path.join(protoDir, f), path.join(atDir, f));
-}
-fs.writeFileSync(
-  path.join(atDir, "package.json"),
-  JSON.stringify(
-    {
-      name: "node-red-contrib-at-test",
-      version: "0.1.0",
-      description: "AT 指令序列测试节点：填表即用，画布编排",
-      keywords: ["node-red", "at-command", "serial", "test"],
-      license: "MIT",
-      "node-red": { nodes: { "at-suite": "at-suite.js" } }
-    },
-    null,
-    2
-  )
-);
-log("节点包已复制 → resources/node-red/local-nodes/");
-
-// 2) 依赖
+// 1) 依赖
 //
 // ⚠️ 不要直接 execFile("npm.cmd")：Node 18.20 / 20.12 起（CVE-2024-27980）在 Windows 上
-//    **禁止不经 shell 执行 .cmd**，会直接抛 `spawn EINVAL` —— 表现就是"at-suite 建好了，
+//    **禁止不经 shell 执行 .cmd**，会直接抛 `spawn EINVAL` —— 表现就是"前面的步骤跑完了，
 //    然后什么都没有"，因为后面的步骤一个都没跑。
 //    正确做法是拿 npm 自己的 cli.js 用当前 node 跑；拿不到才退回 shell:true。
 log("npm install（首次约 20–40 秒，会下载 ~300 个包）…");
@@ -104,7 +74,7 @@ try {
   process.exit(1);
 }
 
-// 3) 裁掉不需要的核心节点分类
+// 2) 裁掉不需要的核心节点分类
 //
 // ⚠️ Node-RED 5.x 的 @node-red/nodes **没有** `node-red` 清单段（老版本才有），
 //    核心节点是 registry 扫 `settings.coreNodesDir` 这个**目录**加载的
@@ -135,12 +105,12 @@ if (!process.argv.includes("--keep-all")) {
   log("--keep-all：保留全部核心节点");
 }
 
-// 4) node.exe
+// 3) node.exe
 const nodeExe = path.join(resDir, "node.exe");
 fs.copyFileSync(process.execPath, nodeExe);
 log("node.exe ← " + process.execPath + "（" + process.version + "）");
 
-// 5) npm 桩（可选）
+// 4) npm 桩（可选）
 if (slim) {
   const npmDir = path.join(resDir, "node_modules", "npm");
   if (fs.existsSync(npmDir)) {
@@ -153,7 +123,7 @@ if (slim) {
   }
 }
 
-// 6) 报告
+// 5) 报告
 const total = sizeOf(resDir);
 log(`完成：${total.mb} MB / ${total.files} 个文件`);
 const nm = path.join(resDir, "node_modules");

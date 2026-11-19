@@ -502,7 +502,7 @@ static WSL_SHELL_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 //     node.exe            Node 运行时（固定版本）
 //     settings.js         离线固化配置（禁调色板安装 / 关遥测，见文件头注释）
 //     package.json
-//     node_modules/       node-red + 本程序的 at-suite 节点（本地 file: 依赖）
+//     node_modules/       node-red 运行时（纯 JS，无原生模块）
 //
 // 前端 `js/85-nodeflow.js` 调 `nodered_open` 拿地址，把 iframe 指过去。
 // ⚠️ 这些都是**外部命令**：node.exe 是独立进程，崩溃不会带走主程序。
@@ -794,7 +794,7 @@ fn nodered_spawn_and_wait(app: tauri::AppHandle) -> Result<String, String> {
     std::fs::create_dir_all(&userdir)
         .map_err(|e| format!("创建 {} 失败：{e}", userdir.display()))?;
 
-    // 自带的 at-suite 节点投递到 <userDir>/nodes/（见函数注释：nodesDir 不管用）
+    // 自带节点（local-nodes/*）投递到 <userDir>/nodes/（见函数注释：nodesDir 不管用）
     nodered_install_local_nodes(&dir, &userdir);
 
     // 日志重定向到文件而不是 null：node-red 起不来时唯一的证据就是它的 stderr。
@@ -884,7 +884,7 @@ fn nodered_plain_path(p: std::path::PathBuf) -> std::path::PathBuf {
 /// 把自带的节点包投递到 `<userDir>/nodes/`。
 ///
 /// 为什么不是 settings 里的 `nodesDir`：那个只用于"按模块名查找"，不参与启动时的调色板加载
-/// （实测：配了 nodesDir，/nodes 里依然没有 at-suite）。Node-RED 启动时扫的是
+/// （实测：配了 nodesDir，/nodes 里依然没有自定义节点）。Node-RED 启动时扫的是
 /// coreNodesDir 和 `<userDir>/nodes` 这两个位置，后者正是"本地节点文件"的官方落点。
 ///
 /// 每次启动都覆盖一次（两个文件、十几 KB）—— 这样升级安装包后节点定义也会跟着更新。
@@ -899,7 +899,7 @@ fn nodered_install_local_nodes(dir: &std::path::Path, userdir: &std::path::Path)
     }
     // 目录里所有 .js/.html 都投递过去（Node-RED 按同名配对加载）：
     //   · seahi-serial.js/.html —— 本仓库自带（serial in / serial out 桥接节点）
-    //   · at-suite.js/.html    —— 由 scripts/prepare-nodered.mjs 从 prototypes 复制过来
+
     let Ok(entries) = std::fs::read_dir(&src) else { return };
     for e in entries.flatten() {
         let p = e.path();
