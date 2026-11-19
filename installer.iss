@@ -73,6 +73,11 @@ Name: "add_adb_path"; Description: "将 ADB 工具(platform-tools)添加至系�
 [Files]
 ; 主程序 - 使用 Tauri 内嵌的 WebView2，无需额外 DLL
 Source: "src-tauri\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; Node-RED 运行时（node.exe + 依赖树 + settings.js + at-suite 节点）—— 应用内嵌编辑器的侧车。
+; ⚠️ 路径必须是 {app}\resources\node-red：Rust 侧用 BaseDirectory::Resource 找它，Windows 上就是 exe 同级的 resources\。
+; ⚠️ 这份目录由 `npm run prep:nodered` 生成，**打包前必须先跑**，否则安装出来的程序会报「缺少 node.exe」。
+;    它约 45 MB（压缩后），是内嵌 Node-RED 的固定成本。
+Source: "src-tauri\resources\node-red\*"; DestDir: "{app}\resources\node-red"; Flags: recursesubdirs ignoreversion
 ; ADB 工具(platform-tools) - 随安装包分发，运行时零下载
 ; ⚠️ 下面三个 flag 都与「重复安装 / 升级」直接相关，别删：
 ;   replacesameversion —— 版本号相同时先比对内容，不同才覆写（替代原 ignoreversion）。

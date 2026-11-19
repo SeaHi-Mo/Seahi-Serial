@@ -1,0 +1,10 @@
+{
+  "name": "seahi-nodered-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "随 Seahi Serial 安装包分发的 Node-RED 运行时（离线固化，不做在线安装）",
+  "dependencies": {
+    "node-red": "5.0.10",
+    "node-red-contrib-at-test": "file:./at-suite"
+  }
+}

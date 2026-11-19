@@ -116,7 +116,7 @@ function createMonitorPane(mid, title, closable) {
             '<button class="ibtn" onclick="copyOutput(\'' + mid + '\')" title="复制全部">' + ICONS.copyAll + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnCollapseTb" onclick="toggleToolbarCollapse(\'' + mid + '\')" title="折叠工具栏">' + ICONS.chevronUp + '</button>' +
             '<div style="flex:1;"></div>' +
-            '<button class="wf-add-btn" onclick="addWorkflowRule(\'' + mid + '\')">+ 添加规则</button>' +
+            '<button class="wf-add-btn" onclick="openNodeFlow(\'' + mid + '\')" aria-label="node-red 自动化" title="node-red 自动化">' + ICONS.nodeRed + '</button>' +
         '</div>' +
         '</div>' +
         '<div class="adv-wf-wrap" id="' + mid + '-advWf">' +

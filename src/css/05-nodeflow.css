@@ -1,0 +1,26 @@
+/* ===== node-red 自动化（内嵌真 Node-RED，见 js/85-nodeflow.js） =====
+   这块只有两样东西：iframe + 加载/错误遮罩。没有标题栏、没有按钮、没有外层容器 ——
+   打开/收起由工具栏那颗 Node-RED 图标负责，编辑器自己的样式全在 Node-RED 里。 */
+
+#nodeflow-pane {
+    position:relative;                 /* 遮罩用绝对定位铺满，锚点在这 */
+    flex:1; min-height:0; min-width:640px;
+    overflow:hidden; display:none;
+    border-top:1px solid var(--border);
+}
+
+/* ⚠️ 底色用主题色而不是 #fff：iframe 加载完成前是透明的，白底会闪一帧白。
+   opacity 也是同一个目的 —— 没 onload 之前不让它露出来（见 85-nodeflow.js 的 data-loaded）。 */
+.nf-frame {
+    display:block; flex:1; min-height:0; width:100%; height:100%;
+    border:0; opacity:0; background:var(--bg);
+}
+.nf-frame.ready { opacity:1; transition:opacity .12s linear; }
+
+.nf-mask {
+    position:absolute; left:0; top:0; right:0; bottom:0;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+    background:var(--bg); color:var(--text-d); font-size:12px; line-height:1.8;
+    text-align:center; white-space:pre-wrap;
+}
+.nf-mask.err { color:var(--accent-red); }

@@ -1,0 +1,10 @@
+{
+  "name": "node-red-at-test-userdir",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node-RED 的 userDir：只用来加载上层的 at-suite 节点，不含业务代码",
+  "dependencies": {
+    "node-red": "^5.0.0",
+    "node-red-contrib-at-test": "file:.."
+  }
+}

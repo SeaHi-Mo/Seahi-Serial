@@ -121,7 +121,7 @@ function getWslMonitorHtml(wmid) {
                 '<button class="ibtn" onclick="copyOutput(\'' + wmid + '\')" title="复制全部">' + ICONS.copyAll + '</button>' +
                 '<button class="ibtn" id="' + wmid + '-btnCollapseTb" onclick="toggleToolbarCollapse(\'' + wmid + '\')" title="折叠工具栏">' + ICONS.chevronUp + '</button>' +
                 '<div style="flex:1;"></div>' +
-                '<button class="wf-add-btn" onclick="addWorkflowRule(\'' + wmid + '\')">+ 添加规则</button>' +
+                '<button class="wf-add-btn" onclick="openNodeFlow(\'' + wmid + '\')" aria-label="node-red 自动化" title="node-red 自动化">' + ICONS.nodeRed + '</button>' +
             '</div></div>' +
             '<div class="adv-wf-wrap" id="' + wmid + '-advWf">' +
                 '<div class="wf-list" id="' + wmid + '-wfList"></div>' +
@@ -155,6 +155,7 @@ function openWslMapping() {
     console.log('[WSL] 打开WSL映射页面');
 
     // 隐藏监视器，显示 WSL 面板
+    nfHidePane();                 // 画布若开着先收起
     document.getElementById('paneContainer').style.display = 'none';
     document.getElementById('wsl-pane').style.display = 'flex';
     refreshMonitorPollRates();   // 页面切换 → 按可见性重设读取频率（隐藏的监视器降频）

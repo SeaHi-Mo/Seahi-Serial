@@ -495,6 +495,239 @@ struct WslShell {
 static WSL_SHELL: Mutex<Option<std::sync::Arc<WslShell>>> = Mutex::new(None);
 /// 标记 shell 需要重建（超时/进程退出后设置，get_wsl_shell 检查此标记）
 static WSL_SHELL_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// ===== node-red 侧车（应用内嵌的编辑器，不是自绘界面）=====
+//
+// 资源树由构建脚本准备、随安装包打进 `resources/node-red/`：
+//     node.exe            Node 运行时（固定版本）
+//     settings.js         离线固化配置（禁调色板安装 / 关遥测，见文件头注释）
+//     package.json
+//     node_modules/       node-red + 本程序的 at-suite 节点（本地 file: 依赖）
+//
+// 前端 `js/85-nodeflow.js` 调 `nodered_open` 拿地址，把 iframe 指过去。
+// ⚠️ 这些都是**外部命令**：node.exe 是独立进程，崩溃不会带走主程序。
+static NODERED_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
+static NODERED_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+/// 启动串行化：应用启动时的预热线程与用户点图标的 `nodered_open` 可能同时到达，
+/// 没有这把锁就会起两个 node.exe（抢同一个用户目录，flows 互相覆盖）。
+static NODERED_START_LOCK: Mutex<()> = Mutex::new(());
+
+fn nodered_alive(port: u16) -> bool {
+    if port == 0 {
+        return false;
+    }
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300)).is_ok()
+}
+
+/// 停掉侧车。退出应用与关闭画布都走这里 —— 留着它会一直占端口和 ~80MB 内存。
+fn nodered_kill() {
+    let mut g = NODERED_CHILD.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(mut c) = g.take() {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+    NODERED_PORT.store(0, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn nodered_stop() -> bool {
+    nodered_kill();
+    true
+}
+
+/// 拉起 node-red 并等端口就绪，返回编辑器地址。
+///
+/// ⚠️ 必须是 `async` + `spawn_blocking`：同步命令里 sleep 会占住 Tauri 的执行线程，
+///    表现就是"点了图标整个窗口卡住"（用户 2026-11 实测）。这里把阻塞等待丢进
+///    spawn_blocking，UI 线程始终空着，遮罩上的"正在启动…"才动得起来。
+#[tauri::command]
+async fn nodered_open(app: tauri::AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || nodered_spawn_and_wait(app))
+        .await
+        .map_err(|e| format!("node-red 启动线程异常：{e}"))?
+}
+
+fn nodered_spawn_and_wait(app: tauri::AppHandle) -> Result<String, String> {
+    // 串行化：预热线程与用户点图标可能同时进来，否则会起两个实例抢同一个用户目录
+    let _guard = NODERED_START_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    // 拿到锁之后再检查一次：可能在排队等锁期间已经被另一个线程拉起来了
+    let running = NODERED_PORT.load(Ordering::SeqCst);
+    if nodered_alive(running) {
+        return Ok(format!("http://127.0.0.1:{running}/"));
+    }
+    nodered_kill();
+
+    let mut dir = nodered_plain_path(
+        app.path()
+            .resolve("resources/node-red", tauri::path::BaseDirectory::Resource)
+            .map_err(|e| format!("定位 node-red 资源目录失败：{e}"))?,
+    );
+
+    // 开发态（`npm run dev`）：Tauri 会把 resources 拷到 target\debug\resources，
+    // 而 `npm run prep:nodered` 产出的是 src-tauri\resources。两边择其有 node.exe 的那个，
+    // 免得每次改完都要重新走一遍构建拷文件。
+    #[cfg(debug_assertions)]
+    {
+        if !dir.join("node.exe").exists() {
+            let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join("node-red");
+            if dev.join("node.exe").exists() {
+                dir = dev;
+            }
+        }
+    }
+
+    let exe = dir.join("node.exe");
+    let red = dir.join("node_modules").join("node-red").join("red.js");
+    if !exe.exists() {
+        return Err(format!(
+            "缺少 node.exe：找过 {}。\n开发环境先跑 `npm run prep:nodered`，再重启 dev；\n打包时确认 installer / bundle.resources 把 resources/node-red 一起带上了。",
+            dir.display()
+        ));
+    }
+    if !red.exists() {
+        return Err(format!(
+            "缺少 node-red 运行时（{}）。先跑 `npm run prep:nodered` 装依赖。",
+            red.display()
+        ));
+    }
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|e| format!("找不到空闲端口：{e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("读端口失败：{e}"))?
+        .port();
+    drop(listener);
+
+    let userdir = nodered_plain_path(
+        app.path()
+            .app_data_dir()
+            .map_err(|e| format!("拿不到用户数据目录：{e}"))?
+            .join("node-red"),
+    );
+    std::fs::create_dir_all(&userdir)
+        .map_err(|e| format!("创建 {} 失败：{e}", userdir.display()))?;
+
+    // 自带的 at-suite 节点投递到 <userDir>/nodes/（见函数注释：nodesDir 不管用）
+    nodered_install_local_nodes(&dir, &userdir);
+
+    // 日志重定向到文件而不是 null：node-red 起不来时唯一的证据就是它的 stderr。
+    // 文件放在用户目录下（可写、可让用户自己打开），路径会随错误信息一起返回。
+    let log_path = userdir.join("node-red.log");
+    let log_out = std::fs::File::create(&log_path)
+        .map_err(|e| format!("创建日志文件 {} 失败：{e}", log_path.display()))?;
+    let log_err = log_out
+        .try_clone()
+        .map_err(|e| format!("复制日志句柄失败：{e}"))?;
+
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg(&red)
+        .arg("-u")
+        .arg(&userdir)
+        .arg("-s")
+        .arg(dir.join("settings.js"))
+        .arg("--port")
+        .arg(port.to_string())
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::from(log_out))
+        .stderr(std::process::Stdio::from(log_err));
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let mut child = cmd.spawn().map_err(|e| format!("启动 node-red 失败：{e}"))?;
+
+    // 冷启动 2–5 秒（首次还要解包 flows 文件）。等待期间同时盯着子进程：
+    // 它要是立刻退出（多半是 node.exe 与 node_modules 版本不匹配、settings.js 语法错），
+    // 就马上把退出码报上去，而不是干等满 25 秒才说"没起来"。
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < std::time::Duration::from_secs(25) {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // 进程刚退出时它的输出可能还没落到磁盘，等一下再读，否则拿到空日志
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let tail = nodered_log_tail(&log_path);
+                return Err(format!(
+                    "node-red 启动后立即退出（{status}）。\n日志：{}\n—— 末几行 ——\n{}",
+                    log_path.display(),
+                    tail
+                ));
+            }
+            _ => {}
+        }
+        if nodered_alive(port) {
+            *NODERED_CHILD.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
+            NODERED_PORT.store(port, Ordering::SeqCst);
+            return Ok(format!("http://127.0.0.1:{port}/"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(format!(
+        "node-red 25 秒内没起来（端口未就绪）。\n日志：{}\n—— 末几行 ——\n{}",
+        log_path.display(),
+        nodered_log_tail(&log_path)
+    ))
+}
+
+/// Windows verbatim 路径（`\\?\D:\...`）不能直接喂给 node：
+/// 拿它当入口脚本会报 `EISDIR: illegal operation on a directory, lstat 'D:'`
+/// （node 把 `\\?\D:` 拆歪了，最后拿 `D:` 去 lstat）。实测可复现。
+/// Tauri 的 `BaseDirectory::Resource` / `app_data_dir()` 解析出来就带这个前缀，所以先剥掉。
+fn nodered_plain_path(p: std::path::PathBuf) -> std::path::PathBuf {
+    let s = p.to_string_lossy().to_string();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return std::path::PathBuf::from(format!(r"\\{}", rest));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        return std::path::PathBuf::from(rest);
+    }
+    p
+}
+
+/// 把自带的节点包投递到 `<userDir>/nodes/`。
+///
+/// 为什么不是 settings 里的 `nodesDir`：那个只用于"按模块名查找"，不参与启动时的调色板加载
+/// （实测：配了 nodesDir，/nodes 里依然没有 at-suite）。Node-RED 启动时扫的是
+/// coreNodesDir 和 `<userDir>/nodes` 这两个位置，后者正是"本地节点文件"的官方落点。
+///
+/// 每次启动都覆盖一次（两个文件、十几 KB）—— 这样升级安装包后节点定义也会跟着更新。
+fn nodered_install_local_nodes(dir: &std::path::Path, userdir: &std::path::Path) {
+    let src = dir.join("at-suite");
+    if !src.exists() {
+        return;
+    }
+    let dst = userdir.join("nodes");
+    if std::fs::create_dir_all(&dst).is_err() {
+        return;
+    }
+    for f in ["at-suite.js", "at-suite.html"] {
+        let s = src.join(f);
+        if s.exists() {
+            let _ = std::fs::copy(&s, dst.join(f));
+        }
+    }
+}
+
+/// 读日志的最后一段（喂给错误信息用）。日志可能很大，只取尾部，避免把整份塞进 IPC。
+fn nodered_log_tail(path: &std::path::Path) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(s) => {
+            let tail: String = s.chars().rev().take(1500).collect::<Vec<char>>().into_iter().rev().collect();
+            if tail.trim().is_empty() {
+                "（日志是空的：进程还没输出就退出了，可能是 node.exe 与依赖树不匹配）".to_string()
+            } else {
+                tail
+            }
+        }
+        Err(e) => format!("（读不到日志：{e}）"),
+    }
+}
 /// 串行化对持久化 WSL shell 的命令执行：shell 的读写是同一根管道，
 /// 并发执行时会因一个个独立读线程各自截取 `___SEAHI_END___` 标记而串音
 /// （A 命令拿到 B 命令的输出）。列表类命令改为 async 并发后必须靠这把锁串行。
@@ -9627,6 +9860,8 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
         // 本机适配器自报支持外设角色，但实测广播起不来（doc/BLE_PERIPHERAL.md 有结论）。
         .manage(mcp::McpState::default())
         .invoke_handler(tauri::generate_handler![
+            nodered_open,
+            nodered_stop,
             list_ports,
             list_wsl_devices,
             open_port,
@@ -9735,6 +9970,19 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
             test_error_report,
         ])
         .setup(|app| {
+    // Node-RED 侧车随应用启动，而不是等用户点图标 —— 它是**自动化引擎**：
+    // 定时触发、串口事件触发的流程在编辑器关掉后仍要继续跑。
+    // 放在独立线程里预热，不拖慢窗口显示；起不来也不影响主程序（用户点图标时会重试并给出原因）。
+    {
+        let handle = app.handle().clone();
+        std::thread::spawn(move || {
+            match nodered_spawn_and_wait(handle) {
+                Ok(url) => dbg_log(&format!("node-red 预热完成：{url}")),
+                Err(e) => dbg_log(&format!("node-red 预热失败（打开画布时会重试）：{e}")),
+            }
+        });
+    }
+
             // 恢复上次窗口大小与位置（须在窗口创建后、仍可取到 monitors 前完成，
             // 且要在设最小尺寸之后，避免恢复值小于最小尺寸）。
             // 主窗口在 tauri.conf.json 中设为 visible:false（避免先居中/默认尺寸闪现），
@@ -9820,6 +10068,10 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
                         state.services.lock().unwrap_or_else(|e| e.into_inner()).clear();
                         *state.connected_addr.lock().unwrap_or_else(|e| e.into_inner()) = None;
                     }
+
+                    // node-red 侧车：跟着应用一起退出（否则它继续占端口 + ~80MB 内存，
+                    // 下次启动会拿到新端口，两份实例还共用同一个用户目录）
+                    nodered_kill();
 
                     dbg_log("CloseRequested: cleanup done");
 

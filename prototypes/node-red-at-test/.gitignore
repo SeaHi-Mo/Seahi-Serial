@@ -1,0 +1,10 @@
+node_modules/
+.npm-cache/
+data/node_modules/
+data/lib/
+data/package-lock.json
+data/flows.json
+data/.sessions.json
+data/.config.runtime.json
+data/.config.nodes.json
+.tmp-*.js

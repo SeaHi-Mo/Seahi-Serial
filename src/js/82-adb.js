@@ -5,6 +5,7 @@
 function openAdb() {
     console.log('[ADB] 打开ADB调试页面');
     // 隐藏主面板与 WSL 面板，显示 ADB 面板
+    nfHidePane();                 // 画布若开着先收起
     document.getElementById('paneContainer').style.display = 'none';
     document.getElementById('wsl-pane').style.display = 'none';
     document.getElementById('adb-pane').style.display = 'flex';
@@ -91,6 +92,8 @@ function closeAdb() {
 
 // 点击应用图标回到串口监视器主界面
 function goMain() {
+    var nf = document.getElementById('nodeflow-pane');
+    if (nf && nf.style.display === 'flex') { closeNodeFlow(); return; }
     var wsl = document.getElementById('wsl-pane');
     if (wsl && wsl.style.display === 'flex') { restoreMonitorPane(); return; }
     var adb = document.getElementById('adb-pane');

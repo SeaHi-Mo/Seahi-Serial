@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "tauri": "tauri",
+    "prep:nodered": "node scripts/prepare-nodered.mjs",
     "dev": "tauri dev",
     "build": "tauri build",
     "docs:dev": "npm --prefix website run dev",

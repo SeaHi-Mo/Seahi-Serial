@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="css/02-global.css">
 <link rel="stylesheet" href="css/03-quickcmd.css">
 <link rel="stylesheet" href="css/04-misc.css">
+<link rel="stylesheet" href="css/05-nodeflow.css">
     <link rel="stylesheet" href="vendor/xterm/xterm.css">
     <script src="vendor/xterm/xterm.js"></script>
 </head>
@@ -152,6 +153,8 @@
 <div class="pane-container" id="adb-pane" style="display:none;"></div>
 <!-- 蓝牙(BLE) 调试面板（常驻 DOM，display:none 时不参与 flex 布局） -->
 <div class="pane-container" id="ble-pane" style="display:none;"></div>
+<!-- node-red 自动化画布（应用内页面；内容由 js/85-nodeflow.js 的 openNodeFlow 构建） -->
+<div class="pane-container" id="nodeflow-pane" style="display:none;"></div>
 
 <!-- ⚠️ BLE 写入（发送）窗**不再是一个居中弹窗**（用户 2026-09 要求：挪到设备详情窗口的右侧）。
      现在它是蓝牙页里的一块**侧栏面板** `#bleWritePanel`，与 `#ble-detail` 并列在 `.ble-right` 内，
@@ -309,6 +312,8 @@
 <!-- BLE 固件升级（OTA）面板：阶段 0 只做「选固件 + 校验 + 版本比对」，不写设备。
      见 doc/BLE_OTA_EVALUATION.md（分期）与 84-ble-ota.js 顶部的范围说明。 -->
 <script src="js/84-ble-ota.js"></script>
+<!-- node-red 风格自动化画布：替代原「规则」入口，页面在应用内切换（不跳网页） -->
+<script src="js/85-nodeflow.js"></script>
 <script src="js/90-init.js"></script>
 </body>
 </html>

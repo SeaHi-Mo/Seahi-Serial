@@ -876,11 +876,18 @@
 .adv-wf-wrap::-webkit-scrollbar-corner { background:transparent; }
 .adv-wf-wrap::-webkit-scrollbar-thumb { background:rgba(100,106,118,.4); border-radius:3px; }
 .adv-wf-wrap::-webkit-scrollbar-thumb:hover { background:rgba(100,106,118,.6); }
+/* 「新建规则 / 自动化流程」入口：透明底 + 32px 点击区 + 24px 图标。
+   比工具栏里那排 28px/18px 的图标大一档，但没有底色（用户 2026-11：默认不要背景色）。 */
 .wf-add-btn {
-    background:transparent; color:var(--btn-p); border:none; cursor:pointer;
-    font-size:12px; padding:2px 8px; border-radius:3px; font-family:inherit; white-space:nowrap;
+    display:inline-flex; align-items:center; justify-content:center;
+    width:32px; height:32px; padding:0; margin-left:2px;
+    border:none; border-radius:6px; background:transparent;
+    color:var(--btn-p); cursor:pointer; flex-shrink:0; line-height:0;
+    transition: background .15s, color .15s;
 }
-.wf-add-btn:hover { background:rgba(255,255,255,.05); }
+.wf-add-btn svg { display:block; }
+.wf-add-btn:hover { background:rgba(255,255,255,.06); color:var(--accent-focus); }
+.wf-add-btn:active { background:rgba(255,255,255,.1); }
 .wf-rule { background:var(--surface-1); border:1px solid var(--border); border-radius:4px; margin-bottom:6px; }
 .wf-rule:last-child { margin-bottom:0; }
 .wf-rule-header { display:flex; align-items:center; gap:6px; padding:5px 8px; border-bottom:1px solid var(--border); }
@@ -930,7 +937,7 @@
 [data-theme="peach"] .wf-rule-btn:hover,
 [data-theme="autumn"] .wf-rule-btn:hover { background:rgba(0,0,0,.05); }
 [data-theme="default-light"] .wf-add-btn:hover,
-[data-theme="japanese-light"] .wf-add-btn:hover { background:rgba(106,149,184,.08); }
+[data-theme="japanese-light"] .wf-add-btn:hover { background:rgba(0,0,0,.05); }
 [data-theme="default-light"] .wf-row-btn:hover,
 [data-theme="japanese-light"] .wf-row-btn:hover { background:rgba(0,0,0,.04); }
 

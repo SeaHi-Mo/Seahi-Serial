@@ -64,3 +64,8 @@ website/docs/en/changelog.md
 # 更新日志的「每版一页」（由 website/scripts/sync-changelog.mjs 生成）
 website/docs/changelog/
 website/docs/en/changelog/
+
+# 本机临时文件 / 绘图脚手架（不参与构建）
+.tmp-svg-render/
+src/icons/_draw_node_red.py
+src/icons/_rasterize_cib.py

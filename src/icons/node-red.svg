@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Node-RED</title>
+  <!-- 连线：左节点分成两支（圆头，104 粗，缩到 22–24px 仍然看得见） -->
+  <g fill="none" stroke="currentColor" stroke-width="104" stroke-linecap="round">
+    <path d="M364 512C470 512 590 256 700 256"/>
+    <path d="M364 512C470 512 590 768 700 768"/>
+  </g>
+  <!-- 节点：一个来源、两个分支 -->
+  <g fill="currentColor">
+    <rect x="48" y="400" width="328" height="224" rx="76"/>
+    <rect x="688" y="144" width="288" height="224" rx="76"/>
+    <rect x="688" y="656" width="288" height="224" rx="76"/>
+  </g>
+</svg>
