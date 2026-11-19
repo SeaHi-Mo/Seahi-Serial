@@ -897,6 +897,29 @@ fn nodered_install_local_nodes(dir: &std::path::Path, userdir: &std::path::Path)
     if std::fs::create_dir_all(&dst).is_err() {
         return;
     }
+
+    // 先清掉「上次投递过、这次包里已经没有了」的 .js/.html。
+    // ⚠️ 只覆盖不清理的话，删掉的节点会**永远留在调色板里** —— 2026-11 就吃过一次：
+    //    at-suite 从包里删了，用户那边的 nodes/ 还留着旧文件，Node-RED 照旧加载它。
+    // 这个目录归我们管（只放投递过去的节点），清掉是安全的。
+    if let Ok(old) = std::fs::read_dir(&dst) {
+        for e in old.flatten() {
+            let p = e.path();
+            let is_node_file = matches!(
+                p.extension().and_then(|s| s.to_str()),
+                Some("js") | Some("html")
+            );
+            if !is_node_file {
+                continue;
+            }
+            if let Some(name) = p.file_name() {
+                if !src.join(name).exists() {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        }
+    }
+
     // 目录里所有 .js/.html 都投递过去（Node-RED 按同名配对加载）：
     //   · seahi-serial.js/.html —— 本仓库自带（serial in / serial out 桥接节点）
 
