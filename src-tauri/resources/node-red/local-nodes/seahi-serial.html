@@ -235,22 +235,43 @@
                     found = true;
                 } else if (!found) {
                     /* 已保存的那个分栏现在没打开：保留它并说明，别让一次打开对话框就把配置改成别的口 */
-                    var note = list.length ? '（该端口当前未打开）' : '（当前没有已打开的串口）';
-                    opts.unshift($('<option>').val(current).text(seahiMonitorTextOf(current) + note));
+                    if (list.length) {
+                        opts.unshift($('<option>').val(current).text(seahiMonitorTextOf(current) + '（该端口当前未打开）'));
+                    } else {
+                        // 一个串口都没开：当**提示**处理，不是"一个叫这个名字的选项"。
+                        // 文案不带括号、整条置灰（见 seahiSyncSelectTone）——用户 2026-11 要求。
+                        // value 仍然保留原来的分栏 id：这样用户不动这一项就保存，配置不会被清成空。
+                        opts.unshift($('<option>').val(current || '').text('当前没有已打开的串口').attr('data-empty', '1'));
+                    }
                 }
                 $select.empty().append(opts).val(current);
+                seahiSyncSelectTone($select);
             })
             .fail(function () {
                 /* 侧车还是旧版 / 桥断了：保留原值，并提示可以刷新，而不是给一个空下拉 */
                 $select.empty()
                     .append($('<option>').val(current).text(current ? seahiMonitorTextOf(current) + '（读取失败，保留原值）' : '读取失败，保留原值'))
                     .val(current);
+                seahiSyncSelectTone($select);
             });
+    }
+
+    /* 「没有可用端口 / 读取失败」这类占位项是**提示**，不是选项：
+       文字不带括号、整条置灰（用户 2026-11 的要求）。<select> 的选项没法单独上色，
+       所以置灰落在 select 自身的颜色上；选了真实端口就把颜色还原。 */
+    function seahiSyncSelectTone($select) {
+        if (!$select || !$select.length) return;
+        var $opt = $select.find('option:selected');
+        // 判据是"选中的是不是占位项"，不是"值空不空"：占位项的 value 可能仍是保存下来的分栏 id
+        var isEmpty = $opt.attr('data-empty') === '1' || !$select.val();
+        $select.css('color', isEmpty ? 'var(--red-ui-secondary-text-color-muted, #9aa0a6)' : '');
+        $select.find('option[data-empty="1"]').css('color', 'var(--red-ui-secondary-color-focus, #9aa0a6)');
     }
 
     function seahiBindMonitorSelect(saved) {
         var $select = $('#node-input-monitor');
         seahiFillMonitorSelect($select, saved);
+        $select.off('change.seahi').on('change.seahi', function () { seahiSyncSelectTone($select); });
         $('#node-input-monitor-refresh').off('click.seahi').on('click.seahi', function (e) {
             e.preventDefault();
             seahiFillMonitorSelect($select, $select.val());
