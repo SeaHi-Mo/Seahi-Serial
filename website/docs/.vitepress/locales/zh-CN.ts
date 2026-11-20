@@ -51,6 +51,10 @@ export const zhCN: LocaleContent = {
         ],
       },
       {
+        text: '自动化',
+        items: [{ text: 'Node-RED 自动化', link: '/guide/automation' }],
+      },
+      {
         text: 'MCP',
         items: [{ text: 'MCP 接入', link: '/guide/mcp' }],
       },

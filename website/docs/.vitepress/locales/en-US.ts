@@ -54,6 +54,10 @@ export const enUS: LocaleContent = {
         ],
       },
       {
+        text: 'Automation',
+        items: [{ text: 'Node-RED automation', link: '/en/guide/automation' }],
+      },
+      {
         text: 'MCP',
         items: [{ text: 'MCP setup', link: '/en/guide/mcp' }],
       },
