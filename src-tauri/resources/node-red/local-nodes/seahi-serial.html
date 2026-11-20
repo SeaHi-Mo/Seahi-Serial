@@ -328,12 +328,18 @@
                     if (!byName[g]) { byName[g] = []; groups.push(g); }
                     byName[g].push(c);
                 });
+                /* 组名做成**灰掉的禁用项**，而不是 optgroup（用户 2026-11：组名要灰、且不可选）。
+                   optgroup 的标题在 Windows 的深色主题里跟普通选项一个颜色，看着像能选；
+                   disabled 的 option 既一定选不中、颜色也能自己定。 */
                 groups.forEach(function (g) {
-                    const $og = $('<optgroup>').attr('label', g);
+                    $select.append(
+                        $('<option>').val('').prop('disabled', true)
+                            .attr('data-group', '1')
+                            .text('── ' + g + ' ──')
+                            .css({ color: '#9aa0a6', 'font-style': 'italic' }));
                     byName[g].forEach(function (c) {
-                        $og.append($('<option>').val(c.key).text(c.value));
+                        $select.append($('<option>').val(c.key).text(c.value));
                     });
-                    $select.append($og);
                 });
                 /* 已保存的 key 不在列表里（这条被删了）→ 退回按文本找；再找不到就选第一条，
                    但要保留原文本给运行期兜底（见 oneditsave 与节点的 stale 分支）。 */
@@ -553,6 +559,9 @@
         },
         oneditsave: function () {
             // 文本一起存下来：列表里这条以后被删了，还能按旧内容发送（状态条会标 stale）
-            this.cmdText = $('#node-input-cmdKey option:selected').text() || '';
+            // 选中项若是提示/分组标题（data-empty / data-group），不能把提示文字当成指令存进去
+            const $opt = $('#node-input-cmdKey option:selected');
+            const placeholder = $opt.attr('data-empty') === '1' || $opt.attr('data-group') === '1';
+            this.cmdText = placeholder ? '' : ($opt.text() || '');
         }
     });</script>

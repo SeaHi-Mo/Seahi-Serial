@@ -409,6 +409,10 @@ async function main() {
         '编辑器模板：cmd list 有「指令」下拉');
     check(html.indexOf('seahi-serial/quickcmds') >= 0, '编辑器模板：从侧车读快捷指令列表');
 
+    check(!/$\(<optgroup>\)/.test(html) && /prop\('disabled', true\)/.test(html) && /data-group/.test(html),
+        '分组标题是禁用的灰选项，不是 optgroup（用户 2026-11：组名要灰、且选不中）');
+    check(/data-empty'\) === '1' \|\| \$opt\.attr\('data-group'\)/.test(html),
+        '保存时不会把提示/分组标题当成指令文本存进去');
     /* 按 key 现查列表 → 文本发送（AT+GMR + CRLF） */
     bridgeState.sends.length = 0;
     const cmdOk = makeNode('cmd list', {
