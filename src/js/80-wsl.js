@@ -261,17 +261,28 @@ function openWslMapping() {
     }
 
     // 检查 WSL 运行状态
-    function loadWslDistros() {
-        invokeTimeout('get_wsl_distributions', null, 6000).then(function(distros) {
+    // ⚠️ 超时给 12s：后端要跑 `wsl --list --verbose` + 每个运行中发行版的 uptime/free，
+    //    以前只等 6s，冷启动的 WSL 必然超时 → 界面上一句「执行超时」，其实后端还在正常干活（2026-11 用户报）。
+    //    后端那边的探测预算现在是 3s，前端必须明显大于它；两个数字改一个就要改另一个。
+    function loadWslDistros(retried) {
+        invokeTimeout('get_wsl_distributions', null, 12000).then(function(distros) {
             renderWslDistroCards('main', distros);
         }).catch(function(e) {
-            // 读不到列表时**如实说出原因**，别只是清空区域：清空等于"什么都不知道"，
-            // 用户既看不到 WSL 的原始报错，也无从下手（以前还会把报错文本画成一张发行版卡片，
-            // 点它的「启动」会开出 PowerShell —— 2026-10-14 事故）。
+            var msg = String(e && e.message ? e.message : e);
             var container = document.getElementById('main-wslDistroList');
+            // 超时是"慢"，不是"坏"：自动重试一次，别让用户读一句没头没尾的红字。
+            // 真正的错误（wsl 没装 / 列表解析失败）必须原样说出来 —— 那是 2026-10-14 事故的教训。
+            if (!retried && msg.indexOf('执行超时') >= 0) {
+                if (container) {
+                    container.innerHTML = '<div style="color:var(--text-d);font-size:12px;line-height:1.5;">'
+                        + 'WSL 状态读取较慢，正在重试…</div>';
+                }
+                setTimeout(function() { loadWslDistros(true); }, 1200);
+                return;
+            }
             if (container) {
                 container.innerHTML = '<div style="color:var(--accent-red);font-size:12px;line-height:1.5;word-break:break-all;">'
-                    + escapeHtml(String(e)) + '</div>';
+                    + escapeHtml(msg) + '</div>';
             }
         });
     }

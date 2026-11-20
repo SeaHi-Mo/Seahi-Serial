@@ -8592,8 +8592,12 @@ try {
   check(/读取 WSL 发行版列表失败：\{/.test(mainRs),
     '后端把 WSL 的原始报错摘要带进错误信息（界面与 AI 都能直接看到原因）');
 
-  check(/main-wslDistroList'\);[\s\S]{0,300}escapeHtml\(String\(e\)\)/.test(html),
+  // 2026-11：错误文本先收敛成 msg（要拿它判"是不是超时"），所以这里允许两种写法。
+  // 守的仍然是同一件事：**读不到列表时把原因显示在面板里**，而不是静默清空。
+  check(/main-wslDistroList'\);[\s\S]{0,900}escapeHtml\((?:String\(e\)|msg)\)/.test(html),
     '前端读不到发行版列表时把原因显示在面板里（不再只是把区域清空）');
+  check(/msg\.indexOf\('执行超时'\) >= 0[\s\S]{0,900}loadWslDistros\(true\)/.test(html),
+    '超时是"慢"不是"坏"：自动重试一次，而不是甩一句红字（2026-11 用户报的 get_wsl_distributions 执行超时）');
   check(/showToast\('打开 WSL 终端失败: ' \+ e, 'error'\)/.test(html),
     '「打开终端」失败有 toast 提示（以前只有 console）');
   check(/showToast\('WSL 操作失败: ' \+ e, 'error'\)/.test(html),

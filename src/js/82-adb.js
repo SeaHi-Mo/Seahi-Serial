@@ -371,7 +371,8 @@ function wslDistAction(cmd, dist) {
                 var mid = el.id.replace('-wslDistroList', '');
                 var fn = el.closest('.monitor-pane');
                 if (fn) {
-                    invokeTimeout('get_wsl_distributions', null, 6000).then(function(distros) {
+                    // 12s：后端要跑 wsl --list + 每个发行版的探测，6s 会假超时（见 80-wsl.js 同处注释）
+                    invokeTimeout('get_wsl_distributions', null, 12000).then(function(distros) {
                         renderWslDistroCards(mid, distros);
                     }).catch(function(e) { console.warn('[WSL] 获取发行版失败:', e); });
                     invoke('check_wsl_status').then(function(dists) {

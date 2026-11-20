@@ -3569,6 +3569,14 @@ fn get_wsl_distributions_blocking() -> Result<Vec<serde_json::Value>, String> {
 
     let mut distros: Vec<serde_json::Value> = Vec::new();
 
+    /* ⚠️ 探测预算（2026-11 修「get_wsl_distributions 执行超时」）。
+       原来每个运行中的发行版各给 3s + 3s，两个发行版就能拖到 5+N×6 ≈ 17 秒，
+       而前端只等 6 秒 → 界面必然报超时，可后端其实还在正常干活。
+       现在：列表之外，**所有探测加起来**只给 PROBE_BUDGET_MS，超了就留空值。
+       前端超时也同步抬到 12s（见 80-wsl.js / 82-adb.js），两个数字必须保持"前端 > 后端"。 */
+    const PROBE_BUDGET_MS: u64 = 3000;
+    let mut probe_spent_ms: u64 = 0;
+
     for row in rows {
         let name = row.name;
         let is_default = row.is_default;
@@ -3577,22 +3585,36 @@ fn get_wsl_distributions_blocking() -> Result<Vec<serde_json::Value>, String> {
         let running = wsl_says_running && terminal_alive;
 
         let (uptime, mem_used, mem_total) = if wsl_says_running {
-            // 用超时避免命令阻塞，且不启动已停止的发行版
-            let uptime_out = run_output_timeout(
-                hidden_command("wsl").args(["-d", &name, "--", "cat", "/proc/uptime"]),
-                3000,
-            );
-            let uptime = match uptime_out {
-                Some(o) => parse_uptime_hms(&decode_wsl_output(&o.stdout)),
-                None => String::new(),
+            // 每次探测只花"预算里剩下的那点时间"，最少 300ms，剩不够就跳过（留空，界面显示"—"）
+            let take_budget = |spent: &mut u64, want: u64| -> u64 {
+                let left = PROBE_BUDGET_MS.saturating_sub(*spent);
+                let got = left.min(want);
+                *spent += got;
+                got
             };
-            let free_out = run_output_timeout(
-                hidden_command("wsl").args(["-d", &name, "--", "free", "-m"]),
-                3000,
-            );
-            let (total, used) = match free_out {
-                Some(o) => parse_free_output(&decode_wsl_output(&o.stdout)),
-                None => (0, 0),
+            let up_budget = take_budget(&mut probe_spent_ms, 1500);
+            let uptime = if up_budget >= 300 {
+                match run_output_timeout(
+                    hidden_command("wsl").args(["-d", &name, "--", "cat", "/proc/uptime"]),
+                    up_budget,
+                ) {
+                    Some(o) => parse_uptime_hms(&decode_wsl_output(&o.stdout)),
+                    None => String::new(),
+                }
+            } else {
+                String::new()
+            };
+            let free_budget = take_budget(&mut probe_spent_ms, 1500);
+            let (total, used) = if free_budget >= 300 {
+                match run_output_timeout(
+                    hidden_command("wsl").args(["-d", &name, "--", "free", "-m"]),
+                    free_budget,
+                ) {
+                    Some(o) => parse_free_output(&decode_wsl_output(&o.stdout)),
+                    None => (0, 0),
+                }
+            } else {
+                (0, 0)
             };
             (uptime, used, total)
         } else {
