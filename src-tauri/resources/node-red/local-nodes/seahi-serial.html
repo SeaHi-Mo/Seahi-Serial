@@ -6,7 +6,7 @@
     <input type="text" id="node-input-name" placeholder="发送">
   </div>
   <div class="form-row">
-    <label for="node-input-monitor"><i class="fa fa-plug"></i> 监视器</label>
+    <label for="node-input-monitor"><i class="fa fa-plug"></i> 端口</label>
     <select id="node-input-monitor" style="width:60%"></select>
     <button type="button" id="node-input-monitor-refresh" class="red-ui-button red-ui-button-small" style="margin-left:6px">刷新</button>
   </div>
@@ -29,7 +29,7 @@
 <script type="text/html" data-help-name="serial out">
   <p>把 <code>msg.payload</code> 写进宿主程序里**已经打开**的那个串口。</p>
   <p>⚠️ 它不自己开串口：COM 口由宿主独占（监视器、DTR/RTS、WSL 映射都在用）。
-     「监视器」下拉列出宿主里当前**已经打开**的串口分栏（<code>main</code> 是主监视器，
+     「端口」下拉列出宿主里当前**已经打开**的串口（每项就是 <code>COM17 · 115200</code> 这样的实际端口；
      <code>extra-N</code> 是额外分栏）；端口有增减时点「刷新」重新读取。
      已保存但当前没打开的分栏会标「当前未打开」，配置不会被悄悄改掉。</p>
   <h3>参数</h3>
@@ -53,7 +53,7 @@
     <input type="text" id="node-input-name" placeholder="接收">
   </div>
   <div class="form-row">
-    <label for="node-input-monitor"><i class="fa fa-plug"></i> 监视器</label>
+    <label for="node-input-monitor"><i class="fa fa-plug"></i> 端口</label>
     <select id="node-input-monitor" style="width:60%"></select>
     <button type="button" id="node-input-monitor-refresh" class="red-ui-button red-ui-button-small" style="margin-left:6px">刷新</button>
   </div>
@@ -72,7 +72,7 @@
 <script type="text/html" data-help-name="serial in">
   <p>把宿主那个串口**收到的数据**变成消息。数据来自宿主程序的读线程 ——
      它与监视器各读各的，不会互相抢。</p>
-  <p>「监视器」下拉列出宿主里当前**已经打开**的串口分栏；端口有增减时点「刷新」重新读取。</p>
+  <p>「端口」下拉列出宿主里当前**已经打开**的串口（显示为 <code>COM17 · 115200</code>）；插拔端口后点「刷新」重新读取。</p>
   <h3>参数</h3>
   <ul>
     <li><b>格式</b>：
@@ -102,7 +102,7 @@
     <input type="text" id="node-input-name" placeholder="AT 请求">
   </div>
   <div class="form-row">
-    <label for="node-input-monitor"><i class="fa fa-plug"></i> 监视器</label>
+    <label for="node-input-monitor"><i class="fa fa-plug"></i> 端口</label>
     <select id="node-input-monitor" style="width:60%"></select>
     <button type="button" id="node-input-monitor-refresh" class="red-ui-button red-ui-button-small" style="margin-left:6px">刷新</button>
   </div>
@@ -145,7 +145,7 @@
 <script type="text/html" data-help-name="serial request">
   <p>发一条命令，然后收一段窗口，最后输出一条结果。顺序固定为
      <b>清空旧数据 → 写串口 → 收窗口</b>，所以这次收到的回复一定属于这次发出去的命令。</p>
-  <p>⚠️ 它不自己开串口（与 serial in/out 一样走宿主桥）。「监视器」下拉列出当前已打开的串口分栏。</p>
+  <p>⚠️ 它不自己开串口（与 serial in/out 一样走宿主桥）。「端口」下拉列出当前已打开的串口，新节点默认选中第一个已打开的端口。</p>
   <h3>输入</h3>
   <p><code>msg.payload</code> 是要发的命令。文本模式下会追加「行尾」；HEX 模式下按十六进制解析，不追加行尾。</p>
   <h3>结果分支（一个条件一个连接点）</h3>
@@ -178,46 +178,72 @@
 </script>
 
 <script type="text/javascript">
-    /* 「监视器」下拉：列出宿主里**当前真的打开着**的串口分栏。
+    /* 「端口」下拉：列出宿主里**当前真的打开着**的串口。
+       用户 2026-11 的要求：界面上看到的是 COM17 这种**端口**，不是 main/extra-1 这种监视器 id ——
+       监视器是宿主内部的实现细节，摆给用户只会让人问"我该选哪个"。
+       ⚠️ 但 option 的 **value 仍然是监视器 id**：桥是按 id 取数据/写数据的（端口名会变、id 不会）。
        Node-RED 编辑器和宿主不是同一个 origin、拿不到桥令牌，所以由侧车代问一次：
        /seahi-serial/monitors（见 seahi-serial.js 的 registerAdminRoutes）。 */
+    var seahiMonitorText = {};   // id -> 显示文本（标签与状态都用它，别再露出 id）
+
+
+    /* 编辑器加载时就把 id → 端口名 缓存起来，**不用等用户打开某个节点对话框**：
+       节点卡片上的标签要立刻显示 COM17，而不是 main/分栏 1（用户 2026-11 的要求）。
+       取到之后重绘一次画布，让已存在的节点标签跟着更新。 */
+    function seahiPrimeMonitors() {
+        $.getJSON('seahi-serial/monitors').done(function (list) {
+            (list || []).forEach(function (m) {
+                if (m && m.id) seahiMonitorText[m.id] = seahiMonitorLabel(m);
+            });
+            try { if (typeof RED !== 'undefined' && RED.view && RED.view.redraw) RED.view.redraw(true); } catch (e) { /* 编辑器还没就绪就算了 */ }
+        });
+    }
+    // 延后一拍：编辑器初始化时 RED 的 base URL 才就绪，过早请求会 404
+    setTimeout(seahiPrimeMonitors, 0);
     function seahiMonitorLabel(m) {
-        var name = m.id;
-        if (m.id === 'main') {
-            name = 'main · 主监视器';
-        } else if (/^extra-(\d+)$/.test(m.id)) {
-            name = m.id + ' · 分栏 ' + RegExp.$1;
-        }
         var info = [];
         if (m.port) info.push(m.port);
         if (m.baud) info.push(m.baud + ' bps');
-        return info.length ? name + '（' + info.join(' / ') + '）' : name;
+        if (info.length) return info.join(' · ');          // COM17 · 115200
+        return m.id === 'main' ? '主分栏（端口未打开）' : '分栏 ' + m.id + '（端口未打开）';
     }
 
+    function seahiMonitorTextOf(id) {
+        return seahiMonitorText[id] || (id === 'main' ? '主分栏' : id);
+    }
+
+    /* saved 为空 = 新节点：默认选中**第一个已打开的端口**（用户 2026-11 要求） */
     function seahiFillMonitorSelect($select, saved) {
-        var current = saved || 'main';
-        $select.empty().append($('<option>').val(current).text(current + '（读取中…）'));
+        var current = saved || '';
+        $select.empty().append($('<option>').val(current).text('读取中…'));
         $select.val(current);
         $.getJSON('seahi-serial/monitors')
             .done(function (list) {
+                list = list || [];
                 var opts = [];
                 var found = false;
-                (list || []).forEach(function (m) {
+                seahiMonitorText = {};
+                list.forEach(function (m) {
                     if (!m || !m.id) return;
+                    seahiMonitorText[m.id] = seahiMonitorLabel(m);
                     if (m.id === current) found = true;
                     opts.push($('<option>').val(m.id).text(seahiMonitorLabel(m)));
                 });
-                /* 已保存的 id 现在没打开：保留它并说明，别让一次打开对话框就把配置改成别的口 */
-                if (!found) {
-                    var note = (list && list.length) ? '（当前未打开）' : '（当前没有已打开的串口）';
-                    opts.unshift($('<option>').val(current).text(current + note));
+                if (!current && list.length) {
+                    // 新节点：默认第一个已打开的端口
+                    current = list[0].id;
+                    found = true;
+                } else if (!found) {
+                    /* 已保存的那个分栏现在没打开：保留它并说明，别让一次打开对话框就把配置改成别的口 */
+                    var note = list.length ? '（该端口当前未打开）' : '（当前没有已打开的串口）';
+                    opts.unshift($('<option>').val(current).text(seahiMonitorTextOf(current) + note));
                 }
                 $select.empty().append(opts).val(current);
             })
             .fail(function () {
                 /* 侧车还是旧版 / 桥断了：保留原值，并提示可以刷新，而不是给一个空下拉 */
                 $select.empty()
-                    .append($('<option>').val(current).text(current + '（读取失败，保留原值）'))
+                    .append($('<option>').val(current).text(current ? seahiMonitorTextOf(current) + '（读取失败，保留原值）' : '读取失败，保留原值'))
                     .val(current);
             });
     }
@@ -317,7 +343,7 @@
         color: '#b8c8b8',
         defaults: {
             name: { value: '' },
-            monitor: { value: 'main' },
+            monitor: { value: '' },   // 空 = 未选：对话框打开时默认选中第一个已打开的端口（用户 2026-11）
             eol: { value: 'crlf' },
             /* '' = 老流程没这个字段：构造函数按 asHex 回退，编辑器打开时再补成 text/hex */
             format: { value: '' },
@@ -326,7 +352,7 @@
         inputs: 1,
         outputs: 1,
         icon: 'font-awesome/fa-arrow-right',
-        label: function () { return this.name || 'serial out'; },
+        label: function () { return this.name || seahiMonitorTextOf(this.monitor) + ' →'; },
         oneditprepare: function () {
             seahiBindMonitorSelect(this.monitor);
             $('#node-input-format').val(this.format || (this.asHex === true ? 'hex' : 'text'));
@@ -338,14 +364,14 @@
         color: '#b8c8b8',
         defaults: {
             name: { value: '' },
-            monitor: { value: 'main' },
+            monitor: { value: '' },   // 空 = 未选：对话框打开时默认选中第一个已打开的端口（用户 2026-11）
             format: { value: '' },
             pollMs: { value: 100 }
         },
         inputs: 0,
         outputs: 1,
         icon: 'font-awesome/fa-arrow-left',
-        label: function () { return this.name || 'serial in'; },
+        label: function () { return this.name || seahiMonitorTextOf(this.monitor) + ' ←'; },
         oneditprepare: function () {
             seahiBindMonitorSelect(this.monitor);
             $('#node-input-format').val(this.format || 'text');
@@ -357,7 +383,7 @@
         color: '#c8b8b8',
         defaults: {
             name: { value: '' },
-            monitor: { value: 'main' },
+            monitor: { value: '' },   // 空 = 未选：对话框打开时默认选中第一个已打开的端口（用户 2026-11）
             sendFormat: { value: 'text' },
             eol: { value: 'crlf' },
             recvFormat: { value: 'text' },
@@ -375,7 +401,7 @@
             return seahiRuleTypeLabel(r.t) + ' ' + r.v;
         },
         icon: 'font-awesome/fa-exchange',
-        label: function () { return this.name || 'serial request'; },
+        label: function () { return this.name || seahiMonitorTextOf(this.monitor) + ' ⇄'; },
         oneditprepare: function () {
             seahiBindMonitorSelect(this.monitor);
             seahiRenderRules(this.rules);

@@ -140,6 +140,24 @@ module.exports = function (RED) {
         });
     }
 
+    /* id → 端口名（COM17 · 115200）。界面上不露 main/extra-1 —— 那是宿主的内部实现细节。
+       只查一次，进程内缓存；查不到就退回 id，不影响功能。 */
+    let monitorNames = null;
+    function monitorLabel(id) {
+        if (monitorNames && monitorNames[id]) return monitorNames[id];
+        if (!monitorNames) {
+            monitorNames = {};
+            bridgeCall('monitors', {}, 1500).then(function (r) {
+                (r.monitors || []).forEach(function (m) {
+                    const info = [];
+                    if (m.port) info.push(m.port);
+                    if (m.baud) info.push(m.baud + ' bps');
+                    monitorNames[m.id] = info.length ? info.join(' · ') : m.id;
+                });
+            }).catch(function () {});
+        }
+        return id === 'main' ? '主分栏' : id;
+    }
     /* ---------------- serial out ---------------- */
     function SerialOutNode(config) {
         RED.nodes.createNode(this, config);
@@ -242,7 +260,7 @@ module.exports = function (RED) {
         }
 
         timer = setInterval(tick, node.pollMs);
-        node.status({ fill: 'blue', shape: 'dot', text: '监听 ' + node.monitor + '（' + node.format + '）' });
+        node.status({ fill: 'blue', shape: 'dot', text: '监听 ' + monitorLabel(node.monitor) + '（' + node.format + '）' });
     }
     RED.nodes.registerType('serial in', SerialInNode);
 
@@ -439,7 +457,7 @@ module.exports = function (RED) {
             pump();
         });
 
-        node.status({ fill: 'grey', shape: 'dot', text: '待请求（' + node.monitor + '）' });
+        node.status({ fill: 'grey', shape: 'dot', text: '待请求（' + monitorLabel(node.monitor) + '）' });
     }
     RED.nodes.registerType('serial request', SerialRequestNode);
 
