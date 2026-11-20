@@ -44,6 +44,11 @@ const bridgeState = {
     rx: [],        // 每次 read 依次取一项（hex 串）；空了就回空
     sends: [],     // 收到的 send 请求
     sendError: '',  // 非空时 send 回 ok:false + 这条 error（模拟端口没打开）
+    /* 「快捷指令」快照 —— 与 Rust 侧 nodered_set_quickcmds 存下的形状一致 */
+    quickcmds: [
+        { key: 'main' + '\u0001' + 'g1' + '\u0001' + 0, monitor: 'main', group: '初始化', index: 0, value: 'AT+GMR', seq: 1, hex: false },
+        { key: 'main' + '\u0001' + 'g1' + '\u0001' + 1, monitor: 'main', group: '初始化', index: 1, value: '41540d0a', seq: 2, hex: true }
+    ],
     reads: [],     // 收到的 read 请求（钉住监视器 id 有没有被原样带过去）
     /* 「当前已打开的串口」——与 main.rs bridge_list_monitors 的回执形状一致 */
     monitors: [
@@ -90,6 +95,8 @@ function startFakeBridge() {
                         bridgeState.reads.push(v);
                         const rx = bridgeState.rx.length ? bridgeState.rx.shift() : '';
                         sock.write(JSON.stringify({ ok: true, id: v.id, rx: rx }) + '\n');
+                    } else if (v.op === 'quickcmds') {
+                        sock.write(JSON.stringify({ ok: true, id: v.id, cmds: bridgeState.quickcmds }) + '\n');
                     } else if (v.op === 'monitors') {
                         sock.write(JSON.stringify({ ok: true, id: v.id, monitors: bridgeState.monitors }) + '\n');
                     } else {
@@ -394,6 +401,47 @@ async function main() {
     check(!!err, '非法 HEX：走 done(err)');
     eq(bridgeState.sends.length, 0, '非法 HEX：一个字节都不发');
 
+    /* --- cmd list：与宿主「快捷指令」列表同步（用户 2026-11） --- */
+    check(typeof types['cmd list'] === 'function', '注册了 cmd list 节点');
+    check(typeof adminRoutes['/seahi-serial/quickcmds'] === 'function',
+        '侧车注册了 /seahi-serial/quickcmds（编辑器下拉的数据来源）');
+    check(/data-template-name="cmd list"/.test(html) && /id="node-input-cmdKey"/.test(html),
+        '编辑器模板：cmd list 有「指令」下拉');
+    check(html.indexOf('seahi-serial/quickcmds') >= 0, '编辑器模板：从侧车读快捷指令列表');
+
+    /* 按 key 现查列表 → 文本发送（AT+GMR + CRLF） */
+    bridgeState.sends.length = 0;
+    const cmdOk = makeNode('cmd list', {
+        monitor: 'main', eol: 'crlf',
+        cmdKey: bridgeState.quickcmds[0].key, cmdText: 'AT+GMR'
+    });
+    cmdOk._handlers.input({ payload: 'go' }, null, function () {});
+    await sleep(250);
+    eq(bridgeState.sends[0] && bridgeState.sends[0].hex, '41542b474d520d0a',
+        'cmd list：按 key 解析出指令内容并按文本发送（AT+GMR + CRLF）');
+    check(cmdOk._sent && cmdOk._sent[0] && cmdOk._sent[0].command === 'AT+GMR'
+        && cmdOk._sent[0].stale === false,
+        'cmd list：输出带上实际发送的文本，且不是旧快照');
+
+    /* 标了 hex 的条目按字节发，不加行尾 */
+    bridgeState.sends.length = 0;
+    const cmdHex = makeNode('cmd list', { monitor: 'main', eol: 'crlf',
+        cmdKey: bridgeState.quickcmds[1].key, cmdText: '41540d0a' });
+    cmdHex._handlers.input({ payload: 'go' }, null, function () {});
+    await sleep(250);
+    eq(bridgeState.sends[0] && bridgeState.sends[0].hex, '41540d0a',
+        'cmd list：标了 HEX 的条目按字节发（不加行尾）');
+
+    /* 条目被删掉了 → 用保存时的文本兜底，并标记 stale（不能假装同步成功） */
+    bridgeState.sends.length = 0;
+    const cmdStale = makeNode('cmd list', { monitor: 'main', eol: 'none',
+        cmdKey: 'main' + '\u0001' + 'gone' + '\u0001' + 0, cmdText: 'AT+OLD' });
+    cmdStale._handlers.input({ payload: 'go' }, null, function () {});
+    await sleep(250);
+    eq(bridgeState.sends[0] && bridgeState.sends[0].hex, '41542b4f4c44',
+        'cmd list：列表里没有这条时按保存的文本发送');
+    eq(cmdStale._sent && cmdStale._sent[0] && cmdStale._sent[0].stale, true,
+        'cmd list：兜底发送必须标 stale=true');
     /* --- 端口没打开时的两种说法（用户 2026-11：别再说「监视器 main 没有打开的串口」）--- */
     bridgeState.sendError = '没有打开的串口';
     const txNoPort = makeNode('serial txd', { monitor: 'main', format: 'text', eol: 'crlf' });

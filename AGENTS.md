@@ -15,7 +15,7 @@ npm run build                                     # 发布构建 → src-tauri/t
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（301 条 + 1 条 #[ignore] 手工联调用例）
 node .walkthrough/gen_ble_preview.js              # 前端无头断言集（改前端后必跑）
 node .walkthrough/mcp_smoke.js                    # 对**正在跑的应用**逐个真调工具（改 MCP 后必跑）
-node .walkthrough/nodered_nodes_test.js           # serial rxd / serial txd / serial request 节点断言（假桥 + 假 RED；改 local-nodes 后必跑）
+node .walkthrough/nodered_nodes_test.js           # serial rxd / serial txd / serial request / cmd list 节点断言（假桥 + 假 RED；改 local-nodes 后必跑）
 
 # 文档站（website/，VitePress；依赖只装在 website/ 里，别在根目录装）
 # 以下在**仓库根目录**执行。`--prefix website` 是相对当前目录的 ——

@@ -89,7 +89,61 @@ function setQcmdGroupOn(mid, gid, on) {
 /// 列标题放在组里面（而不是列表顶上共用一份）：共用一份的话它夹在"第一组抬头"和"第一组数据行"
 /// 之间，读起来是断的，第二组的行又离它很远 —— 用户 2026-09 指出的正是这里。
 /// 现在面板与文件的形状完全一致（文件里也是"一组一张表"，见 qcmdExportPrep）。
+/// 把「快捷指令」列表推给 Rust（node-red 的 cmd list 节点靠这份快照同步）。
+/// 权威数据在前端：面板里可能有还没写回文件的改动，所以**每次列表变化都推**，
+/// Rust 只当中转缓存（见 main.rs 的 nodered_set_quickcmds）。
+/// 去抖 800ms：连续输入时别一条一格地打 IPC。
+var _qcmdNoderedSyncTimer = null;
+var _qcmdNoderedLastJson = '';
+function qcmdNoderedSnapshot() {
+    var out = [];
+    Object.keys(monitors || {}).forEach(function(mid) {
+        var m = monitors[mid];
+        if (!m) return;
+        // 不走 qcmdGroups()：它会顺手补默认组（在这里做等于改用户数据）
+        var gs = (m.quickGroups && m.quickGroups.length)
+            ? m.quickGroups
+            : [{ id: 'legacy', name: QCMD_GROUP_DEFAULT_NAME, items: m.quickCmds || [] }];
+        gs.forEach(function(g) {
+            (g.items || []).forEach(function(it, ii) {
+                if (!it || !it.value) return;      // 空条目没有可发送内容
+                out.push({
+                    key: mid + '\u0001' + (g.id || '') + '\u0001' + ii,
+                    monitor: mid,
+                    group: g.name || QCMD_GROUP_DEFAULT_NAME,
+                    index: ii,
+                    value: String(it.value),
+                    seq: parseInt(it.seq, 10) || 0,
+                    hex: !!it.hex
+                });
+            });
+        });
+    });
+    return out;
+}
+
+function qcmdSyncNodered() {
+    var snap = qcmdNoderedSnapshot();
+    var json = JSON.stringify(snap);
+    if (json === _qcmdNoderedLastJson) return;   // 没变就不推
+    _qcmdNoderedLastJson = json;
+    invoke('nodered_set_quickcmds', { items: snap }).catch(function(e) {
+        // 引擎没跑起来 / 版本旧：不影响面板本身
+        _qcmdNoderedLastJson = '';              // 下次再试
+        console.warn('[快速指令] 同步给自动化引擎失败:', e);
+    });
+}
+
+function qcmdSyncNoderedSoon() {
+    if (_qcmdNoderedSyncTimer) clearTimeout(_qcmdNoderedSyncTimer);
+    _qcmdNoderedSyncTimer = setTimeout(function() {
+        _qcmdNoderedSyncTimer = null;
+        qcmdSyncNodered();
+    }, 800);
+}
 function rebuildQcmdList(mid) {
+    // node-red 的 cmd list 要跟着列表走；断言集的假环境里没有 invoke，直接跳过
+    if (typeof qcmdSyncNoderedSoon === 'function' && typeof invoke === 'function') qcmdSyncNoderedSoon();
     var qlist = document.getElementById(mid + '-qcmdList');
     if (!qlist) return;
     qlist.innerHTML = '';

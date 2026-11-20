@@ -101,6 +101,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // 加载并恢复用户上次的配置
         loadAndApplyConfig();
+        // node-red 的 cmd list 节点要的是「快捷指令」快照（权威数据在前端），
+        // 即使用户没打开过快速指令面板，也要在配置落地后推一次
+        setTimeout(function () {
+            if (typeof qcmdSyncNodered === 'function') qcmdSyncNodered();
+        }, 2500);
 
         // 页面 DOM/样式已就绪（主面板已同步创建完成，尚未发生绘制），
         // 此刻把隐藏的主窗口一次性显示在恢复后的最终几何位置，避免“先显示再移动/缩放”的二次跳变。

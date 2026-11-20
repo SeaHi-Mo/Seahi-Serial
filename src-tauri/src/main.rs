@@ -706,6 +706,14 @@ fn bridge_serve(stream: std::net::TcpStream, app: tauri::AppHandle, token: Strin
                 "ok": true,
                 "monitors": bridge_list_monitors(&app),
             }),
+            /* cmd list 节点的下拉：宿主里「快捷指令」列表的快照（前端推上来的那份）。
+               为什么不由这里自己去读文件：快捷指令的文件路径只认用户在原生框里选过的
+               （见 AGENTS「快速指令的外部文件」），而且面板里可能有未写回内存改动 ——
+               唯一权威是前端那份，这里只做缓存中转。 */
+            "quickcmds" => serde_json::json!({
+                "ok": true,
+                "cmds": quickcmds_store().lock().map(|g| g.clone()).unwrap_or_default(),
+            }),
             _ => serde_json::json!({"ok": false, "error": format!("未知 op: {op}")}),
         };
         let reply = bridge_attach_id(reply, v.get("id"));
@@ -807,6 +815,56 @@ mod bridge_tests {
         ids.sort_by_key(|id| bridge_monitor_sort_key(id));
         assert_eq!(ids, vec!["main", "extra-1", "extra-2", "extra-10", "zzz"]);
     }
+}
+
+// ===== 「快捷指令」快照（给 node-red 的 cmd list 节点用）=====
+//
+// 权威数据在前端（面板里的列表，可能还有没写回文件的改动），Rust 只是**中转缓存**：
+// 前端每次改完调 `nodered_set_quickcmds` 推一份，桥的 `quickcmds` op 把它交给侧车，
+// 编辑器靠管理路由 `/seahi-serial/quickcmds` 取。
+//
+// ⚠️ 别在这里改成"自己去读 quick-cmds 文件"：快捷指令的文件路径**只认用户在原生框里
+//    亲手选过的**（后端 quick-cmds-files.json 那张表），这里凭空开文件就把那条纪律破了。
+static NODERED_QUICKCMDS: std::sync::OnceLock<Mutex<Vec<serde_json::Value>>> =
+    std::sync::OnceLock::new();
+/// 快照上限：条数与单条文本都要有闸（前端可被 MCP 批量改，别把桥和编辑器一起撑爆）
+const QUICKCMD_SYNC_MAX_ITEMS: usize = 2000;
+const QUICKCMD_SYNC_MAX_TEXT: usize = 512;
+
+fn quickcmds_store() -> &'static Mutex<Vec<serde_json::Value>> {
+    NODERED_QUICKCMDS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// 前端推送当前「快捷指令」列表的快照（只用于 node-red 的下拉与运行期解析）。
+/// 入参形状：`[{ key, monitor, group, index, value, seq, hex }]`，多出来的字段一律丢掉。
+#[tauri::command]
+fn nodered_set_quickcmds(items: Vec<serde_json::Value>) -> Result<usize, String> {
+    if items.len() > QUICKCMD_SYNC_MAX_ITEMS {
+        return Err(format!("快捷指令太多（上限 {} 条），未同步给自动化引擎", QUICKCMD_SYNC_MAX_ITEMS));
+    }
+    let mut out: Vec<serde_json::Value> = Vec::with_capacity(items.len());
+    for it in items {
+        let s = |k: &str| it.get(k).and_then(|v| v.as_str()).unwrap_or("");
+        let value = s("value");
+        if value.is_empty() {
+            continue;                       // 空条目没有可发送的内容，不占下拉位置
+        }
+        if value.chars().count() > QUICKCMD_SYNC_MAX_TEXT {
+            return Err(format!("第 {} 条指令超长（上限 {} 字符）", out.len() + 1, QUICKCMD_SYNC_MAX_TEXT));
+        }
+        out.push(serde_json::json!({
+            "key": s("key"),
+            "monitor": s("monitor"),
+            "group": s("group"),
+            "index": it.get("index").and_then(|v| v.as_u64()).unwrap_or(0),
+            "value": value,
+            "seq": it.get("seq").and_then(|v| v.as_u64()).unwrap_or(0),
+            "hex": it.get("hex").and_then(|v| v.as_bool()).unwrap_or(false),
+        }));
+    }
+    let n = out.len();
+    *quickcmds_store().lock().unwrap_or_else(|e| e.into_inner()) = out;
+    Ok(n)
 }
 
 fn nodered_alive(port: u16) -> bool {
@@ -10245,6 +10303,7 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
         .invoke_handler(tauri::generate_handler![
             nodered_open,
             nodered_stop,
+            nodered_set_quickcmds,
             list_ports,
             list_wsl_devices,
             open_port,

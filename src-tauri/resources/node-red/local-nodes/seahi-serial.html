@@ -96,6 +96,45 @@
   </ul>
 </script>
 
+<script type="text/html" data-template-name="cmd list">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> 名称</label>
+    <input type="text" id="node-input-name" placeholder="cmd list">
+  </div>
+  <div class="form-row">
+    <label for="node-input-monitor"><i class="fa fa-plug"></i> 端口</label>
+    <select id="node-input-monitor" style="width:60%"></select>
+    <button type="button" id="node-input-monitor-refresh" class="red-ui-button red-ui-button-small" style="margin-left:6px">刷新</button>
+  </div>
+  <div class="form-row">
+    <label for="node-input-cmdKey"><i class="fa fa-list"></i> 指令</label>
+    <select id="node-input-cmdKey" style="width:60%"></select>
+    <button type="button" id="node-input-cmd-refresh" class="red-ui-button red-ui-button-small" style="margin-left:6px">刷新</button>
+  </div>
+  <div class="form-row">
+    <label for="node-input-eol">行尾</label>
+    <select id="node-input-eol" style="width:30%">
+      <option value="crlf">CRLF</option>
+      <option value="cr">CR</option>
+      <option value="lf">LF</option>
+      <option value="none">不加</option>
+    </select>
+  </div>
+</script>
+
+<script type="text/html" data-help-name="cmd list">
+  <p>发送「快捷指令」面板里选中的那一条。内容不写死在节点里：运行期按 key 去宿主那份列表里现查，
+     所以在面板里改了指令，流程不用重新拖节点也跟着变。</p>
+  <h3>参数</h3>
+  <ul>
+    <li><b>端口</b>：从宿主当前**已经打开**的串口里选（显示为 <code>COM17 · 115200</code>）。</li>
+    <li><b>指令</b>：宿主「快捷指令」列表里的条目，按组分组显示。列表为空时这里会提示。</li>
+    <li><b>行尾</b>：文本模式下追加；该条指令若标了 HEX，则按字节发送、不加行尾。</li>
+  </ul>
+  <h3>输出</h3>
+  <p>成功后原样往下游传，另附 <code>msg.sent</code>（字节数）、<code>msg.command</code>（实际发送的文本）；
+     若这条指令已经不在列表里，会按保存时的文本发送并置 <code>msg.stale=true</code>。</p>
+</script>
 <script type="text/html" data-template-name="serial request">
   <div class="form-row">
     <label for="node-input-name"><i class="fa fa-tag"></i> 名称</label>
@@ -268,6 +307,58 @@
         $select.find('option[data-empty="1"]').css('color', 'var(--red-ui-secondary-color-focus, #9aa0a6)');
     }
 
+    /* 「指令」下拉：宿主「快捷指令」列表的快照（/seahi-serial/quickcmds），按组分 optgroup。
+       ⚠️ value 存的是 key（宿主生成的稳定标识），不是指令文本 —— 文本改了以后节点要能跟着变。 */
+    function seahiFillCmdSelect($select, savedKey, savedText) {
+        $select.empty().append($('<option>').val('').text('读取中…'));
+        $.getJSON('seahi-serial/quickcmds')
+            .done(function (list) {
+                list = list || [];
+                if (!list.length) {
+                    $select.empty().append(
+                        $('<option>').val('').text('快捷指令列表是空的').attr('data-empty', '1'));
+                    return;
+                }
+                const groups = [];
+                const byName = {};
+                list.forEach(function (c) {
+                    const g = c.group || '默认';
+                    if (!byName[g]) { byName[g] = []; groups.push(g); }
+                    byName[g].push(c);
+                });
+                groups.forEach(function (g) {
+                    const $og = $('<optgroup>').attr('label', g);
+                    byName[g].forEach(function (c) {
+                        $og.append($('<option>').val(c.key).text(c.value));
+                    });
+                    $select.append($og);
+                });
+                /* 已保存的 key 不在列表里（这条被删了）→ 退回按文本找；再找不到就选第一条，
+                   但要保留原文本给运行期兜底（见 oneditsave 与节点的 stale 分支）。 */
+                let val = '';
+                if (savedKey && list.some(function (c) { return c.key === savedKey; })) {
+                    val = savedKey;
+                } else if (savedText) {
+                    const hit = list.filter(function (c) { return c.value === savedText; })[0];
+                    if (hit) val = hit.key;
+                }
+                if (!val) val = list[0].key;
+                $select.val(val);
+            })
+            .fail(function () {
+                $select.empty().append(
+                    $('<option>').val(savedKey || '').text('读取失败，保留原值').attr('data-empty', '1'));
+            });
+    }
+
+    function seahiBindCmdSelect(savedKey, savedText) {
+        const $select = $('#node-input-cmdKey');
+        seahiFillCmdSelect($select, savedKey, savedText);
+        $('#node-input-cmd-refresh').off('click.seahi').on('click.seahi', function (e) {
+            e.preventDefault();
+            seahiFillCmdSelect($select, $select.val(), savedText);
+        });
+    }
     function seahiBindMonitorSelect(saved) {
         var $select = $('#node-input-monitor');
         seahiFillMonitorSelect($select, saved);
@@ -438,4 +529,28 @@
             $('#node-input-outputs').val(this.rules.length);
         }
     });
-</script>
+
+    RED.nodes.registerType('cmd list', {
+        category: '串口',
+        color: '#c8c0a8',
+        defaults: {
+            name: { value: '' },
+            monitor: { value: '' },
+            cmdKey: { value: '' },
+            cmdText: { value: '' },
+            eol: { value: 'crlf' }
+        },
+        inputs: 1,
+        outputs: 1,
+        icon: 'font-awesome/fa-list-ul',
+        label: function () { return this.name || 'cmd list'; },
+        oneditprepare: function () {
+            seahiBindMonitorSelect(this.monitor);
+            seahiBindCmdSelect(this.cmdKey, this.cmdText);
+            $('#node-input-eol').val(this.eol || 'crlf');
+        },
+        oneditsave: function () {
+            // 文本一起存下来：列表里这条以后被删了，还能按旧内容发送（状态条会标 stale）
+            this.cmdText = $('#node-input-cmdKey option:selected').text() || '';
+        }
+    });</script>

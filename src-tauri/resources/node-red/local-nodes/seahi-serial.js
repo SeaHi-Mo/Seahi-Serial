@@ -140,6 +140,15 @@ module.exports = function (RED) {
         });
     }
 
+    /* cmd list 的下拉：宿主里「快捷指令」列表的快照。
+       权威数据在宿主前端（面板里那份），侧车只是转发 —— 本模块不解析任何指令文件。 */
+    RED.httpAdmin.get('/seahi-serial/quickcmds', function (req, res) {
+        bridgeCall('quickcmds', {}, 2000)
+            .then(function (r) { res.json(r.cmds || []); })
+            .catch(function (err) {
+                res.status(503).json({ error: String((err && err.message) || err) });
+            });
+    });
     /* id → 端口名（COM17 · 115200）。界面上不露 main/extra-1 —— 那是宿主的内部实现细节。
        只查一次，进程内缓存；查不到就退回 id，不影响功能。 */
     let monitorNames = null;
@@ -218,6 +227,84 @@ module.exports = function (RED) {
     }
     RED.nodes.registerType('serial txd', SerialOutNode);
 
+    /* ---------------- cmd list ----------------
+       一条消息 = 发送「快捷指令」列表里选中的那一条。
+       内容**不写死在节点里**：运行期按 key 去宿主那份快照里现查，所以在面板里改了指令，
+       流程不用重新拖节点也跟着变（这正是它存在的理由，否则用 serial txd 填死就行）。
+       查不到（列表被清空 / 这条被删了）时退回保存时的文本，并在状态条上说清楚。 */
+    let cmdCache = { at: 0, list: [] };
+    function quickCommands() {
+        const now = Date.now();
+        if (now - cmdCache.at < 2000 && cmdCache.list.length) return Promise.resolve(cmdCache.list);
+        return bridgeCall('quickcmds', {}, 2000).then(function (r) {
+            cmdCache = { at: Date.now(), list: (r.cmds || []) };
+            return cmdCache.list;
+        });
+    }
+
+    function cmdTextShort(s) {
+        const t = String(s || '');
+        return t.length > 18 ? t.slice(0, 17) + '…' : t;
+    }
+
+    function CmdListNode(config) {
+        RED.nodes.createNode(this, config);
+        const node = this;
+        node.monitor = (config.monitor || 'main').trim();
+        node.cmdKey = config.cmdKey || '';
+        node.cmdText = config.cmdText || '';
+        node.eol = config.eol || 'crlf';
+        node.status({ fill: 'grey', shape: 'dot', text: node.cmdText ? cmdTextShort(node.cmdText) : '未选择指令' });
+
+        const EOL = { crlf: '\r\n', cr: '\r', lf: '\n', none: '' };
+
+        node.on('input', function (msg, send, done) {
+            send = send || function () { node.send.apply(node, arguments); };
+            done = done || function (err) { if (err) node.error(err, msg); };
+
+            quickCommands().then(function (list) {
+                const hit = list.filter(function (c) { return c.key === node.cmdKey; })[0]
+                    || list.filter(function (c) { return c.value === node.cmdText; })[0];
+                const text = hit ? hit.value : node.cmdText;
+                if (!text) {
+                    node.status({ fill: 'red', shape: 'ring', text: '没有可发送的指令' });
+                    return done(new Error('没有可发送的指令：请重新选择'));
+                }
+                let bytes;
+                if (hit && hit.hex) {
+                    const s = String(text).replace(/\s+/g, '');
+                    if (s.length % 2 !== 0 || /[^0-9a-fA-F]/.test(s)) {
+                        node.status({ fill: 'red', shape: 'ring', text: 'HEX 非法' });
+                        return done(new Error('这条快捷指令的 HEX 不是合法的十六进制串'));
+                    }
+                    bytes = Buffer.from(s, 'hex');
+                } else {
+                    bytes = Buffer.from(text + (EOL[node.eol] || ''), 'utf8');
+                }
+                node.status({ fill: 'blue', shape: 'dot', text: '发送中 ' + cmdTextShort(text) });
+                return bridgeCall('send', { monitor: node.monitor, hex: bytes.toString('hex') }, 3000)
+                    .then(function (r) {
+                        node.status({ fill: 'green', shape: 'dot', text: '已发 ' + (r.written || bytes.length) + 'B' });
+                        msg.sent = r.written || bytes.length;
+                        msg.command = text;
+                        msg.stale = !hit;          // 用的是保存时的旧文本
+                        if (!hit) node.warn('快捷指令「' + text + '」已不在列表里，按保存时的内容发送');
+                        send(msg);
+                        done();
+                    })
+                    .catch(function (err) {
+                        const t = portErrorText(err, node.monitor);
+                        node.status({ fill: 'red', shape: 'ring', text: t });
+                        done(new Error(t));
+                    });
+            }).catch(function (err) {
+                const t = portErrorText(err, node.monitor);
+                node.status({ fill: 'red', shape: 'ring', text: t });
+                done(new Error(t));
+            });
+        });
+    }
+    RED.nodes.registerType('cmd list', CmdListNode);
     /* ---------------- serial rxd ---------------- */
     function SerialInNode(config) {
         RED.nodes.createNode(this, config);
