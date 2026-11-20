@@ -2209,6 +2209,15 @@ try {
       check(r !== '' && !/margin-(left|right)/.test(r), '顶栏 ' + sel + ' 不再自带左右 margin');
     });
   }
+  // ===== 帮助按钮（2026-11）：在「提交issue」右侧，跳到在线文档 =====
+  check(/class="issue-btn help-btn"[^>]*open_url[^>]*https:\/\/seahi-serial\.c-hi\.cn\/guide\/quick-start/.test(html),
+    '帮助按钮在「提交issue」右侧，点击打开在线指南');
+  check(/class="issue-btn help-btn"[^>]*aria-label="帮助"/.test(html),
+    '帮助按钮有简短的 aria-label（控件注册表拿它当名字，title 只是悬停说明）');
+  check(/class="issue-btn help-btn"[\s\S]{0,2200}?fill="currentColor"/.test(html),
+    '帮助图标是内联 SVG + currentColor（跟随主题换色）');
+  check(!/class="issue-btn help-btn"[\s\S]{0,2200}?#bfbfbf/.test(html),
+    '帮助图标没有抄进图形源里写死的 #bfbfbf');
   check(/id="mcpBtn"[\s\S]{0,1400}?fill="currentColor"/.test(html),
     '图标是内联 SVG 且用 currentColor（能跟主题换色）');
   check(!/id="mcpBtn"[\s\S]{0,1400}?#bfbfbf/.test(html),

@@ -397,3 +397,9 @@
 }
 .issue-btn:hover { background:var(--border-h); color:var(--text); }
 
+/* 帮助按钮：与「提交issue」同一颗 chip 的外观（同一套 hover/主题覆盖），
+   里面只放一个跟随 currentColor 的图标，所以不需要额外的主题规则。 */
+.help-btn { padding:3px 6px; }
+.help-btn svg { display:block; }
+.help-btn:hover { color:var(--text); }
+
