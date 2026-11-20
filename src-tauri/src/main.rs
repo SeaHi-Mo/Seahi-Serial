@@ -584,7 +584,9 @@ fn bridge_write(app: &tauri::AppHandle, mid: &str, data: &[u8]) -> Result<usize,
         let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
         match map.get(mid) {
             Some(reader) => reader.port.clone(),
-            None => return Err(format!("监视器 {mid} 没有打开的串口")),
+            // 文案要给节点侧留出加工空间：节点知道"这个端口叫什么、有没有别的口开着"，
+            // 由它决定显示「COM17 没有打开」还是「没有可用的串口」（用户 2026-11）。
+            None => return Err("没有打开的串口".to_string()),
         }
     };
     let mut port = lock_port_with_timeout(&port_arc, 500)?;
@@ -787,11 +789,11 @@ mod bridge_tests {
 
         // 失败回执同样要有 id，否则 node 侧只能等到超时，看不到真正的原因
         let err = bridge_attach_id(
-            serde_json::json!({"ok":false,"error":"监视器 main 没有打开的串口"}),
+            serde_json::json!({"ok":false,"error":"没有打开的串口"}),
             req.get("id"),
         );
         assert_eq!(err["id"], 7);
-        assert_eq!(err["error"], "监视器 main 没有打开的串口");
+        assert_eq!(err["error"], "没有打开的串口");
 
         // 请求本来没带 id（人工探桥）时不要凭空造一个
         let no_id = bridge_attach_id(serde_json::json!({"ok":true}), None);

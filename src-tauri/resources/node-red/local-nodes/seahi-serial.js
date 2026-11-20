@@ -158,6 +158,18 @@ module.exports = function (RED) {
         }
         return id === 'main' ? '主分栏' : id;
     }
+    /* 桥只会回一句「没有打开的串口」—— 具体是"一个口都没开"还是"这一个口没开"，
+       只有节点这边说得清（它缓存了端口名）。用户 2026-11 要求两种说法分开：
+         · 没有任何可用端口          → 没有可用的串口
+         · 选中的那个端口没打开      → COM17 没有打开
+       其余错误原样返回（别把真错误也吞成一句通用话）。 */
+    function portErrorText(msg, id) {
+        const s = String((msg && msg.message) || msg || '');
+        if (s.indexOf('没有打开的串口') < 0) return s;
+        // 缓存里有这个口 → 它现在是关着的；缓存整个是空的 → 一个口都没有
+        if (monitorNames && monitorNames[id]) return String(monitorNames[id]).split(' · ')[0] + ' 没有打开';
+        return '没有可用的串口';
+    }
     /* ---------------- serial txd ---------------- */
     function SerialOutNode(config) {
         RED.nodes.createNode(this, config);
@@ -198,8 +210,9 @@ module.exports = function (RED) {
                     done();
                 })
                 .catch(function (err) {
-                    node.status({ fill: 'red', shape: 'ring', text: String(err.message || err) });
-                    done(err);
+                    const text = portErrorText(err, node.monitor);
+                    node.status({ fill: 'red', shape: 'ring', text: text });
+                    done(new Error(text));
                 });
         });
     }
@@ -255,7 +268,7 @@ module.exports = function (RED) {
                 })
                 .catch(function (err) {
                     busy = false;
-                    node.status({ fill: 'red', shape: 'ring', text: String(err.message || err) });
+                    node.status({ fill: 'red', shape: 'ring', text: portErrorText(err, node.monitor) });
                 });
         }
 
@@ -439,8 +452,9 @@ module.exports = function (RED) {
             try {
                 await run(job);
             } catch (e) {
-                node.status({ fill: 'red', shape: 'ring', text: String(e.message || e) });
-                job.done(e);
+                const text = portErrorText(e, job.monitor || node.monitor);
+                node.status({ fill: 'red', shape: 'ring', text: text });
+                job.done(new Error(text));
             } finally {
                 busy = false;
                 pump();

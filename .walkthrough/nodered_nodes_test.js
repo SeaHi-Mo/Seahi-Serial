@@ -43,6 +43,7 @@ function eq(actual, expected, name) {
 const bridgeState = {
     rx: [],        // 每次 read 依次取一项（hex 串）；空了就回空
     sends: [],     // 收到的 send 请求
+    sendError: '',  // 非空时 send 回 ok:false + 这条 error（模拟端口没打开）
     reads: [],     // 收到的 read 请求（钉住监视器 id 有没有被原样带过去）
     /* 「当前已打开的串口」——与 main.rs bridge_list_monitors 的回执形状一致 */
     monitors: [
@@ -80,7 +81,11 @@ function startFakeBridge() {
                     }
                     if (v.op === 'send') {
                         bridgeState.sends.push(v);
-                        sock.write(JSON.stringify({ ok: true, id: v.id, written: v.hex.length / 2 }) + '\n');
+                        if (bridgeState.sendError) {
+                            sock.write(JSON.stringify({ ok: false, id: v.id, error: bridgeState.sendError }) + '\n');
+                        } else {
+                            sock.write(JSON.stringify({ ok: true, id: v.id, written: v.hex.length / 2 }) + '\n');
+                        }
                     } else if (v.op === 'read') {
                         bridgeState.reads.push(v);
                         const rx = bridgeState.rx.length ? bridgeState.rx.shift() : '';
@@ -389,6 +394,20 @@ async function main() {
     check(!!err, '非法 HEX：走 done(err)');
     eq(bridgeState.sends.length, 0, '非法 HEX：一个字节都不发');
 
+    /* --- 端口没打开时的两种说法（用户 2026-11：别再说「监视器 main 没有打开的串口」）--- */
+    bridgeState.sendError = '没有打开的串口';
+    const txNoPort = makeNode('serial txd', { monitor: 'main', format: 'text', eol: 'crlf' });
+    await new Promise(function (r) { txNoPort._handlers.input({ payload: 'AT' }, null, function () { r(); }); });
+    await sleep(80);
+    eq(String((txNoPort._status || {}).text), 'COM17 没有打开',
+        '端口关了：说出是哪个口没打开（不带波特率、不提监视器）');
+
+    /* 选中的分栏已经不在可用列表里 → 说明"一个可用的都没有"，而不是编一个端口名 */
+    const txGone = makeNode('serial txd', { monitor: 'extra-9', format: 'text', eol: 'crlf' });
+    await new Promise(function (r) { txGone._handlers.input({ payload: 'AT' }, null, function () { r(); }); });
+    await sleep(80);
+    eq(String((txGone._status || {}).text), '没有可用的串口', '一个可用端口都没有时才说「没有可用的串口」');
+    bridgeState.sendError = '';
     server.close();
     console.log('\n' + checks + ' checks, ' + failures + ' failed');
     process.exit(failures ? 1 : 0);
