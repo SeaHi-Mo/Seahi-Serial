@@ -1,6 +1,6 @@
-<!-- seahi-serial：宿主串口 ↔ Node-RED 的三个节点（serial in / serial out / serial request） -->
+<!-- seahi-serial：宿主串口 ↔ Node-RED 的三个节点（serial rxd / serial txd / serial request） -->
 
-<script type="text/html" data-template-name="serial out">
+<script type="text/html" data-template-name="serial txd">
   <div class="form-row">
     <label for="node-input-name"><i class="fa fa-tag"></i> 名称</label>
     <input type="text" id="node-input-name" placeholder="发送">
@@ -26,7 +26,7 @@
   </div>
 </script>
 
-<script type="text/html" data-help-name="serial out">
+<script type="text/html" data-help-name="serial txd">
   <p>把 <code>msg.payload</code> 写进宿主程序里**已经打开**的那个串口。</p>
   <p>⚠️ 它不自己开串口：COM 口由宿主独占（监视器、DTR/RTS、WSL 映射都在用）。
      「端口」下拉列出宿主里当前**已经打开**的串口（每项就是 <code>COM17 · 115200</code> 这样的实际端口；
@@ -47,7 +47,7 @@
   <p>成功后原样往下游传，另附 <code>msg.sent</code> = 实际写入的字节数。失败会走 catch。</p>
 </script>
 
-<script type="text/html" data-template-name="serial in">
+<script type="text/html" data-template-name="serial rxd">
   <div class="form-row">
     <label for="node-input-name"><i class="fa fa-tag"></i> 名称</label>
     <input type="text" id="node-input-name" placeholder="接收">
@@ -69,7 +69,7 @@
   </div>
 </script>
 
-<script type="text/html" data-help-name="serial in">
+<script type="text/html" data-help-name="serial rxd">
   <p>把宿主那个串口**收到的数据**变成消息。数据来自宿主程序的读线程 ——
      它与监视器各读各的，不会互相抢。</p>
   <p>「端口」下拉列出宿主里当前**已经打开**的串口（显示为 <code>COM17 · 115200</code>）；插拔端口后点「刷新」重新读取。</p>
@@ -91,8 +91,8 @@
   <h3>怎么用</h3>
   <ul>
     <li>文本模式下要按行处理：接 <code>function</code> 做行缓冲，或直接在 <code>switch</code> 里用正则。</li>
-    <li>HEX 模式适合把原始帧转给别的协议解析节点，也可以直接喂回 <code>serial out</code> 的 HEX 模式。</li>
-    <li><b>同一个监视器只放一个 <code>serial in</code></b>：宿主的接收队列取走即清，两个节点会互相分走数据。</li>
+    <li>HEX 模式适合把原始帧转给别的协议解析节点，也可以直接喂回 <code>serial txd</code> 的 HEX 模式。</li>
+    <li><b>同一个监视器只放一个 <code>serial rxd</code></b>：宿主的接收队列取走即清，两个节点会互相分走数据。</li>
   </ul>
 </script>
 
@@ -145,7 +145,7 @@
 <script type="text/html" data-help-name="serial request">
   <p>发一条命令，然后收一段窗口，最后输出一条结果。顺序固定为
      <b>清空旧数据 → 写串口 → 收窗口</b>，所以这次收到的回复一定属于这次发出去的命令。</p>
-  <p>⚠️ 它不自己开串口（与 serial in/out 一样走宿主桥）。「端口」下拉列出当前已打开的串口，新节点默认选中第一个已打开的端口。</p>
+  <p>⚠️ 它不自己开串口（与 serial rxd / serial txd 一样走宿主桥）。「端口」下拉列出当前已打开的串口，新节点默认选中第一个已打开的端口。</p>
   <h3>输入</h3>
   <p><code>msg.payload</code> 是要发的命令。文本模式下会追加「行尾」；HEX 模式下按十六进制解析，不追加行尾。</p>
   <h3>结果分支（一个条件一个连接点）</h3>
@@ -171,8 +171,8 @@
         <code>msg.matchedType</code>：条件类型（<code>cont</code> / <code>eq</code> / <code>regex</code>）</li>
     <li><code>msg.timedOut</code>：到最长 ms 还没命中；<code>msg.reason</code>：<code>rule</code> / <code>timeout</code> / <code>quiet</code></li>
   </ul>
-  <p>⚠️ 同一个监视器上**不要再放 serial in**：桥的接收队列是单消费者，两边会互相分走数据。
-     需要持续监控时，用 serial in 的流程，不要和本节点共用分栏。</p>
+  <p>⚠️ 同一个监视器上**不要再放 serial rxd**：桥的接收队列是单消费者，两边会互相分走数据。
+     需要持续监控时，用 serial rxd 的流程，不要和本节点共用分栏。</p>
   <p>⚠️ 设备回显（ATE1）会把命令原样回显，可能提前命中标记 —— 建议 <code>ATE0</code>，
      或把标记写成只在回复里出现的特征（如 <code>^OK$</code> 配合多行模式不合适，优先用设备侧关回显）。</p>
 </script>
@@ -359,7 +359,7 @@
         return rules.length ? rules : [{ t: 'cont', v: 'OK' }];
     }
 
-    RED.nodes.registerType('serial out', {
+    RED.nodes.registerType('serial txd', {
         category: '串口',
         color: '#b8c8b8',
         defaults: {
@@ -373,14 +373,14 @@
         inputs: 1,
         outputs: 1,
         icon: 'font-awesome/fa-arrow-right',
-        label: function () { return this.name || 'serial out'; },
+        label: function () { return this.name || 'serial txd'; },
         oneditprepare: function () {
             seahiBindMonitorSelect(this.monitor);
             $('#node-input-format').val(this.format || (this.asHex === true ? 'hex' : 'text'));
         }
     });
 
-    RED.nodes.registerType('serial in', {
+    RED.nodes.registerType('serial rxd', {
         category: '串口',
         color: '#b8c8b8',
         defaults: {
@@ -392,7 +392,7 @@
         inputs: 0,
         outputs: 1,
         icon: 'font-awesome/fa-arrow-left',
-        label: function () { return this.name || 'serial in'; },
+        label: function () { return this.name || 'serial rxd'; },
         oneditprepare: function () {
             seahiBindMonitorSelect(this.monitor);
             $('#node-input-format').val(this.format || 'text');

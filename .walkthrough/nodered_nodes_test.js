@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* serial in / serial out 两个节点的无头断言（不依赖真串口、不依赖正在跑的应用）
+/* serial rxd / serial txd 两个节点的无头断言（不依赖真串口、不依赖正在跑的应用）
  *
  * 做法：起一个**假桥**（回环 TCP，协议与 main.rs 的 bridge_serve 一致，包括
  *      「回执必须带请求 id」这一条），把 local-nodes/seahi-serial.js 加载进一个
@@ -167,8 +167,8 @@ async function main() {
 
     require(NODE_FILE)(RED);
 
-    check(typeof types['serial in'] === 'function', '注册了 serial in 节点');
-    check(typeof types['serial out'] === 'function', '注册了 serial out 节点');
+    check(typeof types['serial rxd'] === 'function', '注册了 serial rxd 节点');
+    check(typeof types['serial txd'] === 'function', '注册了 serial txd 节点');
     check(typeof types['serial request'] === 'function', '注册了 serial request 节点');
 
     /* --- 编辑器接口：当前已打开的串口列表 --- */
@@ -201,7 +201,7 @@ async function main() {
        它会先取走队列里的数据（桥的接收队列是单消费者）—— 那会让用例随机拿到残片。 */
     async function feed(chunks, config, waitMs) {
         await sleep(80);                     // 等上一个节点在途的 read 落地
-        const node = makeNode('serial in', Object.assign({ monitor: 'main', pollMs: 20 }, config || {}));
+        const node = makeNode('serial rxd', Object.assign({ monitor: 'main', pollMs: 20 }, config || {}));
         chunks.forEach(function (c) { bridgeState.rx.push(c); });
         await sleep(waitMs || 200);
         closeNode(node);
@@ -209,7 +209,7 @@ async function main() {
         return node;
     }
 
-    /* --- serial in：默认（没写 format）必须是文本 --- */
+    /* --- serial rxd：默认（没写 format）必须是文本 --- */
     const rxText = await feed(['4f4b0d0a']);
     check(!!(rxText._sent && rxText._sent.length), '默认格式：收到数据并发出消息');
     if (rxText._sent && rxText._sent.length) {
@@ -220,12 +220,12 @@ async function main() {
     }
     check(/text/.test(JSON.stringify(rxText._status || {})), '状态里标明当前格式');
 
-    /* --- serial in：显式 format=hex --- */
+    /* --- serial rxd：显式 format=hex --- */
     const rxHex = await feed(['41540d0a'], { format: 'hex' });
     const mh = rxHex._sent && rxHex._sent[0];
     eq(mh && mh.payload, '41540d0a', 'HEX 格式：payload 是小写十六进制串');
 
-    /* --- serial in：format=buffer（老流程语义） --- */
+    /* --- serial rxd：format=buffer（老流程语义） --- */
     const rxBuf = await feed(['00ff10'], { format: 'buffer' });
     const mb = rxBuf._sent && rxBuf._sent[0];
     check(mb && Buffer.isBuffer(mb.payload), 'Buffer 格式：payload 是 Buffer');
@@ -233,7 +233,7 @@ async function main() {
         eq(mb.payload.toString('hex'), '00ff10', 'Buffer 格式：字节完整');
     }
 
-    /* --- serial in：UTF-8 半个字符跨包拼接 --- */
+    /* --- serial rxd：UTF-8 半个字符跨包拼接 --- */
     // "中" = e4 b8 ad，故意切在 e4b8 / ad 两块
     const rxSplit = await feed(['e4b8', 'ad'], {}, 280);
     const ms = rxSplit._sent || [];
@@ -303,7 +303,7 @@ async function main() {
             'serial request：raw 是原始字节');
     }
     eq(bridgeState.sends.length && bridgeState.sends[bridgeState.sends.length - 1].hex,
-        '41540d0a', 'serial request：文本 + 行尾写进桥（与 serial out 同一条路）');
+        '41540d0a', 'serial request：文本 + 行尾写进桥（与 serial txd 同一条路）');
 
     // ② 两个条件：命中 ERROR → 从第 2 个连接点出去
     bridgeState.rx.length = 0;
@@ -354,36 +354,36 @@ async function main() {
     eq(bridgeState.sends.length && bridgeState.sends[bridgeState.sends.length - 1].hex, '4154',
         'serial request：HEX 模式按字节发送且不追加行尾');
 
-    /* --- serial out：默认文本 + 行尾 --- */
+    /* --- serial txd：默认文本 + 行尾 --- */
     bridgeState.sends.length = 0;
-    const txText = makeNode('serial out', { monitor: 'main', eol: 'crlf' });
+    const txText = makeNode('serial txd', { monitor: 'main', eol: 'crlf' });
     txText._handlers.input({ payload: 'AT' }, null, function () {});
     await sleep(150);
     check(bridgeState.sends.length === 1, '默认格式：发出一次 send');
     eq(bridgeState.sends[0] && bridgeState.sends[0].hex, '41540d0a', '默认格式：文本 + CRLF');
 
-    /* --- serial out：format=hex（不加行尾） --- */
+    /* --- serial txd：format=hex（不加行尾） --- */
     bridgeState.sends.length = 0;
-    const txHex = makeNode('serial out', { monitor: 'main', eol: 'crlf', format: 'hex' });
+    const txHex = makeNode('serial txd', { monitor: 'main', eol: 'crlf', format: 'hex' });
     txHex._handlers.input({ payload: '41 54 0D 0A' }, null, function () {});
     await sleep(150);
     eq(bridgeState.sends[0] && bridgeState.sends[0].hex, '41540d0a', 'HEX 格式：按字节发送且不追加行尾');
 
     /* --- 兼容：老流程 asHex=true 且没有 format --- */
     bridgeState.sends.length = 0;
-    const txLegacy = makeNode('serial out', { monitor: 'main', asHex: true });
+    const txLegacy = makeNode('serial txd', { monitor: 'main', asHex: true });
     txLegacy._handlers.input({ payload: '4154' }, null, function () {});
     await sleep(150);
     eq(bridgeState.sends[0] && bridgeState.sends[0].hex, '4154', '老流程 asHex=true 仍按 HEX 发送');
 
-    /* --- 兼容：serial in 老流程 asHex=true（早期字段） --- */
+    /* --- 兼容：serial rxd 老流程 asHex=true（早期字段） --- */
     const rxLegacy = await feed(['4f4b'], { asHex: true });
-    eq(rxLegacy._sent && rxLegacy._sent[0] && rxLegacy._sent[0].payload, '4f4b', 'serial in 老字段 asHex=true 仍按 HEX 输出');
+    eq(rxLegacy._sent && rxLegacy._sent[0] && rxLegacy._sent[0].payload, '4f4b', 'serial rxd 老字段 asHex=true 仍按 HEX 输出');
 
     /* --- 非法 HEX 必须报错，而不是把字面量发出去 --- */
     bridgeState.sends.length = 0;
     let err = null;
-    const txBad = makeNode('serial out', { monitor: 'main', format: 'hex' });
+    const txBad = makeNode('serial txd', { monitor: 'main', format: 'hex' });
     txBad._handlers.input({ payload: '4G' }, null, function (e) { err = e; });
     await sleep(60);
     check(!!err, '非法 HEX：走 done(err)');

@@ -39,7 +39,7 @@ Tauri 主窗口（WebView2）
 | `src-tauri/src/main.rs` | `nodered_open/stop`、侧车启停、桥服务器、节点投递（搜 `nodered_` / `bridge_`） |
 | `src-tauri/resources/node-red/settings.js` | 离线固化配置（见下） |
 | `src-tauri/resources/node-red/package.json` | 运行时依赖清单（只有 `node-red@5.0.10`） |
-| `src-tauri/resources/node-red/local-nodes/seahi-serial.{js,html}` | **唯一的自研节点包**：`serial in` / `serial out` / `serial request` |
+| `src-tauri/resources/node-red/local-nodes/seahi-serial.{js,html}` | **唯一的自研节点包**：`serial rxd` / `serial txd` / `serial request` |
 | `scripts/prepare-nodered.mjs` | 生成运行时：npm install → 裁分类 → 拷 node.exe → 可选 npm 桩 |
 | `installer.iss` | Inno 安装器追加拷贝 `{app}\resources\node-red` |
 
@@ -60,10 +60,10 @@ npm run dev                      # 之后正常开发
 
 | 节点 | 字段 | 默认 | 说明 |
 |---|---|---|---|
-| `serial in` | 端口 | 第一个已打开的 | **下拉**：宿主里当前已打开的串口，显示 `COM17 · 115200`；value 仍是分栏 id（桥按 id 取数），带「刷新」 |
+| `serial rxd` | 端口 | 第一个已打开的 | **下拉**：宿主里当前已打开的串口，显示 `COM17 · 115200`；value 仍是分栏 id（桥按 id 取数），带「刷新」 |
 | | 格式 | `文本` | `文本` / `HEX` / `Buffer`；见下 |
 | | 轮询 ms | `100` | 最小 20 |
-| `serial out` | 端口 | 第一个已打开的 | 同上（显示端口，value 是该分栏的 id） |
+| `serial txd` | 端口 | 第一个已打开的 | 同上（显示端口，value 是该分栏的 id） |
 | | 格式 | `文本` | `文本` / `HEX` |
 | | 行尾 | `CRLF` | 只在文本模式生效 |
 | `serial request` | 端口 | 第一个已打开的 | 同上 |
@@ -80,7 +80,7 @@ npm run dev                      # 之后正常开发
   点「添加条件」就多一个连接点；条件类型有 `包含` / `等于` / `正则` / `未匹配或超时`（兜底，只有前面都没命中才走）。
   没配兜底条件时，未匹配/超时的结果会被丢弃（状态标黄 + `node.warn`），不会假装成功。
   同一节点内请求串行排队（上限 32 条），所以两段回复不会混在一起。
-  ⚠️ 它自己会读桥的接收队列，**同一个端口（分栏）上不要再放 `serial in`**（单消费者，会互相分走数据）。
+  ⚠️ 它自己会读桥的接收队列，**同一个端口（分栏）上不要再放 `serial rxd`**（单消费者，会互相分走数据）。
   ⚠️ 设备开着回显（ATE1）时命令会被原样回显，可能提前命中条件 —— 建议 `ATE0`。
 - **「端口」下拉的数据来源**（2026-11）：编辑器是另一个 origin、拿不到宿主桥的令牌，所以由侧车
   注册一条 Node-RED 管理路由 `GET /seahi-serial/monitors`，它再用桥的新 op `{"op":"monitors"}`
@@ -94,12 +94,12 @@ npm run dev                      # 之后正常开发
   `appendOutput(mid,'send',…)` —— 行号、时间戳、日志中心 `serial:<分栏>:tx`、MCP 的 `serial_get_output` 全都有，
   来源标 `auto`。是否显示只看该分栏「消息回显」按钮（`#<mid>-btnEcho`）—— 关掉时窗口与日志中心都不写，
   与手动发送完全一致；含控制字节的二进制帧显示成 `HEX: …`，可打印文本原样显示。
-- **默认文本**（用户 2026-11 明确要求）：`serial in` 的 `payload` 是 UTF-8 字符串，不再是 Buffer；
+- **默认文本**（用户 2026-11 明确要求）：`serial rxd` 的 `payload` 是 UTF-8 字符串，不再是 Buffer；
   跨数据块被切断的半个汉字由 `StringDecoder` 留到下一块拼接，不会变成 U+FFFD。
 - `HEX`：收方向输出小写、无分隔符的十六进制串（`4f4b0d0a`）；发方向把 payload 当十六进制串解析，
   **不追加行尾**。
 - `Buffer`（仅收）：保持原始字节，与官方串口节点一致，适合二进制协议。
-- 任何格式下 `serial in` 都附带 `msg.raw`（原始 Buffer），按字节核对时不用切回 `Buffer` 模式。
+- 任何格式下 `serial rxd` 都附带 `msg.raw`（原始 Buffer），按字节核对时不用切回 `Buffer` 模式。
 - **兼容**：老流程里的 `asHex:true` 继续按 HEX 处理（构造函数在没有 `format` 时回退到它）；
   编辑器打开旧节点会自动把「格式」显示成 HEX。
 - 断言：`node .walkthrough/nodered_nodes_test.js`（假桥 + 假 RED，59 条，覆盖三种格式、跨包 UTF-8、
@@ -161,8 +161,8 @@ npm run dev                      # 之后正常开发
 
 - [ ] **真机验证**：接收方向已在 COM17 上收到字节（2026-11-19）；发送方向的 id 回执修复后待复测
 - [ ] 轮询 → 推送：现在是节点每 100 ms 拉一次，最坏延迟 100 ms；改成桥主动推可以做到零延迟
-- [ ] 预置一条示例流程（inject → serial out），让用户第一次打开就有东西可改
-- [x] 把 `serial in` 的 Buffer → 字符串转换做成节点选项（2026-11：`格式` 三选一，默认文本）
+- [ ] 预置一条示例流程（inject → serial txd），让用户第一次打开就有东西可改
+- [x] 把 `serial rxd` 的 Buffer → 字符串转换做成节点选项（2026-11：`格式` 三选一，默认文本）
 - [ ] 许可证合规：随包分发 Node-RED（Apache-2.0）需要带 LICENSE/NOTICE，并扫描依赖树有没有 GPL
 
 ## 9. 已知限制
@@ -170,5 +170,5 @@ npm run dev                      # 之后正常开发
 - 侧车随应用启动、关画布不停（自动化要一直跑）；代价是常驻约 80 MB + 一个回环端口
 - 一个应用实例只能有一个 Node-RED（共用同一个用户目录）
 - 卸载不清理 `%APPDATA%\com.seahi.seahi-serial\node-red`（有意：升级不丢流程）
-- **同一个监视器只放一个 `serial in`（或 `serial request`）**：桥的接收队列是单消费者（`bridge_take_rx` 取走即清），
+- **同一个监视器只放一个 `serial rxd`（或 `serial request`）**：桥的接收队列是单消费者（`bridge_take_rx` 取走即清），
   两个节点监听同一个分栏会互相分走数据块。需要多处使用时，接一个节点再往下游分叉。

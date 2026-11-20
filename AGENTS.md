@@ -15,7 +15,7 @@ npm run build                                     # 发布构建 → src-tauri/t
 cargo test --manifest-path src-tauri/Cargo.toml   # 后端单测（301 条 + 1 条 #[ignore] 手工联调用例）
 node .walkthrough/gen_ble_preview.js              # 前端无头断言集（改前端后必跑）
 node .walkthrough/mcp_smoke.js                    # 对**正在跑的应用**逐个真调工具（改 MCP 后必跑）
-node .walkthrough/nodered_nodes_test.js           # serial in/out/request 节点断言（假桥 + 假 RED；改 local-nodes 后必跑）
+node .walkthrough/nodered_nodes_test.js           # serial rxd / serial txd / serial request 节点断言（假桥 + 假 RED；改 local-nodes 后必跑）
 
 # 文档站（website/，VitePress；依赖只装在 website/ 里，别在根目录装）
 # 以下在**仓库根目录**执行。`--prefix website` 是相对当前目录的 ——
@@ -169,7 +169,7 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
    四路都要传回界面/工具并提示一行（只有 LogHub 内部的 `channelSkips`/`lockSkips` 是纯内部计数）。不做的后果不是
    "少几条日志"，而是**工具明确告诉调用方"日志是完整的"**（`mayBeIncomplete:false`），于是 AI 拿被截断的证据下结论。
    ⚠️ **每条日志还带一个「来源」`src`**（用户 2026-09："AI 发送的数据在日志里要和接收的区分开"）：`ai` = AI 通过 MCP
-   触发、`ui` = 用户手动、`auto` = 用户编排的自动化（Node-RED 的 `serial out`）、`none` = 未标记。因为 MCP 发送与用户点按钮**走的是同一条路**（`serial_send` 就是"填进输入框 +
+   触发、`ui` = 用户手动、`auto` = 用户编排的自动化（Node-RED 的 `serial txd`）、`none` = 未标记。因为 MCP 发送与用户点按钮**走的是同一条路**（`serial_send` 就是"填进输入框 +
    点发送按钮"，见 #3），光看内容分不出是谁发的。三条别改回去：① **前端三处必须成对** —— `mcpSerialOp` 的 send 分支先挂
    `_mcpAiSend` 标记（**必须早于 `click()`**：click 是同步派发，反了 sendData 已经跑完、认领不到）→ `bufferPush` 认领它
    （认领到就把那条标 `ai`）→ **没被认领就补记一条**（echo 关着 / 输出区没渲染时那次发送本来完全不进日志中心；
@@ -572,7 +572,7 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
 
 1. **画布是内嵌的真 Node-RED，不是自绘的**：`src/js/85-nodeflow.js` 只负责调 `nodered_open`、
    设 iframe、展示错误。**别再往它里面写节点/画布逻辑**（第一版就是自绘的，已删）。
-2. **串口由 Rust 独占**：`serial in` / `serial out` 两个节点不 open COM 口，走回环 TCP 桥
+2. **串口由 Rust 独占**：`serial rxd` / `serial txd` 两个节点不 open COM 口，走回环 TCP 桥
    （`main.rs` 里搜 `bridge_`）。谁再让节点自己开串口，就会和监视器抢口、把数据分走一半。
 3. **`settings.js` 里 `uiHost` 必须是 `127.0.0.1`**：不设就绑 0.0.0.0 —— Windows 防火墙每次弹窗，
    而且把**没有 adminAuth 的编辑器**（能跑任意 function 代码）暴露给整个局域网。
@@ -594,7 +594,7 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
    （默认 `OK` / `ERROR` 两个连接点，加一个条件就多一个口；条件类型 包含/等于/正则/未匹配或超时），
    命中后从对应连接点出去，消息带 `matched` / `matchedIndex` / `matchedType` / `timedOut` / `reason`。
    队列串行（上限 32）。⚠️ 没配「未匹配/超时」兜底条件时，未匹配结果会被丢弃（状态标黄 + `node.warn`），
-   不要依赖"没输出就是成功"。⚠️ 它自己读桥的接收队列，**同一个监视器上不要再放 `serial in`**（单消费者，
+   不要依赖"没输出就是成功"。⚠️ 它自己读桥的接收队列，**同一个监视器上不要再放 `serial rxd`**（单消费者，
    互相分数据）；设备开着回显时命令会被原样回显，建议 `ATE0` 或用只在回复里出现的条件。
 
 构建顺序：`npm run prep:nodered -- --slim` → `npm run dev`。不跑第一步会报「缺少 node.exe」。

@@ -1,5 +1,5 @@
 /**
- * seahi-serial —— 宿主串口 ↔ Node-RED 的桥接节点（serial in / serial out / serial request）
+ * seahi-serial —— 宿主串口 ↔ Node-RED 的桥接节点（serial rxd / serial txd / serial request）
  *
  * ⚠️ 这几个节点**不自己开串口**。
  *    COM 口由宿主进程（Rust）独占：监视器、DTR/RTS、WSL 映射、BLE 都在用同一个口。
@@ -25,7 +25,7 @@
 const { StringDecoder } = require('string_decoder');
 
 /* 格式归一化。
- *  - 新字段是 `format`：text / hex（serial out）、text / hex / buffer（serial in）。
+ *  - 新字段是 `format`：text / hex（serial txd）、text / hex / buffer（serial rxd）。
  *  - 老流程里的 `asHex:true` 必须继续按 HEX 走，否则升级后发出去的就是字面量 "41 54"。 */
 function normalizeFormat(value, legacyHex) {
     if (value === 'hex' || value === 'text' || value === 'buffer') return value;
@@ -158,7 +158,7 @@ module.exports = function (RED) {
         }
         return id === 'main' ? '主分栏' : id;
     }
-    /* ---------------- serial out ---------------- */
+    /* ---------------- serial txd ---------------- */
     function SerialOutNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
@@ -203,9 +203,9 @@ module.exports = function (RED) {
                 });
         });
     }
-    RED.nodes.registerType('serial out', SerialOutNode);
+    RED.nodes.registerType('serial txd', SerialOutNode);
 
-    /* ---------------- serial in ---------------- */
+    /* ---------------- serial rxd ---------------- */
     function SerialInNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
@@ -262,7 +262,7 @@ module.exports = function (RED) {
         timer = setInterval(tick, node.pollMs);
         node.status({ fill: 'blue', shape: 'dot', text: '监听 ' + monitorLabel(node.monitor) + '（' + node.format + '）' });
     }
-    RED.nodes.registerType('serial in', SerialInNode);
+    RED.nodes.registerType('serial rxd', SerialInNode);
 
     /* ---------------- serial request（发一条、收一段） ---------------- */
     function sleep(ms) {
@@ -364,7 +364,7 @@ module.exports = function (RED) {
             await bridgeCall('read', { monitor: node.monitor }, 2000);
             if (closed) return;
 
-            /* ② 写串口（与 serial out 同一个桥命令，监视窗口里同样会看到这条发送） */
+            /* ② 写串口（与 serial txd 同一个桥命令，监视窗口里同样会看到这条发送） */
             node.status({ fill: 'blue', shape: 'dot', text: '发送 ' + bytes.length + 'B' });
             await bridgeCall('send', { monitor: node.monitor, hex: bytes.toString('hex') }, 3000);
             if (closed) return;
