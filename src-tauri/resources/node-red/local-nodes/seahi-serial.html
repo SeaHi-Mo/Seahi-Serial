@@ -254,7 +254,8 @@
     /* saved 为空 = 新节点：默认选中**第一个已打开的端口**（用户 2026-11 要求） */
     function seahiFillMonitorSelect($select, saved) {
         var current = saved || '';
-        $select.empty().append($('<option>').val(current).text('读取中…'));
+        // 不要摆「读取中…」占位项（用户 2026-11）：读回来之前保持空，读到再填
+        $select.empty();
         $select.val(current);
         $.getJSON('seahi-serial/monitors')
             .done(function (list) {
@@ -310,7 +311,8 @@
     /* 「指令」下拉：宿主「快捷指令」列表的快照（/seahi-serial/quickcmds），按组分 optgroup。
        ⚠️ value 存的是 key（宿主生成的稳定标识），不是指令文本 —— 文本改了以后节点要能跟着变。 */
     function seahiFillCmdSelect($select, savedKey, savedText) {
-        $select.empty().append($('<option>').val('').text('读取中…'));
+        // 不摆「读取中…」占位项：它会在下拉里显示成一条假指令（用户 2026-11）
+        $select.empty();
         $.getJSON('seahi-serial/quickcmds')
             .done(function (list) {
                 list = list || [];
