@@ -373,7 +373,7 @@
         inputs: 1,
         outputs: 1,
         icon: 'font-awesome/fa-arrow-right',
-        label: function () { return this.name || seahiMonitorTextOf(this.monitor) + ' →'; },
+        label: function () { return this.name || 'serial out'; },
         oneditprepare: function () {
             seahiBindMonitorSelect(this.monitor);
             $('#node-input-format').val(this.format || (this.asHex === true ? 'hex' : 'text'));
@@ -392,7 +392,7 @@
         inputs: 0,
         outputs: 1,
         icon: 'font-awesome/fa-arrow-left',
-        label: function () { return this.name || seahiMonitorTextOf(this.monitor) + ' ←'; },
+        label: function () { return this.name || 'serial in'; },
         oneditprepare: function () {
             seahiBindMonitorSelect(this.monitor);
             $('#node-input-format').val(this.format || 'text');
@@ -422,7 +422,7 @@
             return seahiRuleTypeLabel(r.t) + ' ' + r.v;
         },
         icon: 'font-awesome/fa-exchange',
-        label: function () { return this.name || seahiMonitorTextOf(this.monitor) + ' ⇄'; },
+        label: function () { return this.name || 'serial request'; },
         oneditprepare: function () {
             seahiBindMonitorSelect(this.monitor);
             seahiRenderRules(this.rules);
