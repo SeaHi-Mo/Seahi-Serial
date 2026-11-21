@@ -51,6 +51,9 @@ npm run dev                      # 之后正常开发
 ```
 
 - **必须**先跑 `prep:nodered`，否则打开画布会报「缺少 node.exe」
+- CI（`.github/workflows/build.yml`）在 `Build Tauri app` 之前也会跑 `npm run prep:nodered -- --slim`。
+  **别删这一步**：运行时目录不入库，少了它 Tauri 的 MSI 会静默不带 `resources`，Inno 会被
+  `installer.iss` 的 `#ifexist` 守卫拦下（v0.6.0 首次构建就是这么失败的）。
 - `--slim` 把 `node_modules/npm` 换成百字节桩（省 11.7 MB）。安全性：`allowInstall=false` 时
   Node-RED 只用它算 CLI 路径，永不执行
 - 打包：`npm run build`，产物里 `resources/node-red` 会被带上；Inno 那条 Source 从

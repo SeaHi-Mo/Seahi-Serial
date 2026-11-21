@@ -78,6 +78,17 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
+      - name: Prepare Node-RED runtime
+        shell: pwsh
+        timeout-minutes: 15
+        # 安装包里的 Node-RED 侧车（node.exe + node_modules）由这个脚本生成，**不入库**。
+        # 漏跑这一步：Tauri 的 MSI 会静默丢掉 resources，Inno 那步会被 installer.iss 的守卫拦下。
+        run: |
+          npm run prep:nodered -- --slim
+          if (!(Test-Path "src-tauri/resources/node-red/node.exe")) {
+            throw "Node-RED 运行时没有生成：src-tauri/resources/node-red/node.exe 不存在"
+          }
+
       - name: Read release notes
         id: notes
         shell: pwsh
