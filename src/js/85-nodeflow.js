@@ -19,6 +19,9 @@
 var NF_URL = '';
 var NF_BUILT = false;
 var NF_MID = null;
+var NF_BODY = null;      // 被画布盖住、需要恢复的 .mon-body
+var NF_RO = null;        // 跟随分栏尺寸变化
+var NF_PLACE_BOUND = false;
 
 /* ===== 自动化发出去的数据也要能在监视窗口看见 =====
  *
@@ -75,29 +78,75 @@ function openNodeFlow(mid) {
     nfStart();
 }
 
-/* 挂进这个分栏、藏在工具栏下面：只隐藏 .mon-body，顶部的串口选择那几行留着 */
+/* 覆盖到分栏的正文区（工具栏与发送栏之间）。
+ *
+ * ⚠️ 这里**绝不能把 iframe / #nodeflow-pane 搬到别的 DOM 节点下面**：iframe 一旦被
+ *    reparent，浏览器就会重建浏览上下文 —— 编辑器重新加载，画布里**还没部署**的
+ *    修改（比如刚删掉的流程页签）会从 flows.json 里原样回来。2026-11 的用户 bug
+ *    「删除的流程重新打开后还在」就是它。
+ *    正确做法：pane 永远留在 body 下，用 position:absolute 盖在正文区上。 */
+function nfPlace() {
+    var pane = document.getElementById('nodeflow-pane');
+    if (!pane || pane.style.display !== 'flex' || !NF_MID) return;
+    var host = document.getElementById('pane-' + NF_MID) || document.querySelector('.monitor-pane');
+    if (!host) return;
+    var hr = host.getBoundingClientRect();
+    var tb = host.querySelector('.toolbar-wrap');
+    var sb = host.querySelector('.send-bar');
+    var top = tb ? tb.getBoundingClientRect().bottom : hr.top;
+    var bottom = sb ? sb.getBoundingClientRect().top : hr.bottom;
+    if (bottom <= top) bottom = hr.bottom;
+    pane.style.left = Math.round(hr.left + window.scrollX) + 'px';
+    pane.style.top = Math.round(top + window.scrollY) + 'px';
+    pane.style.width = Math.round(hr.width) + 'px';
+    pane.style.height = Math.max(0, Math.round(bottom - top)) + 'px';
+}
+
+/* 挂到这个分栏的正文区：只隐藏 .mon-body，pane 本身不移动 */
 function nfAttach(mid) {
     var pane = document.getElementById('nodeflow-pane');
     if (!pane) return;
     var host = document.getElementById('pane-' + mid) || document.querySelector('.monitor-pane');
     if (!host) return;
     var body = host.querySelector('.mon-body');
-    if (body && body.parentNode === host) {
-        host.insertBefore(pane, body);
+    NF_MID = mid;
+    if (body && body !== NF_BODY) {
+        if (NF_BODY) NF_BODY.style.display = '';
+        NF_BODY = body;
         body.style.display = 'none';
     }
     pane.style.display = 'flex';
+    nfPlace();
+
+    if (!NF_PLACE_BOUND) {
+        NF_PLACE_BOUND = true;
+        window.addEventListener('resize', nfPlace);
+        window.addEventListener('scroll', nfPlace, true);
+        if (window.ResizeObserver) {
+            NF_RO = new ResizeObserver(nfPlace);
+            NF_RO.observe(host);
+        }
+    } else if (NF_RO && window.ResizeObserver) {
+        NF_RO.disconnect();
+        NF_RO = new ResizeObserver(nfPlace);
+        NF_RO.observe(host);
+    }
 }
 
-/* 收起：画布挪回 body、恢复输出区 */
+/* 收起：只隐藏 pane、恢复正文，不移动 iframe（保住编辑器里未部署的状态） */
 function nfDetach() {
     var pane = document.getElementById('nodeflow-pane');
     if (!pane) return;
     pane.style.display = 'none';
-    if (pane.parentNode !== document.body) document.body.appendChild(pane);
-    var bodies = document.querySelectorAll('.monitor-pane > .mon-body');
-    for (var i = 0; i < bodies.length; i++) {
-        if (bodies[i].style.display === 'none') bodies[i].style.display = '';
+    if (NF_BODY) {
+        NF_BODY.style.display = '';
+        NF_BODY = null;
+    }
+    if (NF_RO) { NF_RO.disconnect(); NF_RO = null; }
+    if (NF_PLACE_BOUND) {
+        window.removeEventListener('resize', nfPlace);
+        window.removeEventListener('scroll', nfPlace, true);
+        NF_PLACE_BOUND = false;
     }
 }
 

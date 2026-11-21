@@ -566,7 +566,7 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
 字段与上限：`app_version/os/error/stack/context`，服务端截断为 64/128/8K/32K/16K 字节；
 部署与鉴权（`ERROR_API_KEY` 必配、每 IP 限速）见 `server/INSTALL.md` 与 `server/README.md`。
 
-## Node-RED 集成（自动化画布）—— 别改回去的八条
+## Node-RED 集成（自动化画布）—— 别改回去的九条
 
 完整说明见 `doc/NODERED_INTEGRATION.md`。要点：
 
@@ -596,6 +596,10 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
    队列串行（上限 32）。⚠️ 没配「未匹配/超时」兜底条件时，未匹配结果会被丢弃（状态标黄 + `node.warn`），
    不要依赖"没输出就是成功"。⚠️ 它自己读桥的接收队列，**同一个监视器上不要再放 `serial rxd`**（单消费者，
    互相分数据）；设备开着回显时命令会被原样回显，建议 `ATE0` 或用只在回复里出现的条件。
+9. **Node-RED 面板是绝对定位覆盖层，绝不搬 iframe**：`#nodeflow-pane` 永远留在 body，`nfPlace()` 按分栏正文区
+   （工具栏底 → 发送栏顶）定位，`ResizeObserver` 跟尺寸。**别用 `insertBefore` / `appendChild` 移动 iframe**：
+   浏览器会重建浏览上下文、编辑器重载，画布里**还没部署**的删除会从 `flows.json` 原样回来
+   （2026-11 用户报的「删除的流程重新打开后还在」就是它）。
 
 构建顺序：`npm run prep:nodered -- --slim` → `npm run dev`。不跑第一步会报「缺少 node.exe」。
 CI 在 `Build Tauri app` 之前也会跑这一步（`.github/workflows/build.yml`）—— **别删**：运行时不入库，

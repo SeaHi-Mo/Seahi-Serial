@@ -156,6 +156,11 @@ npm run dev                      # 之后正常开发
     修复在 `main.rs` 的 `bridge_attach_id()`，并由 `bridge_reply_echoes_request_id` 守着。
     假桥如果回执带 id、真宿主不带，两端单测都会绿 —— 这也是为什么 `.walkthrough/nodered_nodes_test.js`
     的假桥**刻意按真宿主的行为**（握手无 id、业务回执必须带 id）来写。
+11. **画布面板开关不能搬 iframe**（2026-11 用户 bug「删除的流程重新打开后还在」）：旧实现把
+    `#nodeflow-pane` 在 `body` 与分栏 DOM 之间 `appendChild` / `insertBefore`，iframe 被 reparent 后
+    浏览器会重建浏览上下文，编辑器重新加载，**还没部署**的删除就从 `flows.json` 原样回来。现在 pane
+    永远留在 body，由 `nfPlace()` 用 `position:absolute` 盖在分栏正文区（工具栏底 → 发送栏顶），
+    `ResizeObserver` 跟随尺寸；`.walkthrough` 有四条源码断言守着"不许搬 iframe"。
 
 ## 7. 快速指令的 DSL 已停用（与 Node-RED 无关，但同一时期改的）
 

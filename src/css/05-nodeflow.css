@@ -3,10 +3,14 @@
    打开/收起由工具栏那颗 Node-RED 图标负责，编辑器自己的样式全在 Node-RED 里。 */
 
 #nodeflow-pane {
-    position:relative;                 /* 遮罩用绝对定位铺满，锚点在这 */
-    flex:1; min-height:0; min-width:640px;
+    /* 固定在分栏正文区上方：**不参与 flex、也不搬家**，否则 iframe 会重新加载
+       （未部署的删除会从 flows.json 回来，见 js/85-nodeflow.js 的 nfPlace 注释）。 */
+    position:absolute; z-index:40;
+    box-sizing:border-box;
+    flex:none; min-width:0;
     overflow:hidden; display:none;
     border-top:1px solid var(--border);
+    background:var(--bg);
 }
 
 /* ⚠️ 底色用主题色而不是 #fff：iframe 加载完成前是透明的，白底会闪一帧白。

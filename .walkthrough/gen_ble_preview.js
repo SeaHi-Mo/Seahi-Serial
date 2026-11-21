@@ -8698,6 +8698,21 @@ try {
     check(sent[0] && sent[0].text === 'HEX: 00 01 02', 'Node-RED 发送：含控制字节的帧退回 HEX 显示（不吞成乱码）');
   })();
 
+  (function () {
+    // 面板开关**不能搬 iframe**：iframe 被 reparent 会重建浏览上下文，编辑器重新加载，
+    // 画布里还没部署的删除会从 flows.json 回来（2026-11 用户报的「删除的流程又回来」）。
+    const attach = extractFunction('nfAttach');
+    const detach = extractFunction('nfDetach');
+    const place = extractFunction('nfPlace');
+    check(!/insertBefore\(\s*pane|appendChild\(\s*pane/.test(attach + detach),
+      'Node-RED 画布：开关面板不搬 iframe（否则未部署的删除会重新加载回来）');
+    check(/getBoundingClientRect/.test(place) && /pane\.style\.left/.test(place),
+      'Node-RED 画布：用绝对定位覆盖正文区，而不是插进分栏 DOM');
+    check(/ResizeObserver/.test(attach), 'Node-RED 画布：跟随分栏尺寸重排覆盖层');
+    check(/#nodeflow-pane\s*\{[^}]*position:\s*absolute/s.test(html),
+      'Node-RED 画布：#nodeflow-pane 用 absolute 定位');
+  })();
+
   runQcmdLoopAsyncTests().then(runWslMapStopAsyncTests).then(function () {
     console.log(`\n结果: ${pass} passed, ${fail} failed` + (skippedDsl ? `（另有 ${skippedDsl} 条 DSL 用例跳过：等回话/期望/重试/跳转已停用）` : ''));
     process.exit(fail ? 1 : 0);
