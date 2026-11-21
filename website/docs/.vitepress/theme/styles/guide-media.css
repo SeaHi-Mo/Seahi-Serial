@@ -8,12 +8,23 @@
   margin: 20px 0 26px;
 }
 
-.gmedia video,
-.gmedia-img,
-.gmedia-fallback {
+.gmedia video {
   display: block;
   width: 100%;
   height: auto;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+  background: #17191d;
+}
+
+/* 截图不放大：调色板 / 属性面板这类 500px 原图保持原尺寸，避免被拉到正文宽度后发虚 */
+.gmedia-img,
+.gmedia-fallback {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
   border: 1px solid var(--vp-c-divider);
   border-radius: 10px;
   background: #17191d;

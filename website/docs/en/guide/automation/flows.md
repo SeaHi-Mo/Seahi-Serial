@@ -1,105 +1,82 @@
 # Common flows
 
-The flows below start from an empty canvas. Drag nodes from the palette, connect them, then click Deploy in the upper right corner.
+The flows below start from an empty canvas. Drag nodes from the palette, double-click a node to set its options, connect the nodes, then click Deploy in the upper right corner.
 
 ## Sending on a schedule
 
-<!-- Slot 5 / automation-inject.png
-     Frame: the inject dialog with payload and repeat filled in.
+Goal: send a command to the port at a fixed interval.
 
 <GuideMedia
   poster="/img/guide/automation-inject.png"
-  caption="The inject node defines both the payload and the repeat interval."
+  caption="inject properties: payload holds the command, Repeat is set to interval and the interval is entered below."
 />
--->
 
-1. Drag `serial txd` from the serial group onto the canvas.
-2. Drag `inject` from the common group to its left.
-3. Connect the output of `inject` to the input of `serial txd`.
-4. Open `inject`, set `payload` to the command text and `repeat` to the interval.
-5. Open `serial txd`, select the port and the line ending.
-6. Click Deploy in the upper right corner.
-7. Observe the result in the serial panel.
-
-The flow starts running immediately after deployment and the inject node fires at the configured interval.
-
-<!-- Slot 6 / automation-flow-send.png
-     Frame: the wired inject to serial txd pair, showing the connection and the node label.
+1. Drag `serial txd` from the serial group and `inject` from the common group onto the canvas.
+2. Connect the output of `inject` to the input of `serial txd`.
+3. Open `inject`, set `payload` to the command, select interval under Repeat and enter the interval.
+4. Open `serial txd`, select the port, text format and line ending.
+5. Click Deploy and observe the result in the serial panel.
 
 <GuideMedia
   poster="/img/guide/automation-flow-send.png"
-  caption="The minimal sending flow: a timer wired to a sending node."
+  caption="Scheduled send flow: inject fires on the interval and serial txd reports the number of bytes sent."
 />
--->
-
-<!-- Slot 8 / automation-running.png
-     Frame: a running serial txd node with its green status dot and sent byte count.
 
 <GuideMedia
   poster="/img/guide/automation-running.png"
-  caption="Node status reports the result of the most recent send."
+  caption="A running serial txd node: the status line below the node reports the send result."
 />
--->
 
 ## Request and reply
 
-Use `serial request` when a single command needs a reply and the reply must select a branch. The node runs a fixed sequence: clear stale data, write the command, collect the reply.
+Goal: send an AT command, wait for the reply and handle `OK` and `ERROR` on separate branches.
 
-1. Drag `inject` from the common group and `serial request` from the serial group.
-2. Connect `inject` to `serial request`.
-3. Open `inject`, set `payload` to the command to send; set `repeat` if the request must run on a schedule.
-4. Open `serial request`, select the port, the send and reply formats and the line ending, then set the maximum wait and quiet window.
-5. Keep the default `OK` / `ERROR` result branches, or add exact-value and regular-expression conditions. Add the fallback condition when timeouts and unmatched replies need handling.
-6. Connect each result output to a `debug` node, the next `serial txd`, or another processing node.
-7. Click Deploy, trigger `inject`, then read the result in the Debug sidebar.
+<GuideMedia
+  poster="/img/guide/automation-flow-request.png"
+  caption="Request/reply flow: inject triggers serial request, whose three result outputs feed the OK, ERROR and timeout branches."
+/>
 
-A `serial request` message carries `payload`, `raw`, `cmd`, `bytes`, `elapsedMs`, `matched`, `matchedIndex`, `matchedType`, `timedOut` and `reason`. Requests are queued inside the node, so multiple inputs do not use the port at the same time.
+1. Drag `inject` and `serial request` onto the canvas and connect `inject` to `serial request`.
+2. Open `inject` and set `payload` to the command.
+3. Open `serial request` and select the port, send and reply formats and the line ending.
+4. Set Maximum ms and Quiet ms. The first is the total wait limit; the second closes the reply after a period without new data.
+5. Keep the default `OK` / `ERROR` branches, or add equals and regular-expression conditions. Add the unmatched/timeout condition when timeouts and unmatched replies need handling.
+6. Connect each result output to a `debug` node, the next `serial txd` or another processing node.
+7. Click Deploy, trigger `inject` and read the result in the Debug sidebar.
 
-Additional constraints:
+Each request runs as clear stale data, send, collect reply. A `serial request` message carries `payload`, `raw`, `cmd`, `bytes`, `elapsedMs`, `matched`, `matchedIndex`, `matchedType`, `timedOut` and `reason`. Requests are queued inside the node, so multiple inputs do not use the port at the same time.
 
-- Place only one `serial rxd` or `serial request` per port; both share the internal receive queue.
-- With device echo enabled, the sent command may match a condition first; send `ATE0` first.
-- Without a fallback condition, unmatched results are discarded and the node reports this in its status line.
+Place only one `serial rxd` or `serial request` per port. With device echo enabled, send `ATE0` first.
 
 ## Receiving and branching
 
-<!-- Slot 9 / automation-rxd.png
-     Frame: the serial rxd dialog with port, format and poll interval.
+Goal: receive unsolicited data from the device and act on its content.
 
 <GuideMedia
   poster="/img/guide/automation-rxd.png"
-  caption="The receive node selects the port and data format; text format compares directly against keywords."
+  caption="serial rxd properties: select the port and text format so replies can be compared against keywords."
 />
--->
-
-1. Drag `serial rxd` onto the canvas and add a `switch` node.
-2. Connect the output of `serial rxd` to the input of `switch`.
-3. Open `switch`, set `property` to `payload`, add a rule that matches the reply keyword.
-4. Connect the two outputs of `switch` to different `serial txd` or `debug` nodes.
-5. Deploy.
-
-The `payload` of `serial rxd` follows the node format; text format emits a string that can be compared against keywords directly. For byte-level checks, select HEX or Buffer and read the original bytes from `msg.raw`.
-
-<!-- Slot 10 / automation-switch.png
-     Frame: the switch dialog with property set to payload and a keyword rule.
 
 <GuideMedia
   poster="/img/guide/automation-switch.png"
-  caption="The switch node branches on the received payload."
+  caption="switch properties: property is set to msg.payload and the rules match OK and ERROR."
 />
--->
 
-<!-- Slot 11 / automation-flow-recv.png
-     Frame: the full serial rxd to switch to two serial txd wiring.
+1. Drag `serial rxd` and `switch` onto the canvas and connect the output of `serial rxd` to the input of `switch`.
+2. Open `serial rxd`, select the port, text format and poll interval.
+3. Open `switch`, set property to `msg.payload`, add a contains rule and enter the keyword from the device reply.
+4. Connect the switch outputs to different `serial txd`, `debug` or other processing nodes.
+5. Click Deploy.
 
 <GuideMedia
   poster="/img/guide/automation-flow-recv.png"
-  caption="Replies are branched by content, and each branch sends a different command."
+  caption="Receive branch flow: serial rxd passes data to switch, and each branch sends a different command."
 />
--->
+
+In text format, the `payload` of `serial rxd` is a string. For byte-level checks, select HEX or Buffer and read `msg.raw`.
 
 ## Using quick commands
 
 `cmd list` is intended for commands already maintained in the quick commands panel. The node stores only the entry identifier, and edits in the panel propagate to deployed flows.
 
-Place `cmd list` in the flow, select the port, command and line ending, then trigger it from an upstream node after deployment. When the entry has been removed or the list is empty, the node sends the captured text and marks the entry as stale.
+Place `cmd list` in the flow, double-click it to select the port, command and line ending, connect an upstream trigger and deploy. When the entry has been removed or the list is empty, the node sends the captured text and marks the entry as stale.

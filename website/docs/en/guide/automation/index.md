@@ -6,37 +6,50 @@ The editor is the full Node-RED distribution bundled with the program. Flows are
 
 This section contains three pages:
 
-- This page: opening the canvas, deployment and execution
-- [Nodes and ports](/en/guide/automation/nodes): the four serial nodes, port selection, reply branches
-- [Common flows](/en/guide/automation/flows): scheduled sends, request/reply, receive branching, quick commands
+- This page: opening the canvas, editing node properties, deployment and execution
+- [Nodes and ports](/en/guide/automation/nodes): what the four serial nodes do and which options they expose
+- [Common flows](/en/guide/automation/flows): scheduled sends, request/reply and receive branching from an empty canvas
 
 ## Opening the canvas
 
 Click the automation icon in the monitor toolbar. The canvas appears below the monitor instead of opening a new window.
 
-<!-- Slot 1 / automation-open.png
-     Frame: the toolbar icon and the opened canvas with the palette on the left.
+<GuideMedia
+  poster="/img/guide/automation-entry.png"
+  caption="The automation icon in the monitor toolbar (arrow), which opens the canvas below the monitor."
+/>
 
 <GuideMedia
   poster="/img/guide/automation-open.png"
-  caption="The automation canvas sits below the monitor, with the palette on the left."
+  caption="The automation canvas inside the application window: serial toolbar at the top, node palette on the left, editor in the middle."
 />
--->
 
 A serial port must be open in the serial panel before the nodes can be used. Automation nodes do not open the port themselves; the port is owned by the program and the nodes read and write through an internal channel.
 
 Closing the canvas does not stop the flows. They stop when the program exits.
 
-## Deployment and execution
+## Editing node properties
 
-<!-- Slot 7 / automation-deploy.png
-     Frame: the Deploy button and the deployment confirmation.
+All node options are set in the properties panel:
+
+1. Double-click a node on the canvas; the properties panel opens on the right.
+2. Change the name, port, format, timeout and other options.
+3. Click Done in the upper right corner of the panel to keep the changes, or Cancel to discard them.
+4. Click Deploy in the upper right corner of the canvas so the flow runs with the new options.
+
+The properties panel only edits the selected node. Canvas changes stay in the editor until deployment and are not written to the flow file.
+
+<GuideMedia
+  poster="/img/guide/automation-port.png"
+  caption="Properties of a serial txd node: name, port, format and line ending."
+/>
+
+## Deployment and execution
 
 <GuideMedia
   poster="/img/guide/automation-deploy.png"
-  caption="Deployment takes effect immediately and the result is shown in the editor."
+  caption="The Deploy button in the upper right corner of the canvas. The flow starts immediately after deployment."
 />
--->
 
 | Item | Description |
 |---|---|

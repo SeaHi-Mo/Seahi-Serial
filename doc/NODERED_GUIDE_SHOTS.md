@@ -1,22 +1,22 @@
 # Node-RED 指南配图清单
 
-`website/docs/guide/automation/` 下的三页与英文版里已经**预置了 14 个截图位**（HTML 注释块）。
-拍照 → 放进素材目录 → 去掉注释符，页面就出图。本文是那份拍摄清单。
+`website/docs/guide/automation/` 下的三页与英文版已经使用 **14 张真实截图**（`website/docs/public/img/guide/automation-*.png`）。
+本文记录每张图的取景口径，以及后续替换/补拍方式。
 
 截图位分布：
 
 | 页面 | 截图位 |
 |---|---|
 | `index.md`（概览 / 部署） | 1、7 |
-| `nodes.md`（节点与端口） | 2、3、4、12、13、14 |
-| `flows.md`（常用流程） | 5、6、8、9、10、11 |
+| `nodes.md`（节点与端口） | 2、3、4、12、13 |
+| `flows.md`（常用流程） | 5、6、8、9、10、11，以及请求应答流程图 |
+| 可选补拍 | 14（端口未打开） |
 
 ## 怎么用
 
 1. 截图存成 PNG，命名见下表，放到 `website/docs/public/img/guide/`。
-2. 打开 `website/docs/guide/automation/` 下对应的页面，找到注释块（形如 `<!-- 截图位 3｜automation-port.png`），
-   把**上下那两行 `<!--` / `-->` 删掉**，`<GuideMedia>` 就会渲染。
-3. 英文页 `website/docs/en/guide/automation/` 里同一个 Slot 编号要同步去掉注释。
+2. 页面已经用 `<GuideMedia>` 引用了这些文件，**替换同名文件**即可更新，不需要改 Markdown。
+3. 英文页引用同一批文件，替换后同时生效。
 4. `npm run docs:dev` 预览，`npm run docs:build` 验证。
 
 ## 拍摄口径
@@ -30,7 +30,8 @@
 
 | # | 文件名 | 画面内容 | 说明要点 |
 |---|---|---|---|
-| 1 | `automation-open.png` | 工具栏自动化图标 + 打开后的画布（左侧调色板、中间画布） | 要能看出画布嵌在监视器下方，不是独立窗口 |
+| 1 | `automation-entry.png` | 工具栏上的自动化图标（箭头所指） | 点它打开画布，位于监视器下方 |
+| 1b | `automation-open.png` | 打开后的画布（左侧调色板、中间画布） | 应用窗口与串口工具栏保留，不是独立窗口 |
 | 2 | `automation-palette.png` | 调色板「串口」分组展开 | 四个节点名都要看清：`serial rxd` / `serial txd` / `serial request` / `cmd list` |
 | 3 | `automation-port.png` | `serial txd` 对话框，端口下拉展开 | 下拉里是 `COM3 · 115200` 这种端口名与波特率 |
 | 4 | `automation-request.png` | `serial request` 对话框的结果分支编辑器 | 体现「一个条件一个输出口」 |
