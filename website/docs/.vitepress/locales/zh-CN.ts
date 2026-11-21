@@ -52,7 +52,11 @@ export const zhCN: LocaleContent = {
       },
       {
         text: '自动化',
-        items: [{ text: 'Node-RED 自动化', link: '/guide/automation' }],
+        items: [
+          { text: 'Node-RED 自动化', link: '/guide/automation/' },
+          { text: '节点与端口', link: '/guide/automation/nodes' },
+          { text: '常用流程', link: '/guide/automation/flows' },
+        ],
       },
       {
         text: 'MCP',

@@ -166,7 +166,7 @@ onBeforeUnmount(() => {
           <p class="lp-auto-lede">{{ t.automation.body }}</p>
           <a
             class="lp-btn lp-btn-secondary lp-btn-s lp-auto-link"
-            :href="isEn ? '/en/guide/automation' : '/guide/automation'"
+            :href="isEn ? '/en/guide/automation/' : '/guide/automation/'"
           >
             {{ t.automation.link }}
           </a>

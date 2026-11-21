@@ -1,14 +1,22 @@
 # Node-RED 指南配图清单
 
-`website/docs/guide/automation.md` 与英文版里已经**预置了 14 个截图位**（HTML 注释块）。
+`website/docs/guide/automation/` 下的三页与英文版里已经**预置了 14 个截图位**（HTML 注释块）。
 拍照 → 放进素材目录 → 去掉注释符，页面就出图。本文是那份拍摄清单。
+
+截图位分布：
+
+| 页面 | 截图位 |
+|---|---|
+| `index.md`（概览 / 部署） | 1、7 |
+| `nodes.md`（节点与端口） | 2、3、4、12、13、14 |
+| `flows.md`（常用流程） | 5、6、8、9、10、11 |
 
 ## 怎么用
 
 1. 截图存成 PNG，命名见下表，放到 `website/docs/public/img/guide/`。
-2. 打开 `website/docs/guide/automation.md`，找到对应的注释块（形如 `<!-- 截图位 3｜automation-port.png`），
+2. 打开 `website/docs/guide/automation/` 下对应的页面，找到注释块（形如 `<!-- 截图位 3｜automation-port.png`），
    把**上下那两行 `<!--` / `-->` 删掉**，`<GuideMedia>` 就会渲染。
-3. 英文页 `website/docs/en/guide/automation.md` 里同一个 Slot 编号要同步去掉注释。
+3. 英文页 `website/docs/en/guide/automation/` 里同一个 Slot 编号要同步去掉注释。
 4. `npm run docs:dev` 预览，`npm run docs:build` 验证。
 
 ## 拍摄口径
@@ -44,6 +52,6 @@
 
 ## 补图之后
 
-- 英文页的 `caption` 要跟着改（两页各一份，不是自动同步的）
+- 英文页的 `caption` 要跟着改（三页各一份，中英不是自动同步的）
 - 新增或改名素材时，同步改本表
-- 页面不需要改侧边栏（`automation` 已经在「自动化」分组里）
+- 侧边栏已收录三页；新增自动化页面时要同步 `website/docs/.vitepress/locales/{zh-CN,en-US}.ts`
