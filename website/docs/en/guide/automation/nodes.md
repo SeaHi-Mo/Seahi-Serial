@@ -22,7 +22,7 @@ Double-click a node to open its properties. All four panels share the same layou
 
 <GuideMedia
   poster="/img/guide/automation-port.png"
-  caption="serial txd properties: the port dropdown shows open ports with name and baud rate; format and line ending are set on the right."
+  caption="serial txd properties: the port field shows the selected open port with name and baud rate; format and line ending are set on the right."
 />
 
 | Option | How to set it |
@@ -75,7 +75,7 @@ Result branches support contains, equals, regular expression and the unmatched/t
 
 <GuideMedia
   poster="/img/guide/automation-cmdlist.png"
-  caption="cmd list properties: the command dropdown lists quick commands by group; the line ending is set separately."
+  caption="cmd list properties: the command field shows the selected quick command; the line ending is set separately."
 />
 
 | Option | How to set it |

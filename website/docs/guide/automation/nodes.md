@@ -22,7 +22,7 @@
 
 <GuideMedia
   poster="/img/guide/automation-port.png"
-  caption="serial txd 的属性面板：端口下拉显示已打开端口的名称与波特率，右侧可选择文本 / HEX 与行尾。"
+  caption="serial txd 的属性面板：端口字段显示已打开端口的名称与波特率，右侧可选择文本 / HEX 与行尾。"
 />
 
 | 参数 | 设置方式 |
@@ -75,7 +75,7 @@
 
 <GuideMedia
   poster="/img/guide/automation-cmdlist.png"
-  caption="cmd list 的属性面板：指令下拉按组列出快捷指令，行尾单独设置。"
+  caption="cmd list 的属性面板：指令字段显示已选择的快捷指令，行尾单独设置。"
 />
 
 | 参数 | 设置方式 |

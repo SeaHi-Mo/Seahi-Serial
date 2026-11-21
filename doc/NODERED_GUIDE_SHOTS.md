@@ -33,7 +33,7 @@
 | 1 | `automation-entry.png` | 工具栏上的自动化图标（箭头所指） | 点它打开画布，位于监视器下方 |
 | 1b | `automation-open.png` | 打开后的画布（左侧调色板、中间画布） | 应用窗口与串口工具栏保留，不是独立窗口 |
 | 2 | `automation-palette.png` | 调色板「串口」分组展开 | 四个节点名都要看清：`serial rxd` / `serial txd` / `serial request` / `cmd list` |
-| 3 | `automation-port.png` | `serial txd` 对话框，端口下拉展开 | 下拉里是 `COM3 · 115200` 这种端口名与波特率 |
+| 3 | `automation-port.png` | `serial txd` 对话框，端口字段选中已打开的端口 | 显示 `COM3 · 115200` 这种端口名与波特率；下拉展开画面不易截，字段值即可 |
 | 4 | `automation-request.png` | `serial request` 对话框的结果分支编辑器 | 体现「一个条件一个输出口」 |
 | 5 | `automation-inject.png` | `inject` 对话框，`payload` 与 `repeat` 已填 | 一个节点同时决定内容与间隔 |
 | 6 | `automation-flow-send.png` | `inject` → `serial txd` 连好的两个节点 | 连线清晰，节点上能看到端口标签 |
@@ -42,7 +42,7 @@
 | 9 | `automation-rxd.png` | `serial rxd` 对话框 | 端口 / 格式 / 轮询间隔三项 |
 | 10 | `automation-switch.png` | `switch` 对话框，`property = payload` + 包含规则 | 规则里填的是应答里的关键字 |
 | 11 | `automation-flow-recv.png` | `serial rxd` → `switch` → 两个 `serial txd` | 完整的分支流程 |
-| 12 | `automation-cmdlist.png` | `cmd list` 对话框，指令下拉展开 | 灰色分组标题 + 组内条目 |
+| 12 | `automation-cmdlist.png` | `cmd list` 对话框，指令字段已选中条目 | 灰色分组标题 + 组内条目；下拉展开不易截，字段值即可 |
 | 13 | `automation-quickcmds.png` | 串口面板的快捷指令侧栏 | 说明这是 `cmd list` 的数据来源 |
 | 14 | `automation-noport.png` | 端口未打开时节点下方的红色状态 | 文案是「COM17 没有打开」或「没有可用的串口」 |
 
