@@ -1,6 +1,19 @@
-# Common flows
+﻿# Common flows
 
 The flows below start from an empty canvas. Drag nodes from the palette, double-click a node to set its options, connect the nodes, then click Deploy in the upper right corner.
+
+## Flow code
+
+Importable JSON is provided for all four flows:
+
+- [Download scheduled send JSON](/flows/scheduled-send.json)
+- [Download request and reply JSON](/flows/request-reply.json)
+- [Download receive branch JSON](/flows/receive-branch.json)
+- [Download quick command JSON](/flows/quick-command.json)
+
+To import, open the menu in the upper right corner of the canvas, choose Import and paste the JSON. After importing, double-click each serial node, set Port to the open port, then click Deploy.
+
+`monitor` in the JSON is the pane id and defaults to `main`. For extra panes or WSL panes, change it to the actual pane. Node names are display labels and can be renamed.
 
 ## Sending on a schedule
 
@@ -27,6 +40,8 @@ Goal: send a command to the port at a fixed interval.
   caption="A running serial txd node: the status line below the node reports the send result."
 />
 
+Flow code: [Scheduled send JSON](/flows/scheduled-send.json)
+
 ## Request and reply
 
 Goal: send an AT command, wait for the reply and handle `OK` and `ERROR` on separate branches.
@@ -47,6 +62,8 @@ Goal: send an AT command, wait for the reply and handle `OK` and `ERROR` on sepa
 Each request runs as clear stale data, send, collect reply. A `serial request` message carries `payload`, `raw`, `cmd`, `bytes`, `elapsedMs`, `matched`, `matchedIndex`, `matchedType`, `timedOut` and `reason`. Requests are queued inside the node, so multiple inputs do not use the port at the same time.
 
 Place only one `serial rxd` or `serial request` per port. With device echo enabled, send `ATE0` first.
+
+Flow code: [Request and reply JSON](/flows/request-reply.json)
 
 ## Receiving and branching
 
@@ -75,8 +92,13 @@ Goal: receive unsolicited data from the device and act on its content.
 
 In text format, the `payload` of `serial rxd` is a string. For byte-level checks, select HEX or Buffer and read `msg.raw`.
 
+Flow code: [Receive branch JSON](/flows/receive-branch.json)
+
 ## Using quick commands
 
 `cmd list` is intended for commands already maintained in the quick commands panel. The node stores only the entry identifier, and edits in the panel propagate to deployed flows.
 
 Place `cmd list` in the flow, double-click it to select the port, command and line ending, connect an upstream trigger and deploy. When the entry has been removed or the list is empty, the node sends the captured text and marks the entry as stale.
+
+Flow code: [Quick command JSON](/flows/quick-command.json)
+

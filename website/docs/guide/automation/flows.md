@@ -2,6 +2,19 @@
 
 以下流程都从空白画布开始。节点从左侧调色板拖入，双击节点设置参数，连线后点击右上角「部署」。
 
+## 流程代码
+
+四个流程都提供了可直接导入的 JSON：
+
+- [下载定时发送 JSON](/flows/scheduled-send.json)
+- [下载请求与应答 JSON](/flows/request-reply.json)
+- [下载接收与分支 JSON](/flows/receive-branch.json)
+- [下载发送快捷指令 JSON](/flows/quick-command.json)
+
+导入方式：在画布右上角菜单中选择「导入」，粘贴 JSON 内容后确认。导入后双击串口节点，把「端口」改为当前打开的端口，再点击「部署」。
+
+JSON 中的 `monitor` 是分栏 id，默认 `main`。使用额外分栏或 WSL 分栏时，需要按实际分栏修改。导入的节点名称只作显示，可以按需重命名。
+
 ## 定时发送
 
 目标：每隔固定时间向端口发送一条指令。
@@ -27,6 +40,8 @@
   caption="运行中的 serial txd：节点下方的状态文字显示发送结果。"
 />
 
+流程代码：[下载定时发送 JSON](/flows/scheduled-send.json)
+
 ## 请求与应答
 
 目标：发送一条 AT 指令，等待设备回复，并按 `OK` / `ERROR` 分支处理。
@@ -47,6 +62,8 @@
 `serial request` 每次请求按「清空旧数据 → 发送 → 收集回复」执行，消息中包含 `payload`、`raw`、`cmd`、`bytes`、`elapsedMs`、`matched`、`matchedIndex`、`matchedType`、`timedOut` 和 `reason`。请求在节点内串行排队，多条输入不会同时占用端口。
 
 同一端口只放一个 `serial rxd` 或 `serial request`；设备回显未关闭时先发送 `ATE0`。
+
+流程代码：[下载请求与应答 JSON](/flows/request-reply.json)
 
 ## 接收与分支
 
@@ -75,8 +92,12 @@
 
 `serial rxd` 格式选文本时 `payload` 直接作为字符串；需要按字节核对时选 HEX 或 Buffer，并读取 `msg.raw`。
 
+流程代码：[下载接收与分支 JSON](/flows/receive-branch.json)
+
 ## 使用快捷指令
 
 `cmd list` 适合发送已经在快捷指令面板中维护的指令。节点只保存条目标识，面板中修改内容后，已部署的流程会自动跟随。
 
 在流程中放置 `cmd list`，双击选择端口、指令与行尾，连接上游触发节点后部署。条目被删除或列表为空时，节点按保存时的文本发送，并在状态栏标注条目已失效。
+
+流程代码：[下载发送快捷指令 JSON](/flows/quick-command.json)
