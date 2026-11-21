@@ -22,6 +22,8 @@ export interface LandingCopy {
   }
   /** 内置 MCP 服务器（替换掉原来的「接入方式」整章） */
   mcp: { title: string; body: string }
+  /** Node-RED 自动化演示（首页动画） */
+  automation: { title: string; body: string; link: string }
   closing: {
     title: string
     body: string
@@ -70,6 +72,11 @@ const zh: LandingCopy = {
   mcp: {
     title: '内置 MCP 服务器',
     body: '程序自带 MCP 服务器。AI 客户端连上后能直接读日志、发指令、订阅通知，不用你手动复制输出。',
+  },
+  automation: {
+    title: 'Node-RED 自动化',
+    body: '应用内嵌 Node-RED 画布。把串口节点连成流程，按回复自动走分支：OK 继续，ERROR 重试，超时告警。',
+    link: '查看自动化指南',
   },
   closing: {
     title: '把串口助手交给 AI',
@@ -120,6 +127,11 @@ const en: LandingCopy = {
   mcp: {
     title: 'Built-in MCP server',
     body: 'The app ships an MCP server. An AI client can read logs, send commands and subscribe to notifications instead of copying output by hand.',
+  },
+  automation: {
+    title: 'Node-RED automation',
+    body: 'A Node-RED canvas is built in. Wire serial nodes into a flow and branch on replies: OK continues, ERROR retries, timeout raises an alert.',
+    link: 'Read the automation guide',
   },
   closing: {
     title: 'Hand your serial console to an AI',

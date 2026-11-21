@@ -158,6 +158,37 @@ onBeforeUnmount(() => {
 
       <FeatureCards />
 
+      <!-- Node-RED 自动化：真实编辑器画布录屏（本地演示桥回 AT 应答），1280×800 / 6.6s；
+           poster 取最后一帧，prefers-reduced-motion 时只显示这张静态图。 -->
+      <section class="lp-sec lp-wrap lp-auto-sec">
+        <div class="lp-sec-h lp-reveal">
+          <h2>{{ t.automation.title }}</h2>
+          <p class="lp-auto-lede">{{ t.automation.body }}</p>
+          <a
+            class="lp-btn lp-btn-secondary lp-btn-s lp-auto-link"
+            :href="isEn ? '/en/guide/automation' : '/guide/automation'"
+          >
+            {{ t.automation.link }}
+          </a>
+        </div>
+        <div class="lp-auto lp-reveal">
+          <div class="motion">
+            <video
+              autoplay
+              muted
+              loop
+              playsinline
+              preload="metadata"
+              poster="/img/landing/automation.jpg"
+              :aria-label="t.automation.title"
+            >
+              <source src="/img/landing/automation.mp4" type="video/mp4" />
+            </video>
+            <img class="motion-still" src="/img/landing/automation.jpg" :alt="t.automation.title" loading="lazy" />
+          </div>
+        </div>
+      </section>
+
       <section class="lp-sec lp-wrap lp-mcp-sec">
         <div class="lp-sec-h lp-reveal">
           <h2>{{ t.mcp.title }}</h2>
