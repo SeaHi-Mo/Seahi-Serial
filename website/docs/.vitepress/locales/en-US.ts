@@ -54,9 +54,9 @@ export const enUS: LocaleContent = {
         ],
       },
       {
-        text: 'Automation',
+        text: 'Node-RED automation',
         items: [
-          { text: 'Node-RED automation', link: '/en/guide/automation/' },
+          { text: 'Overview', link: '/en/guide/automation/' },
           { text: 'Nodes and ports', link: '/en/guide/automation/nodes' },
           { text: 'Common flows', link: '/en/guide/automation/flows' },
         ],
