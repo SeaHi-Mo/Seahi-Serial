@@ -62,6 +62,22 @@ jobs:
             Write-Host "非 tag 触发（${{ github.ref }}），跳过 tag 校验"
           }
 
+      - name: Remove stale release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # 重建同一个 tag 时，同名 Release 还挂着上一次的资产（v0.6.0 就这样留下了一个没有
+        # Node-RED 的 6.5 MB MSI）。先删掉，tauri-action / softprops 才会建一套干净资产。
+        # 普通新 tag 没有旧 Release，gh 返回非 0，忽略即可。
+        run: |
+          gh release delete "${{ github.ref_name }}" --yes
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "已删除旧 Release：${{ github.ref_name }}"
+          } else {
+            Write-Host "没有旧 Release，继续"
+          }
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
