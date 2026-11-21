@@ -741,6 +741,16 @@ fn bridge_attach_id(
     reply
 }
 
+/// 生成一行监视器信息。端口名与波特率来自 `PortReader` 的打开时缓存，
+/// 不碰 `port` 锁 —— 读线程持有它阻塞在 `read()` 上，`try_lock` 会失败。
+fn bridge_monitor_row(mid: &str, port_name: &str, baud_rate: u32) -> serde_json::Value {
+    serde_json::json!({
+        "id": mid,
+        "port": port_name,
+        "baud": if baud_rate == 0 { serde_json::Value::Null } else { serde_json::json!(baud_rate) },
+    })
+}
+
 /// 列出宿主里当前打开的串口监视器（node-red 编辑器的「监视器」下拉用）。
 ///
 /// 只列 Rust 侧真有 reader 的：串口分栏 `main` / `extra-N`。WSL 分栏的读在 Python 侧，
@@ -751,16 +761,7 @@ fn bridge_list_monitors(app: &tauri::AppHandle) -> Vec<serde_json::Value> {
     let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
     let mut rows: Vec<serde_json::Value> = map
         .iter()
-        .map(|(mid, reader)| {
-            /* try_lock：读线程可能正卡在 read() 上（串口超时是毫秒级），
-               不能为了填一个下拉框把它堵住。拿不到锁就只回 id，前端会显示成
-               「main（端口信息暂不可用）」。 */
-            let (port, baud) = match reader.port.try_lock() {
-                Ok(p) => (p.name().unwrap_or_default(), p.baud_rate().ok()),
-                Err(_) => (String::new(), None),
-            };
-            serde_json::json!({"id": mid, "port": port, "baud": baud})
-        })
+        .map(|(mid, reader)| bridge_monitor_row(mid, &reader.port_name, reader.baud_rate))
         .collect();
     rows.sort_by_key(|v| {
         bridge_monitor_sort_key(v.get("id").and_then(|x| x.as_str()).unwrap_or(""))
@@ -814,6 +815,21 @@ mod bridge_tests {
         let mut ids = vec!["extra-10", "extra-2", "main", "zzz", "extra-1"];
         ids.sort_by_key(|id| bridge_monitor_sort_key(id));
         assert_eq!(ids, vec!["main", "extra-1", "extra-2", "extra-10", "zzz"]);
+    }
+
+    #[test]
+    fn bridge_monitor_row_uses_cached_port_metadata() {
+        // 回归：曾经在 bridge_list_monitors 里 try_lock(port)，读线程正卡在
+        // 10ms 的 read() 上时拿不到锁，端口名变成空串，属性面板显示「未打开」。
+        let row = bridge_monitor_row("main", "COM7", 115200);
+        assert_eq!(row["id"], "main");
+        assert_eq!(row["port"], "COM7");
+        assert_eq!(row["baud"], 115200);
+
+        // 0 表示当时拿不到波特率；回 null，别让前端显示 “0 bps”。
+        let row = bridge_monitor_row("extra-1", "", 0);
+        assert_eq!(row["port"], "");
+        assert!(row["baud"].is_null());
     }
 }
 
@@ -1387,6 +1403,13 @@ struct PortReader {
     /// 断开后是否已上报过（避免 read_data 每次轮询都重复上报）
     disconnect_reported: std::sync::Arc<std::sync::atomic::AtomicBool>,
     port: std::sync::Arc<std::sync::Mutex<Box<dyn SerialPort>>>,
+    /// 打开时缓存的端口名与波特率。
+    ///
+    /// 属性面板的 `monitors` 不能再去 `try_lock(port)`：读线程几乎一直持有这把锁，
+    /// 阻塞在 10ms 的 `read()` 上；`try_lock` 失败后端口名变成空串，编辑器就会显示
+    /// 「当前没有已打开的串口」。端口名与波特率在打开期间不变，缓存一份即可。
+    port_name: String,
+    baud_rate: u32,
     rules: std::sync::Arc<std::sync::Mutex<Vec<WorkflowRule>>>,
     log_dir: std::sync::Arc<std::sync::Mutex<String>>,
     line_ending: std::sync::Arc<std::sync::Mutex<String>>,
@@ -1412,6 +1435,8 @@ impl PortReader {
         let dropped_clone = dropped.clone();
         let stop_clone = stop.clone();
         let disconnected_clone = disconnected.clone();
+        let port_name = port.name().unwrap_or_default();
+        let baud_rate = port.baud_rate().unwrap_or(0);
         let port_arc = std::sync::Arc::new(std::sync::Mutex::new(port));
         let rules_clone = rules.clone();
         let log_dir_clone = log_dir.clone();
@@ -1502,7 +1527,7 @@ impl PortReader {
         PortReader {
             buffer, events, dropped, read_handle: Some(read_handle), wf_handle: Some(wf_handle),
             act_handle: Some(act_handle), stop, disconnected, disconnect_reported,
-            port: port_arc, rules, log_dir, line_ending,
+            port: port_arc, port_name, baud_rate, rules, log_dir, line_ending,
         }
     }
 

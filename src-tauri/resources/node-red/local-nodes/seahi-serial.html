@@ -244,7 +244,10 @@
         if (m.port) info.push(m.port);
         if (m.baud) info.push(m.baud + ' bps');
         if (info.length) return info.join(' · ');          // COM17 · 115200
-        return m.id === 'main' ? '主分栏（端口未打开）' : '分栏 ' + m.id + '（端口未打开）';
+        /* 列表里只会有已经打开的监视器；port 为空说明宿主没把端口名带回来
+           （旧版后端读锁竞争），不能再写成「端口未打开」——那会把一个已打开的
+           串口说成没打开。 */
+        return m.id === 'main' ? '主分栏（端口信息暂不可用）' : '分栏 ' + m.id + '（端口信息暂不可用）';
     }
 
     function seahiMonitorTextOf(id) {
