@@ -1,6 +1,6 @@
 # Node-RED 指南配图清单
 
-`website/docs/guide/automation/` 下的三页与英文版已经使用 **14 张真实截图**（`website/docs/public/img/guide/automation-*.png`）。
+`website/docs/guide/automation/` 下的四页与英文版已经使用 **14 张真实截图**（`website/docs/public/img/guide/automation-*.png`）。
 本文记录每张图的取景口径，以及后续替换/补拍方式。
 
 截图位分布：
@@ -8,6 +8,7 @@
 | 页面 | 截图位 |
 |---|---|
 | `index.md`（概览 / 部署） | 1、7 |
+| `quick-start.md`（快速开始） | 复用 1、3、7、8 |
 | `nodes.md`（节点与端口） | 2、3、4、12、13 |
 | `flows.md`（常用流程） | 5、6、8、9、10、11，以及请求应答流程图 |
 | 可选补拍 | 14（端口未打开） |

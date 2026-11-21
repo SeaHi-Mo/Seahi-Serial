@@ -4,9 +4,10 @@ The application ships with an embedded Node-RED editor. Flows are built on the c
 
 The editor is the full Node-RED distribution bundled with the program. Flows are stored as flow files and executed by the background engine after deployment. Flows are suited to fixed send/receive sequences, reply handling and scheduled tasks.
 
-This section contains three pages:
+This section contains four pages:
 
 - This page: opening the canvas, editing node properties, deployment and execution
+- [Quick start](/en/guide/automation/quick-start): import a minimal flow and send the first command
 - [Nodes and ports](/en/guide/automation/nodes): what the four serial nodes do and which options they expose
 - [Common flows](/en/guide/automation/flows): scheduled sends, request/reply and receive branching from an empty canvas
 
