@@ -102,6 +102,18 @@ function nfPlace() {
     pane.style.height = Math.max(0, Math.round(bottom - top)) + 'px';
 }
 
+/* 覆盖层要跟着分栏、工具栏、发送栏一起变：只看 host 会漏掉折叠工具栏 */
+function nfObserveHost(host) {
+    if (!window.ResizeObserver) return;
+    if (NF_RO) NF_RO.disconnect();
+    NF_RO = new ResizeObserver(nfPlace);
+    NF_RO.observe(host);
+    var tb = host.querySelector('.toolbar-wrap');
+    if (tb) NF_RO.observe(tb);
+    var sb = host.querySelector('.send-bar');
+    if (sb) NF_RO.observe(sb);
+}
+
 /* 挂到这个分栏的正文区：只隐藏 .mon-body，pane 本身不移动 */
 function nfAttach(mid) {
     var pane = document.getElementById('nodeflow-pane');
@@ -122,15 +134,8 @@ function nfAttach(mid) {
         NF_PLACE_BOUND = true;
         window.addEventListener('resize', nfPlace);
         window.addEventListener('scroll', nfPlace, true);
-        if (window.ResizeObserver) {
-            NF_RO = new ResizeObserver(nfPlace);
-            NF_RO.observe(host);
-        }
-    } else if (NF_RO && window.ResizeObserver) {
-        NF_RO.disconnect();
-        NF_RO = new ResizeObserver(nfPlace);
-        NF_RO.observe(host);
     }
+    nfObserveHost(host);
 }
 
 /* 收起：只隐藏 pane、恢复正文，不移动 iframe（保住编辑器里未部署的状态） */

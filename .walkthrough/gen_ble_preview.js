@@ -8704,11 +8704,13 @@ try {
     const attach = extractFunction('nfAttach');
     const detach = extractFunction('nfDetach');
     const place = extractFunction('nfPlace');
+    const observe = extractFunction('nfObserveHost');
     check(!/insertBefore\(\s*pane|appendChild\(\s*pane/.test(attach + detach),
       'Node-RED 画布：开关面板不搬 iframe（否则未部署的删除会重新加载回来）');
     check(/getBoundingClientRect/.test(place) && /pane\.style\.left/.test(place),
       'Node-RED 画布：用绝对定位覆盖正文区，而不是插进分栏 DOM');
-    check(/ResizeObserver/.test(attach), 'Node-RED 画布：跟随分栏尺寸重排覆盖层');
+    check(/ResizeObserver/.test(observe) && /toolbar-wrap/.test(observe),
+      'Node-RED 画布：跟随分栏 / 工具栏尺寸重排覆盖层');
     check(/#nodeflow-pane\s*\{[^}]*position:\s*absolute/s.test(html),
       'Node-RED 画布：#nodeflow-pane 用 absolute 定位');
   })();
