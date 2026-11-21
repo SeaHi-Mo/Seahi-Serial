@@ -158,8 +158,8 @@ onBeforeUnmount(() => {
 
       <FeatureCards />
 
-      <!-- Node-RED 自动化：真实编辑器画布录屏（本地演示桥回 AT 应答），1280×800 / 6.6s；
-           poster 取最后一帧，prefers-reduced-motion 时只显示这张静态图。 -->
+      <!-- Node-RED 自动化：真实应用界面录屏（工具栏 + 内嵌 Node-RED），演示流程每 2 秒
+           自动跑一遍 OK / ERROR 分支；1280×922 / 8s，poster 取最后一帧。 -->
       <section class="lp-sec lp-wrap lp-auto-sec">
         <div class="lp-sec-h lp-reveal">
           <h2>{{ t.automation.title }}</h2>

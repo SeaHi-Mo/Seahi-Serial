@@ -75,7 +75,7 @@ const zh: LandingCopy = {
   },
   automation: {
     title: 'Node-RED 自动化',
-    body: '应用内嵌 Node-RED 画布。把串口节点连成流程，按回复自动走分支：OK 继续，ERROR 重试，超时告警。',
+    body: '应用内嵌 Node-RED 画布。把节点连成流程，按回复自动走分支：OK 继续，ERROR 重试，超时告警。',
     link: '查看自动化指南',
   },
   closing: {
@@ -130,7 +130,7 @@ const en: LandingCopy = {
   },
   automation: {
     title: 'Node-RED automation',
-    body: 'A Node-RED canvas is built in. Wire serial nodes into a flow and branch on replies: OK continues, ERROR retries, timeout raises an alert.',
+    body: 'A Node-RED canvas is built in. Wire nodes into a flow and branch on replies: OK continues, ERROR retries, timeout raises an alert.',
     link: 'Read the automation guide',
   },
   closing: {
