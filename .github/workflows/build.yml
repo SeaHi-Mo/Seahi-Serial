@@ -77,6 +77,10 @@ jobs:
           } else {
             Write-Host "没有旧 Release，继续"
           }
+          # ⚠️ 必须复位 exit code：GitHub 的 pwsh 包装会在脚本末尾 `exit $LASTEXITCODE`，
+          # 而上面那次 gh 是**预期内失败**（普通新 tag 没有旧 Release）。不复位的话整步判失败，
+          # 后面的构建一次都不会跑 —— v0.6.1 就卡在这里（19 秒失败）。
+          exit 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
