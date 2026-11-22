@@ -54,13 +54,30 @@ function notesFromTag(tag) {
 }
 
 /**
+ * 英文页的正文来源：`doc/release-notes-en/<版本>.md`。
+ *
+ * 为什么不机翻、也不发英文 GitHub Release：发布说明只有中文一份（GitHub 上就是它），
+ * 英文站点要的是**可读的英文正文**，由人写进这个目录，生成器只负责取用。
+ * 没有对应文件时英文页给一句说明并链到 GitHub，**不把中文原样贴到英文页上**。
+ */
+const EN_NOTES_DIR = resolve(repoRoot, 'doc', 'release-notes-en')
+
+function notesEn(version) {
+  try {
+    return readFileSync(resolve(EN_NOTES_DIR, `${version}.md`), 'utf8').trim()
+  } catch {
+    return ''
+  }
+}
+
+/**
  * 发布说明里的「验证」「安装说明」两节只对发布流程有意义（构建命令、签名提示），
- * 站点上不展示：按 `###` 切块，命中关键词的整块删掉。
+ * 站点上不展示：按 `###` 切块，命中关键词的整块删掉。中文与英文的标题都要覆盖。
  */
 function stripInternalSections(md) {
   return md
     .split(/\n(?=###[ \t])/)
-    .filter((chunk) => !/^###[^\n]*(验证|安装说明)/.test(chunk))
+    .filter((chunk) => !/^###[^\n]*(验证|安装说明|verification|installation)/i.test(chunk))
     .join('\n')
 }
 
@@ -72,7 +89,7 @@ function sectionBody(md) {
 function placeholder(version, isEn) {
   const url = `${REPO}/releases/tag/${version}`
   return isEn
-    ? `No release notes were saved for this build. See the [GitHub release](${url}).`
+    ? `No English notes have been written for this version yet. The original release notes are on [GitHub](${url}) in Chinese.`
     : `这一版没有留存发布说明，见 [GitHub Release](${url})。`
 }
 
@@ -148,13 +165,19 @@ function collectVersions() {
     versions.push({
       version: currentVersion,
       notes: stripInternalSections(current).trim(),
+      notesEn: stripInternalSections(notesEn(currentVersion)).trim(),
       ref: tags.includes(currentVersion) ? currentVersion : 'main',
     })
   }
   for (const tag of tags) {
     if (versions.some((v) => v.version === tag)) continue
     const raw = notesFromTag(tag)
-    versions.push({ version: tag, notes: raw ? stripInternalSections(raw).trim() : '', ref: tag })
+    versions.push({
+      version: tag,
+      notes: raw ? stripInternalSections(raw).trim() : '',
+      notesEn: stripInternalSections(notesEn(tag)).trim(),
+      ref: tag,
+    })
   }
   return versions
 }
@@ -164,8 +187,10 @@ function writeVersionPages(baseDir, isEn) {
   // 目录整体重建：版本列表变了以后不留旧版本的孤儿页
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
-  for (const { version, notes, ref } of versions) {
-    const body = (notes && sectionBody(notes)) || placeholder(version, isEn)
+  for (const { version, notes, notesEn, ref } of versions) {
+    // 英文页只用英文原文；没翻译时给一句说明 + GitHub 链接，**绝不把中文正文贴到英文页**
+    const source = isEn ? notesEn : notes
+    const body = (source && sectionBody(source)) || placeholder(version, isEn)
     const md = `---\ntitle: ${version}\npageClass: changelog\n---\n\n# ${version}\n\n${sanitizeLinks(body, ref)}\n`
     writeFileSync(resolve(dir, `${version}.md`), md, 'utf8')
   }
