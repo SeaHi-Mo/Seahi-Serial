@@ -43,7 +43,7 @@ const tabs = computed(() => [
 </script>
 
 <template>
-  <nav class="docs-tabs" :class="`docs-tabs--${props.variant}`" aria-label="文档快捷入口">
+  <nav class="docs-tabs" :class="`docs-tabs--${props.variant}`" :aria-label="isEn ? 'Document shortcuts' : '文档快捷入口'">
     <a
       v-for="t in tabs"
       :key="t.href"
