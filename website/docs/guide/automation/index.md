@@ -8,7 +8,7 @@
 
 - 本页：打开画布、修改节点属性、部署与运行
 - [快速开始](/guide/automation/quick-start)：导入一条最小流程并发送第一条指令
-- [节点与端口](/guide/automation/nodes)：四个串口节点的作用与参数
+- [节点说明](/guide/automation/nodes)：四个串口节点的作用、属性设置与常见用途
 - [常用流程](/guide/automation/flows)：从空白画布完成定时发送、请求应答和接收分支
 
 ## 打开画布
@@ -17,12 +17,12 @@
 
 <GuideMedia
   poster="/img/guide/automation-entry.png"
-  caption="监视器工具栏上的自动化图标（箭头所指），点击后在监视器下方打开画布。"
+  width="700"
 />
 
 <GuideMedia
   poster="/img/guide/automation-open.png"
-  caption="应用窗口中的自动化画布：顶部是串口工具栏，左侧是节点调色板，中间是编辑区。"
+  width="700"
 />
 
 使用前需要先在串口面板打开端口。自动化节点不自行打开串口，端口由程序独占，节点通过内部通道读取和写入。
@@ -42,14 +42,12 @@
 
 <GuideMedia
   poster="/img/guide/automation-port.png"
-  caption="双击 serial txd 节点后的属性面板：名称、端口、格式和行尾都在这里设置。"
 />
 
 ## 部署与运行
 
 <GuideMedia
   poster="/img/guide/automation-deploy.png"
-  caption="画布右上角的「部署」按钮。部署后流程立即生效。"
 />
 
 | 项目 | 说明 |

@@ -5,7 +5,6 @@ The quick command panel is located on the right side of the output area and is c
 <GuideMedia
   src="/img/guide/qcmd.mp4"
   poster="/img/guide/qcmd.png"
-  caption="Expanding the quick command panel and collapsing or expanding groups. Table data comes from the application configuration."
 />
 
 The left side of the header contains the Loop sending switch; the right side contains + New loop group, Import and Export. After a file is imported, a source row appears below the header with the file name, Reload and Disconnect. Without an associated file, the list is stored in the local configuration. With a file, the file serves as storage, the configuration keeps a cache, and the cache is used when the file cannot be read.

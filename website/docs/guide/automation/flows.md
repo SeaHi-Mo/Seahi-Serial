@@ -16,7 +16,6 @@ JSON 中的 `monitor` 是分栏 id，默认 `main`。使用额外分栏或 WSL �
 
 <GuideMedia
   poster="/img/guide/automation-inject.png"
-  caption="inject 的属性面板：payload 填指令内容，「重复」选择周期性执行并填写间隔。"
 />
 
 1. 从「串口」分组拖出 `serial txd`，从「通用」分组拖出 `inject`。
@@ -27,12 +26,10 @@ JSON 中的 `monitor` 是分栏 id，默认 `main`。使用额外分栏或 WSL �
 
 <GuideMedia
   poster="/img/guide/automation-flow-send.png"
-  caption="定时发送流程：inject 按间隔触发，serial txd 显示最近一次发送的字节数。"
 />
 
 <GuideMedia
   poster="/img/guide/automation-running.png"
-  caption="运行中的 serial txd：节点下方的状态文字显示发送结果。"
 />
 
 流程代码：
@@ -84,7 +81,6 @@ JSON 中的 `monitor` 是分栏 id，默认 `main`。使用额外分栏或 WSL �
 
 <GuideMedia
   poster="/img/guide/automation-flow-request.png"
-  caption="请求应答流程：inject 触发 serial request，三个结果连接点分别接 OK、ERROR 与超时分支。"
 />
 
 1. 拖出 `inject` 与 `serial request`，连接 `inject` 到 `serial request`。
@@ -206,12 +202,10 @@ JSON 中的 `monitor` 是分栏 id，默认 `main`。使用额外分栏或 WSL �
 
 <GuideMedia
   poster="/img/guide/automation-rxd.png"
-  caption="serial rxd 的属性面板：选择端口和文本格式，便于直接比较回复中的关键字。"
 />
 
 <GuideMedia
   poster="/img/guide/automation-switch.png"
-  caption="switch 的属性面板：property 设为 msg.payload，规则分别匹配 OK 与 ERROR。"
 />
 
 1. 拖出 `serial rxd` 与 `switch`，连接 `serial rxd` 的输出到 `switch` 的输入。
@@ -222,7 +216,6 @@ JSON 中的 `monitor` 是分栏 id，默认 `main`。使用额外分栏或 WSL �
 
 <GuideMedia
   poster="/img/guide/automation-flow-recv.png"
-  caption="接收分支流程：serial rxd 收到数据后交给 switch，两个分支分别发送不同指令。"
 />
 
 `serial rxd` 格式选文本时 `payload` 直接作为字符串；需要按字节核对时选 HEX 或 Buffer，并读取 `msg.raw`。

@@ -1,87 +1,16 @@
-# 节点与端口
+# 节点说明
 
-串口相关的节点位于调色板的「串口」分组。
+串口相关的节点位于调色板的「串口」分组，共四个。发送、接收、请求应答各一个，另有一个读取快捷指令面板的节点。
 
-<GuideMedia
-  poster="/img/guide/automation-palette.png"
-  caption="调色板的「串口」分组：serial txd、serial rxd、serial request 和 cmd list。"
-/>
+| 节点 | 作用 |
+|---|---|
+| [serial txd](/guide/automation/nodes/serial-txd) | 向端口发送数据 |
+| [serial rxd](/guide/automation/nodes/serial-rxd) | 接收端口数据 |
+| [serial request](/guide/automation/nodes/serial-request) | 发送一条并收取应答 |
+| [cmd list](/guide/automation/nodes/cmd-list) | 发送快捷指令面板中的条目 |
 
-| 节点 | 作用 | 主要参数 |
-|---|---|---|
-| `serial txd` | 向端口发送数据 | 端口、格式（文本 / HEX）、行尾 |
-| `serial rxd` | 接收端口数据 | 端口、格式（文本 / HEX / Buffer）、轮询间隔 |
-| `serial request` | 发送一条并收取应答 | 端口、发送与回复格式、行尾、最长等待、静默收口、结果分支 |
-| `cmd list` | 发送快捷指令面板中的条目 | 端口、指令、行尾 |
+调色板里还有 Node-RED 自带的节点，按通用、功能、序列、解析四类列在[官方节点](/guide/automation/nodes/official)，用它们配合串口节点完成判断、改写与延时。
 
 双击节点打开属性面板。四个节点的面板结构相同：上方是名称与端口，中间是数据格式与行尾，下方是节点自己的参数。
 
-## serial txd：发送数据
-
-`serial txd` 把收到的消息写入端口。文本模式下按 UTF-8 编码并追加行尾；HEX 模式按十六进制字节发送，不追加行尾。
-
-<GuideMedia
-  poster="/img/guide/automation-port.png"
-  caption="serial txd 的属性面板：端口字段显示已打开端口的名称与波特率，右侧可选择文本 / HEX 与行尾。"
-/>
-
-| 参数 | 设置方式 |
-|---|---|
-| 名称 | 节点在画布上显示的名字，只影响可读性 |
-| 端口 | 下拉选择当前已打开的串口；显示为 `COM3 · 115200`。端口未打开时列表会给出提示 |
-| 格式 | 文本：把消息内容按字符串发送；HEX：把十六进制串转成字节发送 |
-| 行尾 | 文本模式下追加 CRLF、CR、LF 或不追加；HEX 模式忽略此项 |
-
-## serial rxd：接收数据
-
-`serial rxd` 轮询端口并把收到的数据转换成消息。格式选文本时 `payload` 是字符串，便于与应答关键字比较；选 HEX 或 Buffer 时按字节输出，同时保留 `msg.raw`。
-
-<GuideMedia
-  poster="/img/guide/automation-rxd.png"
-  caption="serial rxd 的属性面板：端口、数据格式与轮询间隔。"
-/>
-
-| 参数 | 设置方式 |
-|---|---|
-| 端口 | 下拉选择当前已打开的串口 |
-| 格式 | 文本 / HEX / Buffer；文本模式适合直接匹配 `OK`、`ERROR` 等关键字 |
-| 轮询 ms | 读取队列的间隔，默认 100 毫秒；越小延迟越低，读取越频繁 |
-
-同一端口只放置一个 `serial rxd`。需要多处使用数据时，从它的输出向下游分叉。
-
-## serial request：发送并等待应答
-
-`serial request` 承担一次完整的请求 / 应答事务：清空旧数据、发送命令、收集回复，然后按结果分支输出。
-
-<GuideMedia
-  poster="/img/guide/automation-request.png"
-  caption="serial request 的属性面板：发送与回复格式、最长等待、静默收口，以及结果分支编辑器。"
-/>
-
-| 参数 | 设置方式 |
-|---|---|
-| 端口 | 下拉选择当前已打开的串口 |
-| 发送 / 回复 | 分别选择文本或 HEX；发送为 HEX 时不追加行尾 |
-| 行尾 | 文本发送时追加 CRLF、CR、LF 或不追加 |
-| 最长 ms | 从发出命令开始的总等待上限 |
-| 静默 ms | 收到字节后，连续无新数据达到该时长即收口 |
-| 结果分支 | 每行一个条件，命中后从对应连接点输出；默认包含 `OK` 与 `ERROR` |
-
-结果分支支持「包含」「等于」「正则」和「未匹配/超时」。条件按从上到下的顺序匹配，第一个命中的分支生效。未配置「未匹配/超时」时，没有命中的应答会被丢弃，并在节点状态栏提示。
-
-## cmd list：发送快捷指令
-
-`cmd list` 发送快捷指令面板中维护的条目。节点只保存条目标识，在面板中修改内容后，已部署的流程会自动使用新内容。
-
-<GuideMedia
-  poster="/img/guide/automation-cmdlist.png"
-  caption="cmd list 的属性面板：指令字段显示已选择的快捷指令，行尾单独设置。"
-/>
-
-| 参数 | 设置方式 |
-|---|---|
-| 端口 | 下拉选择当前已打开的串口 |
-| 指令 | 从快捷指令面板的条目中选择；分组标题只作分隔，不能选中 |
-| 行尾 | 发送时追加 CRLF、CR、LF 或不追加 |
-
-列表为空或条目已被删除时，节点按保存时的文本发送，并在状态栏标注该条目已失效。
+端口下拉只列出当前已打开的串口，显示为 `COM3 · 115200`。新节点默认选中第一个可用端口；端口关闭后节点状态会说明具体原因。

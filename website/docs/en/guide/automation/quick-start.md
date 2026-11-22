@@ -10,7 +10,6 @@ Click the automation icon in the monitor toolbar. The canvas appears below the m
 
 <GuideMedia
   poster="/img/guide/automation-open.png"
-  caption="The opened automation canvas: serial toolbar at the top, node palette on the left, editor in the middle."
 />
 
 The first open waits for the embedded Node-RED to start, usually 2–5 seconds.
@@ -68,7 +67,6 @@ Double-click `serial txd`, set Port to the open port and confirm the line ending
 
 <GuideMedia
   poster="/img/guide/automation-port.png"
-  caption="serial txd properties: select the open port in the Port field and confirm format and line ending on the right."
 />
 
 `main` in `monitor` is the pane id. For extra panes or WSL panes, change the value in the JSON to the actual pane.
@@ -79,21 +77,19 @@ Click Deploy in the upper right corner. The sample flow sends `AT` once, about 0
 
 <GuideMedia
   poster="/img/guide/automation-deploy.png"
-  caption="The Deploy button in the upper right corner. The flow runs immediately after deployment."
 />
 
 The serial monitor shows the send record and the `serial txd` node reports the number of bytes sent.
 
 <GuideMedia
   poster="/img/guide/automation-running.png"
-  caption="A running serial txd node: the status line reports the most recent send result."
 />
 
 ## Next steps
 
 - Send periodically: open `inject`, clear the one-time trigger, select interval under Repeat and enter the interval.
 - Wait for a reply: see [Request and reply](/en/guide/automation/flows#request-and-reply) and use `serial request` with `OK` / `ERROR` branches.
-- Review node options: see [Nodes and ports](/en/guide/automation/nodes).
+- Review node options: see [Node reference](/en/guide/automation/nodes).
 
 ## Troubleshooting
 

@@ -7,7 +7,6 @@ There are 6 styles: Default, Ukiyo-e, Poetic East, Ink Wash, Peach Blossom and G
 <GuideMedia
   src="/img/guide/theme.mp4"
   poster="/img/guide/theme.png"
-  caption="Real app: cycling through the six theme styles, then switching light and dark modes."
 />
 
 Switching a theme updates the normal output view, terminal mode, sidebar and controls together. The terminal's 16-colour ANSI palette also comes from the current theme and shares the same colour definitions as the normal output view, so coloured log lines look consistent in both views.

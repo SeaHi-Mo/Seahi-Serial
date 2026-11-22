@@ -6,6 +6,8 @@
  */
 .gmedia {
   margin: 20px 0 26px;
+  /* width 属性只给「多大」；窄屏仍由这里兜住，不横向溢出 */
+  max-width: 100%;
 }
 
 .gmedia video {
@@ -34,12 +36,6 @@
   display: none;
 }
 
-.gmedia figcaption {
-  margin-top: 8px;
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--vp-c-text-2);
-}
 
 @media (prefers-reduced-motion: reduce) {
   .gmedia video {

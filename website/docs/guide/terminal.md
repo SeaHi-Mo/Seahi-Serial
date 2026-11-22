@@ -5,7 +5,6 @@
 <GuideMedia
   src="/img/landing/terminal.mp4"
   poster="/img/landing/feature-terminal.png"
-  caption="在终端模式里输入命令，设备输出按 ANSI 颜色显示。"
 />
 
 ## 什么时候用终端模式

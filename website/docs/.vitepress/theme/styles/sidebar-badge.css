@@ -1,0 +1,28 @@
+/**
+ * 侧边栏标题上的「new」标记。
+ *
+ * VitePress 的 sidebar `text` 是用 `v-html` 渲染的，所以可以在配置里直接写
+ * `<span class="nav-new">new</span>`；这里只负责样式。
+ * 用蓝色字 + 淡蓝底，深浅色主题下都能看清，也不抢标题本身的权重。
+ */
+.nav-new {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.dark .nav-new {
+  color: #7ab0ff;
+  background: rgba(122, 176, 255, 0.14);
+  border-color: rgba(122, 176, 255, 0.28);
+}

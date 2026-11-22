@@ -5,7 +5,6 @@
 <GuideMedia
   src="/img/guide/ble.mp4"
   poster="/img/guide/ble.png"
-  caption="开始扫描后，设备列表会随扫描结果实时更新。"
 />
 
 ## 面板布局

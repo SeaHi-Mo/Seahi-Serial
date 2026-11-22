@@ -6,6 +6,7 @@ import type { DefaultTheme } from 'vitepress'
 import { locales } from './locales/index.ts'
 import { APP_VERSION as APP_VERSION_RAW } from './download.ts'
 import { CHANGELOG_VERSIONS } from './changelog-versions.ts'
+import { stepsContainer } from './theme/components/stepList/stepsContainer.ts'
 
 const DOCS_ROOT = resolve(process.cwd(), 'docs')
 
@@ -55,6 +56,13 @@ export default defineConfig({
   locales,
 
   themeConfig,
+
+  // 步骤卡片：:::steps 容器与 `steps 围栏都交给 StepList 渲染（组件在 theme/index.ts 全局注册）
+  markdown: {
+    config(md) {
+      md.use(stepsContainer)
+    },
+  },
 
   // 兜底：某些构建环境（浅克隆 / VitePress 缓存）拿不到 page.lastUpdated，
   // 这里直接从 git 补一次文件最后提交时间，保证页脚能显示「更新时间」。

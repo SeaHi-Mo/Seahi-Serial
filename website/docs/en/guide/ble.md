@@ -5,7 +5,6 @@ The Bluetooth panel provides central-role functions: scanning for nearby BLE dev
 <GuideMedia
   src="/img/guide/ble.mp4"
   poster="/img/guide/ble.png"
-  caption="The device list updates while the scan is running."
 />
 
 ## Panel layout

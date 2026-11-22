@@ -27,7 +27,6 @@ SeaHi Serial 是 Windows 上的串口与蓝牙调试工具。这一页完成三�
 <GuideMedia
   src="/img/guide/serial.mp4"
   poster="/img/guide/serial.png"
-  caption="连接 COM9 后发送命令，设备返回的内容直接显示在输出区。"
 />
 
 ## 发送命令

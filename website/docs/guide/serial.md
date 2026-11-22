@@ -4,7 +4,6 @@
 
 <GuideMedia
   poster="/img/landing/feature-panes.png"
-  caption="两个分栏分别连接 COM9 和 COM17，端口与配置各自独立。"
 />
 
 ## 分栏
@@ -84,7 +83,6 @@ HEX 模式遵循以下规则：
 <GuideMedia
   src="/img/guide/serial.mp4"
   poster="/img/guide/serial.png"
-  caption="发送命令后，设备返回的内容显示在输出区。"
 />
 
 ## 接收区

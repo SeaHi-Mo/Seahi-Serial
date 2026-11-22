@@ -28,7 +28,6 @@ The Map to dropdown selects the target distribution: an empty value means the de
 <GuideMedia
   src="/img/guide/wsl-quick.mp4"
   poster="/img/guide/wsl-quick.png"
-  caption="Real app: starting Ubuntu-20.04 from the WSL panel; the status and uptime update immediately."
 />
 
 ## Device list
@@ -75,7 +74,6 @@ Automatic mapping follows these rules:
 <GuideMedia
   src="/img/guide/wsl.mp4"
   poster="/img/guide/wsl.png"
-  caption="The WSL mapping panel listing usbipd devices and the installed distribution."
 />
 
 ## Debugging from a WSL pane

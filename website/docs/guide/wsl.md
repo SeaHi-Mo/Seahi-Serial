@@ -28,7 +28,6 @@ WSL 页面中的「打开额外监视器」按钮用于新增 WSL 分栏；WSL �
 <GuideMedia
   src="/img/guide/wsl-quick.mp4"
   poster="/img/guide/wsl-quick.png"
-  caption="真实界面：在 WSL 面板直接启动 Ubuntu-20.04，运行状态和 uptime 随即更新。"
 />
 
 ## 设备列表
@@ -75,7 +74,6 @@ WSL 页面中的「打开额外监视器」按钮用于新增 WSL 分栏；WSL �
 <GuideMedia
   src="/img/guide/wsl.mp4"
   poster="/img/guide/wsl.png"
-  caption="WSL 端口映射面板列出本机的 usbipd 设备和发行版状态。"
 />
 
 ## 在 WSL 分栏里调试

@@ -27,7 +27,6 @@ Data bits, stop bits, parity, and DTR/RTS are in the gear menu.
 <GuideMedia
   src="/img/guide/serial.mp4"
   poster="/img/guide/serial.png"
-  caption="Sending a command on COM9; the device response appears in the output area."
 />
 
 ## Send a command

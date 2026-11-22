@@ -4,7 +4,6 @@ The application uses a frameless window. The top row is a custom title bar conta
 
 <GuideMedia
   poster="/img/landing/hero.png"
-  caption="Real main window: the top row contains the app icon, +, WSL / ADB / Bluetooth entries, MCP, theme style, Submit issue, Update (shown when a new version is detected), the light/dark switch and the window controls."
 />
 
 ## Title bar

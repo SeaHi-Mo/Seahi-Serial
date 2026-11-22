@@ -15,6 +15,9 @@
     "preview": "vitepress preview docs"
   },
   "devDependencies": {
+    "highlight.js": "^11.12.0",
+    "js-yaml": "^5.5.0",
+    "markdown-it": "^15.0.3",
     "vitepress": "^2.0.0-alpha.21"
   }
 }

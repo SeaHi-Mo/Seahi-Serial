@@ -4,7 +4,6 @@ The serial page is the default page after startup. Each pane corresponds to one 
 
 <GuideMedia
   poster="/img/landing/feature-panes.png"
-  caption="Two panes connected to COM9 and COM17, each with its own port and settings."
 />
 
 ## Panes
@@ -84,7 +83,6 @@ Send history follows these rules:
 <GuideMedia
   src="/img/guide/serial.mp4"
   poster="/img/guide/serial.png"
-  caption="Sending a command and viewing the device response in the output area."
 />
 
 ## Output area

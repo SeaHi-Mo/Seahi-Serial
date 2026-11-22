@@ -8,7 +8,7 @@ This section contains four pages:
 
 - This page: opening the canvas, editing node properties, deployment and execution
 - [Quick start](/en/guide/automation/quick-start): import a minimal flow and send the first command
-- [Nodes and ports](/en/guide/automation/nodes): what the four serial nodes do and which options they expose
+- [Node reference](/en/guide/automation/nodes): what each serial node does, how its properties are set and where it is used
 - [Common flows](/en/guide/automation/flows): scheduled sends, request/reply and receive branching from an empty canvas
 
 ## Opening the canvas
@@ -17,12 +17,10 @@ Click the automation icon in the monitor toolbar. The canvas appears below the m
 
 <GuideMedia
   poster="/img/guide/automation-entry.png"
-  caption="The automation icon in the monitor toolbar (arrow), which opens the canvas below the monitor."
 />
 
 <GuideMedia
   poster="/img/guide/automation-open.png"
-  caption="The automation canvas inside the application window: serial toolbar at the top, node palette on the left, editor in the middle."
 />
 
 A serial port must be open in the serial panel before the nodes can be used. Automation nodes do not open the port themselves; the port is owned by the program and the nodes read and write through an internal channel.
@@ -42,14 +40,12 @@ The properties panel only edits the selected node. Canvas changes stay in the ed
 
 <GuideMedia
   poster="/img/guide/automation-port.png"
-  caption="Properties of a serial txd node: name, port, format and line ending."
 />
 
 ## Deployment and execution
 
 <GuideMedia
   poster="/img/guide/automation-deploy.png"
-  caption="The Deploy button in the upper right corner of the canvas. The flow starts immediately after deployment."
 />
 
 | Item | Description |

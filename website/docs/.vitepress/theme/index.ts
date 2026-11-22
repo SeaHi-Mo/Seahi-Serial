@@ -3,6 +3,7 @@ import DefaultTheme from 'vitepress/theme'
 import DocsTabs from './components/DocsTabs.vue'
 import VersionBadge from './components/VersionBadge.vue'
 import GuideMedia from './components/GuideMedia.vue'
+import StepList from './components/stepList/StepList.vue'
 import LandingHome from './components/landing/LandingHome.vue'
 import './styles/vars.css'
 import './styles/base.css'
@@ -11,6 +12,7 @@ import './styles/landing.css'
 import './styles/guide-media.css'
 import './styles/docs-layout.css'
 import './styles/docs-tabs.css'
+import './styles/sidebar-badge.css'
 
 export default {
   extends: DefaultTheme,
@@ -24,6 +26,7 @@ export default {
     // 全局组件：Markdown 里直接写标签
     app.component('VersionBadge', VersionBadge)
     app.component('GuideMedia', GuideMedia)
+    app.component('StepList', StepList)
     app.component('LandingHome', LandingHome)
   },
 }

@@ -5,7 +5,6 @@ The terminal button in the toolbar switches the output area to an xterm.js canva
 <GuideMedia
   src="/img/landing/terminal.mp4"
   poster="/img/landing/feature-terminal.png"
-  caption="Typing commands in terminal mode; output is rendered with ANSI colours."
 />
 
 ## When to use terminal mode

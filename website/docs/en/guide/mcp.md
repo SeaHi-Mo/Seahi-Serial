@@ -4,7 +4,6 @@ The app includes an MCP server. Once a client such as Claude Code, Claude Deskto
 
 <GuideMedia
   poster="/img/guide/mcp.png"
-  caption="The MCP server window: server toggle, transport, read-only mode and token reset at the top; connection URLs, client configs and the install prompt below (the access token is masked in this screenshot)."
 />
 
 ## Open the MCP server window

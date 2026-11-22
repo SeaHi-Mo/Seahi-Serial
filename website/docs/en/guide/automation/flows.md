@@ -16,7 +16,6 @@ Goal: send a command to the port at a fixed interval.
 
 <GuideMedia
   poster="/img/guide/automation-inject.png"
-  caption="inject properties: payload holds the command, Repeat is set to interval and the interval is entered below."
 />
 
 1. Drag `serial txd` from the serial group and `inject` from the common group onto the canvas.
@@ -27,12 +26,10 @@ Goal: send a command to the port at a fixed interval.
 
 <GuideMedia
   poster="/img/guide/automation-flow-send.png"
-  caption="Scheduled send flow: inject fires on the interval and serial txd reports the number of bytes sent."
 />
 
 <GuideMedia
   poster="/img/guide/automation-running.png"
-  caption="A running serial txd node: the status line below the node reports the send result."
 />
 
 Flow code:
@@ -84,7 +81,6 @@ Goal: send an AT command, wait for the reply and handle `OK` and `ERROR` on sepa
 
 <GuideMedia
   poster="/img/guide/automation-flow-request.png"
-  caption="Request/reply flow: inject triggers serial request, whose three result outputs feed the OK, ERROR and timeout branches."
 />
 
 1. Drag `inject` and `serial request` onto the canvas and connect `inject` to `serial request`.
@@ -206,12 +202,10 @@ Goal: receive unsolicited data from the device and act on its content.
 
 <GuideMedia
   poster="/img/guide/automation-rxd.png"
-  caption="serial rxd properties: select the port and text format so replies can be compared against keywords."
 />
 
 <GuideMedia
   poster="/img/guide/automation-switch.png"
-  caption="switch properties: property is set to msg.payload and the rules match OK and ERROR."
 />
 
 1. Drag `serial rxd` and `switch` onto the canvas and connect the output of `serial rxd` to the input of `switch`.
@@ -222,7 +216,6 @@ Goal: receive unsolicited data from the device and act on its content.
 
 <GuideMedia
   poster="/img/guide/automation-flow-recv.png"
-  caption="Receive branch flow: serial rxd passes data to switch, and each branch sends a different command."
 />
 
 In text format, the `payload` of `serial rxd` is a string. For byte-level checks, select HEX or Buffer and read `msg.raw`.

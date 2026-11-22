@@ -4,7 +4,6 @@
 
 <GuideMedia
   poster="/img/landing/hero.png"
-  caption="真实主窗口：顶部依次为应用图标、＋、WSL / ADB / 蓝牙入口、MCP、主题风格、提交 issue、更新（检测到新版本时显示）、深浅色开关与窗口控制。"
 />
 
 ## 标题栏
