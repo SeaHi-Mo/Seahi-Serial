@@ -13,8 +13,20 @@ async function checkForUpdate() {
         if (result.has_update) {
             _updateInfo = result;
             var btn = document.getElementById('updateBtn');
-            btn.textContent = '更新 ' + result.latest_version;
             btn.style.display = 'inline-flex';
+            if (!result.download_url) {
+                // 发现新版本，但 Release 里没有当前架构的安装包（例如 64 位程序只找到
+                // 32 位 Inno 安装器）。明确告知，别让用户点一个永远不会反应的按钮。
+                btn.textContent = '新版本 ' + result.latest_version + ' · 无匹配安装包';
+                btn.title = '发现 ' + result.latest_version + '，但没有适用于 '
+                    + (result.arch || '当前') + ' 架构的安装包，请到官网下载对应架构的版本。';
+                btn.classList.add('disabled');
+                console.warn(btn.title);
+                return;
+            }
+            btn.textContent = '更新 ' + result.latest_version;
+            btn.title = '发现新版本：点击下载并安装';
+            btn.classList.remove('disabled');
         }
     } catch (e) {
         console.warn('检查更新失败:', e);
@@ -24,7 +36,10 @@ async function checkForUpdate() {
 
 // 下载并安装更新
 async function downloadAndInstallUpdate() {
-    if (!_updateInfo || !_updateInfo.download_url) return;
+    if (!_updateInfo || !_updateInfo.download_url) {
+        showToast('当前架构暂无可用更新包，请到官网下载对应架构的版本', 'info');
+        return;
+    }
     var btn = document.getElementById('updateBtn');
     btn.classList.add('disabled');
     btn.textContent = '正在下载...';

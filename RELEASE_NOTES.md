@@ -33,5 +33,6 @@
 
 ### 📦 安装说明
 
+- 发布页提供 x64 / x86 两种架构的安装包（`.msi` 与 Inno 安装包各两种），请按系统架构选择；程序内「检查更新」也会按当前架构自动匹配，不会把 64 位用户更新成 32 位安装器。
 - 安装包未做代码签名，Windows SmartScreen 可能提示「未知发布者」，属未签名程序的正常提示。
 - 校验方式见 [代码签名与安装说明](https://github.com/SeaHi-Mo/Seahi-Serial/blob/main/doc/SIGNING.md)：Release 附带 `SHA256SUMS.txt` 与 cosign keyless 签名（`.sigstore.json`）。

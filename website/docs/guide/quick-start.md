@@ -8,7 +8,7 @@ SeaHi Serial 是 Windows 上的串口与蓝牙调试工具。这一页完成三�
 
 ## 安装
 
-1. 打开 [Releases](https://github.com/SeaHi-Mo/Seahi-Serial/releases/latest)，下载 `.msi` 或 `Seahi-Serial-Setup-*.exe`。
+1. 打开 [Releases](https://github.com/SeaHi-Mo/Seahi-Serial/releases/latest)，按系统架构下载对应安装包：64 位选文件名带 `-x64` / `_x64_` 的，32 位选带 `-x86` / `_x86_` 的。可选 `.msi` 或 `Seahi-Serial-Setup-*.exe` 两种格式。
 2. 安装包没有代码签名，SmartScreen 会提示。点「更多信息」，再点「仍要运行」。
 3. 安装完成后从开始菜单启动。
 

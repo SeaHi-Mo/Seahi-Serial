@@ -89,6 +89,9 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # 双架构发布：x64 走默认 target，x86 需要显式装 i686 工具链
+          targets: x86_64-pc-windows-msvc, i686-pc-windows-msvc
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -143,6 +146,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "npm 安装器自测失败" }
           Write-Host "三套测试全部通过"
 
+      - name: Verify 32-bit build
+        shell: pwsh
+        # 提前验证 i686 工具链可用；真正的 release 编译在下面两步，
+        # 但让架构问题在较便宜的阶段就暴露，别等打完包才发现。
+        run: |
+          cargo check --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release
+          if ($LASTEXITCODE -ne 0) { throw "32 位编译检查失败" }
+
       - name: Check error reporting key
         shell: pwsh
         # 发布版默认上报错误，而 Cloudflare Worker 对缺少/错误 X-API-Key 一律 401（fail-closed）。
@@ -168,6 +179,19 @@ jobs:
           prerelease: false
           args: "--bundles msi"
 
+      - name: Build 32-bit MSI
+        shell: pwsh
+        # tauri-action 只构建默认 target（x64）的 MSI，x86 必须单独跑一次 Tauri CLI。
+        # 错误上报配置要和上面那步一致，否则 32 位版会静默丢掉所有错误上报。
+        env:
+          SEAHI_ERROR_SERVER_URL: https://seahi-error-server.seahi-mo.workers.dev
+          SEAHI_ERROR_API_KEY: ${{ secrets.SEAHI_ERROR_API_KEY }}
+        run: |
+          npx tauri build --target i686-pc-windows-msvc --bundles msi
+          if ($LASTEXITCODE -ne 0) { throw "32 位 MSI 构建失败" }
+          Get-ChildItem 'src-tauri/target/i686-pc-windows-msvc/release/bundle/msi/*.msi' |
+            Select-Object Name, Length
+
       - name: Install Inno Setup
         run: choco install innosetup -y
 
@@ -190,8 +214,16 @@ jobs:
           if (!(Test-Path $langDir)) { New-Item -ItemType Directory -Path $langDir -Force }
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile "$langDir\ChineseSimplified.isl"
 
-      - name: Build Inno Setup installer
-        run: iscc installer.iss
+      - name: Build Inno Setup installers
+        shell: pwsh
+        # 两次编译分别打 32/64 位主程序；/DAppArch 由 installer.iss 消费，
+        # 决定 exe 路径、AppId、输出文件名与 64 位安装模式。
+        run: |
+          iscc /DAppArch=x64 installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "x64 Inno 安装包构建失败" }
+          iscc /DAppArch=x86 installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "x86 Inno 安装包构建失败" }
+          Get-ChildItem 'installer/Seahi-Serial-Setup-*.exe' | Select-Object Name, Length
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -199,13 +231,15 @@ jobs:
       - name: Generate SHA256SUMS and sign with cosign (keyless)
         shell: pwsh
         run: |
-          # 发布资产 = MSI（tauri-action 已上传）+ Inno Setup 安装包（下面这步上传）。
+          # 发布资产 = 两个架构的 MSI + 两个架构的 Inno 安装包（共四个）。
           # 只签 SHA256SUMS.txt：用户先用 cosign 验它，再用其中的 SHA-256 核对安装包，
           # 这样签名文件只有三个、校验链路也短。
           $files = @()
           $files += Get-ChildItem -Path 'src-tauri/target/release/bundle/msi/*.msi' -ErrorAction SilentlyContinue
+          $files += Get-ChildItem -Path 'src-tauri/target/i686-pc-windows-msvc/release/bundle/msi/*.msi' -ErrorAction SilentlyContinue
           $files += Get-ChildItem -Path 'installer/Seahi-Serial-Setup-*.exe' -ErrorAction SilentlyContinue
-          if ($files.Count -eq 0) { throw '找不到发布产物（MSI / Inno Setup 安装包）' }
+          # 少任何一个都说明某个架构没打出来 —— 宁可中断发版，也不能只发一半
+          if ($files.Count -ne 4) { throw "发布产物应有 4 个（x64/x86 各 MSI + Inno），实际 $($files.Count) 个" }
           $lines = foreach ($f in $files) {
             $h = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash.ToLower()
             Write-Host "$h  $($f.Name)"
@@ -223,7 +257,9 @@ jobs:
           tag_name: ${{ github.ref_name }}
           draft: false
           files: |
-            installer/Seahi-Serial-Setup-*.exe
+            installer/Seahi-Serial-Setup-*-x64.exe
+            installer/Seahi-Serial-Setup-*-x86.exe
+            src-tauri/target/i686-pc-windows-msvc/release/bundle/msi/*.msi
             SHA256SUMS.txt
             SHA256SUMS.txt.sigstore.json
         env:

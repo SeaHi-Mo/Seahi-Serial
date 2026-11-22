@@ -9,6 +9,26 @@
 #define UsbipdMsiName "usbipd-win.msi"
 #define WebView2BootstrapperUrl "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
 
+; ===== 目标架构（x64 / x86）=====
+; CI 用 `iscc /DAppArch=x64` / `/DAppArch=x86` 分别打包；本地直接 iscc 默认出 x64
+; （与历史行为一致）。x86 包必须打 32 位主程序，否则 32 位系统装上去跑不起来。
+#ifndef AppArch
+  #define AppArch "x64"
+#endif
+#if AppArch != "x64" && AppArch != "x86"
+  #error AppArch 只能是 x64 或 x86（用 /DAppArch=x86 传参）
+#endif
+
+#if AppArch == "x86"
+  #define MainExeDir "src-tauri\target\i686-pc-windows-msvc\release"
+  ; 32 位包用独立 AppId，避免和 x64 版互相覆盖（两个架构可共存）
+  #define AppIdValue "{{C3D4E5F6-A7B8-9012-CDEF-345678901234}"
+#else
+  #define MainExeDir "src-tauri\target\release"
+  ; x64 沿用历史 AppId：旧的无架构标记 Inno 包能原位升级到 -x64 包，不残留两份程序
+  #define AppIdValue "{{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+#endif
+
 ; ===== Node-RED 侧车（可选打包）=====
 ; 默认带上；用 `iscc /DWithNodeRed=0 installer.iss` 可出「不带自动化引擎」的对比包，
 ; 只用来量安装包体积，正式发布不要带这个开关。
@@ -30,7 +50,7 @@
 ; 不重新编译，exe 里的版本就不会变。于是安装包的文件名/产品版本是 0.5.0，装出来的应用却是 0.4.0。
 ; 下面在编译安装包时就把这种不一致卡死，避免再把旧内核装进新外壳。
 ; 注：GetVersionNumbersString 返回四段式（"0.5.0.0"），所以拿 MyAppVersion 比较时补一个 ".0"。
-#define BundledExeVersion GetVersionNumbersString("src-tauri\target\release\" + MyAppExeName)
+#define BundledExeVersion GetVersionNumbersString(MainExeDir + "\" + MyAppExeName)
 #pragma message "打包的主程序版本 = " + BundledExeVersion + " / MyAppVersion = " + MyAppVersion
 #if BundledExeVersion != MyAppVersion + ".0"
   #error 打包的主程序版本与 MyAppVersion 不一致！请先重新编译发布产物（npm run build，或 cargo build --release --manifest-path src-tauri/Cargo.toml），再编译本安装脚本。
@@ -38,7 +58,7 @@
 
 [Setup]
 ; 应用基本信息
-AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+AppId={#AppIdValue}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 ; 让安装包自身的「文件版本」也有值（此前只有产品版本有值，文件版本一栏是空白，容易看错版本）
@@ -51,7 +71,16 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=installer
-OutputBaseFilename=Seahi-Serial-Setup-{#MyAppVersion}
+OutputBaseFilename=Seahi-Serial-Setup-{#MyAppVersion}-{#AppArch}
+#if AppArch == "x64"
+; Inno Setup 生成的安装器本身是 32 位进程；不声明 64 位安装模式的话 {autopf}
+; 会指向 Program Files (x86)，用户会误以为装成了 x86（v0.6.1 的实际投诉）。
+ArchitecturesAllowed=x64
+ArchitecturesInstallIn64BitMode=x64
+; 同 AppId 升级时 Inno 默认沿用旧安装目录 —— 旧版 Inno 包装在 Program Files (x86)，
+; 不强制重置的话 64 位用户升级后目录仍是 (x86)，看起来像没修好。
+UsePreviousAppDir=no
+#endif
 SetupIconFile=src-tauri\icons\icon.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -87,7 +116,7 @@ Name: "add_adb_path"; Description: "将 ADB 工具(platform-tools)添加至系�
 
 [Files]
 ; 主程序 - 使用 Tauri 内嵌的 WebView2，无需额外 DLL
-Source: "src-tauri\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MainExeDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; Node-RED 运行时（node.exe + 依赖树 + settings.js + 本地节点）—— 应用内嵌编辑器的侧车。
 ; ⚠️ 路径必须是 {app}\resources\node-red：Rust 侧用 BaseDirectory::Resource 找它，Windows 上就是 exe 同级的 resources\。
 ; ⚠️ 这份目录由 `npm run prep:nodered` 生成，**打包前必须先跑**，否则安装出来的程序会报「缺少 node.exe」。

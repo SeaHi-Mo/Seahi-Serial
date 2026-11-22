@@ -8,7 +8,7 @@ Windows 10 or 11. WebView2 is usually included with the system; the installer wi
 
 ## Install
 
-1. Open [Releases](https://github.com/SeaHi-Mo/Seahi-Serial/releases/latest) and download the `.msi` or `Seahi-Serial-Setup-*.exe`.
+1. Open [Releases](https://github.com/SeaHi-Mo/Seahi-Serial/releases/latest) and download the package matching your system architecture: pick files marked `-x64` / `_x64_` on 64-bit Windows, or `-x86` / `_x86_` on 32-bit Windows. Both `.msi` and `Seahi-Serial-Setup-*.exe` formats are available.
 2. The installer is unsigned, so SmartScreen will warn you. Click *More info*, then *Run anyway*.
 3. Launch the app from the Start menu after installation.
 
