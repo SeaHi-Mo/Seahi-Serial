@@ -1452,7 +1452,7 @@ fn nodered_dock(app: tauri::AppHandle, rect: Option<serde_json::Value>, force: O
     {
         use tauri::Manager;
         use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{MoveWindow, SetParent, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MoveWindow, SetParent, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SWP_NOMOVE, SWP_NOSIZE, SWP_FRAMECHANGED};
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             GetWindowLongW, SetWindowLongW, GWL_STYLE, WS_MAXIMIZEBOX, WS_THICKFRAME,
         };
@@ -1598,14 +1598,19 @@ fn nodered_dock(app: tauri::AppHandle, rect: Option<serde_json::Value>, force: O
                     );
                 }
                 let _ = ed.set_skip_taskbar(false);
-                /* 脱离后把样式加回去（独立窗口应该能自由拉大小） */
+                /* 脱离：把"停靠态摘掉的"两个样式位**加回去**（不是整份样式覆盖！）。
+                   整份覆盖会把 tao 给无边框窗口设的其它位写脏 —— 实测后果是系统标题栏冒出来
+                   + WebView 变黑（用户 2026-11 截图报的"拖动脱离出现这个 bug"）。 */
                 unsafe {
-                    let st = NODERED_STYLE.load(Ordering::SeqCst);
-                    if st != 0 {
-                        SetWindowLongW(ed_hwnd, GWL_STYLE, st);
-                        NODERED_STYLE.store(0, Ordering::SeqCst);
-                    }
+                    let cur = GetWindowLongW(ed_hwnd, GWL_STYLE);
+                    SetWindowLongW(ed_hwnd, GWL_STYLE, cur | (WS_THICKFRAME as i32) | (WS_MAXIMIZEBOX as i32));
+                    /* 让 Windows 重算非客户区（不然新样式要等下一次尺寸变化才生效） */
+                    windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                        ed_hwnd, std::ptr::null_mut::<core::ffi::c_void>(), 0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                    );
                 }
+                NODERED_STYLE.store(0, Ordering::SeqCst);
                 NODERED_DOCKED.store(false, Ordering::SeqCst);
                 NODERED_USER_H.store(0, Ordering::SeqCst);
                 NODERED_EDGE_AT.store(0, Ordering::SeqCst);
@@ -1615,7 +1620,7 @@ fn nodered_dock(app: tauri::AppHandle, rect: Option<serde_json::Value>, force: O
                 NODERED_UNDOCK_AT.store(now_ms(), Ordering::SeqCst);
                 nodered_clear_hover_hint(&app);
                 NODERED_WAS_OUTSIDE.store(false, Ordering::SeqCst);
-                let _ = app.emit_to(NODERED_WINDOW_LABEL, "nodered-dock", false);
+                let _ = ed.show();
                 let _ = ed.set_focus();
                 Ok(false)
             }
