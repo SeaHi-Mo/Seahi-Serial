@@ -6,7 +6,7 @@ Open a serial port in the serial panel first. Automation nodes do not open the p
 
 ## 1. Open the canvas
 
-Click the automation icon in the monitor toolbar. The canvas appears below the monitor.
+Click the Node-RED icon in the top toolbar. The program opens a separate editor window.
 
 <GuideMedia
   poster="/img/guide/automation-open.png"

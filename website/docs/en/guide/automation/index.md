@@ -11,9 +11,9 @@ This section contains four pages:
 - [Node reference](/en/guide/automation/nodes): what each serial node does, how its properties are set and where it is used
 - [Common flows](/en/guide/automation/flows): scheduled sends, request/reply and receive branching from an empty canvas
 
-## Opening the canvas
+## Opening the editor
 
-Click the automation icon in the monitor toolbar. The canvas appears below the monitor instead of opening a new window.
+Click the Node-RED icon in the top toolbar. The program opens a separate editor window. The editor exists independently of the panes: one set of flows serves every pane, so the window stays open when panes are switched. It is placed beside the main window, which allows watching serial data while editing flows. Window size and position are remembered; clicking the icon again brings the open window to the front instead of opening a second editor.
 
 <GuideMedia
   poster="/img/guide/automation-entry.png"
@@ -25,7 +25,7 @@ Click the automation icon in the monitor toolbar. The canvas appears below the m
 
 A serial port must be open in the serial panel before the nodes can be used. Automation nodes do not open the port themselves; the port is owned by the program and the nodes read and write through an internal channel.
 
-Closing the canvas does not stop the flows. They stop when the program exits.
+Closing the editor window does not stop the flows. They stop when the program exits.
 
 ## Editing node properties
 
@@ -51,11 +51,11 @@ The properties panel only edits the selected node. Canvas changes stay in the ed
 | Item | Description |
 |---|---|
 | Activation | Runs immediately after Deploy; uncommitted edits stay in the editor |
-| Execution | Background engine, continues after the canvas is closed |
+| Execution | Background engine, continues after the editor window is closed |
 | Stop condition | Program exit |
 | Flow file | `%APPDATA%\com.seahi.seahi-serial\node-red\flows.json` |
 
-Uninstalling the program does not remove this directory, so flows survive an upgrade. Deleting a flow tab or changing wiring is written to the flow file only after Deploy; closing the canvas does not write them, while the edit state remains when the canvas is reopened.
+Uninstalling the program does not remove this directory, so flows survive an upgrade. Deleting a flow tab or changing wiring is written to the flow file only after Deploy. Uncommitted edits live only inside the editor window and are discarded when it closes, matching the editor behaviour in a browser.
 
 ## Notes
 

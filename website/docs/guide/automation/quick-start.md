@@ -5,7 +5,7 @@
 
 ## 1. 打开画布
 
-点击监视器工具栏最右侧的自动化图标，画布显示在监视器下方。首次打开需要等待内置 Node-RED 启动，通常为 2–5 秒。
+点击顶部工具栏的 Node-RED 图标，程序打开独立的编辑器窗口。首次打开需要等待内置 Node-RED 启动，通常为 2–5 秒。
 
 <GuideMedia
   poster="/gif/guider/openNodeRed.gif"
