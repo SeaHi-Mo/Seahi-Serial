@@ -93,9 +93,12 @@ function nfBindNodeRedState() {
 function openNodeRed() {
     if (NF_OPENING) return;
     NF_OPENING = true;
+    /* 先把停靠矩形算出来传给宿主：窗口**一出生就落在正文区**，不会先以"上次保存的尺寸
+       居中"闪一下再被贴进来（用户 2026-11 报的"关闭后重新打开有另外的窗口闪一下"）。 */
+    var rect = nfDockRect();
     var p;
     try {
-        p = invoke('nodered_open_window');
+        p = invoke('nodered_open_window', { rect: rect, maxH: NF_MAX_H });
     } catch (e) {
         NF_OPENING = false;
         NF_LAST_ERROR = String(e);

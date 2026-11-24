@@ -8736,8 +8736,10 @@ try {
   check(!/openNodeRed\(\)" aria-label="node-red 自动化"/.test(html) && !/ICONS\.nodeRed/.test(html),
     '★ 分栏工具栏里已经没有 node-red 图标（10-monitor.js / 80-wsl.js 都删干净了）');
   const openRedSrc = extractFunction('openNodeRed');
-  check(/invoke\(\s*'nodered_open_window'\s*\)/.test(openRedSrc),
-    '打开编辑器走宿主命令 nodered_open_window（窗口由 Rust 建，前端不自己开 webview）');
+  /* 打开时**把停靠矩形一起传过去**：窗口一出生就落在正文区，不会先闪一个居中大窗口 */
+  check(/invoke\(\s*'nodered_open_window',\s*\{\s*rect:\s*rect/.test(openRedSrc) &&
+        /var rect = nfDockRect\(\)/.test(openRedSrc),
+    '打开编辑器走宿主命令 nodered_open_window，并把停靠矩形传过去（窗口由 Rust 建，前端不自己开 webview）');
   check(/NF_OPENING/.test(openRedSrc),
     '打开编辑器有在途闸（启动 2–5 秒里连点不会拉起第二份侧车）');
   check(/showToast\('打开 Node-RED 失败: ' \+ msg/.test(openRedSrc),
@@ -8924,6 +8926,9 @@ try {
     const toasts = [];
     const pending = [];
     const ctx = {
+      /* openNodeRed 现在会先算停靠矩形（一起传给宿主），沙箱里给个固定矩形即可 */
+      nfDockRect: function () { return { x: 0, y: 116, width: 1115, height: 743 }; },
+      NF_MAX_H: 743,
       invoke: function (cmd) {
         calls.push(cmd);
         return new Promise(function (res, rej) { pending.push({ res: res, rej: rej }); });

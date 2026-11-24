@@ -1245,7 +1245,7 @@ static NODERED_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicI
 #[cfg(windows)]
 fn nodered_hwnd_of(win: &tauri::WebviewWindow) -> Option<isize> {
     use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowTextW, GetWindowThreadProcessId};
 
     struct Ctx {
         pid: u32,
@@ -1257,7 +1257,10 @@ fn nodered_hwnd_of(win: &tauri::WebviewWindow) -> Option<isize> {
         let ctx = &mut *(l as *mut Ctx);
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(h, &mut pid);
-        if pid != ctx.pid || IsWindowVisible(h) == 0 {
+        /* ⚠️ **不能过滤不可见窗口**：编辑器窗口是 hidden 创建的（避免"先闪一下再贴进来"），
+           而"找句柄"正是贴之前那一步 —— 过滤掉就永远拿不到 HWND
+           （实测日志：nodered_hwnd_of 枚举不到窗口（标题=""））。 */
+        if pid != ctx.pid {
             return 1;
         }
         let mut buf = [0u16; 512];
@@ -1564,6 +1567,17 @@ fn nodered_dock(app: tauri::AppHandle, rect: Option<serde_json::Value>, force: O
                 if !was {
                     NODERED_DOCKED.store(true, Ordering::SeqCst);
                     dbg_log(&format!("nodered_dock: 已嵌入 {w}×{h} @{x},{y}"));
+                    /* 窗口创建时是隐藏的（避免"先闪一下再贴进来"）—— 贴到位了**才**显示。
+                       ⚠️ 显示后再把客户区尺寸"重设一次"：WebView2 在隐藏创建时不会收到尺寸通知，
+                       光 show() 会让页面停在 0×0 的白板（实测：重开后台一片空白）。
+                       用 `inner_size` 原值重设，窗口不会变大。 */
+                    let _ = ed.show();
+                    /* 真·1px 抖动：同尺寸 set_size 会被 wry 当作 no-op 跳过，WebView 就永远收不到
+                       "你该按新尺寸重排"的通知 —— 表现是窗口出来了但一片空白（实测）。 */
+                    if let Ok(sz) = ed.inner_size() {
+                        let _ = ed.set_size(tauri::PhysicalSize::new(sz.width.saturating_sub(1).max(200), sz.height));
+                        let _ = ed.set_size(sz);
+                    }
                     let _ = app.emit_to(NODERED_WINDOW_LABEL, "nodered-dock", true);
                 }
                 Ok(true)
@@ -1671,7 +1685,7 @@ fn nodered_url() -> Option<String> {
 }
 
 #[tauri::command]
-async fn nodered_open_window(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+async fn nodered_open_window(app: tauri::AppHandle, rect: Option<serde_json::Value>, max_h: Option<f64>) -> Result<serde_json::Value, String> {
     use tauri::{Emitter, Manager};
     /* 这是个**开关**（用户 2026-11）：点开 → 按钮亮起；再点 → 隐藏窗口（不是关闭，
        编辑器与未部署的修改都留着）；再点 → 原样回来。
@@ -1704,7 +1718,32 @@ async fn nodered_open_window(app: tauri::AppHandle) -> Result<serde_json::Value,
     let url = tauri::async_runtime::spawn_blocking(move || nodered_spawn_and_wait(a))
         .await
         .map_err(|e| format!("node-red 启动线程异常：{e}"))??;
-    nodered_show_window(&app, &url)?;
+    nodered_show_window(&app, &url, rect.clone())?;
+    /* 建完**立刻**贴进正文区（不等前端那第二跳）：窗口第一次绘制就已经是子窗口，
+       不会有一帧"可见的顶层窗口"（用户 2026-11 报的重开闪窗）。 */
+    if let Some(r) = rect {
+        let _ = nodered_dock(app.clone(), Some(r), Some(true), max_h);
+    }
+    /* 兜底：窗口创建时是隐藏的，正常路径由前端 `nodered_dock` 贴好后 show()。
+       但"当前页面没有监视器正文区 / 前端没来得及 dock"时它会一直藏着 —— 1.5 秒后仍没嵌进去
+       就当独立窗口显示出来（宁可闪，也不能点了没反应）。 */
+    {
+        let a = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            if NODERED_DOCKED.load(Ordering::SeqCst) {
+                return;
+            }
+            use tauri::Manager;
+            if let Some(win) = a.get_webview_window(NODERED_WINDOW_LABEL) {
+                if !win.is_visible().unwrap_or(false) {
+                    nodered_ensure_on_screen(&win);
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+            }
+        });
+    }
     let _ = app.emit("nodered-state", "open");
     Ok(serde_json::json!({ "state": "open", "shouldDock": true }))
 }
@@ -1743,7 +1782,7 @@ fn nodered_ensure_on_screen(win: &tauri::WebviewWindow) {
     dbg_log("nodered: 浮动窗口不在可见区域，已拉回上次记住的位置");
 }
 
-fn nodered_show_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
+fn nodered_show_window(app: &tauri::AppHandle, url: &str, rect: Option<serde_json::Value>) -> Result<(), String> {
     /* 地址在这里只做一次校验（真正加载发生在窗口里：外壳页向 `nodered_url` 要地址）。
        为什么外壳页而不是直接加载 Node-RED 的地址 —— 直接加载就没有标题栏、窗口也拖不动
        （`decorations:false`）。外壳页给的是**和主窗口同一套**的自绘标题栏
@@ -1751,7 +1790,34 @@ fn nodered_show_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> 
        ⚠️ url 仍然要在这里验一次：侧车起来但地址拼错时，用户看到的是"窗口里一行英文错误"
        而不是"编辑器打不开"，很难判断是谁的问题。 */
     let _ = url.parse::<tauri::Url>().map_err(|e| format!("编辑器地址不合法（{url}）：{e}"))?;
+    /* 窗口**一出生就落在正文区的位置/尺寸**（用户 2026-11 报的"关闭后重新打开有另外的
+       窗口闪一下"：之前按保存的几何居中创建，用户先看到一个大窗口、再被贴进正文区）。
+       矩形是前端算的 CSS px（相对主窗口客户区），这里换算成屏幕坐标给窗口。
+       ⚠️ 不能走"隐藏创建再显示"那条路：WebView2 隐藏创建后**不渲染**，显示出来是一片空白（实测）。 */
+    let docked = rect
+        .as_ref()
+        .and_then(|r| {
+            let n = |k: &str| r.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let (w, h) = (n("width"), n("height"));
+            if w < 200.0 || h < 150.0 {
+                return None;
+            }
+            let main = app.get_webview_window("main")?;
+            let scale = main.scale_factor().unwrap_or(1.0);
+            let origin = main.outer_position().ok()?;
+            Some((
+                origin.x as f64 + n("x") * scale,
+                origin.y as f64 + n("y") * scale,
+                w * scale,
+                h * scale,
+            ))
+        });
     let state = load_nodered_window_state().unwrap_or_else(|| nodered_default_state(app));
+    /* 有正文区矩形就**按它建窗**（一出生就在停靠位置，不会先闪一个大窗口在中间） */
+    let (init_w, init_h, init_x, init_y) = match docked {
+        Some((dx, dy, dw, dh)) => (dw, dh, dx, dy),
+        None => (state.width as f64, state.height as f64, state.x as f64, state.y as f64),
+    };
     let win = tauri::WebviewWindowBuilder::new(
         app,
         NODERED_WINDOW_LABEL,
@@ -1761,12 +1827,17 @@ fn nodered_show_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> 
     /* 自绘标题栏：与主窗口一致（主窗口也是 decorations:false + #globalBar）。
        代价是"拖拽/最大化/关闭"都得自己实现 —— 见 src/js/86-node-red-window.js。 */
     .decorations(false)
-    .inner_size(state.width as f64, state.height as f64)
+    /* 先隐藏：贴进正文区后才 show，避免有一帧"可见的顶层窗口"（重开时闪一下）。
+       ⚠️ 必须配下面的 1px 尺寸抖动：WebView2 在隐藏态收不到尺寸通知，直接 show 会白板。 */
+    .visible(false)
+    .inner_size(init_w, init_h)
     .min_inner_size(NODERED_WINDOW_MIN_W, NODERED_WINDOW_MIN_H)
-    .position(state.x as f64, state.y as f64)
+    .position(init_x, init_y)
     .build()
     .map_err(|e| format!("打开 Node-RED 编辑器窗口失败：{e}"))?;
-    if state.maximized {
+    /* 显式再设一次标题：`nodered_hwnd_of` 靠标题枚举窗口，标题没生效就拿不到句柄。 */
+    let _ = win.set_title("Node-RED · 流程编辑器");
+    if state.maximized && docked.is_none() {
         let _ = win.maximize();
     }
     let w = win.clone();
