@@ -121,7 +121,6 @@ function getWslMonitorHtml(wmid) {
                 '<button class="ibtn" onclick="copyOutput(\'' + wmid + '\')" title="复制全部">' + ICONS.copyAll + '</button>' +
                 '<button class="ibtn" id="' + wmid + '-btnCollapseTb" onclick="toggleToolbarCollapse(\'' + wmid + '\')" title="折叠工具栏">' + ICONS.chevronUp + '</button>' +
                 '<div style="flex:1;"></div>' +
-                '<button class="wf-add-btn" onclick="openNodeFlow(\'' + wmid + '\')" aria-label="node-red 自动化" title="node-red 自动化">' + ICONS.nodeRed + '</button>' +
             '</div></div>' +
             '<div class="adv-wf-wrap" id="' + wmid + '-advWf">' +
                 '<div class="wf-list" id="' + wmid + '-wfList"></div>' +
@@ -155,7 +154,6 @@ function openWslMapping() {
     console.log('[WSL] 打开WSL映射页面');
 
     // 隐藏监视器，显示 WSL 面板
-    nfHidePane();                 // 画布若开着先收起
     document.getElementById('paneContainer').style.display = 'none';
     document.getElementById('wsl-pane').style.display = 'flex';
     refreshMonitorPollRates();   // 页面切换 → 按可见性重设读取频率（隐藏的监视器降频）
@@ -442,6 +440,10 @@ function initWslMonitor(wmid) {
     // 工具栏自适应：窄窗口时先压端口框保一行（与 Windows 分栏同一套，见 10-monitor.js 的
     // layoutMonitorToolbar）。少了这一句，WSL 面板在窄窗口下会先把图标按钮挤到第二行。
     watchToolbarFit(wmid);
+    // 端口框宽度变化时重排端口名（截断/靠尾显示）。与 watchToolbarFit 是两件事：
+    // 那个管"工具栏换不换行"，这个管"盒子里的字怎么摆" —— 少了它，端口名只在
+    // 刷新列表那一次被量过，之后窗口一缩一放就停在错的对齐上（2026-11 用户报）。
+    watchPortLabel(wmid);
     // 终端模式（xterm）按需懒创建：点按钮时才建，不在这里初始化
 }
 
@@ -748,7 +750,11 @@ async function refreshWslMonPorts(wmid) {
         drop.innerHTML = '<div class="sel-opt" style="color:var(--text-placeholder);">无可用端口</div>';
         if (ps) {
             ps.setAttribute('data-val', '');
-            ps.querySelector('.sel-text').textContent = '无可用端口';
+            /* ⚠️ 端口名只走 `setPortLabel()`（Windows 分栏同一条路）：它同时更新
+               `data-full-name` 并重排截断/对齐。直接写 `.sel-text` 的 textContent 会留下
+               `name-truncated`（`text-align:right`）和过期的全名 —— 2026-11 用户报的
+               「WSL 分栏端口号变成右对齐」就是这么来的。 */
+            setPortLabel(wmid, '无可用端口');
         }
         return;
     }
@@ -771,15 +777,14 @@ async function refreshWslMonPorts(wmid) {
                 e.stopPropagation();
                 setPortSel(wmid, p.name, div);
                 // 选中后只显示路径，设备名仅在下拉展开时可见
-                var selEl = document.getElementById(wmid + '-portSelect');
-                if (selEl) selEl.querySelector('.sel-text').textContent = p.name;
+                setPortLabel(wmid, p.name);
             });
         }
         drop.appendChild(div);
     });
     if (ps && ports.length > 0) {
         ps.setAttribute('data-val', ports[matchIdx].name);
-        ps.querySelector('.sel-text').textContent = ports[matchIdx].name;
+        setPortLabel(wmid, ports[matchIdx].name);
     }
 }
 
@@ -950,12 +955,16 @@ function restoreMonitorPane() {
     console.log('[WSL] 返回监视器页面');
     if (_wslStatusUnlisten) { _wslStatusUnlisten(); _wslStatusUnlisten = null; }
     if (_wslDevListTimer) { clearInterval(_wslDevListTimer); _wslDevListTimer = null; }
-    // 快照所有 WSL 监视器设置并停止读取
+    /* 快照所有 WSL 监视器设置，但**不再停读**（2026-11）。
+     *
+     * WSL 的数据是前端轮询 `read_wsl_serial` 取出来的，而 Node-RED 桥的接收队列就挂在
+     * 这一跳上（`read_wsl_serial` 会把同一块字节复制一份进桥）。回主界面就 stopReading，
+     * 等于"用户在 WSL 分栏上编排的流程，一离开这个页面就静默断流" —— 那种故障没有任何界面提示。
+     * 频率交给 `refreshMonitorPollRates()`：隐藏后降到 MON_READ_MS_HIDDEN（500ms），
+     * 与隐藏的串口分栏同一套口径（Rust 侧读线程也不会因为切页而停）。
+     */
     getWslMonitorIds().forEach(function(wmid) {
         snapshotWslSettings(wmid);
-        if (monitors[wmid] && monitors[wmid].readTimer) {
-            stopReading(wmid);
-        }
     });
     // 切换面板显示
     document.getElementById('wsl-pane').style.display = 'none';

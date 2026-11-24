@@ -1,4 +1,3 @@
-// Release 模式下隐藏命令行窗口
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use regex::Regex;
@@ -576,31 +575,53 @@ fn bridge_hex_decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// 把一段字节写到指定监视器的串口（与 `send_data` 同一条路，锁也带超时）
-fn bridge_write(app: &tauri::AppHandle, mid: &str, data: &[u8]) -> Result<usize, String> {
-    use tauri::Manager;
-    let state = app.state::<PortState>();
-    let port_arc = {
-        let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
-        match map.get(mid) {
-            Some(reader) => reader.port.clone(),
-            // 文案要给节点侧留出加工空间：节点知道"这个端口叫什么、有没有别的口开着"，
-            // 由它决定显示「COM17 没有打开」还是「没有可用的串口」（用户 2026-11）。
-            None => return Err("没有打开的串口".to_string()),
-        }
-    };
-    let mut port = lock_port_with_timeout(&port_arc, 500)?;
-    port.write_all(data).map_err(|e| format!("写入失败: {e}"))?;
-    port.flush().ok();
-    /* 让串口监视窗口也能看见自动化发出去的数据（用户 2026-11 要求）。
-       这里只发事件：**显不显示由前端按该分栏的「消息回显」开关决定**，
-       回显关掉就不往窗口/日志中心写 —— 与手动发送完全同一条口径。
-       事件带 hex 而不是文本：二进制帧不会被解码歧义吞掉，前端自己决定怎么呈现。 */
+/// 告诉前端"自动化刚发出去这段数据"（payload: `{monitor, hex}`）。
+///
+/// 只发事件、**不替前端决定显示**：显不显示取决于该分栏的「消息回显」开关
+/// （`js/85-nodeflow.js` 的 `nfOnSent`），与手动发送同一条口径。
+fn bridge_emit_sent(app: &tauri::AppHandle, mid: &str, data: &[u8]) {
     let _ = app.emit(
         "nodered-sent",
         serde_json::json!({ "monitor": mid, "hex": bridge_hex_encode(data) }),
     );
-    Ok(data.len())
+}
+
+/// 把一段字节写到指定监视器的串口（与 `send_data` 同一条路，锁也带超时）。
+///
+/// 两类分栏都要认（2026-11）：串口分栏在本进程的 readers 表里，WSL 分栏的会话在
+/// `WslSerialState` 里（读在 Python 侧，写走同一条 bridge 管道）。
+fn bridge_write(app: &tauri::AppHandle, mid: &str, data: &[u8]) -> Result<usize, String> {
+    use tauri::Manager;
+    let port_arc = {
+        let state = app.state::<PortState>();
+        let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
+        map.get(mid).map(|reader| reader.port.clone())
+    };
+    if let Some(port_arc) = port_arc {
+        let mut port = lock_port_with_timeout(&port_arc, 500)?;
+        port.write_all(data).map_err(|e| format!("写入失败: {e}"))?;
+        port.flush().ok();
+        /* 让串口监视窗口也能看见自动化发出去的数据（用户 2026-11 要求）。
+           这里只发事件：**显不显示由前端按该分栏的「消息回显」开关决定**。
+           事件带 hex 而不是文本：二进制帧不会被解码歧义吞掉。 */
+        bridge_emit_sent(app, mid, data);
+        return Ok(data.len());
+    }
+    /* WSL 分栏：**写可以走桥**（`{"cmd":"write"}`），所以自动化在 WSL 分栏上同样能发数据；
+       读是另一回事（那要靠 `read_wsl_serial` 把字节复制进桥队列，见那里的注释）。 */
+    let wsl_session = {
+        let st = app.state::<WslSerialState>();
+        let map = st.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(mid).cloned()
+    };
+    if let Some(session) = wsl_session {
+        let n = wsl_session_write(&session, mid, data)?;
+        bridge_emit_sent(app, mid, data);
+        return Ok(n);
+    }
+    // 文案要给节点侧留出加工空间：节点知道"这个端口叫什么、有没有别的口开着"，
+    // 由它决定显示「COM17 没有打开」还是「没有可用的串口」（用户 2026-11）。
+    Err("没有打开的串口".to_string())
 }
 
 /// 起桥服务器（只起一次），返回端口。令牌写进 `BRIDGE_TOKEN`，子进程用环境变量取。
@@ -751,25 +772,38 @@ fn bridge_monitor_row(mid: &str, port_name: &str, baud_rate: u32) -> serde_json:
     })
 }
 
-/// 列出宿主里当前打开的串口监视器（node-red 编辑器的「监视器」下拉用）。
+/// 列出宿主里当前打开的监视器（node-red 编辑器的「监视器」下拉用）。
 ///
-/// 只列 Rust 侧真有 reader 的：串口分栏 `main` / `extra-N`。WSL 分栏的读在 Python 侧，
-/// 桥也写不进去（`bridge_write` 查的就是这张 readers 表），列出来只会让人选到一个必然失败的 id。
+/// 两类都要列（2026-11）：串口分栏 `main` / `extra-N`（Rust 侧 reader），
+/// 以及 WSL 分栏 `wsl` / `wsl-xN`（会话在 `WslSerialState`）。
+/// 早先只列前者、理由是"WSL 的读在 Python 侧，桥写不进去"——桥现在两头都通了
+/// （写走 `{"cmd":"write"}`，读由 `read_wsl_serial` 复制进队列），再把 WSL 藏起来
+/// 只会让用户在 WSL 分栏上打开画布后选不到那个端口。
 fn bridge_list_monitors(app: &tauri::AppHandle) -> Vec<serde_json::Value> {
     use tauri::Manager;
-    let state = app.state::<PortState>();
-    let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
-    let mut rows: Vec<serde_json::Value> = map
-        .iter()
-        .map(|(mid, reader)| bridge_monitor_row(mid, &reader.port_name, reader.baud_rate))
-        .collect();
+    let mut rows: Vec<serde_json::Value> = {
+        let state = app.state::<PortState>();
+        let map = state.readers.read().unwrap_or_else(|e| e.into_inner());
+        map.iter()
+            .map(|(mid, reader)| bridge_monitor_row(mid, &reader.port_name, reader.baud_rate))
+            .collect()
+    };
+    {
+        let st = app.state::<WslSerialState>();
+        let map = st.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        rows.extend(
+            map.iter()
+                .map(|(mid, s)| bridge_monitor_row(mid, &s.device_path, s.baud_rate)),
+        );
+    }
     rows.sort_by_key(|v| {
         bridge_monitor_sort_key(v.get("id").and_then(|x| x.as_str()).unwrap_or(""))
     });
     rows
 }
 
-/// 下拉顺序：主监视器 → 额外分栏（按数字，`extra-2` 在 `extra-10` 前面）→ 其它。
+/// 下拉顺序：主监视器 → 额外分栏（按数字，`extra-2` 在 `extra-10` 前面）
+/// → WSL 分栏（同样按数字）→ 其它。
 fn bridge_monitor_sort_key(id: &str) -> (u8, u32, String) {
     if id == "main" {
         return (0, 0, String::new());
@@ -779,7 +813,19 @@ fn bridge_monitor_sort_key(id: &str) -> (u8, u32, String) {
             return (1, n, String::new());
         }
     }
-    (2, 0, id.to_string())
+    if let Some(n) = wsl_monitor_index(id) {
+        return (2, n, id.to_string());
+    }
+    (3, 0, id.to_string())
+}
+
+/// WSL 分栏 id → 序号（`wsl` = 0、`wsl-xN` = N）；不是 WSL 分栏时 `None`。
+/// 与前端 `monitorHostId()` 认的是同一套 id（`wsl` / `wsl-xN`）。
+fn wsl_monitor_index(id: &str) -> Option<u32> {
+    if id == "wsl" {
+        return Some(0);
+    }
+    id.strip_prefix("wsl-x")?.parse::<u32>().ok()
 }
 
 #[cfg(test)]
@@ -815,6 +861,29 @@ mod bridge_tests {
         let mut ids = vec!["extra-10", "extra-2", "main", "zzz", "extra-1"];
         ids.sort_by_key(|id| bridge_monitor_sort_key(id));
         assert_eq!(ids, vec!["main", "extra-1", "extra-2", "extra-10", "zzz"]);
+    }
+
+    #[test]
+    fn bridge_monitor_order_puts_wsl_after_numeric_extras() {
+        // WSL 分栏现在也会进「监视器」下拉（2026-11），顺序固定在额外分栏之后、
+        // 按序号排（wsl → wsl-x1 → wsl-x2 → wsl-x10）
+        let mut ids = vec!["wsl-x10", "wsl", "extra-2", "main", "wsl-x2", "wsl-x1", "zzz"];
+        ids.sort_by_key(|id| bridge_monitor_sort_key(id));
+        assert_eq!(
+            ids,
+            vec!["main", "extra-2", "wsl", "wsl-x1", "wsl-x2", "wsl-x10", "zzz"]
+        );
+    }
+
+    #[test]
+    fn wsl_monitor_index_recognizes_only_wsl_panes() {
+        // 别把 `wsl-x`（后面没数字）或 `wslx1` 认成分栏 —— 那会排出一个不存在的身份
+        assert_eq!(wsl_monitor_index("wsl"), Some(0));
+        assert_eq!(wsl_monitor_index("wsl-x3"), Some(3));
+        assert_eq!(wsl_monitor_index("wsl-x"), None);
+        assert_eq!(wsl_monitor_index("wslx1"), None);
+        assert_eq!(wsl_monitor_index("main"), None);
+        assert_eq!(wsl_monitor_index("extra-1"), None);
     }
 
     #[test]
@@ -1054,8 +1123,733 @@ fn nodered_spawn_and_wait(app: tauri::AppHandle) -> Result<String, String> {
     ))
 }
 
-/// Windows verbatim 路径（`\\?\D:\...`）不能直接喂给 node：
-/// 拿它当入口脚本会报 `EISDIR: illegal operation on a directory, lstat 'D:'`
+// ===== Node-RED 编辑器窗口（2026-11：从"分栏内嵌画布"改成独立窗口）=====
+//
+// 为什么是独立窗口：Node-RED 是**全局**的工作台（一套流程服务所有分栏），把它塞进某个
+// 分栏的正文区等于"编辑器跟着分栏走"——切个分栏就得重新找它，而且只能吃掉监视窗口那一块。
+// 用户 2026-11 的原话："node red 属于一个全局的界面，不可能跟着分栏一次存在"，同时还要
+// "编辑流程的同时还能查看窗口数据情况" —— 两个窗口并排/分屏正好满足，且能让它占满第二块屏。
+//
+// 三条纪律：
+//   ① **直接加载 `http://127.0.0.1:<port>/`**，不再套 iframe（少一层，剪贴板/快捷键/DevTools 都正常）；
+//   ② **关窗不杀引擎**：窗口只是编辑器的一张皮，流程由侧车继续跑（杀引擎只有两个时机：退出应用、`nodered_stop`）；
+//   ③ 几何单独存 `nodered-window.json`，**不要**和主窗口的 `window.json` 抢同一个文件。
+const NODERED_WINDOW_LABEL: &str = "nodered";
+const NODERED_WINDOW_MIN_W: f64 = 900.0;
+const NODERED_WINDOW_MIN_H: f64 = 600.0;
+const NODERED_WINDOW_DEF_W: u32 = 1440;
+const NODERED_WINDOW_DEF_H: u32 = 920;
+
+fn nodered_window_state_file() -> Option<std::path::PathBuf> {
+    dirs_config_path().map(|d| d.join("nodered-window.json"))
+}
+
+fn load_nodered_window_state() -> Option<SavedWindowState> {
+    let f = nodered_window_state_file()?;
+    std::fs::read_to_string(f).ok().and_then(|s| serde_json::from_str(&s).ok())
+}
+
+fn save_nodered_window_state(s: &SavedWindowState) {
+    if let Some(f) = nodered_window_state_file() {
+        if let Some(dir) = f.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(s) {
+            let _ = std::fs::write(f, json);
+        }
+    }
+}
+
+/// 第一次打开时的落点：优先**并排放在主窗口右侧**，放不下就叠在主窗口上偏右下。
+/// 宽度/高度都要夹进当前屏幕（换到小屏笔记本上还原时，别把窗口摆到屏幕外面去）。
+fn nodered_default_state(app: &tauri::AppHandle) -> SavedWindowState {
+    use tauri::Manager;
+    let mut st = SavedWindowState {
+        x: 160,
+        y: 80,
+        width: NODERED_WINDOW_DEF_W,
+        height: NODERED_WINDOW_DEF_H,
+        maximized: false,
+    };
+    let screen = app.primary_monitor().ok().flatten().map(|m| m.size().clone());
+    let main = app
+        .get_webview_window("main")
+        .and_then(|w| Some((w.outer_position().ok()?, w.inner_size().ok()?)));
+    if let Some(mon) = screen {
+        let sw = mon.width as i32;
+        let sh = mon.height as i32;
+        st.width = NODERED_WINDOW_DEF_W.min((sw.max(400) as u32).saturating_sub(80)).max(NODERED_WINDOW_MIN_W as u32);
+        st.height = NODERED_WINDOW_DEF_H.min((sh.max(300) as u32).saturating_sub(120)).max(NODERED_WINDOW_MIN_H as u32);
+        if let Some((pos, size)) = main {
+            let right = pos.x + size.width as i32;
+            st.x = if right + 40 + (st.width as i32) <= sw { right + 40 } else { pos.x + 60 };
+            st.y = pos.y.max(0);
+        } else {
+            st.x = (sw - st.width as i32) / 2;
+            st.y = (sh - st.height as i32) / 2;
+        }
+        st.x = st.x.max(0).min((sw - st.width as i32).max(0));
+        st.y = st.y.max(0).min((sh - st.height as i32).max(0));
+    }
+    st
+}
+
+/// 关闭/退出时记下几何。最小化、隐藏等异常态**不写**（系统会给 -32000 这类哨兵坐标，
+/// 写进去下次就把窗口摆到屏幕外 —— 与主窗口 `persist_window_geometry` 同一条纪律）。
+fn nodered_persist_geometry(win: &tauri::WebviewWindow) {
+    /* ⚠️ 嵌入态（子窗口）下 `outer_position()` 是**相对父窗口客户区**的坐标（比如 0,116），
+       写进文件下次就会把编辑器开到左上角、尺寸也变成分栏正文区那么大（实测踩到：
+       nodered-window.json 被写成 {"x":0,"y":116,"width":1198,"height":873}）。
+       所以嵌入态**不写几何**，文件里保留最后一次"独立窗口"的位置与大小。 */
+    if NODERED_DOCKED.load(Ordering::SeqCst) {
+        return;
+    }
+    if win.is_minimized().unwrap_or(false) {
+        return;
+    }
+    let mut state = load_nodered_window_state().unwrap_or_else(|| nodered_default_state(win.app_handle()));
+    if win.is_maximized().unwrap_or(false) {
+        state.maximized = true;
+    } else {
+        state.maximized = false;
+        if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
+            state.x = pos.x;
+            state.y = pos.y;
+            state.width = size.width;
+            state.height = size.height;
+        }
+    }
+    dbg_log(&format!(
+        "nodered_persist_geometry: 写入 {}x{} @{},{} (max={})",
+        state.width, state.height, state.x, state.y, state.maximized
+    ));
+    save_nodered_window_state(&state);
+}
+
+/// 打开（或抬到前面）Node-RED 编辑器窗口。
+///
+/// 已经开着就只 `show + set_focus`：**绝不能开第二个编辑器** —— 两个编辑器同时改同一份
+/// flows 会互相覆盖（`flows.json` 没有冲突检测，后部署的赢）。
+/// 编辑器窗口当前是否"贴"在主窗口里（嵌入态）。窗口销毁时要复位。
+static NODERED_DOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// 嵌入时记住的编辑器 HWND：**一旦 SetParent 成子窗口，EnumWindows 就再也找不到它了**
+/// （那只枚举顶层窗口），所以脱离时必须靠这个记住的句柄，不能重新枚举。
+static NODERED_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// 取一个窗口的真实 HWND（`isize`）。**不依赖 Tauri 的 `hwnd()`**：
+///
+/// 实测（Tauri 2.11 + WebView2，本项目的编辑器窗口）`WebviewWindow::hwnd()` 会返回
+/// `the underlying handle is not available`，而窗口明明就在屏幕上 —— 它走的是
+/// `dispatcher.window_handle()`（要回主线程问一次），拿不到就报这个错。
+/// 所以这里直接 **EnumWindows 枚举本进程的顶层窗口 + 按标题匹配**：纯 Win32、任何线程都能用。
+#[cfg(windows)]
+fn nodered_hwnd_of(win: &tauri::WebviewWindow) -> Option<isize> {
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible};
+
+    struct Ctx {
+        pid: u32,
+        want: Vec<u16>,
+        exact: isize,
+        fuzzy: isize,
+    }
+    unsafe extern "system" fn cb(h: HWND, l: LPARAM) -> BOOL {
+        let ctx = &mut *(l as *mut Ctx);
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(h, &mut pid);
+        if pid != ctx.pid || IsWindowVisible(h) == 0 {
+            return 1;
+        }
+        let mut buf = [0u16; 512];
+        let n = GetWindowTextW(h, buf.as_mut_ptr(), buf.len() as i32);
+        if n <= 0 {
+            return 1;
+        }
+        let title = &buf[..n as usize];
+        if title == ctx.want.as_slice() {
+            ctx.exact = h as isize;
+            return 0; // 找到精确的，停
+        }
+        // 兜底：标题里带 "Node-RED"（比如以后改了标题格式）
+        if title.windows(8).any(|w| w == "Node-RED".encode_utf16().collect::<Vec<_>>().as_slice()) {
+            ctx.fuzzy = h as isize;
+        }
+        1
+    }
+
+    let want = win.title().unwrap_or_default();
+    let mut ctx = Ctx {
+        pid: std::process::id(),
+        want: want.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>()[..want.encode_utf16().count()].to_vec(),
+        exact: 0,
+        fuzzy: 0,
+    };
+    unsafe { EnumWindows(Some(cb), &mut ctx as *mut Ctx as LPARAM) };
+    if ctx.exact != 0 {
+        return Some(ctx.exact);
+    }
+    if ctx.fuzzy != 0 {
+        return Some(ctx.fuzzy);
+    }
+    dbg_log(&format!("nodered_hwnd_of: 枚举不到窗口（标题={want:?}，pid={}）", std::process::id()));
+    None
+}
+
+/// 上一次贴进去用的矩形（物理像素 x,y,w,h）。前端每 250ms 报一次，
+/// **矩形没变就不再 MoveWindow** —— 否则每秒四次重设位置，画面会闪、日志也会被刷满。
+static NODERED_RECT: std::sync::Mutex<Option<(i32, i32, i32, i32)>> = std::sync::Mutex::new(None);
+/// 最近一次"用户主动脱离"的毫秒时间戳：2 秒内的 `nodered_dock_sync` 一律忽略（防"拖出去又被吸回来"）。
+static NODERED_UNDOCK_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 贴进主窗口时**摘掉**的窗口样式（`WS_THICKFRAME` 等），脱离时按原样加回来。
+/// 为什么不用 `set_resizable`：tao 对 `SetParent` 之后的子窗口改 resizable **不生效**（实测
+/// `WS_THICKFRAME` 还在，边缘照样能拖），只有直接改窗口样式才拦得住。
+static NODERED_STYLE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// 贴进去时的 DPI 缩放（×100）。拖上边沿时前端报的是 CSS px，宿主自己换算成物理像素直接 MoveWindow，
+/// 少一次"前端→宿主→前端"的往返 —— 拖起来跟手，也不会因为反复重排而闪。
+static NODERED_SCALE100: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(100);
+/// 正文区满高（物理像素）。拖上边沿按它夹上限，不能按"当前高度"夹。
+static NODERED_MAX_H: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// 用户拖上边沿改出来的高度（**外框**物理像素，0 = 没改过/用满高）。停靠态靠原生缩放拖，
+/// 松开后由同步按这个高度 + 正文区宽度重新落位（左右拖出来的宽度会被收回）。
+static NODERED_USER_H: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// 最近一次"用户正在拖嵌入窗口边缘"的时刻：250ms 内的同步不许动窗口（否则和拖动抢）。
+static NODERED_EDGE_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 上次贴完后**实测**的客户区高度。判断"用户拖过吗"要和它比 —— 拿请求的外框高度比会差一圈边框，
+/// 结果每轮同步都当成"又拖了一下"，高度一路缩（实测 250ms 缩 9px）。
+static NODERED_INNER_H: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// 外框高度 − 客户区高度（边框厚度）。拖出来的是外框，`inner_size()` 给的是客户区，必须换算。
+static NODERED_FRAME_H: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// 松开后由同步按"这个高度 + 正文区宽度"重新落位（左右拖出来的宽度会被收回去）。
+/// 结果每次同步都被当成"用户又拖了一下"，高度一路缩或一路涨（实测 2 秒内抖了 5 种几何）。
+/// 两者差一圈；不换算的话每轮同步都会把高度改小 9px（实测 250ms 缩一次，一直缩）。
+/// 主窗口最近一次被缩放的时刻。拖拽缩放的过程中**一律不贴窗**（只松手后贴一次）——
+/// 否则主窗口宽度每变一点，分栏工具栏换行、`.mon-body` 顶边跳动，编辑器会被拽着上下弹（2026-11 用户报的"闪烁"）。
+static NODERED_MAIN_RESIZE_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 浮动窗口的移动代次：拖动会连续发 Moved，用"代次没变"判断"已经停手"。
+static NODERED_MOVE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 这次浮动期间，窗口是否**到过主窗口外面**。只有到过外面再拖回来才自动归位 ——
+/// 否则"刚从程序里拖出来"那一刻中心还在程序里，会被立刻吸回去（实测就是这样）。
+static NODERED_WAS_OUTSIDE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// 上一次告诉前端的"悬停在主窗口上方"状态（变了才发事件，拖动时 Moved 是连续发的）。
+static NODERED_HOVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 浮动窗口的中心是否落在主窗口里（拿不到句柄/位置时返回 `None`）。
+#[cfg(windows)]
+fn nodered_center_over_app(app: &tauri::AppHandle) -> Option<bool> {
+    use tauri::Manager;
+    let ed = app.get_webview_window(NODERED_WINDOW_LABEL)?;
+    let main = app.get_webview_window("main")?;
+    let pos = ed.outer_position().ok()?;
+    let size = ed.inner_size().ok()?;
+    let mpos = main.outer_position().ok()?;
+    let msize = main.inner_size().ok()?;
+    let cx = pos.x + size.width as i32 / 2;
+    let cy = pos.y + size.height as i32 / 2;
+    Some(
+        cx >= mpos.x
+            && cx <= mpos.x + msize.width as i32
+            && cy >= mpos.y
+            && cy <= mpos.y + msize.height as i32,
+    )
+}
+
+/// 鼠标左键此刻是不是还按着（拖动窗口时判断"用户还没松手"）。
+#[cfg(windows)]
+fn nodered_left_button_down() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    const VK_LBUTTON: i32 = 0x01;
+    unsafe { (GetAsyncKeyState(VK_LBUTTON) as u16 & 0x8000) != 0 }
+}
+
+/// 拖动中的"可以停靠"蒙版：状态变化时通知主窗口，由前端在分栏正文区画出虚线提示框。
+///
+/// 用户 2026-11："脱离后，拖回程序时，主程序的位置应该有相应的蒙版提示可以停靠。而不是什么都不显示。"
+#[cfg(windows)]
+fn nodered_update_hover_hint(app: &tauri::AppHandle) {
+    use tauri::Emitter;
+    let over = !NODERED_DOCKED.load(Ordering::SeqCst)
+        && NODERED_WAS_OUTSIDE.load(Ordering::SeqCst)
+        && nodered_center_over_app(app).unwrap_or(false);
+    if NODERED_HOVER.swap(over, Ordering::SeqCst) != over {
+        let _ = app.emit_to("main", "nodered-drag-hover", over);
+    }
+}
+
+/// 收起蒙版（嵌入成功 / 脱离 / 关闭窗口时都要收）。
+#[cfg(windows)]
+fn nodered_clear_hover_hint(app: &tauri::AppHandle) {
+    use tauri::Emitter;
+    if NODERED_HOVER.swap(false, Ordering::SeqCst) {
+        let _ = app.emit_to("main", "nodered-drag-hover", false);
+    }
+}
+
+
+/// 浮动窗口被拖到主窗口上方（中心落在主窗口里）→ 请前端把分栏矩形报过来，重新贴进去。
+///
+/// 这就是"拖出 / 拖回"的另一半（用户 2026-11："脱离之后也要拖动回归程序"）。
+/// 两条判据，缺一个都会误吸：
+///   ① 用**中心点**而不是"有重叠"—— 重叠一点就吸附会把"摆在旁边对照着看"也吸进去；
+///   ② 必须**先在主窗口外待过**（`NODERED_WAS_OUTSIDE`）—— 刚拖出来时中心还在主窗口里。
+#[cfg(windows)]
+fn nodered_request_dock_if_over_app(app: &tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    let (Some(ed), Some(main)) = (
+        app.get_webview_window(NODERED_WINDOW_LABEL),
+        app.get_webview_window("main"),
+    ) else {
+        return;
+    };
+    let (Ok(pos), Ok(size)) = (ed.outer_position(), ed.inner_size()) else { return };
+    let (Ok(mpos), Ok(msize)) = (main.outer_position(), main.inner_size()) else { return };
+    let cx = pos.x + size.width as i32 / 2;
+    let cy = pos.y + size.height as i32 / 2;
+    let inside = cx >= mpos.x
+        && cx <= mpos.x + msize.width as i32
+        && cy >= mpos.y
+        && cy <= mpos.y + msize.height as i32;
+    if !inside {
+        NODERED_WAS_OUTSIDE.store(true, Ordering::SeqCst);
+        return;
+    }
+    if !NODERED_WAS_OUTSIDE.load(Ordering::SeqCst) {
+        return; // 还没离开过主窗口：这是"刚拖出来"，别吸回去
+    }
+    NODERED_WAS_OUTSIDE.store(false, Ordering::SeqCst);
+    dbg_log("nodered_dock: 浮动窗口被拖回主窗口范围，请求重新嵌入");
+    let _ = app.emit_to("main", "nodered-dock-request", ());
+}
+
+
+
+/// 编辑器窗口现在是不是嵌入态（外壳页据此决定显示"整条标题栏"还是"细拖条"）。
+#[tauri::command]
+fn nodered_docked() -> bool {
+    NODERED_DOCKED.load(Ordering::SeqCst)
+}
+
+/// 把编辑器窗口**贴进主窗口**（`rect = None` 则脱开成独立窗口）。
+///
+/// 为什么用 Win32 父子窗口，而不是把编辑器搬进主窗口的 DOM（iframe）：
+/// 编辑器始终只有**一个 WebView** —— 一旦把它在页面/窗口之间搬动，浏览器必须重建它，
+/// 编辑器整页重载，**还没部署的修改就丢了**（这正是 2026-11 用户报过的"删掉的流程又回来"
+/// 那一族的根因）。而 `SetParent` 挂的是同一个 HWND：视觉上等于内嵌，拖出时只解除父子关系，
+/// 编辑器**一帧都不重载**。
+///
+/// `rect` 是相对**主窗口客户区**的逻辑像素（前端量 `.mon-body` 得到）：
+/// 嵌入时外壳页会把自己的标题栏收成一条细拖条，所以这块区域正好等于"监视器正文区"。
+#[tauri::command]
+fn nodered_dock(app: tauri::AppHandle, rect: Option<serde_json::Value>, force: Option<bool>, max_h: Option<f64>) -> Result<bool, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = (app, rect, force);
+        return Err("嵌入/脱离只在 Windows 上支持".to_string());
+    }
+    #[cfg(windows)]
+    {
+        use tauri::Manager;
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MoveWindow, SetParent, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongW, SetWindowLongW, GWL_STYLE, WS_MAXIMIZEBOX, WS_THICKFRAME,
+        };
+
+        /* ⚠️ 尺寸调整由**前端按比例**算好再传进来（`NF_MANUAL` 记住的是"占正文区的比例"）：
+           宿主这边**不再锁死像素尺寸** —— 锁像素会出两个问题：切分栏时弹回原位、
+           主窗口缩小时子窗口留原尺寸被父窗口裁掉（2026-11 实测）。 */
+        if force.unwrap_or(false) {
+            /* 显式停靠（拖回 / 点停靠 / 图标打开）= 恢复铺满，清掉残留的"用户高度" */
+            NODERED_USER_H.store(0, Ordering::SeqCst);
+            NODERED_EDGE_AT.store(0, Ordering::SeqCst);
+        }
+        if rect.is_some() {
+            if let Some(mh) = max_h {
+                let sc = (NODERED_SCALE100.load(Ordering::SeqCst) as f64) / 100.0;
+                let s = if sc > 0.0 { sc } else { 1.0 };
+                let phys = (mh * s).round() as i32;
+                if phys > 0 {
+                    NODERED_MAX_H.store(phys, Ordering::SeqCst);
+                }
+            }
+        }
+        /* 主窗口正在被拖拽缩放（150ms 内有过 Resized）→ 这一拍先不贴。
+           拖拽时宽度连续变，分栏工具栏在阈值处换行、正文区顶边跳，跟着贴就是"上下弹"（闪烁）。
+           松手后前端 250ms 的同步会再报一次，那时才真正落位。 */
+        if rect.is_some() && {
+            let last = NODERED_MAIN_RESIZE_AT.load(Ordering::SeqCst);
+            last != 0 && now_ms().saturating_sub(last) < 150
+        } {
+            return Ok(true);
+        }
+        let ed = app.get_webview_window(NODERED_WINDOW_LABEL).ok_or("编辑器窗口没打开")?;
+        let main = app.get_webview_window("main").ok_or("主窗口不在")?;
+        /* 嵌入态下编辑器是子窗口，EnumWindows 找不到 —— 所以优先用记住的句柄 */
+        let cached = NODERED_HWND.load(Ordering::SeqCst);
+        let ed_raw = if cached != 0 { Some(cached) } else { nodered_hwnd_of(&ed) };
+        let ed_hwnd = ed_raw.ok_or("拿不到编辑器窗口句柄")? as HWND;
+        let main_hwnd = nodered_hwnd_of(&main).ok_or("拿不到主窗口句柄")? as HWND;
+        NODERED_HWND.store(ed_hwnd as isize, Ordering::SeqCst);
+
+        match rect {
+            Some(r) => {
+                let scale = main.scale_factor().unwrap_or(1.0);
+                NODERED_SCALE100.store((scale * 100.0).round() as i32, Ordering::SeqCst);
+                let num = |k: &str| r.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let (x, y) = ((num("x") * scale).round() as i32, (num("y") * scale).round() as i32);
+                let (w, h) = ((num("width") * scale).round() as i32, (num("height") * scale).round() as i32);
+                /* 用户拖过边缘：把他改出来的高度套回来（底边固定、x/宽度一律按正文区重算 ——
+                   左右拖出来的宽度会被收回，这正是用户要的"左右不可拖动"）。 */
+                let (mut y, mut h) = (y, h);
+                let user_h = NODERED_USER_H.load(Ordering::SeqCst);
+                if user_h > 0 {
+                    let cap = {
+                        let mx = NODERED_MAX_H.load(Ordering::SeqCst);
+                        if mx > 120 { mx } else { h }
+                    };
+                    let hh = user_h.min(cap).max(120).min(h);
+                    y = y + h - hh;
+                    h = hh;
+                }
+                /* 用户正在拖边缘 → 这一拍不动，别和拖动抢。 */
+                let edge_at = NODERED_EDGE_AT.load(Ordering::SeqCst);
+                if edge_at != 0 && now_ms().saturating_sub(edge_at) < 250 {
+                    return Ok(true);
+                }
+                /* 用户拖过边缘：把"他改出来的高度"套回来（底边固定、x/宽度一律按正文区重算 ——
+                   左右拖出来的宽度会被收回去，这正是用户要的"左右不可拖动"）。 */
+                if w < 200 || h < 150 {
+                    return Err(format!("嵌入区域太小（{w}×{h}），先把分栏拉大一点再嵌入"));
+                }
+                /* 矩形没变就什么都不做：前端每 250ms 报一次，重复 MoveWindow 会让画面抖。 */
+                let changed = {
+                    let mut guard = NODERED_RECT.lock().unwrap_or_else(|e| e.into_inner());
+                    if *guard == Some((x, y, w, h)) && NODERED_DOCKED.load(Ordering::SeqCst) {
+                        false
+                    } else {
+                        *guard = Some((x, y, w, h));
+                        true
+                    }
+                };
+                if !changed {
+                    return Ok(true);
+                }
+                /* ⚠️ **`SetParent` / 改样式 / 改任务栏只做一次**（第一次贴进来的那一下）。
+                   每帧都 `SetParent` 会让 WebView 整页重绘 —— 拖上边沿时整个窗口狂闪（用户 2026-11 实测）。
+                   拖拽期间这个函数每帧都会被调，所以"一次性的活"必须和"每帧的 MoveWindow"分开。 */
+                let was = NODERED_DOCKED.load(Ordering::SeqCst);
+                if !was {
+                    unsafe {
+                        SetParent(ed_hwnd, main_hwnd);
+                    }
+                    // 子窗口不占任务栏；嵌入时也不该抢焦点盖不住主窗口（父子关系已经管了层级）
+                    let _ = ed.set_skip_taskbar(true);
+                    /* 停靠态**不许拖边缘**（用户 2026-11："停靠时 node red 的编辑区左右不可拖动，始终和主程序窗口保持一致"）。
+                       tao 的 `set_resizable` 对 `SetParent` 之后的子窗口不生效（实测样式没变），只能直接改窗口样式；
+                       脱离时按记住的原样式加回去。
+                       ⚠️ 上边沿拖动（原生缩放那套）2026-11 试过两轮：子窗口上抓不稳，且会让 Node-RED 的布局在
+                       边缘状态下错乱，已撤回；要再做请先解决"子窗口缩放手柄"问题（WM_NCHITTEST 子类化）。 */
+                    unsafe {
+                        let st = GetWindowLongW(ed_hwnd, GWL_STYLE);
+                        NODERED_STYLE.store(st, Ordering::SeqCst);
+                        SetWindowLongW(ed_hwnd, GWL_STYLE, st & !(WS_THICKFRAME as i32) & !(WS_MAXIMIZEBOX as i32));
+                    }
+                }
+                unsafe {
+                    MoveWindow(ed_hwnd, x, y, w, h, 1);
+                }
+                if let Ok(sz) = ed.inner_size() {
+                    NODERED_INNER_H.store(sz.height as i32, Ordering::SeqCst);
+                    NODERED_FRAME_H.store(h - sz.height as i32, Ordering::SeqCst);
+                }
+                if !was {
+                    NODERED_DOCKED.store(true, Ordering::SeqCst);
+                    dbg_log(&format!("nodered_dock: 已嵌入 {w}×{h} @{x},{y}"));
+                    let _ = app.emit_to(NODERED_WINDOW_LABEL, "nodered-dock", true);
+                }
+                Ok(true)
+            }
+            None => {
+                /* 先记下"拆下来时该待在屏幕哪儿"：子窗口的坐标是相对父窗口客户区的，
+                   直接 SetParent(null) 会让它跑到屏幕左上角去。 */
+                let outer = ed.outer_position().unwrap_or(tauri::PhysicalPosition::new(200, 200));
+                let size = ed.inner_size().unwrap_or(tauri::PhysicalSize::new(1200, 800));
+                unsafe {
+                    SetParent(ed_hwnd, std::ptr::null_mut());
+                    MoveWindow(ed_hwnd, outer.x, outer.y, size.width as i32, size.height as i32, 1);
+                    // 恢复成普通顶层窗口：可见 + 不激活地重设一次尺寸，确保样式刷新
+                    windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                        ed_hwnd, std::ptr::null_mut(), outer.x, outer.y,
+                        size.width as i32, size.height as i32,
+                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    );
+                }
+                let _ = ed.set_skip_taskbar(false);
+                /* 脱离后把样式加回去（独立窗口应该能自由拉大小） */
+                unsafe {
+                    let st = NODERED_STYLE.load(Ordering::SeqCst);
+                    if st != 0 {
+                        SetWindowLongW(ed_hwnd, GWL_STYLE, st);
+                        NODERED_STYLE.store(0, Ordering::SeqCst);
+                    }
+                }
+                NODERED_DOCKED.store(false, Ordering::SeqCst);
+                NODERED_USER_H.store(0, Ordering::SeqCst);
+                NODERED_EDGE_AT.store(0, Ordering::SeqCst);
+                NODERED_HWND.store(0, Ordering::SeqCst);
+                *NODERED_RECT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                dbg_log("nodered_dock: 已脱离");
+                NODERED_UNDOCK_AT.store(now_ms(), Ordering::SeqCst);
+                nodered_clear_hover_hint(&app);
+                NODERED_WAS_OUTSIDE.store(false, Ordering::SeqCst);
+                let _ = app.emit_to(NODERED_WINDOW_LABEL, "nodered-dock", false);
+                let _ = ed.set_focus();
+                Ok(false)
+            }
+        }
+    }
+}
+
+/// 主窗口尺寸/位置/分栏布局变化时，把嵌入中的编辑器重新贴一次（前端只负责报矩形）。
+#[tauri::command]
+fn nodered_dock_sync(app: tauri::AppHandle, rect: serde_json::Value, max_h: Option<f64>) -> Result<bool, String> {
+    /* 刚被用户拖出/点「脱离」的 2 秒内**忽略同步**：前端 250ms 一次，若一次 dock 请求正好在
+       脱离那一刻在路上，回来就会把窗口又贴回去（用户看到"拖出去了又被吸回来"）。 */
+    let now = now_ms();
+    if NODERED_UNDOCK_AT.load(Ordering::SeqCst) + 2000 > now {
+        return Ok(false);
+    }
+    if !NODERED_DOCKED.load(Ordering::SeqCst) {
+        return Ok(false);       // 没嵌入就什么都不做（别把浮动窗口拽回主窗口）
+    }
+    nodered_dock(app, Some(rect), Some(false), max_h)?;
+    Ok(true)
+}
+
+/// 毫秒时间戳（用于"刚脱离"的抑制窗口）。
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(windows)]
+fn nodered_undock_before_destroy(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if !NODERED_DOCKED.load(Ordering::SeqCst) {
+        return;
+    }
+    /* 嵌入态下它是子窗口，EnumWindows 查不到 —— 只能用记住的句柄（退回枚举只是兜底） */
+    let cached = NODERED_HWND.load(Ordering::SeqCst);
+    let raw = if cached != 0 {
+        Some(cached)
+    } else {
+        app.get_webview_window(NODERED_WINDOW_LABEL).and_then(|ed| nodered_hwnd_of(&ed))
+    };
+    if let Some(h) = raw {
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::SetParent(h as _, std::ptr::null_mut());
+        }
+    }
+    NODERED_DOCKED.store(false, Ordering::SeqCst);
+    NODERED_HWND.store(0, Ordering::SeqCst);
+}
+
+
+/// 当前编辑器地址（只读、**不负责拉起侧车**）：给窗口里的外壳页填 iframe 用。
+///
+/// 为什么单独一条命令：端口是启动时随机分配的，写死在页面里不现实；而 `nodered_open` 会在
+/// 没起来时**拉起侧车**（几秒阻塞）—— 外壳页只需要"现在到底有没有、地址是多少"，不该有副作用。
+#[tauri::command]
+fn nodered_url() -> Option<String> {
+    let port = NODERED_PORT.load(Ordering::SeqCst);
+    if port != 0 && nodered_alive(port) {
+        Some(format!("http://127.0.0.1:{port}/"))
+    } else {
+        None
+    }
+}
+
+#[tauri::command]
+async fn nodered_open_window(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    use tauri::{Emitter, Manager};
+    /* 这是个**开关**（用户 2026-11）：点开 → 按钮亮起；再点 → 隐藏窗口（不是关闭，
+       编辑器与未部署的修改都留着）；再点 → 原样回来。
+       返回 `{ state: "open"|"hidden", shouldDock: bool }`：
+         · 刚创建 → shouldDock=true（默认形态就是贴进分栏）；
+         · 已开着且**嵌着** → shouldDock=true（按当前分栏重贴一次）；
+         · 已开着且**浮着** → shouldDock=false（用户拖出去的，只抬到前面，别拽回分栏）；
+         · 刚被隐藏 → shouldDock=false（先别动，等下次显示时再贴）。 */
+    if let Some(win) = app.get_webview_window(NODERED_WINDOW_LABEL) {
+        let visible = win.is_visible().unwrap_or(true);
+        if visible {
+            let _ = win.hide();
+            let _ = app.emit("nodered-state", "hidden");
+            /* 隐藏的是不是嵌入态都要说清楚：嵌入态被隐藏时前端要停掉 250ms 的贴窗循环 */
+            return Ok(serde_json::json!({ "state": "hidden", "shouldDock": false }));
+        }
+        let _ = win.unminimize();
+        let _ = win.show();
+        if !NODERED_DOCKED.load(Ordering::SeqCst) {
+            nodered_ensure_on_screen(&win);
+        }
+        let _ = win.set_focus();
+        let _ = app.emit("nodered-state", "open");
+        return Ok(serde_json::json!({
+            "state": "open",
+            "shouldDock": NODERED_DOCKED.load(Ordering::SeqCst)
+        }));
+    }
+    let a = app.clone();
+    let url = tauri::async_runtime::spawn_blocking(move || nodered_spawn_and_wait(a))
+        .await
+        .map_err(|e| format!("node-red 启动线程异常：{e}"))??;
+    nodered_show_window(&app, &url)?;
+    let _ = app.emit("nodered-state", "open");
+    Ok(serde_json::json!({ "state": "open", "shouldDock": true }))
+}
+
+
+/// 编辑器窗口现在是什么状态：`open`（看得见）/ `hidden`（被开关收起）/ `closed`（还没开或已关掉）。
+/// 顶栏那颗按钮用它校正自己的高亮 —— 用户可能从编辑器自己的「✕」关掉，界面得跟上。
+
+#[tauri::command]
+fn nodered_window_state(app: tauri::AppHandle) -> String {
+    use tauri::Manager;
+    match app.get_webview_window(NODERED_WINDOW_LABEL) {
+        None => "closed".to_string(),
+        Some(w) => {
+            if w.is_visible().unwrap_or(true) {
+                "open".to_string()
+            } else {
+                "hidden".to_string()
+            }
+        }
+    }
+}
+
+/// 把浮动窗口拉回可见区域（换过屏幕 / 被缩到边角 / 落在已拔掉的显示器上时）。
+///
+/// 只在"完全看不见或基本看不见"时动手：用户刻意摆在屏幕边缘（露着一条边）不该被挪走。
+#[cfg(windows)]
+fn nodered_ensure_on_screen(win: &tauri::WebviewWindow) {
+    let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) else { return };
+    if rect_on_screen(win.app_handle(), pos.x, pos.y, size.width, size.height) {
+        return;
+    }
+    let state = load_nodered_window_state().unwrap_or_else(|| nodered_default_state(win.app_handle()));
+    let _ = win.set_position(tauri::PhysicalPosition::new(state.x, state.y));
+    let _ = win.set_size(tauri::PhysicalSize::new(state.width.max(400), state.height.max(300)));
+    dbg_log("nodered: 浮动窗口不在可见区域，已拉回上次记住的位置");
+}
+
+fn nodered_show_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
+    /* 地址在这里只做一次校验（真正加载发生在窗口里：外壳页向 `nodered_url` 要地址）。
+       为什么外壳页而不是直接加载 Node-RED 的地址 —— 直接加载就没有标题栏、窗口也拖不动
+       （`decorations:false`）。外壳页给的是**和主窗口同一套**的自绘标题栏
+       （36px / 同底色 / 同按钮 / 同 hover），两个窗口才不会像两套软件（用户 2026-11 报的）。
+       ⚠️ url 仍然要在这里验一次：侧车起来但地址拼错时，用户看到的是"窗口里一行英文错误"
+       而不是"编辑器打不开"，很难判断是谁的问题。 */
+    let _ = url.parse::<tauri::Url>().map_err(|e| format!("编辑器地址不合法（{url}）：{e}"))?;
+    let state = load_nodered_window_state().unwrap_or_else(|| nodered_default_state(app));
+    let win = tauri::WebviewWindowBuilder::new(
+        app,
+        NODERED_WINDOW_LABEL,
+        tauri::WebviewUrl::App("node-red-window.html".into()),
+    )
+    .title("Node-RED · 流程编辑器")
+    /* 自绘标题栏：与主窗口一致（主窗口也是 decorations:false + #globalBar）。
+       代价是"拖拽/最大化/关闭"都得自己实现 —— 见 src/js/86-node-red-window.js。 */
+    .decorations(false)
+    .inner_size(state.width as f64, state.height as f64)
+    .min_inner_size(NODERED_WINDOW_MIN_W, NODERED_WINDOW_MIN_H)
+    .position(state.x as f64, state.y as f64)
+    .build()
+    .map_err(|e| format!("打开 Node-RED 编辑器窗口失败：{e}"))?;
+    if state.maximized {
+        let _ = win.maximize();
+    }
+    let w = win.clone();
+    win.on_window_event(move |ev| {
+        match ev {
+            tauri::WindowEvent::CloseRequested { .. } => nodered_persist_geometry(&w),
+            /* 拖回来就"归位"（用户 2026-11："脱离之后也要拖动回归程序"）：
+               浮动窗口移动停下 600ms 后，如果它的**中心落在主窗口里**，就请前端把分栏矩形报过来重新贴进去。
+               为什么让前端算矩形：分栏是前端动态建的，只有它知道 `.mon-body` 在哪、多大。
+               为什么要去抖：原生拖动会连续发 Moved，拖动过程中就贴进去会很突兀。 */
+            /* 嵌入态被**手动**改了尺寸/位置（拖窗口边缘）→ 记下来，之后同步不再套分栏公式。
+               判据用"和上次我们设置后实测的几何差多少"（`NODERED_EXPECT`），而不是拿请求的矩形比 ——
+               子窗口的 inner_size 比设置值小一圈（边框/阴影），直接比会每次都判成"手动"。 */
+            tauri::WindowEvent::Resized(_) => {
+                /* 嵌入态用户拖了边缘：记下**他改出来的高度**（同步之后按它落位，宽度收回正文区）。
+                   和我们自己 MoveWindow 引起的事件区分开：和上次贴完后**实测的客户区高度**比。 */
+                if !NODERED_DOCKED.load(Ordering::SeqCst) {
+                    return;
+                }
+                if let Ok(sz) = w.inner_size() {
+                    let want = NODERED_INNER_H.load(Ordering::SeqCst);
+                    if want <= 0 {
+                        return;   // 第一次贴完的那次 Resized 不算用户操作
+                    }
+                    let same = (sz.height as i32 - want).abs() <= 4;
+                    if !same {
+                        let frame = NODERED_FRAME_H.load(Ordering::SeqCst);
+                        NODERED_USER_H.store(sz.height as i32 + frame.max(0), Ordering::SeqCst);
+                        NODERED_EDGE_AT.store(now_ms(), Ordering::SeqCst);
+                    }
+                }
+            }
+            tauri::WindowEvent::Moved(_) => {
+                if NODERED_DOCKED.load(Ordering::SeqCst) {
+                    nodered_clear_hover_hint(&w.app_handle().clone());
+                    return;
+                }
+                /* 拖动中就更新"可停靠"蒙版（状态变了才发事件，Moved 是连续来的） */
+                nodered_update_hover_hint(w.app_handle());
+                let gen = NODERED_MOVE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+                let app = w.app_handle().clone();
+                std::thread::spawn(move || {
+                    /* **松手才算数**：拖动期间只亮蒙版。否则用户把窗口按在主窗口上方停一下，
+                       600ms 后就被"拽"进去了 —— 手还没松，窗口先跑了（实测踩到）。 */
+                    let mut waited = 0u32;
+                    while waited < 12000 && nodered_left_button_down() {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        waited += 100;
+                    }
+                    if waited >= 12000 {
+                        return; // 按着超过 12 秒，当成异常情况，别乱归位
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(120));
+                    if NODERED_MOVE_GEN.load(Ordering::SeqCst) != gen {
+                        return; // 松手后又动了（真的又拖了一次）
+                    }
+                    if NODERED_DOCKED.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    nodered_request_dock_if_over_app(&app);
+                });
+            }
+            /* 窗口真的销毁了（不管是浮动态按关闭、还是嵌入态点「✕」）→ 把嵌入状态复位。
+               不复位会留一堆后遗症：`nodered_dock_sync` 会一直去贴一个不存在的窗口、
+               `nodered_docked()` 还回 true、蒙版状态也可能挂在 true 上。 */
+            tauri::WindowEvent::Destroyed => {
+                let _ = w.app_handle().emit("nodered-state", "closed");
+                NODERED_DOCKED.store(false, Ordering::SeqCst);
+                NODERED_USER_H.store(0, Ordering::SeqCst);
+                NODERED_EDGE_AT.store(0, Ordering::SeqCst);
+                NODERED_HWND.store(0, Ordering::SeqCst);
+                NODERED_WAS_OUTSIDE.store(false, Ordering::SeqCst);
+                *NODERED_RECT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                nodered_clear_hover_hint(w.app_handle());
+            }
+            _ => {}
+        }
+    });
+    let _ = win.set_focus();
+    Ok(())
+}
+
+/// Windows verbatim 路径（`\\?\D:\...`）不能直接喂给 node：/// 拿它当入口脚本会报 `EISDIR: illegal operation on a directory, lstat 'D:'`
 /// （node 把 `\\?\D:` 拆歪了，最后拿 `D:` 去 lstat）。实测可复现。
 /// Tauri 的 `BaseDirectory::Resource` / `app_data_dir()` 解析出来就带这个前缀，所以先剥掉。
 fn nodered_plain_path(p: std::path::PathBuf) -> std::path::PathBuf {
@@ -1676,6 +2470,14 @@ struct WslSerialSession {
     responses: crossbeam_channel::Receiver<String>,
     /// 会话已失效（超时被杀后置位，防止消费过期响应）
     dead: std::sync::atomic::AtomicBool,
+    /// 命令互斥：`bridge_command` 是"写一行 → 从共享响应通道取一行"，
+    /// 两个调用方并发时（前端 25ms 轮询 read + Node-RED 桥的 write）会互相取走对方的回执，
+    /// 表现为"读回来的是上一次写的回执"这种最难查的错。这一对时序必须锁成整体。
+    cmd: std::sync::Mutex<()>,
+    /// 打开时的设备路径与波特率：Node-RED 桥的 `monitors` 下拉要如实报出 WSL 分栏
+    /// （展示成 `/dev/ttyUSB0 · 115200`，与串口分栏的 `COM17 · 115200` 同构）
+    device_path: String,
+    baud_rate: u32,
 }
 
 /// 全局状态：WSL 串口连接（key = monitor_id）
@@ -3905,6 +4707,10 @@ fn spawn_bridge(distro: &str) -> Result<std::process::Child, String> {
 }
 fn bridge_command(session: &WslSerialSession, cmd: &serde_json::Value) -> Result<serde_json::Value, String> {
     use std::io::Write;
+    /* 写管道 + 等回执是一段**不可分割**的时序：会话只有一条 stdout 响应通道，
+       两个调用方同时进来就会各取走对方的那一行（前端轮询 read 与 Node-RED 的 write
+       现在真的会并发，见 WslSerialSession::cmd）。 */
+    let _cmd_guard = session.cmd.lock().unwrap_or_else(|e| e.into_inner());
     // 会话已失效（之前超时被杀）：直接失败，不再读写管道
     if session.dead.load(std::sync::atomic::Ordering::Relaxed) {
         let e = "bridge 进程已退出".to_string();
@@ -4080,6 +4886,9 @@ async fn open_wsl_serial(
             writer,
             responses: resp_rx,
             dead: std::sync::atomic::AtomicBool::new(false),
+            cmd: std::sync::Mutex::new(()),
+            device_path: device_path.clone(),
+            baud_rate,
         };
         // 若 bridge 命令失败（超时/进程退出/序列化或写入错误），先杀子进程再返回，避免泄漏孤儿 python 进程
         let resp = match bridge_command(&session, &json!({"cmd":"open","id":&monitor_id,"path":&device_path,"baud":baud_rate})) {
@@ -4134,7 +4943,16 @@ async fn read_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: St
         if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
             let b64 = resp.get("data").and_then(|v| v.as_str()).unwrap_or("");
             use base64::Engine;
-            Ok(base64::engine::general_purpose::STANDARD.decode(b64).unwrap_or_default())
+            let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap_or_default();
+            /* Node-RED 桥的接收队列挂在这一跳上（2026-11）：
+               WSL 的数据没有 Rust 侧读线程，唯一的产出点就是前端这次轮询。
+               所以**把同一块字节复制一份**进桥队列（与串口读线程的 `bridge_push_rx` 同一个做法），
+               前端那份照旧返回 —— 两边各读各的，谁也不会把对方的数据吃掉。
+               反过来：这里不复制，`serial rxd` 在 WSL 分栏上就永远收不到数据。 */
+            if !bytes.is_empty() {
+                bridge_push_rx(&monitor_id, &bytes);
+            }
+            Ok(bytes)
         } else {
             let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("读取失败");
             if err.contains("port not open") || err.contains("Resource temporarily unavailable") { Ok(vec![]) } else { Err(err.to_string()) }
@@ -4142,6 +4960,21 @@ async fn read_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: St
     })
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
+}
+
+/// 往 WSL 分栏写一段字节。
+///
+/// 前端「发送」与 Node-RED 的桥（`bridge_write`）共用这一条路 —— 一份实现，两个入口，
+/// 免得哪天一改只有一边生效。
+fn wsl_session_write(session: &WslSerialSession, monitor_id: &str, data: &[u8]) -> Result<usize, String> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+    let resp = bridge_command(session, &json!({"cmd":"write","id":monitor_id,"data":b64}))?;
+    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        Ok(resp.get("n").and_then(|v| v.as_u64()).unwrap_or(data.len() as u64) as usize)
+    } else {
+        Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("写入失败").to_string())
+    }
 }
 
 /// 向 WSL 串口发送数据
@@ -4153,14 +4986,7 @@ async fn send_wsl_serial(state: tauri::State<'_, WslSerialState>, monitor_id: St
             let map = sessions.lock().unwrap_or_else(|e| e.into_inner());
             map.get(&monitor_id).ok_or("未连接 WSL 串口")?.clone()
         };
-        use base64::Engine;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-        let resp = bridge_command(&session, &json!({"cmd":"write","id":&monitor_id,"data":b64}))?;
-        if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-            Ok(resp.get("n").and_then(|v| v.as_u64()).unwrap_or(data.len() as u64) as usize)
-        } else {
-            Err(resp.get("error").and_then(|v| v.as_str()).unwrap_or("写入失败").to_string())
-        }
+        wsl_session_write(&session, &monitor_id, &data)
     })
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
@@ -10327,6 +11153,12 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
         .manage(mcp::McpState::default())
         .invoke_handler(tauri::generate_handler![
             nodered_open,
+            nodered_open_window,
+            nodered_url,
+            nodered_window_state,
+            nodered_dock,
+            nodered_dock_sync,
+            nodered_docked,
             nodered_stop,
             nodered_set_quickcmds,
             list_ports,
@@ -10481,11 +11313,32 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
         })
         .on_window_event(|window, event| {
             match event {
-                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                tauri::WindowEvent::Resized(_) => {
+                    /* 主窗口正在被拖拽缩放：记下时刻，让编辑器**先别跟着挪**。
+                       用户 2026-11："拖动窗口宽度时程序会闪烁" —— 拖拽时主窗口宽度连续变，
+                       分栏工具栏会在阈值处换行（那排按钮宽窄切换），`.mon-body` 顶边跟着跳，
+                       编辑器每 250ms 被拽着上下弹一次，看起来就是闪。改法：拖的时候一律不动，
+                       松手后由 250ms 同步贴一次（只重排一次，不闪）。 */
+                    if window.label() == "main" {
+                        NODERED_MAIN_RESIZE_AT.store(now_ms(), Ordering::SeqCst);
+                    }
+                    // 拖动/缩放时去抖持久化窗口几何（含最大化标志切换）
+                    window_auto_save(window, false);
+                }
+                tauri::WindowEvent::Moved(_) => {
                     // 拖动/缩放时去抖持久化窗口几何（含最大化标志切换）
                     window_auto_save(window, false);
                 }
                 tauri::WindowEvent::CloseRequested { .. } => {
+                    /* ⚠️ 只有**主窗口**的关闭才是"退出应用"。
+                       这个回调注册在应用上、对**每个**窗口都生效；2026-11 之前只有 main 一个窗口，
+                       所以没人踩到。加了 Node-RED 编辑器窗口之后，关编辑器会把串口、BLE、侧车、
+                       MCP 端点全拆掉，而主窗口还开着 —— 实测就是这样：关掉编辑器后
+                       `mcp-endpoint.json` 被删、node-red 侧车被杀、应用变成空壳。
+                       编辑器窗口自己的 `on_window_event` 负责存几何（见 nodered_persist_geometry）。 */
+                    if window.label() != "main" {
+                        return;
+                    }
                     // 退出前强制保存最终窗口几何
                     window_auto_save(window, true);
                     dbg_log("CloseRequested: cleaning up resources");
@@ -10538,6 +11391,13 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
 
                     // node-red 侧车：跟着应用一起退出（否则它继续占端口 + ~80MB 内存，
                     // 下次启动会拿到新端口，两份实例还共用同一个用户目录）
+                    // ⚠️ 先把编辑器窗口关掉：它是独立窗口，留着的话"关主窗口"不会退出应用，
+                    //    用户会看到一个没有主界面的空壳（而且侧车刚被杀，编辑器已经是死的）。
+                    //    用 `close()` 而不是 `destroy()`，让它自己的 CloseRequested 先存几何。
+                    nodered_undock_before_destroy(window.app_handle());
+                    if let Some(w) = window.app_handle().get_webview_window(NODERED_WINDOW_LABEL) {
+                        let _ = w.close();
+                    }
                     nodered_kill();
 
                     dbg_log("CloseRequested: cleanup done");

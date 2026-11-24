@@ -50,10 +50,13 @@ const bridgeState = {
         { key: 'main' + '\u0001' + 'g1' + '\u0001' + 1, monitor: 'main', group: '初始化', index: 1, value: '41540d0a', seq: 2, hex: true }
     ],
     reads: [],     // 收到的 read 请求（钉住监视器 id 有没有被原样带过去）
-    /* 「当前已打开的串口」——与 main.rs bridge_list_monitors 的回执形状一致 */
+    /* 「当前已打开的串口」——与 main.rs bridge_list_monitors 的回执形状一致。
+       WSL 分栏（`wsl` / `wsl-xN`）也在里面（2026-11）：桥的读写两头都通了，
+       端口名就是它打开的 /dev 路径，展示成 `/dev/ttyUSB0 · 115200`，与 COM 口同构。 */
     monitors: [
         { id: 'main', port: 'COM17', baud: 115200 },
-        { id: 'extra-1', port: 'COM3', baud: 9600 }
+        { id: 'extra-1', port: 'COM3', baud: 9600 },
+        { id: 'wsl', port: '/dev/ttyUSB0', baud: 115200 }
     ],
     clients: 0
 };
@@ -190,12 +193,14 @@ async function main() {
         callAdminRoute('/seahi-serial/monitors'),
         sleep(2000).then(function () { throw new Error('管理路由 2s 未返回'); })
     ]);
-    check(Array.isArray(monitors) && monitors.length === 2, '监视器接口返回已打开的两个串口',
+    check(Array.isArray(monitors) && monitors.length === 3, '监视器接口返回已打开的三个分栏',
         JSON.stringify(monitors));
     eq(monitors[0] && monitors[0].id, 'main', '监视器接口：主监视器排第一');
     eq(monitors[0] && monitors[0].port, 'COM17', '监视器接口：带端口名');
     eq(monitors[0] && monitors[0].baud, 115200, '监视器接口：带波特率');
     eq(monitors[1] && monitors[1].id, 'extra-1', '监视器接口：额外分栏也在列表里');
+    eq(monitors[2] && monitors[2].id, 'wsl', '监视器接口：WSL 分栏也在列表里（桥的读写两头都通了）');
+    eq(monitors[2] && monitors[2].port, '/dev/ttyUSB0', '监视器接口：WSL 分栏的端口名就是它打开的 /dev 路径');
 
     /* --- 编辑器模板：监视器必须是下拉，且带刷新 --- */
     const html = fs.readFileSync(HTML_FILE, 'utf8');

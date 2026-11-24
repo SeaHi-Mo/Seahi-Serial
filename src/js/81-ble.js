@@ -1211,7 +1211,6 @@ function applyLiveRssi(address, rssi) {
 
 function openBle() {
     console.log('[BLE] 打开蓝牙调试页面');
-    nfHidePane();                 // 画布若开着先收起
     document.getElementById('paneContainer').style.display = 'none';
     document.getElementById('wsl-pane').style.display = 'none';
     document.getElementById('adb-pane').style.display = 'none';

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<!-- 独立窗口：不许缩放页面（编辑器自己有布局），也不许被浏览器默认样式干扰 -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Node-RED · 流程编辑器</title>
+<!-- 标题栏配色跟主窗口走：靠同一份 01-theme.css 的变量（换主题时跟着变） -->
+<link rel="stylesheet" href="css/01-theme.css">
+<link rel="stylesheet" href="css/05-node-red-window.css">
+</head>
+<!-- 外壳页面（2026-11）：自绘标题栏 + 一个**永不移动**的 iframe。
+     为什么不直接让窗口加载 Node-RED：那个窗口就没有标题栏、也拖不动（decorations:false）。
+     iframe 在这里是安全用法 —— 它从生到死都在这一个位置，不 reparent，
+     所以不会出现"搬 iframe 导致编辑器整页重载"那个老坑（见 js/86-node-red-window.js 顶部注释）。 -->
+<body>
+
+<div class="nr-titlebar">
+    <span class="nr-brand" aria-label="Node-RED 流程编辑器">
+        <!-- 拖动把手：嵌入态的抓取点（细拖条其余部分也能拖，但这个更显眼）。
+             按住拖出去 = 脱离成独立窗口；编辑器是同一个 WebView，不重载、不丢草稿。 -->
+        <span class="nr-grip" id="nrGrip" aria-label="拖动脱离为独立窗口" title="按住拖动：拖出主窗口即成为独立窗口">⋮⋮</span>
+        <!-- 图标与工具栏那颗 Node-RED 图标同一个（00-bootstrap.js 的 ICONS.nodeRed）：
+             内联而不是 <img>，这样它能跟着主题的 currentColor 走。 -->
+        <svg viewBox="0 0 1024 1024" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="104" stroke-linecap="round"><path d="M364 512C470 512 590 256 700 256"/><path d="M364 512C470 512 590 768 700 768"/></g><g fill="currentColor"><rect x="48" y="400" width="328" height="224" rx="76"/><rect x="688" y="144" width="288" height="224" rx="76"/><rect x="688" y="656" width="288" height="224" rx="76"/></g></svg>
+        <span class="nr-name">Node-RED</span>
+    </span>
+    <span class="nr-status" id="nrStatus"></span>
+    <!-- 嵌入态才有：「脱离」把编辑器拆成独立窗口（同一个 WebView，不重载、不丢草稿） -->
+    <span class="nr-dockact">
+        <button class="nr-dockbtn" id="nrUndock" title="脱离为独立窗口（拖动标题条也可以）" aria-label="脱离为独立窗口">脱离</button>
+        <!-- 独立态才有：「停靠」把编辑器放回主窗口（等价于把它拖回主窗口上方松手） -->
+        <button class="nr-dockbtn" id="nrDock" title="停靠回主窗口（也可以直接把它拖回主窗口上方）" aria-label="停靠回主窗口">停靠</button>
+        <!-- 嵌入态也要能关掉编辑器（用户 2026-11："停靠显示时，无法关闭窗口"）。
+             关掉的是编辑器窗口本身，流程（侧车）继续跑，跟独立态关窗一个语义。 -->
+        <button class="nr-dockbtn nr-closebtn" id="nrCloseInline" title="关闭编辑器窗口（流程继续运行）" aria-label="关闭编辑器窗口">✕</button>
+    </span>
+    <div class="win-ctrl">
+        <button class="win-ctrl-btn" id="nrMin" title="最小化" aria-label="最小化">
+            <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1"><line x1="2" y1="5" x2="8" y2="5"/></svg>
+        </button>
+        <button class="win-ctrl-btn" id="nrMax" title="最大化" aria-label="最大化">
+            <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1"><rect x="1.5" y="1.5" width="7" height="7" rx="0.5"/></svg>
+        </button>
+        <button class="win-ctrl-btn close" id="nrClose" title="关闭" aria-label="关闭">
+            <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><line x1="2" y1="2" x2="8" y2="8"/><line x1="8" y1="2" x2="2" y2="8"/></svg>
+        </button>
+</div>
+</div>
+
+<!-- 编辑器本体：src 由 86-node-red-window.js 现问宿主要（端口是随机的，写死不现实）。
+     allow 里那两条剪贴板权限是 Node-RED 编辑器"复制/粘贴节点"要用的。 -->
+<iframe id="nfFrame" class="nr-frame" title="Node-RED 编辑器"
+        referrerpolicy="no-referrer" allow="clipboard-read; clipboard-write"></iframe>
+
+<script src="js/86-node-red-window.js"></script>
+</body>
+</html>

@@ -8,7 +8,6 @@
 <link rel="stylesheet" href="css/02-global.css">
 <link rel="stylesheet" href="css/03-quickcmd.css">
 <link rel="stylesheet" href="css/04-misc.css">
-<link rel="stylesheet" href="css/05-nodeflow.css">
     <link rel="stylesheet" href="vendor/xterm/xterm.css">
     <script src="vendor/xterm/xterm.js"></script>
 </head>
@@ -43,6 +42,14 @@
     <span id="bleToggleBtn" class="add-btn icon-btn" onclick="openBle()" title="BLE 扫描与连接：GATT 服务/特征读写、订阅通知">
         <svg id="bleToggleIcon" width="20" height="20" viewBox="0 0 1024 1024" fill="currentColor"><path d="M466.125 149.709a45.875 45.875 0 0 1 70.349-39.936l1.638 1.126 250.982 178.483a48.128 48.128 0 0 1 2.253 76.186l-1.843 1.331L593.92 508.723l194.56 137.728a48.026 48.026 0 0 1 1.946 76.493l-1.844 1.434-250.47 178.483a45.773 45.773 0 0 1-71.68-36.762V601.6L287.437 731.238a45.056 45.056 0 0 1-62.157-9.523l-1.331-1.945a48.23 48.23 0 0 1 9.216-64.41l1.843-1.434 198.246-144.179L235.52 369.664a48.026 48.026 0 0 1-13.107-63.693l1.229-2.048a45.056 45.056 0 0 1 61.44-13.517l1.945 1.332 179.2 126.566z m92.16 448.102V773.94l123.801-87.859z m0-358.4V419.84l124.928-90.624z" p-id="13027"></path></svg>
         <span id="bleToggleText" style="display:none;">蓝牙调试</span>
+    </span>
+    <!-- Node-RED 自动化：**全局入口放这里**（用户 2026-11："启动 icon 放在分栏工具栏里不合理，
+         那个位置也会跟着分栏分栏"）。编辑器是独立窗口、一套流程服务所有分栏，所以它的入口
+         也只能有一个 —— 放在顶栏，和 ADB / BLE 这些"面板入口"排在一起。
+         ⚠️ 别再往各分栏的工具栏里加回这个图标（10-monitor.js / 80-wsl.js 的工具栏 HTML 里已删）。
+         说明走 data-mcp-tip（不用原生 title）：title 会闪、会被控件注册表当成 label 抄给 AI。 -->
+    <span id="nodeRedBtn" class="add-btn icon-btn" onclick="openNodeRed()" aria-label="Node-RED 自动化" data-mcp-tip="Node-RED 自动化：打开独立的流程编辑器窗口（一套流程服务所有分栏，关窗不影响流程运行）">
+        <svg width="20" height="20" viewBox="0 0 1024 1024"><g fill="none" stroke="currentColor" stroke-width="104" stroke-linecap="round"><path d="M364 512C470 512 590 256 700 256"/><path d="M364 512C470 512 590 768 700 768"/></g><g fill="currentColor"><rect x="48" y="400" width="328" height="224" rx="76"/><rect x="688" y="144" width="288" height="224" rx="76"/><rect x="688" y="656" width="288" height="224" rx="76"/></g></svg>
     </span>
     <span style="flex:1;"></span>
     <!-- MCP 服务器入口（放在「风格」下拉的左边）。
@@ -156,8 +163,10 @@
 <div class="pane-container" id="adb-pane" style="display:none;"></div>
 <!-- 蓝牙(BLE) 调试面板（常驻 DOM，display:none 时不参与 flex 布局） -->
 <div class="pane-container" id="ble-pane" style="display:none;"></div>
-<!-- node-red 自动化画布（应用内页面；内容由 js/85-nodeflow.js 的 openNodeFlow 构建） -->
-<div class="pane-container" id="nodeflow-pane" style="display:none;"></div>
+<!-- ⚠️ 这里**没有** node-red 画布容器：Node-RED 是**独立窗口**（2026-11 起）。
+     以前那个 `#nodeflow-pane` 覆盖层会把编辑器绑在某个分栏上，切分栏就得重新找它；
+     现在工具栏那颗 Node-RED 图标调 `openNodeRed()` → 宿主开/聚焦独立窗口。
+     别再往这里加回覆盖层（见 js/85-nodeflow.js 顶部注释）。 -->
 
 <!-- ⚠️ BLE 写入（发送）窗**不再是一个居中弹窗**（用户 2026-09 要求：挪到设备详情窗口的右侧）。
      现在它是蓝牙页里的一块**侧栏面板** `#bleWritePanel`，与 `#ble-detail` 并列在 `.ble-right` 内，

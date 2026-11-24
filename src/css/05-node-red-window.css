@@ -1,0 +1,138 @@
+/* 05-node-red-window.css —— Node-RED 编辑器窗口的**外壳**（2026-11）
+ *
+ * ⚠️ 这个文件只被 `src/node-red-window.html` 引用，**不进 index.html** —— 它不属于主界面，
+ *    是独立编辑器窗口的"自绘标题栏 + iframe 容器"。
+ *
+ * 为什么要自绘：Node-RED 窗口如果用系统标题栏，就会和主窗口（`decorations:false` + 自绘
+ * `#globalBar`）是两套框 —— 系统字体、系统按钮、不同高度，肉眼一看就不是一个软件
+ * （用户 2026-11："这两个窗口的风格都不一样"）。这里把标题栏做成与主窗口**同一套尺寸与配色**：
+ *   高 36px / 底色 var(--toolbar-bg) / 下边框 var(--border) / 左内边距 12px /
+ *   窗口按钮 46×36、hover 白 8%、关闭 hover #e81123 —— 全部照抄 02-global.css 里的
+ *   `.global-bar` 与 `.win-ctrl-btn`。改那边的话**两边一起改**（数值别各写一套）。
+ *
+ * 主题变量来自 01-theme.css（与主窗口同一份文件），所以换主题 / 深浅色时这里跟着变。
+ */
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    overflow: hidden;                 /* 外壳本身不滚：只有里面的编辑器自己滚 */
+    font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+body { display: flex; flex-direction: column; }
+
+/* ===== 自绘标题栏（= 主窗口 #globalBar） ===== */
+.nr-titlebar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 36px;
+    flex-shrink: 0;
+    padding: 0 0 0 12px;
+    background: var(--toolbar-bg);
+    border-bottom: 1px solid var(--border);
+    cursor: default;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.nr-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    min-width: 0;
+}
+.nr-brand svg { width: 18px; height: 18px; color: var(--text-b); flex-shrink: 0; }
+/* 标题只写「Node-RED」：窗口自己就是编辑器，"流程编辑器"是多余的一行字（用户 2026-11 要求删掉）。
+   别再加副标题 —— 标题栏右侧那块留给状态/错误文案。 */
+.nr-name { font-size: 12px; font-weight: 600; color: var(--text-b); white-space: nowrap; }
+
+/* 状态/错误：贴在标题右边，靠 .win-ctrl 的 margin-left:auto 把它顶过去 */
+.nr-status {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    color: var(--text-d);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding-left: 8px;
+}
+.nr-status.err { color: var(--accent-red, #e06c75); }
+
+/* ===== 窗口控制按钮（= 主窗口 .win-ctrl / .win-ctrl-btn） ===== */
+.win-ctrl { display: inline-flex; align-items: center; height: 100%; flex-shrink: 0; margin-left: auto; }
+.win-ctrl-btn {
+    width: 46px; height: 36px; border: none; background: transparent; color: var(--text-d);
+    cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    transition: background .1s, color .1s;
+}
+.win-ctrl-btn:hover { background: rgba(255, 255, 255, .08); color: var(--text); }
+.win-ctrl-btn.close:hover { background: #e81123; color: #fff; }
+.win-ctrl-btn svg { width: 12px; height: 12px; }
+
+/* ===== 编辑器本体 ===== */
+.nr-frame {
+    display: block;
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+    border: 0;
+    background: var(--bg);
+}
+/* ===== 嵌入态（docked）：贴进主窗口的监视器正文区 =====
+ *
+ * 这时窗口是被 SetParent 挂进主窗口的子窗口，**不是**普通独立窗口：
+ *   · 标题栏收成 24px 的细拖条（还能拖、还能「脱离」），窗口按钮全部隐藏（关它没意义）；
+ *   · 鼠标停在细拖条上拖动 → 先脱离、再原生拖动（就是用户要的"拖出来变成独立窗口"）。
+ * 嵌入/脱离由宿主决定（`nodered_dock`），外壳页只按 `nodered-dock` 事件切类名。
+ */
+body.docked .nr-titlebar { height: 26px; padding-left: 4px; gap: 6px; }
+body.docked .nr-brand svg { width: 14px; height: 14px; }
+body.docked .nr-name { font-size: 11px; font-weight: 500; color: var(--text-d); }
+body.docked .nr-status { display: none; }
+body.docked .win-ctrl { display: none; }
+body.docked .nr-frame { border-top: 0; }
+
+.nr-dockact { display: inline-flex; align-items: center; margin-left: auto; padding-right: 6px; }
+body.docked .nr-dockact { display: inline-flex; }
+.nr-dockbtn {
+    height: 18px; padding: 0 8px; border: 1px solid var(--border-h); border-radius: 3px;
+    background: transparent; color: var(--text-d); font-size: 11px; line-height: 1;
+    cursor: pointer; font-family: inherit; white-space: nowrap;
+}
+.nr-dockbtn:hover { color: var(--text); border-color: var(--text-d); background: rgba(255,255,255,.06); }
+
+/* 拖动把手（嵌入态）：细拖条左侧 "⋮⋮"，按住拖出去就脱离成独立窗口。
+   独立态不显示 —— 那时整条标题栏本来就能拖。 */
+.nr-grip {
+    display: none;
+    width: 16px; height: 100%; align-items: center; justify-content: center;
+    font-size: 12px; letter-spacing: -2px; line-height: 1;
+    color: var(--text); opacity: .55; cursor: grab; user-select: none;
+    border-right: 1px solid var(--border); margin-right: 2px;
+}
+.nr-grip:hover { opacity: 1; }
+body.docked .nr-grip { display: inline-flex; }
+body.docked .nr-grip:hover { color: var(--text); }
+body.docked .nr-titlebar { cursor: grab; }
+body.docked .nr-titlebar:active { cursor: grabbing; }
+
+/* 独立态的「停靠」按钮：与「脱离」同一个尺寸，但只在浮动时出现（嵌入时没必要） */
+body.docked #nrDock { display: none; }
+body:not(.docked) #nrUndock { display: none; }   /* 独立态只留「停靠」，嵌入态只留「脱离」 */
+body:not(.docked) .nr-dockact { display: inline-flex; }
+
+/* 嵌入态的关闭按钮：只在嵌入时出现（独立态有系统窗口按钮那一组） */
+.nr-closebtn { display: none; margin-left: 6px; }
+body.docked #nrCloseInline { display: inline-flex; align-items: center; justify-content: center; }
+body.docked #nrCloseInline:hover { color: #fff; background: #e81123; border-color: #e81123; }
+
+/* 上边沿拖拽条：只有嵌入态出现（独立态有系统窗口边框）。
+   5px 高、贴在窗口最顶端，光标是 ns-resize —— 提示"只能上下拉"。 */

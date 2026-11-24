@@ -34,7 +34,7 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
 
 - ⛔ **BLE 从机（外设）方向 2026-09 整条删除**（用户："实现不了了"）：适配器自报支持外设角色，实测**广播起不来**
   （`Aborted`）。别再往这个方向加功能；证据见 `doc/BLE_PERIPHERAL.md`（已归档）。BLE 只剩**主机方向**。
-- 前端断言集 `.walkthrough/gen_ble_preview.js`（**2013 条**，随代码增补）：`vm` 沙箱抽真函数断言（源码正则 +
+- 前端断言集 `.walkthrough/gen_ble_preview.js`（**2081 条**，随代码增补）：`vm` 沙箱抽真函数断言（源码正则 +
   假 DOM 行为断言）；`readFrontendSource()` 按标签顺序把 css/js **内联回"逻辑单文件"**再跑，所以跨 CSS/JS 的正则
   照旧有效，加新前端文件不用改断言集（只要标签写进 `index.html`）。改了 MCP 工具定义后重跑
   `node .walkthrough/gen_mcp_tools_doc.js` 生成 `doc/MCP_TOOLS.md`（断言守着"文档必须列出全部内置工具"）。
@@ -290,7 +290,7 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
 
 ## 项目结构
 
-- `src/index.html` + `src/css/*.css` + `src/js/*.js` — **整个前端**（无框架 / 无打包器 / 无构建步骤；4 个 CSS +
+- `src/index.html` + `src/css/*.css` + `src/js/*.js` — **整个前端**（无框架 / 无打包器 / 无构建步骤；3 个 CSS +
   16 个 JS + 272 行骨架，含 12 套主题变量；串口 / WSL / ADB / 蓝牙 四个面板）。`src/js/81-ble-uuids.js` 是**生成文件**
   （见 BLE #4）；`src/js/84-ble-ota.js` 是 OTA 面板（阶段 0 + 1 已落地，界面入口被 `BLE_OTA_UI_ENABLED = false` 隐藏，
   见 BLE #7）。⚠️ **只用普通 `<script src>`，绝不用 `type="module"`**；目录结构、加载顺序、原 index.html 行号映射
@@ -382,6 +382,14 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
   而 `icacls` 上看 ACL 完全正常。**判别方法**：进程 Low + 目录 Medium = 这个进程被沙箱降级了 —— 该改的是沙箱/提权方式，
   **不是**去 `icacls /setintegritylevel L`（那是把整个项目往下拉，正是 `win-build-access-denied` 要治的病）。这种情况
   文件改动走**编辑/写入工具**（它们不经那个被降级的子进程），**别反复重试同一条 shell 命令**。
+- **端口框里的名字只有一个入口 `setPortLabel(mid, text)`**（Windows 分栏与 WSL 分栏共用，2026-11）：
+  它负责三件事 —— 更新 `data-full-name`（全名缓存）、**先把全名摆上再量**、按当前宽度决定截断。
+  截断只保留尾部（`…ttyUSB0`，串口号/设备号在末尾）并加 `name-truncated` → `text-align:right`，
+  那是"放不下"的表达，不是默认对齐。⚠️ **别直接写 `.sel-text` 的 `textContent`**：那样全名缓存停在旧值、
+  `name-truncated` 留在元素上，症状就是**名字明明放得下却靠右对齐**，而且下一次重排还会把旧名字写回去
+  （2026-11 用户报的「WSL 分栏端口号向右对齐」）。`fitPortLabel` 里有自愈（外部改过文字就以它为准），
+  但那是兜底；`watchPortLabel(mid)` 也必须挂上，否则只有"刷新列表那一次"量过宽度。
+  `.walkthrough` 有 5 条守着（只走入口、WSL 挂监听、放得下不右对齐、放不下才截尾、`setPortLabel` 先摆后量）。
 - **每个"会滚动"的区域都必须有滚动条样式**（用户 2026-09："确认所有的滚动条都已经做了美化"）：新加
   `overflow:auto/scroll` 就得同时写 `::-webkit-scrollbar` 那一套（尺寸 + track + **corner** + thumb + thumb:hover）；
   `corner` 最容易漏，漏一个就是横竖交汇处的白方块。**有意隐藏**滚动条的（`.sel-drop` / `.no-scrollbar` / xterm）
@@ -476,6 +484,15 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
   与其触发点（断线处）**一行都不许写** —— 逐次的「正在重连 (N/10)」与失败原因既刷满输出区，又经 `bufferPush` 灌进
   MCP 日志中心（`ui:sys`/`ui:err`）。可见性只靠界面状态（按钮变「等待接入」+ 端口/WSL 状态点）；`.walkthrough` 里有
   3 条断言守着（两个 reconnect 函数体内不许出现 `appendOutput`、这些文案不许传给 `appendOutput`）。
+- **WSL 映射/取消映射的进度也不写日志**（同一口径，用户 2026-11 点名："串口监控窗口，不应该出现
+  「取消映射：正在关闭 WSL 串口连接...」等这种提示信息"）：监视窗口只放**设备收发的东西**，
+  「为什么监控自己停了」「正在关闭 WSL 串口连接」这类**状态说明走 `showToast`**。三个具体位置：
+  `stopMonitoringForWslMap`（映射前停掉目标 COM 的监控）→ 一条 toast，不再写进那个分栏；
+  `toggleWslMapping` 取消映射分支 → **什么都不写**（`disconnectWslPort` 自己会弹「WSL 串口已断开」）。
+  ⚠️ 别把这类说明"顺手"写进输出区：`appendOutput` 同时喂输出区、行号/时间戳缓冲**和** MCP 日志中心
+  （`serial:<分栏>:log`），写进去等于让 AI 把"用户点了取消映射"当成设备日志证据。
+  仍然**必须**留在输出区的只有**丢数据告警**（`[缓冲] 读取不及时，已丢弃 N 字节`、`日志缓存文件已达上限`）。
+  `.walkthrough` 有 3 条守着（映射流程里不出现 `appendOutput`、停监控时输出区零写入 + 有 toast）。
 - USB 设备映射到 WSL 依赖 `usbipd-win` 工具，需管理员权限。
 - ⚠️ **跑外部命令（wsl/usbipd/adb）一律走 `run_output_timeout_checked`，别用裸 `Command::output()`**：
   ① 它**并发读 stdout/stderr** —— 子进程输出超过管道缓冲（Windows 约 64KB）时会阻塞在写端，只 `wait`
@@ -570,8 +587,9 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
 
 完整说明见 `doc/NODERED_INTEGRATION.md`。要点：
 
-1. **画布是内嵌的真 Node-RED，不是自绘的**：`src/js/85-nodeflow.js` 只负责调 `nodered_open`、
-   设 iframe、展示错误。**别再往它里面写节点/画布逻辑**（第一版就是自绘的，已删）。
+1. **编辑器是「独立窗口」里的真 Node-RED**（2026-11 起，别再改回分栏内嵌）：`src/js/85-nodeflow.js` 只负责
+   调 `nodered_open_window`、显示失败原因。窗口由 Rust 建（**直接加载** `http://127.0.0.1:<port>/`，不是 iframe），
+   几何存 `nodered-window.json`。**别再往它里面写节点/画布逻辑**（第一版自绘的已删）。
 2. **串口由 Rust 独占**：`serial rxd` / `serial txd` 两个节点不 open COM 口，走回环 TCP 桥
    （`main.rs` 里搜 `bridge_`）。谁再让节点自己开串口，就会和监视器抢口、把数据分走一半。
 3. **`settings.js` 里 `uiHost` 必须是 `127.0.0.1`**：不设就绑 0.0.0.0 —— Windows 防火墙每次弹窗，
@@ -596,10 +614,26 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
    队列串行（上限 32）。⚠️ 没配「未匹配/超时」兜底条件时，未匹配结果会被丢弃（状态标黄 + `node.warn`），
    不要依赖"没输出就是成功"。⚠️ 它自己读桥的接收队列，**同一个监视器上不要再放 `serial rxd`**（单消费者，
    互相分数据）；设备开着回显时命令会被原样回显，建议 `ATE0` 或用只在回复里出现的条件。
-9. **Node-RED 面板是绝对定位覆盖层，绝不搬 iframe**：`#nodeflow-pane` 永远留在 body，`nfPlace()` 按分栏正文区
-   （工具栏底 → 发送栏顶）定位，`ResizeObserver` 跟尺寸。**别用 `insertBefore` / `appendChild` 移动 iframe**：
-   浏览器会重建浏览上下文、编辑器重载，画布里**还没部署**的删除会从 `flows.json` 原样回来
-   （2026-11 用户报的「删除的流程重新打开后还在」就是它）。
+9. **Node-RED 是独立窗口，入口在顶栏、不在分栏工具栏**（用户 2026-11："启动 icon 放在这个位置不合理，
+   因为这个位置也会根据分栏而分栏"）：编辑器是全局的、一套流程服务所有分栏，入口也只能有一个 ——
+   `#nodeRedBtn` 在 `#globalBar`（`onclick="openNodeRed()"`，`aria-label` + `data-mcp-tip`）。
+   `10-monitor.js` / `80-wsl.js` 的分栏工具栏 HTML 里**不许再加回**这个图标（加了就变成每个分栏各一颗）。
+   **默认形态 = 贴进当前分栏**（用户 2026-11："默认就是原来的内嵌在程序内，位置不变，但是支持拖动独立成窗口"）：
+   编辑器**始终是同一个 WebView**，嵌入靠 Win32 `SetParent` 挂成主窗口子窗口，脱离只解除父子关系 ——
+   **绝不能换成"内嵌 iframe + 独立窗口"两套**（那要重建 WebView，编辑器重载、未部署的流程全丢）。
+   双向都支持：拖出去 = 脱离，**拖回主窗口上方 = 归位**（中心进入主窗口 **且** 这次浮动期间到过窗口外才吸，
+   否则刚拖出来会被立刻吸回去；**松手才算**，按着鼠标时只亮蒙版）；拖动中主窗口亮出停靠蒙版（`#nfDockHint`）；嵌入区 = 所有可见分栏正文区的**并集**（只贴第一个分栏会让编辑器被分栏边界切开 —— 用户 2026-11："编辑器被分栏了，不应该分栏的"）；独立态标题栏还有「停靠」按钮，嵌入态细拖条右端有「✕」（嵌入态窗口按钮整组隐藏，没有它就没法关编辑器）。
+   **顶栏按钮是开关**：点开高亮（`.add-btn.icon-btn.active` 主题色），**再点一次是 hide 不是关**（草稿留着），
+   宿主的 `nodered-state`（open/hidden/closed）事件让按钮自己校正高亮。
+   ⚠️ **点图标的行为分三种**（`nodered_open_window` 返回"要不要停靠"）：没开 → 新建并停靠；已开且嵌着 → 只重贴；
+   **已开且浮着 → 只抬到前面，绝不拽回分栏**（2026-11 用户报的：浮动窗口缩小后点图标，被当成新开一个停靠窗口）。
+   三个实测坑：`WebviewWindow::hwnd()` 拿不到句柄（改 `EnumWindows` 按标题匹配）；
+   一旦变成子窗口 `EnumWindows` 就枚举不到（脱离要用记住的 `NODERED_HWND`）；前端 250ms 报矩形，宿主必须去重。
+   **独立窗口的三条铁律**：① **绝不开第二个编辑器** —— 已经开着就只 `show + set_focus`（两个编辑器改同一份
+   flows 会互相覆盖，`flows.json` 没有冲突检测）；② **关窗不杀引擎**，流程继续跑（杀侧车只有两个时机：
+   退出应用 / `nodered_stop`）；③ **关主窗口要一并关掉编辑器窗口**，否则应用不退出，只剩一个没有主界面的空壳。
+   旧的 `#nodeflow-pane` 绝对定位覆盖层已整段删除（`nfPlace` / `nfAttach` / `nfShowHost` /
+   "搬 iframe 会让编辑器重载"那一整族坑随之消失）—— **别再挂回来**。
 
 构建顺序：`npm run prep:nodered -- --slim` → `npm run dev`。不跑第一步会报「缺少 node.exe」。
 CI 在 `Build Tauri app` 之前也会跑这一步（`.github/workflows/build.yml`）—— **别删**：运行时不入库，

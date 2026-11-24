@@ -9,15 +9,17 @@
 自己画一套画布等于重造 Node-RED，且没有执行语义；所以**直接内嵌 Node-RED 本体**（Apache-2.0，可商用）。
 
 早期写过一版自绘节点画布（`85-nodeflow.js` 的第一版），**已全部删除**——它只有画布、没有引擎。
-现在 `85-nodeflow.js` 只是一个启动器：调后端拿地址，塞进 iframe。
+现在 `85-nodeflow.js` 只是一个启动器：调后端要地址、开编辑器窗口（2026-11 起是**独立窗口**；更早是分栏里的 iframe 覆盖层，已删除）。
 
 ## 2. 架构
 
 ```
-Tauri 主窗口（WebView2）
- ├── 工具栏 Node-RED 图标 ──► openNodeFlow(mid)
- │                              ├─ invoke('nodered_open') → 返回 http://127.0.0.1:<port>/
- │                              └─ iframe.src = 该地址（挂在监视器工具栏下面）
+主窗口（WebView2）                       Node-RED 编辑器窗口（独立 WebView2，自绘标题栏）
+ ├── 工具栏 Node-RED 图标 ──► invoke('nodered_open_window')
+ │                              └─ Rust：已开着就 show + focus（绝不第二个编辑器）
+ │                                 没开 → 拉起侧车 → 新建窗口加载 **node-red-window.html**
+ │                                 （外壳页：自绘标题栏 + iframe → http://127.0.0.1:<port>/）
+ │                                 几何存 %APPDATA%\seahi-serial\nodered-window.json
  │
  └── Rust 宿主进程（独占 COM 口）
       ├── 侧车：node.exe + node_modules/node-red + settings.js（随安装包分发）
@@ -27,15 +29,60 @@ Tauri 主窗口（WebView2）
       └── 用户数据：%APPDATA%\com.seahi.seahi-serial\node-red\（flows.json 等）
 ```
 
+**为什么要外壳页（自绘标题栏）**：窗口若是 `decorations(true)`，就是系统标题栏（系统字体/系统按钮/不同高度），
+和主窗口（`decorations:false` + `#globalBar` 自绘）摆一起像两套软件（用户 2026-11 报的"风格都不一样"）。
+所以窗口改为 `decorations:false`、加载仓库内的 `node-red-window.html`：标题栏**照抄主窗口**那一套
+（36px / `var(--toolbar-bg)` / 46×36 按钮 / 关闭 hover `#e81123`），中间一个 **永不移动**的 iframe 指到编辑器。
+iframe 在这里是安全用法 —— 它从生到死都在同一个位置，不 reparent，所以不会触发"搬 iframe → 编辑器整页重载"。
+
+**为什么是独立窗口**（2026-11 用户定的方向）：Node-RED 是**全局**工作台 —— 一套流程服务所有分栏，
+塞进某个分栏的正文区就等于"编辑器跟着分栏走"，而且只能吃监视窗口那一块。独立窗口可以并排/分屏，
+同时满足"编辑流程"和"看串口数据"；也能整块拖到第二块屏。
+
 **关键约束：串口由 Rust 独占。** 节点绝不自己 open COM 口（会和监视器、DTR/RTS、WSL 映射抢），
 只通过桥跟宿主说话。
+
+## 2.1 嵌入 / 脱离：一个编辑器，两种形态（2026-11）
+
+用户要的共存方式：**默认贴在程序里（位置就是原来的监视器正文区），能拖出来变成独立窗口**。
+
+实现上只有一条路能同时满足"默认内嵌"和"拖出不丢草稿"：编辑器**始终是那一个 WebView**，
+嵌入 = 用 Win32 `SetParent` 把它挂成主窗口的子窗口（视觉上就是内嵌），脱离 = 解除父子关系。
+换成"内嵌用 iframe、独立用窗口"的写法必须重建 WebView，编辑器整页重载、未部署的修改全丢。
+
+| 环节 | 做法 |
+|---|---|
+| 打开 | `openNodeRed()` → `nodered_open_window`（**返回"要不要停靠"**）→ 要停靠时前端量**所有可见分栏正文区的并集**（`.mon-body` union）→ `nodered_dock{rect}`。三种情形：没开 → 新建并停靠；已开且嵌着 → 只重贴一次；已开且浮着 → **只抬到前面，绝不拽回分栏** |
+| 跟随 | 前端每 250ms `nodered_dock_sync{rect}`；宿主发现矩形没变就直接返回（不重复 `MoveWindow`）。⚠️ 矩形是**并集**：只贴第一个分栏的话，多分栏时编辑器会被分栏边界切开（用户 2026-11："编辑器被分栏了，不应该分栏的"） |
+| 外观 | 嵌入态外壳页把标题栏收成 24px 细拖条（左「Node-RED」+ 右「脱离」），窗口按钮隐藏 |
+| 脱离 | 点「脱离」，或抓住细拖条左侧的把手 `⋮⋮`（整条拖条都能拖）往外拖 —— 先 `nodered_dock{rect:null}` 再 `startDragging()`，松手就停在鼠标处 |
+| 归位 | **把浮动窗口拖回主窗口上方松手**（中心进入主窗口、且这次浮动期间到过窗口外）→ 宿主发 `nodered-dock-request` → 前端报矩形 → 重新贴进去；独立态标题栏另有「停靠」按钮，等价 |
+| 开关（顶栏按钮） | 点开 → 窗口显示且**按钮背景用主题色**（`.add-btn.icon-btn.active`）；**再点一次是 `hide`**（不是关闭，编辑器与未部署的修改都留着），再点又原样回来（同一个 WebView，实测 HWND 不变）。宿主用 `nodered-state`（open/hidden/closed）事件 + `nodered_window_state` 让按钮自己校正 |
+| 关闭 | 嵌入态用细拖条右端的「✕」，独立态用标题栏的关闭按钮 —— 都只关编辑器窗口，**侧车继续跑**；嵌入态关窗不写几何（见坑 #12） |
+| 点图标 | 浮动窗口被缩得很小或挪出屏幕时，先 `nodered_ensure_on_screen` 拉回可见区域再 `set_focus`（否则"点了没反应"） |
+| 尺寸 | **停靠态不可缩放**（用户 2026-11："编辑区左右不可拖动，始终和主程序窗口保持一致"）：贴进主窗口时用 `SetWindowLongW` 摘掉 `WS_THICKFRAME`/`WS_MAXIMIZEBOX`，宽度/高度都恒等于正文区；脱离时按记住的原样式加回去。⚠️ `set_resizable(false)` 对 `SetParent` 之后的子窗口**不生效**（实测样式没变），只能改窗口样式。<br>⚠️ **上边沿拖动试过两轮、已撤回**：① 页面里自算高度（`#nrTopGrip` + pointer capture）——那条 5px 窄带实测收不到 mousedown（日志零调用）；② 恢复 `WS_THICKFRAME` 走原生缩放 —— 子窗口上抓不稳，且会让 Node-RED 在边缘状态下布局错乱。要再做请先解决"子窗口缩放手柄"（`WM_NCHITTEST` 子类化返回 `HTTOP`）。 |
+| 蒙版 | 拖动中中心一旦进入主窗口，分栏正文区亮出**蓝色虚线框 + 「松开鼠标：把编辑器停靠到这里」**（`nodered-drag-hover` 事件 → `#nfDockHint`；`pointer-events:none`，文字贴顶部否则会被浮动的编辑器挡住） |
+| 退出 | 主窗口关闭时先 `SetParent(null)` 再关编辑器窗口（否则子窗口跟着父窗口销毁，几何存不下来） |
+
+⚠️ **三个实测坑，别改回去**：
+① `WebviewWindow::hwnd()` 在本项目返回 `the underlying handle is not available`（窗口明明在），
+   所以句柄改用 `EnumWindows` 枚举本进程顶层窗口按标题匹配（`nodered_hwnd_of`）；
+② **一旦成为子窗口，`EnumWindows` 就再也枚举不到它** —— 脱离必须用 `NODERED_HWND` 里记住的句柄；
+③ 前端 250ms 报一次矩形，宿主必须**去重**（`NODERED_RECT`），否则每 250ms 重设一次窗口位置，画面会抖；
+④ **刚脱离的 2 秒内同步请求一律忽略**（`NODERED_UNDOCK_AT`）：否则一个正在路上的同步请求会在脱离之后把窗口又贴回去（"拖出去又被吸回来"）；
+⑤ **自动归位要两条判据**：中心点落在主窗口里 **且** 这次浮动期间到过窗口外（`NODERED_WAS_OUTSIDE`）—— 少了后者，刚拖出来那一刻中心还在主窗口里，会被立刻吸回去（实测踩到）。⑥ **归位必须等"松手"**（`GetAsyncKeyState(VK_LBUTTON)` 轮询）：只看"移动停下 N 毫秒"会在用户还按着鼠标时就把窗口拽进去（实测踩到），拖动期间只亮蒙版。
+⑥ **停靠态靠"摘样式"锁死尺寸，不靠"拖了再纠正"**：`set_resizable(false)` 对子窗口无效（实测 `WS_THICKFRAME` 还在），要 `SetWindowLongW` 摘掉它；脱离时把原样式写回。一旦允许拖，就必须在 250ms 内回弹 —— 那既抖又和"拖拽时不贴窗"的闸打架，2026-11 反复踩过三次。
+⑦ 拖动手势**不能用 `data-tauri-drag-region`**：它会把嵌入态的拖动变成"在父窗口里挪子窗口"，永远拖不出去 —— 两种形态的拖动都由 `86-node-red-window.js` 接管。
 
 ## 3. 文件清单
 
 | 路径 | 作用 |
 |---|---|
-| `src/js/85-nodeflow.js` | 前端启动器：调 `nodered_open`、设 iframe、防白闪、错误展示 |
-| `src/css/05-nodeflow.css` | 只有容器 + 遮罩（没有标题栏/按钮，开关由工具栏图标负责） |
+| `src/js/85-nodeflow.js` | 前端薄启动器：`openNodeRed()` 调 `nodered_open_window`、在途闸、失败原因展示；外加 `nfOnSent`（把自动化发出的数据回显到监视窗口） |
+| `src/node-red-window.html` | **编辑器窗口的外壳页**（不进 index.html）：自绘标题栏 + iframe |
+| `src/css/05-node-red-window.css` | 外壳页样式：标题栏/按钮**照抄**主窗口 `#globalBar` + `.win-ctrl-btn`（数值要对账，见断言） |
+| `src/js/86-node-red-window.js` | 外壳页脚本：窗口按钮（最小化/最大化/关闭）、取 `nodered_url` 填 iframe、地址变了才换 src |
+| `src-tauri/src/main.rs` | `nodered_open` / **`nodered_open_window`** / **`nodered_url`** / `nodered_stop`、编辑器窗口几何、侧车启停、桥服务器、节点投递（搜 `nodered_` / `bridge_`） |
 | `src-tauri/src/main.rs` | `nodered_open/stop`、侧车启停、桥服务器、节点投递（搜 `nodered_` / `bridge_`） |
 | `src-tauri/resources/node-red/settings.js` | 离线固化配置（见下） |
 | `src-tauri/resources/node-red/package.json` | 运行时依赖清单（只有 `node-red@5.0.10`） |
@@ -97,9 +144,10 @@ npm run dev                      # 之后正常开发
   ⚠️ 设备开着回显（ATE1）时命令会被原样回显，可能提前命中条件 —— 建议 `ATE0`。
 - **「端口」下拉的数据来源**（2026-11）：编辑器是另一个 origin、拿不到宿主桥的令牌，所以由侧车
   注册一条 Node-RED 管理路由 `GET /seahi-serial/monitors`，它再用桥的新 op `{"op":"monitors"}`
-  问宿主。宿主只回 **Rust 侧真有 reader 的串口分栏**（WSL 分栏的读在 Python 侧、桥也写不进去，
-  列出来只会让人选到一个必然失败的 id）；端口名/波特率用 `try_lock` 取，读线程正卡在 `read()`
-  上时只回 id，不堵串口。
+  问宿主。宿主列**两类**分栏：① 串口分栏 `main` / `extra-N`（Rust 侧 reader，端口名/波特率用
+  `try_lock` 取，读线程正卡在 `read()` 上时只回 id，不堵串口）；② WSL 分栏 `wsl` / `wsl-xN`
+  （会话在 `WslSerialState`，端口名是它打开的 `/dev/ttyUSB0`，展示成 `/dev/ttyUSB0 · 115200`）。
+  顺序固定：主分栏 → 额外分栏（按数字）→ WSL 分栏（按数字）→ 其它（`bridge_monitor_sort_key`）。
 - 已保存但当前没打开的分栏会标「当前未打开」并保留原值；侧车还是旧版时显示
   「读取失败，保留原值」，点「刷新」重试 —— **一次打开对话框不会悄悄改掉配置**。
 - **Node-RED 发出去的数据会出现在串口监视窗口**（用户 2026-11 要求："除非关闭了消息回显"）：
@@ -115,9 +163,33 @@ npm run dev                      # 之后正常开发
 - 任何格式下 `serial rxd` 都附带 `msg.raw`（原始 Buffer），按字节核对时不用切回 `Buffer` 模式。
 - **兼容**：老流程里的 `asHex:true` 继续按 HEX 处理（构造函数在没有 `format` 时回退到它）；
   编辑器打开旧节点会自动把「格式」显示成 HEX。
-- 断言：`node .walkthrough/nodered_nodes_test.js`（假桥 + 假 RED，59 条，覆盖三种格式、跨包 UTF-8、
+- 断言：`node .walkthrough/nodered_nodes_test.js`（假桥 + 假 RED，74 条，覆盖三种格式、跨包 UTF-8、
   行尾、非法 HEX、老字段兼容、监视器下拉接口与 id 透传，以及 `serial request` 的清旧数据、
   默认两条分支 / 动态输出口 / 兜底分支 / 超时 / HEX 发送）。
+
+## 4.2 WSL 分栏上的自动化（2026-11）
+
+WSL 分栏与串口分栏在编辑器里是同一套节点、同一个「端口」下拉，但数据通路不同，别把两者混为一谈：
+
+| 方向 | 串口分栏 | WSL 分栏 |
+|---|---|---|
+| 写 | `bridge_write` 直接写 `PortState` 里的端口 | `bridge_write` 回落到 `WslSerialState` 的会话，走 Python bridge 的 `{"cmd":"write"}` |
+| 读 | 读线程每收一块就 `bridge_push_rx` 复制进桥队列 | **`read_wsl_serial` 把同一块字节复制进桥队列**（WSL 没有 Rust 侧读线程） |
+| 数据产出点 | 常驻读线程（与界面无关） | 前端轮询（`wsl` 面板可见 25ms / 隐藏 500ms） |
+
+四条别改回去：
+
+1. **WSL 的读只有 `read_wsl_serial` 这一个产出点**：不在这里复制，`serial rxd` 在 WSL 分栏上
+   永远收不到数据（而且现象是"什么都没发生"，没有任何报错）。
+2. **回主界面时不再 `stopReading(wmid)`**（`restoreMonitorPane`）：停了就等于"用户一离开 WSL
+   页面，在那上面编排的流程静默断流"。频率交给 `refreshMonitorPollRates()` 降到 500ms，
+   与隐藏的串口分栏同一套口径。
+3. **WSL 会话的命令必须串行**（`WslSerialSession.cmd`）：会话只有一条 stdout 响应通道，
+   前端 25ms 轮询的 `read` 与桥的 `write` 并发时，`bridge_command` 会互相取走对方的回执。
+4. **写入只有一份实现** `wsl_session_write`：前端「发送」和桥共用它，别各写一套。
+
+代价：WSL 分栏上的收数据延迟受轮询档位限制（可见 25ms、隐藏 500ms），`serial request` 的
+「静默 80ms」在隐藏档下要靠一次轮询就带回整段回复；要低延迟就把 WSL 页面留在前台。
 
 ## 5. settings.js 的关键项（都有实测依据）
 
@@ -145,8 +217,9 @@ npm run dev                      # 之后正常开发
    现在投递前先删除目标目录里源中已不存在的 `.js/.html`。
 6. **dev 里的 stale 副本**：Tauri 只在构建时把 resources 拷进 `target\debug\resources`，删掉的文件不会消失。
    debug 构建现在**优先用 `CARGO_MANIFEST_DIR/resources`**。
-7. **iframe 白闪**：`.nf-stage` 用过白底 + 每次打开都重设 `src`（整页重载）。现在：底色跟主题、
-   加载完成前 `opacity:0`、已加载就不碰 `src`。
+7. **iframe 白闪（已不适用，留作历史）**：内嵌时 `.nf-stage` 用过白底 + 每次打开都重设 `src`（整页重载）。
+   当时的解法是"底色跟主题 + 加载完成前 `opacity:0` + 已加载就不碰 `src`"。2026-11 换成独立窗口后，
+   这两条实现随覆盖层一起删了；新窗口每次打开就是一次正常页面加载，不存在"白闪"。
 8. **`spawn EINVAL`**：Windows 上 Node ≥18.20 不许不经 shell 执行 `.cmd`。npm 要用
    `process.execPath + npm_execpath` 跑，不能 `execFileSync('npm.cmd')`。
 9. **防火弹窗**：见 `uiHost`。
@@ -156,11 +229,31 @@ npm run dev                      # 之后正常开发
     修复在 `main.rs` 的 `bridge_attach_id()`，并由 `bridge_reply_echoes_request_id` 守着。
     假桥如果回执带 id、真宿主不带，两端单测都会绿 —— 这也是为什么 `.walkthrough/nodered_nodes_test.js`
     的假桥**刻意按真宿主的行为**（握手无 id、业务回执必须带 id）来写。
-11. **画布面板开关不能搬 iframe**（2026-11 用户 bug「删除的流程重新打开后还在」）：旧实现把
-    `#nodeflow-pane` 在 `body` 与分栏 DOM 之间 `appendChild` / `insertBefore`，iframe 被 reparent 后
-    浏览器会重建浏览上下文，编辑器重新加载，**还没部署**的删除就从 `flows.json` 原样回来。现在 pane
-    永远留在 body，由 `nfPlace()` 用 `position:absolute` 盖在分栏正文区（工具栏底 → 发送栏顶），
-    `ResizeObserver` 跟随尺寸；`.walkthrough` 有四条源码断言守着"不许搬 iframe"。
+11. **编辑器改成独立窗口（2026-11，用户定的方向）**：用户的原话是"它属于一个全局的界面，不可能跟着分栏
+    一次存在"，同时要求"编辑流程的同时还能查看窗口数据情况"。于是整条 `#nodeflow-pane` 覆盖层（`nfPlace` /
+    `nfAttach` / `nfDetach` / `nfShowHost` / `#nodeflow-pane` 的 absolute 定位 / `05-nodeflow.css`）**整段删除**，
+    改为：工具栏图标 → `openNodeRed()` → `nodered_open_window` → Rust 建窗口**直接加载** `http://127.0.0.1:<port>/`
+    （不是 iframe，剪贴板/快捷键/DevTools 都正常）。三条口径：**已开就 show + focus**（两个编辑器改同一份
+    `flows.json` 会互相覆盖，那文件没有冲突检测）；**关窗不杀引擎**（流程继续跑，杀侧车只有"退出应用"与
+    `nodered_stop` 两个时机）；**关主窗口要一并关掉编辑器窗口**（否则应用不退出，只剩一个没有主界面的空壳）。
+    顺带消失的两个旧坑：搬 iframe 会让编辑器重载（未部署的删除"复活"）、以及在 WSL 分栏点图标会被切回主界面。
+12. ⚠️ **嵌入态不许写窗口几何**：子窗口的 `outer_position()` 是**相对父窗口客户区**的（实测写出 `{"x":0,"y":116,…}`），
+    下次打开就会把编辑器摆到左上角、尺寸变成分栏正文区大小。`nodered_persist_geometry` 里第一句就是
+    `if NODERED_DOCKED { return; }`，文件保留"最后一次独立窗口"的位置（`.walkthrough` 有断言钉着）。
+13. **窗口几何单独一个文件**：`%APPDATA%\seahi-serial\nodered-window.json`（**别塞进主窗口的 `window.json`**，
+    两个窗口会互相覆盖对方的几何）。首次打开摆主窗口右侧、放不下就偏右下并夹进当前屏幕；最小化时不写盘
+    （系统会给 `-32000` 这类哨兵坐标，写进去下次就把窗口甩到屏幕外 —— 与主窗口同一套纪律）。
+14. **编辑器窗口的框必须与主窗口同款（自绘标题栏）**（2026-11，用户："这两个窗口的风格都不一样"）：
+    窗口 `decorations(false)` + `src/node-red-window.html`。三条别改回去：① 标题栏数值**照抄**主窗口
+    （36px / `var(--toolbar-bg)` / 12px 左内边距 / 按钮 46×36 / hover 白 8% / 关闭 `#e81123`），
+    改一边就要改另一边 —— `.walkthrough` 用两侧 CSS 对账（高度、按钮尺寸、关闭 hover 色）钉着；
+    ② 拖动**由脚本接管**（`86-node-red-window.js` 的 `nrBindDragOut`：独立态调 `startDragging()`，
+    嵌入态先脱离再拖）。⛔ **不要改回 `data-tauri-drag-region`** —— 嵌入态下它会把拖动变成
+    "在父窗口里挪子窗口"，永远拖不出去（2026-11 实测）；双击标题栏最大化也要自己补（系统不再代劳）；
+    ③ `capabilities/default.json` 的 `windows` **必须包含 `nodered`** —— 窗口按钮走 `core:window:*`，
+    不在 capability 里的窗口会被 ACL 拦掉，表现是"按钮点了没反应、控制台一条 deny"。
+    外壳页只做"标题栏 + iframe"，**不要在 iframe 里塞第二个界面**（那就变成自绘 Node-RED 了，早就否掉）。
+
 
 ## 7. 快速指令的 DSL 已停用（与 Node-RED 无关，但同一时期改的）
 
@@ -185,8 +278,13 @@ npm run dev                      # 之后正常开发
 
 ## 9. 已知限制
 
-- 侧车随应用启动、关画布不停（自动化要一直跑）；代价是常驻约 80 MB + 一个回环端口
-- 一个应用实例只能有一个 Node-RED（共用同一个用户目录）
+- 侧车随应用启动、**关编辑器窗口也不停**（自动化要一直跑）；代价是常驻约 80 MB + 一个回环端口
+- 一个应用实例只能有一个 Node-RED（共用同一个用户目录），**也只能有一个编辑器窗口**（重复点图标只是把它切到前面）
+- **未部署的修改在关窗时丢弃**：窗口一关 WebView 就销毁，与浏览器里关掉编辑器标签页一致（`flows.json` 里
+  只有「已部署」的内容）。想保住草稿就别关窗口，或先「部署」
+- 编辑器窗口是**独立顶层窗口**，不跟随主窗口最小化；主窗口关闭时它会一起关掉
 - 卸载不清理 `%APPDATA%\com.seahi.seahi-serial\node-red`（有意：升级不丢流程）
+- **WSL 分栏的数据产出点仍是前端轮询**（见 4.2）：隐藏时降到 500ms，所以后台流程拿到的数据
+  最多晚半秒；`serial request` 这类"发一条等一段"的时序在隐藏档下会偏保守（靠一次轮询带回整段）。
 - **同一个监视器只放一个 `serial rxd`（或 `serial request`）**：桥的接收队列是单消费者（`bridge_take_rx` 取走即清），
   两个节点监听同一个分栏会互相分走数据块。需要多处使用时，接一个节点再往下游分叉。

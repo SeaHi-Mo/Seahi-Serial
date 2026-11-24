@@ -287,6 +287,10 @@ function showWslMapApproval(device, distro) {
 ///
 /// usbipd attach 会把设备从 Windows 侧摘走；如果这里还开着监控，读线程只会连续
 /// 报错/触发自动重连，端口也没法干净释放。停止监控放在真正的 attach 之前。
+///
+/// ⚠️ **只弹 toast，不往监视窗口写**（用户 2026-11："串口监控窗口不应该出现
+/// 「取消映射：正在关闭 WSL 串口连接...」这种提示信息"）：监视窗口只放设备收发的东西，
+/// 进度/解释统一走 toast —— 与「自动重连全程不写日志」「掉线说明只弹窗」同一条口径。
 async function stopMonitoringForWslMap(portName) {
     if (!portName) return;
     var opened = [];
@@ -295,8 +299,9 @@ async function stopMonitoringForWslMap(portName) {
         if (m && m.isConnected && !m.isWsl && m.portName === portName) opened.push(mid);
     });
     if (!opened.length) return;
+    // 先告诉用户"为什么监控自己停了"（走弹窗，不写日志）
+    showToast('映射到 WSL：已停止 ' + portName + ' 的监控（映射期间端口归 WSL 独占）', 'info');
     await Promise.all(opened.map(function(mid) {
-        appendOutput(mid, 'sys', '映射到 WSL：先停止 ' + portName + ' 的监控');
         return disconnectPort(mid);
     }));
 }
@@ -337,7 +342,10 @@ async function toggleWslMapping(busid, checked) {
                     var wslPath = device.wslPath || '';
                     var portName = monitors[wmid].portName || '';
                     if (wslPath && portName && (portName === wslPath || portName.indexOf(wslPath) !== -1 || wslPath.indexOf(portName) !== -1)) {
-                        appendOutput(wmid, 'sys', '取消映射：正在关闭 WSL 串口连接...');
+                        /* 断开这一下**不写监视窗口**（用户 2026-11 点名的那句
+                           「取消映射：正在关闭 WSL 串口连接...」就在这里）：
+                           `disconnectWslPort` 自己会弹「WSL 串口已断开」，
+                           再往输出区写一行只是把状态说明混进设备数据里（还会进日志中心）。 */
                         return disconnectWslPort(wmid);
                     }
                 }

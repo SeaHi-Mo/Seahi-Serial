@@ -115,8 +115,9 @@ function createMonitorPane(mid, title, closable) {
             '<button class="ibtn" onclick="saveLogToFile(\'' + mid + '\')" title="保存日志">' + ICONS.saveLog + '</button>' +
             '<button class="ibtn" onclick="copyOutput(\'' + mid + '\')" title="复制全部">' + ICONS.copyAll + '</button>' +
             '<button class="ibtn" id="' + mid + '-btnCollapseTb" onclick="toggleToolbarCollapse(\'' + mid + '\')" title="折叠工具栏">' + ICONS.chevronUp + '</button>' +
+            /* Node-RED 入口**不在分栏工具栏里**（2026-11 用户："这个位置也会根据分栏而分栏"）：
+               编辑器是全局的独立窗口，入口只有一个 —— 顶栏的 #nodeRedBtn（见 index.html）。 */
             '<div style="flex:1;"></div>' +
-            '<button class="wf-add-btn" onclick="openNodeFlow(\'' + mid + '\')" aria-label="node-red 自动化" title="node-red 自动化">' + ICONS.nodeRed + '</button>' +
         '</div>' +
         '</div>' +
         '<div class="adv-wf-wrap" id="' + mid + '-advWf">' +
@@ -438,7 +439,16 @@ function fitPortLabel(sel) {
     var el = sel.querySelector('.sel-text');
     if (!el) return;
     var full = el.getAttribute('data-full-name');
-    if (full == null) { full = el.textContent; el.setAttribute('data-full-name', full); }
+    var cur = el.textContent;
+    /* 自愈（2026-11 用户报「WSL 分栏端口号变成右对齐」）：有人绕过 `setPortLabel`
+       直接写 `textContent` 时，缓存里的旧名字会在下一次重排被写回去 —— 而
+       `name-truncated`（那条 `text-align:right`）也跟着留下，于是"名字放得下却靠右"。
+       判据：当前文字既不是缓存的全名、也不是省略号开头的截断形式 ⇒ 外部改过了，以它为准。 */
+    if (full != null && cur !== full && cur.charAt(0) !== '\u2026') {
+        full = cur;
+        el.setAttribute('data-full-name', full);
+    }
+    if (full == null) { full = cur; el.setAttribute('data-full-name', full); }
     el.textContent = full;
     el.classList.remove('name-truncated');
     if (el.scrollWidth <= el.clientWidth + 1) return;      // 放得下：完整名字
@@ -495,7 +505,12 @@ function setPortLabel(mid, text) {
     if (!sel) return;
     var el = sel.querySelector('.sel-text');
     if (!el) return;
-    el.setAttribute('data-full-name', text == null ? '' : String(text));
+    var name = text == null ? '' : String(text);
+    el.setAttribute('data-full-name', name);
+    /* 先把全名摆上再量。少了这一句，`fitPortLabel` 的自愈判定会看到
+       「缓存是新名字、文字还是旧名字」→ 把旧文字当成"外部改过的真名"写回去，
+       于是端口名永远停在初始化时的那个占位符上（2026-11 实机截到过）。 */
+    el.textContent = name;
     fitPortLabel(sel);
 }
 

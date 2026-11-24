@@ -7376,8 +7376,13 @@ try {
       '非强制自动保存只在窗口可见时执行（隐藏期恢复几何的瞬时态不能写盘）');
     check(/prev\.elapsed\(\) < std::time::Duration::from_millis\(400\)/.test(mainRs),
       '拖动/缩放去抖 400ms（不能每帧写盘）');
-    check(/tauri::WindowEvent::Moved\(_\) \| tauri::WindowEvent::Resized\(_\)[\s\S]{0,120}window_auto_save\(window, false\)/.test(mainRs) &&
-          /tauri::WindowEvent::CloseRequested \{ \.\. \}[\s\S]{0,120}window_auto_save\(window, true\)/.test(mainRs),
+    /* CloseRequested 里现在先有一道 "只认 main" 的闸（见节点红编辑器窗口那条断言），
+       所以 window_auto_save(window, true) 与事件名的距离放宽到 400 字符。 */
+    /* 两个 arm 已拆开（Resized 里多了一句"主窗口正在被拖拽"的记录，见 Node-RED 闪烁那条），
+       所以这里分别对 Moved / Resized 断言 window_auto_save(window, false)。 */
+    check(/tauri::WindowEvent::Resized\(_\) => \{[\s\S]{0,700}window_auto_save\(window, false\)/.test(mainRs) &&
+          /tauri::WindowEvent::Moved\(_\) => \{[\s\S]{0,200}window_auto_save\(window, false\)/.test(mainRs) &&
+          /tauri::WindowEvent::CloseRequested \{ \.\. \}[\s\S]{0,900}window_auto_save\(window, true\)/.test(mainRs),
       'Moved/Resized 去抖保存，CloseRequested 强制保存最终几何（退出前最后一下也要留住）');
     check(/ow >= 60 && oh >= 40/.test(mainRs) && /fn rect_on_screen/.test(mainRs),
       '恢复位置前先判"至少露出 60×40 可操作区"，否则拔掉外接屏后窗口落在不可见的虚拟屏上');
@@ -8615,6 +8620,7 @@ try {
   async function runWslMapStopAsyncTests() {
     const disconnected = [];
     const logs = [];
+    const toasts = [];
     const sbMap = {
       monitors: {
         main: { isConnected: true, portName: 'COM9' },
@@ -8624,6 +8630,7 @@ try {
         closed: { isConnected: false, portName: 'COM9' },
       },
       appendOutput: function(mid, type, text) { logs.push({ mid: mid, text: text }); },
+      showToast: function(text) { toasts.push(text); },
       disconnectPort: async function(mid) {
         disconnected.push(mid);
         sbMap.monitors[mid].isConnected = false;
@@ -8635,8 +8642,12 @@ try {
     await sbMap.stopMonitoringForWslMap('COM9');
     check(disconnected.sort().join(',') === 'main,x2',
       '映射前停监控：只停 COM9 上正在打开的分栏（main、x2），不碰其它端口');
-    check(logs.length === 2 && logs.every((l) => l.text.indexOf('COM9') !== -1),
-      '停监控时在对应分栏写一条说明（用户能看到为什么自己停了）');
+    /* 用户 2026-11："串口监控窗口，不应该出现「取消映射：正在关闭 WSL 串口连接...」等这种提示信息"。
+       监视窗口只放设备收发的东西；"为什么停了"改走弹窗。 */
+    check(logs.length === 0,
+      '★ 映射前停监控：监视窗口一行都不写（这种进度说明不该混进设备数据）');
+    check(toasts.length === 1 && toasts[0].indexOf('COM9') !== -1,
+      '映射前停监控：改用 toast 说明"为什么监控自己停了"');
     check(sbMap.monitors.wsl.isConnected === true,
       '映射前停监控：不误伤 WSL 分栏（它开的是 /dev/ttyUSB0，不是 Windows COM）');
     check(sbMap.monitors.other.isConnected === true,
@@ -8644,6 +8655,13 @@ try {
     check(sbMap.monitors.closed.isConnected === false,
       '映射前停监控：本来就没打开的分栏不会被多断一次');
   }
+
+  /* 取消映射那一侧同理：`toggleWslMapping` 里**不许**再往监视窗口写状态说明 */
+  const toggleMapSrc = extractFunction('toggleWslMapping');
+  check(!/appendOutput\(/.test(toggleMapSrc),
+    '★ 取消映射：不往 WSL 监视窗口写「正在关闭 WSL 串口连接...」（反馈走 disconnectWslPort 的 toast）');
+  check(!/appendOutput\(/.test(extractFunction('stopMonitoringForWslMap')),
+    '★ 映射前停监控：函数体内不出现 appendOutput');
 
   /* ===== Node-RED 自动化发送 → 串口监视窗口（用户 2026-11："发送的指令也应该出现，
      除非关闭了消息回显"）===== */
@@ -8657,8 +8675,10 @@ try {
     'Node-RED 发送按 send 行落进输出区与日志中心，来源标 auto（不是 ui / ai）');
 
   const mainRsForNf = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
-  check(/fn bridge_write[\s\S]{0,1400}emit\(\s*"nodered-sent"/.test(mainRsForNf),
-    '宿主在桥写成功后发 nodered-sent（带 monitor + hex，不替前端决定文本/HEX）');
+  check(/fn bridge_emit_sent[\s\S]{0,600}emit\(\s*"nodered-sent"/.test(mainRsForNf),
+    '宿主把「自动化发了数据」收成一个出口 bridge_emit_sent（带 monitor + hex，不替前端决定文本/HEX）');
+  check(/fn bridge_write[\s\S]{0,3000}bridge_emit_sent\(\s*app,\s*mid,\s*data\);[\s\S]{0,900}bridge_emit_sent\(\s*app,\s*mid,\s*data\);/.test(mainRsForNf),
+    '桥写两条路（串口分栏 / WSL 分栏）都会通知前端 —— 少一处，WSL 上的自动化在监视窗口里就看不见');
   const loghubRsForNf = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'mcp', 'loghub.rs'), 'utf8');
   check(/SRC_AUTO => "auto"/.test(loghubRsForNf) && /"auto" => SRC_AUTO/.test(loghubRsForNf),
     '日志来源 auto 双向可映射（写进去能读回来）');
@@ -8698,24 +8718,315 @@ try {
     check(sent[0] && sent[0].text === 'HEX: 00 01 02', 'Node-RED 发送：含控制字节的帧退回 HEX 显示（不吞成乱码）');
   })();
 
-  (function () {
-    // 面板开关**不能搬 iframe**：iframe 被 reparent 会重建浏览上下文，编辑器重新加载，
-    // 画布里还没部署的删除会从 flows.json 回来（2026-11 用户报的「删除的流程又回来」）。
-    const attach = extractFunction('nfAttach');
-    const detach = extractFunction('nfDetach');
-    const place = extractFunction('nfPlace');
-    const observe = extractFunction('nfObserveHost');
-    check(!/insertBefore\(\s*pane|appendChild\(\s*pane/.test(attach + detach),
-      'Node-RED 画布：开关面板不搬 iframe（否则未部署的删除会重新加载回来）');
-    check(/getBoundingClientRect/.test(place) && /pane\.style\.left/.test(place),
-      'Node-RED 画布：用绝对定位覆盖正文区，而不是插进分栏 DOM');
-    check(/ResizeObserver/.test(observe) && /toolbar-wrap/.test(observe),
-      'Node-RED 画布：跟随分栏 / 工具栏尺寸重排覆盖层');
-    check(/#nodeflow-pane\s*\{[^}]*position:\s*absolute/s.test(html),
-      'Node-RED 画布：#nodeflow-pane 用 absolute 定位');
+  /* ===== Node-RED 是一个**独立窗口**（2026-11 用户："它属于一个全局的界面，不可能跟着
+     分栏一次存在"，同时要求"编辑流程的同时还能查看窗口数据情况"）=====
+     旧形态是 `#nodeflow-pane` 覆盖层（absolute 盖在某个分栏的正文区上）：编辑器跟着分栏走、
+     只能吃监视窗口那一块地方，而且搬 iframe 还会让编辑器整页重载。现在整段删掉了。 */
+  check(!/id="nodeflow-pane"/.test(html),
+    '★ 分栏里不再有 node-red 画布容器（编辑器是独立窗口，不该被绑到某个分栏上）');
+  check(!/\.nf-frame\s*\{|\.nf-mask\s*\{/.test(html),
+    '★ 覆盖层的 iframe/遮罩样式已删除（留着就会有人把它再挂回来）');
+  /* 入口只有一个、且在**顶栏**（用户 2026-11："启动 icon 放在这个位置不合理，因为这个位置也会根据
+     分栏而分栏"）。编辑器是全局的独立窗口，入口跟着分栏走就必然出现"每个分栏各一颗、各点各的"。 */
+  check(/id="nodeRedBtn"[\s\S]{0,400}onclick="openNodeRed\(\)"/.test(html),
+    '★ Node-RED 入口在顶栏（#nodeRedBtn → openNodeRed），不跟分栏走');
+  check(/id="nodeRedBtn"[\s\S]{0,400}aria-label="Node-RED 自动化"/.test(html) &&
+        /id="nodeRedBtn"[\s\S]{0,500}data-mcp-tip=/.test(html),
+    '顶栏入口有 aria-label（控件名）与 data-mcp-tip（悬停说明，不用原生 title）');
+  check(!/openNodeRed\(\)" aria-label="node-red 自动化"/.test(html) && !/ICONS\.nodeRed/.test(html),
+    '★ 分栏工具栏里已经没有 node-red 图标（10-monitor.js / 80-wsl.js 都删干净了）');
+  const openRedSrc = extractFunction('openNodeRed');
+  check(/invoke\(\s*'nodered_open_window'\s*\)/.test(openRedSrc),
+    '打开编辑器走宿主命令 nodered_open_window（窗口由 Rust 建，前端不自己开 webview）');
+  check(/NF_OPENING/.test(openRedSrc),
+    '打开编辑器有在途闸（启动 2–5 秒里连点不会拉起第二份侧车）');
+  check(/showToast\('打开 Node-RED 失败: ' \+ msg/.test(openRedSrc),
+    '打开失败把宿主的原始原因弹出来（缺 node.exe / 端口没起来 / 日志尾巴，别吞成一句"打开失败"）');
+
+  check(/fn nodered_open_window/.test(mainRsForNf) && /\n\s+nodered_open_window,/.test(mainRsForNf),
+    '宿主有 nodered_open_window 并已注册（前端才调得到）');
+  check(/fn nodered_open_window[\s\S]{0,1600}get_webview_window\(NODERED_WINDOW_LABEL\)[\s\S]{0,1400}set_focus/.test(mainRsForNf),
+    '★ 已经开着就只 show/hide + focus —— 绝不开第二个编辑器（两个编辑器改同一份 flows 会互相覆盖）');
+  check(/"nodered-window\.json"/.test(mainRsForNf) && !/nodered_window_state_file[\s\S]{0,200}"window\.json"/.test(mainRsForNf),
+    '编辑器窗口几何单独存 nodered-window.json（不跟主窗口的 window.json 抢）');
+  check(/NODERED_WINDOW_LABEL\)[\s\S]{0,200}\.close\(\)/.test(mainRsForNf),
+    '★ 关主窗口时一并关掉编辑器窗口（否则应用不退出，只剩一个没有主界面的空壳 + 已死的编辑器）');
+
+  /* ===== 编辑器窗口的"框"要和主窗口是一套（用户 2026-11："这两个窗口的风格都不一样"）=====
+     做法：窗口 `decorations(false)` + 加载仓库内的外壳页，标题栏尺寸/配色/按钮全部照抄主窗口
+     `#globalBar` + `.win-ctrl-btn`。**两处数值必须一致** —— 所以这里直接对两侧的 CSS 取值做对账。 */
+  const shellHtml = fs.readFileSync(path.join(root, 'src', 'node-red-window.html'), 'utf8');
+  const shellJs = fs.readFileSync(path.join(root, 'src', 'js', '86-node-red-window.js'), 'utf8');
+  const shellCss = fs.readFileSync(path.join(root, 'src', 'css', '05-node-red-window.css'), 'utf8');
+  const mainCss = fs.readFileSync(path.join(root, 'src', 'css', '02-global.css'), 'utf8');
+  const caps = JSON.parse(fs.readFileSync(path.join(root, 'src-tauri', 'capabilities', 'default.json'), 'utf8'));
+
+  check(/WebviewUrl::App\("node-red-window\.html"/.test(mainRsForNf) && /\.decorations\(false\)/.test(mainRsForNf),
+    '★ 编辑器窗口加载仓库内的外壳页并去掉系统边框（与主窗口同为 decorations:false + 自绘标题栏）');
+  check(/fn nodered_url[\s\S]{0,600}NODERED_PORT/.test(mainRsForNf) && /\n\s+nodered_url,/.test(mainRsForNf),
+    '外壳页要地址走 nodered_url（只读、不拉起侧车 —— 不能让"开个窗口"变成"起引擎"）');
+
+  check(/class="nr-titlebar"/.test(shellHtml) && !/data-tauri-drag-region/.test(shellHtml) &&
+        /startDragging\(\)/.test(shellJs),
+    '★ 标题栏拖动由脚本接管（**不许用 data-tauri-drag-region**：它会让嵌入态的拖动变成在父窗口里挪子窗口，拖不出去）');
+  check(/id="nrMin"[\s\S]{0,400}id="nrMax"[\s\S]{0,400}id="nrClose"/.test(shellHtml),
+    '外壳页有三个窗口按钮（最小化 / 最大化 / 关闭）');
+  check(/class="nr-frame"[\s\S]{0,200}clipboard-read/.test(shellHtml),
+    '编辑器用 iframe 承载且带剪贴板权限（复制/粘贴节点要用）');
+  check(/css\/01-theme\.css/.test(shellHtml) && /css\/05-node-red-window\.css/.test(shellHtml),
+    '外壳页复用主窗口的 01-theme.css（换主题时标题栏跟着变），再叠自己的外壳样式');
+  check(!/appendChild\(\s*f\b|insertBefore\(\s*f\b|appendChild\(\s*frame/.test(shellJs),
+    '★ 外壳脚本绝不搬 iframe（reparent 会让编辑器整页重载，未部署的修改就丢了）');
+  check(/nrInvoke\('nodered_url'\)/.test(shellJs) && /__TAURI__\.core\.invoke/.test(shellJs),
+    '外壳脚本向宿主要编辑器地址（端口随机，写死不现实）');
+
+  /* 两套框的数值必须对得上 —— 抄一份就该有对账，否则哪天主窗口改了按钮尺寸，这边悄悄漂 */
+  check(/height:\s*36px/.test(shellCss) && /height:\s*36px/.test(mainCss),
+    '标题栏高度两边一致（36px）');
+  check(/\.win-ctrl-btn\s*\{[\s\S]{0,120}width:\s*46px;\s*height:\s*36px/.test(shellCss) &&
+        /\.win-ctrl-btn\s*\{[\s\S]{0,120}width:\s*46px;\s*height:\s*36px/.test(mainCss),
+    '窗口按钮尺寸两边一致（46×36）');
+  check(/\.win-ctrl-btn\.close:hover\s*\{\s*background:\s*#e81123/.test(shellCss) &&
+        /\.win-ctrl-btn\.close:hover\s*\{\s*background:\s*#e81123/.test(mainCss),
+    '关闭按钮 hover 色两边一致（#e81123）');
+  check((caps.windows || []).indexOf('nodered') >= 0,
+    '★ capability 的 windows 必须包含 nodered（否则外壳页的窗口按钮被 ACL 拦掉，点了没反应）');
+
+  /* ===== 嵌入 / 脱离（2026-11 用户的共存方式：默认贴进主窗口，拖出来就是独立窗口）=====
+     实现要点：**同一个 WebView** 用 Win32 `SetParent` 挂进主窗口 —— 绝不重建页面/换 iframe，
+     否则编辑器整页重载、未部署的流程就丢了（这是这套方案唯一站得住的理由）。 */
+  check(/fn nodered_dock\b/.test(mainRsForNf) && /\n\s+nodered_dock,/.test(mainRsForNf) &&
+        /fn nodered_dock_sync\b/.test(mainRsForNf) && /fn nodered_docked\b/.test(mainRsForNf),
+    '★ 宿主提供 嵌入(nodered_dock) / 跟随(nodered_dock_sync) / 查询(nodered_docked) 三条命令');
+  check(/SetParent\(/.test(mainRsForNf) && /MoveWindow\(/.test(mainRsForNf),
+    '★ 嵌入走 Win32 SetParent + MoveWindow（父子窗口，同一个 WebView 不重载）');
+  check(/EnumWindows/.test(mainRsForNf) && /nodered_hwnd_of/.test(mainRsForNf) &&
+        /the underlying handle is not available|EnumWindows 枚举本进程/.test(mainRsForNf),
+    '★ 句柄不能只靠 WebviewWindow::hwnd()（实测返回 handle is not available）—— 必须枚举顶层窗口兜底');
+  check(/NODERED_HWND/.test(mainRsForNf) && /cached != 0/.test(mainRsForNf),
+    '★ 嵌入后是子窗口、EnumWindows 再也找不到它 —— 脱离必须用记住的 HWND');
+  check(/fn nodered_persist_geometry[\s\S]{0,400}if NODERED_DOCKED\.load\(Ordering::SeqCst\) \{\s*return;\s*\}/.test(mainRsForNf),
+    '★ 嵌入态不写窗口几何（子窗口的 outer_position 是相对父窗口的 0,116，写进文件下次就开在左上角）');
+  check(/NODERED_RECT/.test(mainRsForNf) && /if !changed \{\s*return Ok\(true\)/.test(mainRsForNf),
+    '嵌入矩形没变就不重复 MoveWindow（前端 250ms 报一次，重复移动会抖）');
+
+  const nfJs = fs.readFileSync(path.join(root, 'src', 'js', '85-nodeflow.js'), 'utf8');
+  /* 点图标时**不能无条件停靠**（用户 2026-11 报的：浮动窗口缩小后再点图标，被拽回分栏、
+     看起来像"新开了一个停靠窗口"）。宿主返回 shouldDock，只有 true 才贴。 */
+  check(/shouldDock/.test(nfJs) && /nodered_ensure_on_screen/.test(mainRsForNf) &&
+        /"shouldDock": NODERED_DOCKED\.load\(Ordering::SeqCst\)/.test(mainRsForNf),
+    '★ 已开着的编辑器：嵌入态才重贴，浮动态只抬到前面（点图标不许把它拽回分栏）');
+  /* 开关语义（用户 2026-11）：点开 → 按钮背景用主题色；**再点一次是隐藏窗口**（不是关闭，草稿留着） */
+  check(/\.add-btn\.icon-btn\.active/.test(mainCss) && /function nfSetNodeRedBtn/.test(nfJs) &&
+        /nfSetNodeRedBtn\(state === 'open'\)/.test(nfJs) && /classList\.toggle\('active', !!on\)/.test(nfJs),
+    '★ 顶栏按钮打开后高亮（既有 .add-btn.icon-btn.active 主题色）、收起/关掉后熄灭');
+  check(/fn nodered_open_window[\s\S]{0,1600}let _ = win\.hide\(\);/.test(mainRsForNf) &&
+        /"state": "hidden"/.test(mainRsForNf) && /fn nodered_window_state/.test(mainRsForNf),
+    '★ 再点一次是 hide（编辑器状态保留），另有 nodered_window_state 给按钮校正初始高亮');
+  check(/'nodered-state'/.test(nfJs) && /emit\("nodered-state", "closed"\)/.test(mainRsForNf),
+    '开 / 隐藏 / 被关掉都会发 nodered-state，按钮状态不会漂');
+  check(/fn nodered_ensure_on_screen/.test(mainRsForNf) && /rect_on_screen/.test(mainRsForNf),
+    '浮动窗口被缩到很小/挪出屏幕时，点图标要先把它拉回可见区域（否则 set_focus 等于没反应）');
+  /* 停靠态**只能拖上边沿改高度**（用户 2026-11："停靠时，支持上边沿上下拖动"）：
+     用**原生**缩放（不摘 WS_THICKFRAME），拖完由同步按"用户改出来的高度 + 正文区宽度"重新落位 ——
+     左右拖出来的宽度会被收回去。页面里自己算高度那套实测点不到（5px 窄带收不到 mousedown），已删除。 */
+  check(/static NODERED_USER_H/.test(mainRsForNf) && /static NODERED_EDGE_AT/.test(mainRsForNf),
+    '★ 宿主记"用户拖出来的高度"与"正在拖的边缘时刻"');
+  check(/tauri::WindowEvent::Resized\(_\) => \{[\s\S]{0,900}NODERED_USER_H\.store\(sz\.height/.test(mainRsForNf),
+    '★ 嵌入窗口的 Resized 里记下用户改出来的高度（和自己贴的矩形差 ≤8px 视为自己改的）');
+  check(/let user_h = NODERED_USER_H\.load\(Ordering::SeqCst\);[\s\S]{0,400}y = y \+ h - hh;/.test(mainRsForNf),
+    '同步落位时套用用户高度：底边固定、x/宽度按正文区重算（所以左右拖不动）');
+  check(/if edge_at != 0 && now_ms\(\)\.saturating_sub\(edge_at\) < 250/.test(mainRsForNf),
+    '★ 用户正在拖边缘的 250ms 内不动窗口（否则和拖动抢）');
+  check(/if force\.unwrap_or\(false\) \{[\s\S]{0,160}NODERED_USER_H\.store\(0/.test(mainRsForNf),
+    '显式停靠/点图标打开 → 清掉手动高度，恢复铺满');
+  /* 拖拽缩放主窗口时**一律不贴窗**（用户 2026-11："拖动窗口宽度时程序会闪烁" ——
+     分栏工具栏在宽度阈值处换行、正文区顶边跟着跳，边拖边贴就是上下弹）。松手后由同步贴一次。 */
+  check(/static NODERED_MAIN_RESIZE_AT/.test(mainRsForNf) &&
+        /last != 0 && now_ms\(\)\.saturating_sub\(last\) < 150/.test(mainRsForNf) &&
+        /tauri::WindowEvent::Resized\(_\) => \{[\s\S]{0,700}NODERED_MAIN_RESIZE_AT\.store/.test(mainRsForNf),
+    '★ 主窗口拖拽缩放期间不贴窗（150ms 闸），松手后才落位 —— 否则编辑器会被拽着上下弹（闪烁）');
+  check(/function nfDockRect\(\)[\s\S]{0,2200}width: Math\.round\(right - left\), height: NF_MAX_H/.test(nfJs) &&
+        /maxH: NF_MAX_H/.test(nfJs) && !/unionChanged/.test(nfJs),
+    '★ nfDockRect 每次都给完整正文区并把满高告诉宿主（maxH）；不做"没变就不发"的前端优化');
+  check(/nfDockToPane\(true\)/.test(nfJs) && /invoke\('nodered_dock', \{ rect: rect/.test(nfJs),
+    '★ 打开编辑器后默认**贴进当前分栏**（不再一上来就弹独立窗口）');
+  check(/document\.querySelectorAll\('\.mon-body'\)/.test(nfJs) && /getBoundingClientRect/.test(nfJs) &&
+        /var left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity/.test(nfJs),
+    '★ 嵌入区域 = **所有可见分栏正文区的并集**（用户 2026-11："编辑器被分栏了，不应该分栏的"—— 只贴第一个分栏会被切开）');
+  check(/nodered_dock_sync/.test(nfJs) && /setInterval\(nfSyncDock, 250\)/.test(nfJs),
+    '拖动窗口 / 拉分栏时嵌入窗口跟着走（250ms 同步一次）');
+  check(/body\.docked/.test(shellCss) && /nr-dockbtn/.test(shellCss),
+    '嵌入态外壳页收成细拖条（隐藏窗口按钮，露出「脱离」）');
+  check(/id="nrUndock"/.test(shellHtml) && /nrUndock\(\)/.test(shellJs),
+    '外壳页有「脱离」按钮（脱离成独立窗口，编辑器不重载）');
+  check(/startDragging\(\)/.test(shellJs) && /nrBindDragOut/.test(shellJs),
+    '★ 嵌入时拖标题条 = 先脱离再原生拖动（用户说的"支持拖动独立成窗口"）');
+
+  /* ===== 反向：脱离之后**拖回主窗口**就归位（用户 2026-11："脱离之后也要拖动回归程序"）===== */
+  check(/fn nodered_request_dock_if_over_app/.test(mainRsForNf) &&
+        /emit_to\("main", "nodered-dock-request"/.test(mainRsForNf),
+    '★ 浮动窗口被拖回主窗口范围 → 发事件让前端把分栏矩形报过来重新贴进去');
+  check(/NODERED_WAS_OUTSIDE/.test(mainRsForNf) &&
+        /if !NODERED_WAS_OUTSIDE\.load\(Ordering::SeqCst\)[\s\S]{0,80}return;/.test(mainRsForNf),
+    '★ 必须"先离开过主窗口"才允许自动归位（否则刚拖出来中心还在主窗口里，会被立刻吸回去）');
+  check(/NODERED_MOVE_GEN/.test(mainRsForNf) && /from_millis\(600\)/.test(mainRsForNf),
+    '拖停 600ms 才判断归位（原生拖动会连续发 Moved，拖动中就贴会很突兀）');
+  check(/nodered-dock-request/.test(nfJs) && /nfDockToPane\(true\);[\s\S]{0,60}nfStartDockSync\(\)/.test(nfJs),
+    '主窗口收到停靠请求就重新贴进当前分栏');
+  /* 拖回来时的"可停靠"蒙版（用户 2026-11："拖回程序时主程序的位置应该有相应的蒙版提示可以停靠"） */
+  check(/nodered-drag-hover/.test(mainRsForNf) && /fn nodered_update_hover_hint/.test(mainRsForNf),
+    '★ 拖动中宿主把"悬停在主窗口上方"的状态发给主窗口（nodered-drag-hover）');
+  check(/nodered-drag-hover/.test(nfJs) && /nfShowDockHint/.test(nfJs) && /nfDockHint/.test(nfJs),
+    '★ 主窗口收到就画出停靠蒙版（虚线框 + 提示文字）');
+  check(/'pointer-events:none'/.test(nfJs) && /'align-items:flex-start'/.test(nfJs),
+    '蒙版不吃鼠标事件（pointer-events:none），文字贴顶部（居中会被浮动的编辑器挡住）');
+  check(!/dashed/.test(nfJs.split('function nfDockHintEl')[1] || ''),
+    '★ 蒙版不画虚线边框（用户 2026-11：虚线完全是多余的）—— 只留淡色蒙版 + 一行字');
+  check(/GetAsyncKeyState/.test(mainRsForNf) && /while waited < 12000 && nodered_left_button_down\(\)/.test(mainRsForNf),
+    '★ 归位必须等到**松手**（鼠标还按着只亮蒙版、不抢窗口 —— 拖动中被"拽"进去很突兀）');
+  /* 嵌入态必须能关掉编辑器（用户 2026-11："停靠显示时，无法关闭窗口"—— 那时窗口按钮整组隐藏了） */
+  check(/id="nrCloseInline"/.test(shellHtml) && /byId\('nrCloseInline'\)\.addEventListener/.test(shellJs) &&
+        /body\.docked #nrCloseInline/.test(shellCss),
+    '★ 嵌入态有「✕」关闭按钮（独立态用系统窗口按钮，嵌入态必须有等价入口）');
+  check(/tauri::WindowEvent::Destroyed =>[\s\S]{0,400}NODERED_DOCKED\.store\(false/.test(mainRsForNf),
+    '★ 编辑器窗口销毁要复位嵌入状态（否则同步循环会一直去贴一个不存在的窗口）');
+  check(/id="nrDock"/.test(shellHtml) && /nrDock\(\)/.test(shellJs) && /body\.docked #nrDock/.test(shellCss),
+    '独立态有「停靠」按钮（与"拖回去"等价；嵌入态隐藏）');
+  /* 实测踩到的：`on_window_event` 是**应用级**的，CloseRequested 分支原先没按 label 过滤 ——
+     关编辑器窗口会把串口 / 侧车 / MCP 端点全拆掉，主窗口却还开着（变成空壳）。
+     这条守"退出清理只认 main"。 */
+  const appCloseHandler = (mainRsForNf.match(/tauri::WindowEvent::CloseRequested \{ \.\. \} => \{[\s\S]{0,600}/) || [''])[0];
+  check(/if window\.label\(\) != "main"[\s\S]{0,40}return;/.test(appCloseHandler),
+    '★ 只有主窗口关闭才执行退出清理（关编辑器窗口不许把串口/侧车/MCP 一起拆掉）');
+
+  /* ===== Node-RED 在 WSL 分栏上也要能用（2026-11 用户报：WSL 端口映射界面的串口监控里
+     点自动化图标 → 界面变成主界面；而且 WSL 分栏在编辑器的「端口」下拉里根本选不到） =====
+     两件事的根因不同：前端是 `openNodeFlow` 无条件显示 paneContainer；后端是桥只认
+     本进程的 readers 表（WSL 的会话在 WslSerialState，读写两头都没接）。 */
+  check(/fn bridge_write[\s\S]{0,3000}WslSerialState/.test(mainRsForNf),
+    '桥写认 WSL 分栏：readers 里没有就去 WslSerialState 会话表（否则 WSL 上的 serial txd 必然失败）');
+  check(/fn read_wsl_serial[\s\S]{0,2000}bridge_push_rx\(\s*&monitor_id/.test(mainRsForNf),
+    'WSL 的读把同一块字节复制进桥队列（唯一产出点就是这次轮询；不复制则 serial rxd 永远收不到）');
+  check(/fn bridge_list_monitors[\s\S]{0,1800}WslSerialState/.test(mainRsForNf),
+    '「端口」下拉列出 WSL 分栏（否则画布开在 WSL 页面上、却选不到那个端口）');
+  check(/fn bridge_command[\s\S]{0,700}session\.cmd\.lock/.test(mainRsForNf),
+    'WSL 会话命令串行化：前端轮询与 Node-RED 写入并发时不会互相取走对方的回执');
+  check(/fn wsl_session_write[\s\S]{0,700}\{"cmd":"write"/.test(mainRsForNf),
+    'WSL 写入只有一份实现（前端「发送」与桥共用 wsl_session_write，别各写一套）');
+  check(/function restoreMonitorPane[\s\S]{0,1400}getWslMonitorIds\(\)\.forEach\(function\(wmid\)\s*\{\s*snapshotWslSettings\(wmid\);/.test(html)
+        && !/function restoreMonitorPane[\s\S]{0,1400}stopReading\(wmid\)/.test(html),
+    '回主界面时不再停掉 WSL 的读（桥的接收队列挂在这一跳上，停了后台自动化就静默断流）');
+
+  /* 行为断言：假沙箱里跑真函数 —— 源码正则证明不了"连点两下只发一次 IPC" */
+  async function runNodeRedOpenTests() {
+    const calls = [];
+    const toasts = [];
+    const pending = [];
+    const ctx = {
+      invoke: function (cmd) {
+        calls.push(cmd);
+        return new Promise(function (res, rej) { pending.push({ res: res, rej: rej }); });
+      },
+      showToast: function (msg, type) { toasts.push({ msg: msg, type: type }); },
+      console: { error: function () {}, warn: function () {} },
+      NF_OPENING: false,
+      NF_LAST_ERROR: ''
+    };
+    vm.createContext(ctx);
+    vm.runInContext(extractFunction('openNodeRed'), ctx);
+
+    ctx.openNodeRed();
+    check(calls.length === 1 && calls[0] === 'nodered_open_window',
+      '打开编辑器：走宿主命令 nodered_open_window');
+    ctx.openNodeRed();
+    check(calls.length === 1,
+      '★ 打开编辑器：启动期间连点只发一次 IPC（不会拉起第二份侧车/第二个编辑器）');
+
+    pending[0].res();
+    await new Promise(function (r) { setTimeout(r, 0); });
+    check(ctx.NF_OPENING === false, '打开编辑器：成功后解除在途闸（下次还能点）');
+
+    toasts.length = 0;
+    ctx.openNodeRed();
+    pending[1].rej(new Error('缺少 node.exe：找过 D:\\seahi\\resources\\node-red'));
+    await new Promise(function (r) { setTimeout(r, 0); });
+    check(toasts.length === 1 && toasts[0].type === 'error' &&
+          toasts[0].msg.indexOf('缺少 node.exe') >= 0,
+      '打开编辑器失败：把宿主的原始原因原样弹出来（不吞成一句"打开失败"）');
+    check(ctx.NF_OPENING === false, '打开编辑器失败后同样解除在途闸（否则这一辈子都点不动）');
+  }
+
+  /* ===== 端口框里的名字怎么摆（2026-11 用户报「WSL 分栏端口号向右对齐」）=====
+     根因：WSL 那边绕过 `setPortLabel()` 直接写 `.sel-text` 的 textContent ——
+     `name-truncated`（就是那条 `text-align:right`）留在元素上、`data-full-name` 还是旧名字。
+     两条断言各守一半：一条守"只从这一个入口改"，一条守"被绕过了也能自愈"。 */
+  const wslPortsSrc = extractFunction('refreshWslMonPorts');
+  const wslMonInitSrc = extractFunction('initWslMonitor');
+  check(!/sel-text'\)\.textContent/.test(wslPortsSrc) && /setPortLabel\(wmid/.test(wslPortsSrc),
+    'WSL 端口名只走 setPortLabel（直写 .sel-text 会留下右对齐的 name-truncated 与过期全名）');
+  check(/watchPortLabel\(wmid\)/.test(wslMonInitSrc),
+    'WSL 监视器也监听端口框宽度变化（否则只在刷新列表那次量过，之后对齐就停在错的状态）');
+
+  (function portLabelBehaviour() {
+    function makeEl(text, fullName, width) {
+      const el = {
+        _text: text,
+        _attrs: fullName == null ? {} : { 'data-full-name': fullName },
+        _cls: new Set(fullName == null ? [] : ['name-truncated']),
+        clientWidth: width,
+        getAttribute: function (k) { return this._attrs[k] == null ? null : this._attrs[k]; },
+        setAttribute: function (k, v) { this._attrs[k] = String(v); },
+        classList: {
+          add: function (c) { el._cls.add(c); },
+          remove: function (c) { el._cls.delete(c); },
+          contains: function (c) { return el._cls.has(c); }
+        }
+      };
+      Object.defineProperty(el, 'textContent', {
+        get: function () { return this._text; },
+        set: function (v) { this._text = String(v); }
+      });
+      Object.defineProperty(el, 'scrollWidth', {
+        // 近似：每字符 7px。二分找后缀那段逻辑只需要"能否放下"的单调性
+        get: function () { return this._text.length * 7; }
+      });
+      return el;
+    }
+    const ctx = { '\u2026': '\u2026' };
+    vm.createContext(ctx);
+    vm.runInContext(extractFunction('fitPortLabel'), ctx);
+
+    // ① 放得下：外部刚写进来的新名字不许被缓存里的旧名字顶掉，右对齐也得撤掉
+    let el = makeEl('/dev/ttyUSB0', '无可用端口', 200);
+    const sel = { querySelector: function () { return el; } };
+    ctx.fitPortLabel(sel);
+    check(el.textContent === '/dev/ttyUSB0', '端口框：外部写入的新名字不会被 data-full-name 的旧值顶掉');
+    check(!el.classList.contains('name-truncated'), '端口框：名字放得下时撤掉 name-truncated（不再右对齐）');
+    check(el.getAttribute('data-full-name') === '/dev/ttyUSB0', '端口框：自愈后缓存同步成真正显示的名字');
+
+    // ② 放不下：仍然要按"保留尾部 + 省略号"截断，并靠右（串口号在末尾，靠右才对得上）
+    el = makeEl('/dev/ttyUSB0', '/dev/ttyUSB0', 60);
+    ctx.fitPortLabel({ querySelector: function () { return el; } });
+    check(el.textContent.charAt(0) === '\u2026' && el.textContent.indexOf('0') >= 0,
+      '端口框：名字放不下时保留尾部（…ttyUSB0），不是从中间截');
+    check(el.classList.contains('name-truncated'), '端口框：真截断时才加 name-truncated（靠尾显示）');
+
+    // ③ setPortLabel 必须先把全名摆上再量：否则自愈判定会把"旧文字"当成真名写回去
+    (function setPortLabelOrder() {
+      const el = makeEl('无可用端口', null, 400);
+      const sel = { querySelector: function () { return el; } };
+      const doc = { getElementById: function (id) { return id === 'wsl-portSelect' ? sel : null; } };
+      const c2 = { document: doc };
+      vm.createContext(c2);
+      vm.runInContext([extractFunction('fitPortLabel'), extractFunction('setPortLabel')].join('\n'), c2);
+      c2.setPortLabel('wsl', '/dev/ttyS0');
+      check(el.textContent === '/dev/ttyS0', '端口框：setPortLabel 之后显示的是新名字（不是初始化时的占位符）');
+      check(el.getAttribute('data-full-name') === '/dev/ttyS0', '端口框：setPortLabel 的时候缓存也换成新名字');
+    })();
   })();
 
-  runQcmdLoopAsyncTests().then(runWslMapStopAsyncTests).then(function () {
+  runQcmdLoopAsyncTests().then(runWslMapStopAsyncTests).then(runNodeRedOpenTests).then(function () {
     console.log(`\n结果: ${pass} passed, ${fail} failed` + (skippedDsl ? `（另有 ${skippedDsl} 条 DSL 用例跳过：等回话/期望/重试/跳转已停用）` : ''));
     process.exit(fail ? 1 : 0);
   }, function (e) {
