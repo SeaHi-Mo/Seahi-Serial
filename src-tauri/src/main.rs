@@ -1301,6 +1301,10 @@ fn nodered_hwnd_of(win: &tauri::WebviewWindow) -> Option<isize> {
 /// 上一次贴进去用的矩形（物理像素 x,y,w,h）。前端每 250ms 报一次，
 /// **矩形没变就不再 MoveWindow** —— 否则每秒四次重设位置，画面会闪、日志也会被刷满。
 static NODERED_RECT: std::sync::Mutex<Option<(i32, i32, i32, i32)>> = std::sync::Mutex::new(None);
+/// **正文区满矩形**（物理像素，x / y / w / 满高），每次贴窗时按前端报的矩形更新，**不套用户高度**。
+/// 存在的理由：`NODERED_RECT` 记的是"当前窗口矩形"（贴完后会被写成缩过的高度），而"最多能长多高、
+/// 底边在哪"必须用满矩形算 —— 否则上边沿拖动只能变矮、不能变高（2026-11-25 实测踩到）。
+static NODERED_BODY: std::sync::Mutex<Option<(i32, i32, i32, i32)>> = std::sync::Mutex::new(None);
 /// 最近一次"用户主动脱离"的毫秒时间戳：2 秒内的 `nodered_dock_sync` 一律忽略（防"拖出去又被吸回来"）。
 static NODERED_UNDOCK_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// 贴进主窗口时**摘掉**的窗口样式（`WS_THICKFRAME` 等），脱离时按原样加回来。
@@ -1500,6 +1504,14 @@ fn nodered_dock(app: tauri::AppHandle, rect: Option<serde_json::Value>, force: O
                 let num = |k: &str| r.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let (x, y) = ((num("x") * scale).round() as i32, (num("y") * scale).round() as i32);
                 let (w, h) = ((num("width") * scale).round() as i32, (num("height") * scale).round() as i32);
+                /* **正文区满矩形**单独存一份（物理像素、未套用户高度）：`nodered_resize_height`
+                   要拿它算"底边在哪、最多能长多高"。别指望 `NODERED_RECT` —— 那个是"当前窗口矩形"
+                   （贴完之后会被写成缩过的），拿它当基准会把上限算成"当前高度"，于是**只能拖矮、不能拖高**
+                   （2026-11-25 用户报的"只能放下拖动，不能往上拖动"就是这个）。 */
+                {
+                    let mut body = NODERED_BODY.lock().unwrap_or_else(|e| e.into_inner());
+                    *body = Some((x, y, w, h));
+                }
                 /* 用户拖过边缘：把他改出来的高度套回来（底边固定、x/宽度一律按正文区重算 ——
                    左右拖出来的宽度会被收回，这正是用户要的"左右不可拖动"）。 */
                 let (mut y, mut h) = (y, h);
@@ -1639,6 +1651,7 @@ fn nodered_dock(app: tauri::AppHandle, rect: Option<serde_json::Value>, force: O
                 NODERED_EDGE_AT.store(0, Ordering::SeqCst);
                 NODERED_HWND.store(0, Ordering::SeqCst);
                 *NODERED_RECT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                *NODERED_BODY.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 dbg_log("nodered_dock: 已脱离");
                 NODERED_UNDOCK_AT.store(now_ms(), Ordering::SeqCst);
                 nodered_clear_hover_hint(&app);
@@ -1690,22 +1703,27 @@ fn nodered_resize_height(app: tauri::AppHandle, height: f64) -> Result<bool, Str
             return Ok(false);
         }
         let hwnd = raw as HWND;
-        /* 正文区矩形（x / 宽度 / 满高）必须是上一次贴窗时算好的：拿不到就说明还没真正嵌入 */
+        /* 基准是**正文区满矩形**（不是当前窗口矩形）：缩过之后 NODERED_RECT 里只有当前高度，
+           拿它算上限就会"只能拖矮"（见 NODERED_BODY 的注释）。 */
         let (x, y, w, full_h) = {
-            let guard = NODERED_RECT.lock().unwrap_or_else(|e| e.into_inner());
-            match *guard {
-                Some(r) => r,
-                None => return Ok(false),
-            }
+            let body = NODERED_BODY.lock().unwrap_or_else(|e| e.into_inner());
+            let from_body = *body;
+            drop(body);
+            let cur = *NODERED_RECT.lock().unwrap_or_else(|e| e.into_inner());
+            from_body.or(cur).ok_or_else(|| "还没有嵌入区域，先停靠一次".to_string())?
         };
         let sc = (NODERED_SCALE100.load(Ordering::SeqCst) as f64) / 100.0;
         let s = if sc > 0.0 { sc } else { 1.0 };
-        let min_h = (120.0 * s).round() as i32;         // 与前端 NR_EDGE_MIN 一致
+        /* `height` 是页面量的**客户区**高度（`window.innerHeight` 只知道这个），而 MoveWindow 要的是
+           **窗口**高度 —— 中间差一圈边框/阴影（实测 9px）。不补这一截，每拖一次就矮 9px
+           （往上拖 120 只长 111、往下拖 120 反而掉 129，用户会觉得"拖不准"）。 */
+        let frame = NODERED_FRAME_H.load(Ordering::SeqCst).max(0);
+        let min_h = (120.0 * s).round() as i32 + frame;  // 与前端 NR_EDGE_MIN 一致（客户区 120）
         let max_h = {
             let mx = NODERED_MAX_H.load(Ordering::SeqCst);
             if mx > 120 { mx.min(full_h) } else { full_h }
         };
-        let mut phys = (height * s).round() as i32;
+        let mut phys = (height * s).round() as i32 + frame;
         phys = if max_h <= min_h {
             max_h.max(1)
         } else {
@@ -2024,6 +2042,7 @@ fn nodered_show_window(app: &tauri::AppHandle, url: &str, rect: Option<serde_jso
                 NODERED_HWND.store(0, Ordering::SeqCst);
                 NODERED_WAS_OUTSIDE.store(false, Ordering::SeqCst);
                 *NODERED_RECT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                *NODERED_BODY.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 nodered_clear_hover_hint(w.app_handle());
             }
             _ => {}

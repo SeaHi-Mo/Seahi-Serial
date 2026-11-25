@@ -8858,6 +8858,17 @@ try {
     '★ 停靠时关掉 wry 的缩放边框覆盖层、脱离时还回去（否则它吃掉上边沿热区，拖动"失效"）');
   check(/SetWindowLongW\(ed_hwnd, GWL_STYLE, st & !\(WS_THICKFRAME as i32\)[\s\S]{0,800}SWP_FRAMECHANGED/.test(mainRsForNf),
     '摘掉 WS_THICKFRAME 后必须 SWP_FRAMECHANGED 重算非客户区（否则顶部留 1px 死区，热区够不到窗口顶）');
+  /* 2026-11-25 第二轮：用户报"只能放下拖动，不能往上拖动"。两处都要守：
+     ① 上限必须按**正文区满矩形**（NODERED_BODY）算 —— 拿 `NODERED_RECT`（贴完后已被写成缩过的高度）
+        当基准，max 就等于当前高度，于是只能越拖越矮；
+     ② 页面量的是**客户区**高度，MoveWindow 要窗口高度，差一圈 9px 边框 —— 不补就会
+        "往上拖 120 只长 111、往下拖 120 掉 129"。 */
+  check(/static NODERED_BODY/.test(mainRsForNf) &&
+        /fn nodered_resize_height[\s\S]{0,1600}NODERED_BODY\.lock/.test(mainRsForNf),
+    '★ 上边沿的基准是"正文区满矩形"（NODERED_BODY），不是当前窗口矩形 —— 否则只能拖矮、不能拖高');
+  check(/let frame = NODERED_FRAME_H\.load\(Ordering::SeqCst\)\.max\(0\)/.test(mainRsForNf) &&
+        /\(height \* s\)\.round\(\) as i32 \+ frame/.test(mainRsForNf),
+    '页面报的是客户区高度，落位前要补上边框（否则每拖一次就是 9px 的"拖不准"）');
   check(/fn nodered_resize_height[\s\S]{0,3000}let ny = y \+ full_h - phys;[\s\S]{0,400}MoveWindow\(hwnd, x, ny, w, phys/.test(mainRsForNf),
     '★ 按用户高度落位：底边固定（ny = y + full_h - phys）、宽度不变 —— 左右仍然拖不动');
   check(/NODERED_USER_H\.store\(phys/.test(mainRsForNf) && /phys\.clamp\(min_h, max_h\)/.test(mainRsForNf) &&
