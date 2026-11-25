@@ -1452,7 +1452,7 @@ fn nodered_dock(app: tauri::AppHandle, rect: Option<serde_json::Value>, force: O
     {
         use tauri::Manager;
         use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{MoveWindow, SetParent, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SWP_NOMOVE, SWP_NOSIZE, SWP_FRAMECHANGED};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MoveWindow, SetWindowPos, SetParent, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SWP_NOMOVE, SWP_NOSIZE, SWP_FRAMECHANGED};
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             GetWindowLongW, SetWindowLongW, GWL_STYLE, WS_MAXIMIZEBOX, WS_THICKFRAME,
         };
@@ -1541,20 +1541,40 @@ fn nodered_dock(app: tauri::AppHandle, rect: Option<serde_json::Value>, force: O
                    拖拽期间这个函数每帧都会被调，所以"一次性的活"必须和"每帧的 MoveWindow"分开。 */
                 let was = NODERED_DOCKED.load(Ordering::SeqCst);
                 if !was {
+                    /* ⚠️ 先摘掉 wry 的「无边框缩放边框」覆盖层（`TAURI_DRAG_RESIZE_BORDERS`）。
+                       那是一个盖在客户区上的子窗口，按 `SM_CXFRAME/SM_CYFRAME` 把窗口四边各
+                       几px 判成缩放边框；它**吞掉顶部那一条**，页面里的热区根本收不到 mousedown
+                       （2026-11-25 实测：去掉它之前，y = 窗口顶 + 3px 的拖动毫无反应）。
+                       `set_resizable(false)` 是这条覆盖层唯一的关法（tauri-runtime-wry 里
+                       `SetResizable(false) → detach_resize_handler`）—— 顺手也把 thickframe 摘了，
+                       正好符合"停靠态左右/下边不许拖"。 */
+                    let _ = ed.set_resizable(false);
                     unsafe {
                         SetParent(ed_hwnd, main_hwnd);
                     }
                     // 子窗口不占任务栏；嵌入时也不该抢焦点盖不住主窗口（父子关系已经管了层级）
                     let _ = ed.set_skip_taskbar(true);
-                    /* 停靠态**不许拖边缘**（用户 2026-11："停靠时 node red 的编辑区左右不可拖动，始终和主程序窗口保持一致"）。
+                    /* 停靠态**左右/下边不许拖**（用户 2026-11："停靠时 node red 的编辑区左右不可拖动，始终和主程序窗口保持一致"）。
                        tao 的 `set_resizable` 对 `SetParent` 之后的子窗口不生效（实测样式没变），只能直接改窗口样式；
                        脱离时按记住的原样式加回去。
-                       ⚠️ 上边沿拖动（原生缩放那套）2026-11 试过两轮：子窗口上抓不稳，且会让 Node-RED 的布局在
-                       边缘状态下错乱，已撤回；要再做请先解决"子窗口缩放手柄"问题（WM_NCHITTEST 子类化）。 */
+                       ⚠️ **高度不走这套**：上边沿改高度由 `nodered_resize_height` 用 MoveWindow 落位。
+                       别为了"能拖上边沿"把 `WS_THICKFRAME` 留着 —— 那会让顶部 6px 变成 NC 边框，
+                       页面里的热区就再也收不到 mousedown（2026-11 两版实测的教训）。 */
                     unsafe {
                         let st = GetWindowLongW(ed_hwnd, GWL_STYLE);
                         NODERED_STYLE.store(st, Ordering::SeqCst);
                         SetWindowLongW(ed_hwnd, GWL_STYLE, st & !(WS_THICKFRAME as i32) & !(WS_MAXIMIZEBOX as i32));
+                        /* ⚠️ 改完样式**必须让 Windows 重算非客户区**（`SWP_FRAMECHANGED`）。
+                           不重算的话窗口还留着"边"：实测窗口 1115×744 而客户区只有 1099×735
+                           —— 左右各 8px、顶部 1px 是**死区**，页面从窗口顶往下 1px 才开始。
+                           用户抓"最上面那条边"正好落在死区里 → 看起来就是"上边沿拖动失效"
+                           （2026-11-25 用户报的"脱离再停靠回来就失效"，实测就是这个 1px 死区；
+                           第一次停靠时还碰巧留着 WS_THICKFRAME，系统原生缩放把那一带接住了，
+                           所以只有"再停靠"之后才暴露）。 */
+                        SetWindowPos(
+                            ed_hwnd, std::ptr::null_mut(), 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                        );
                     }
                 }
                 unsafe {
@@ -1598,6 +1618,9 @@ fn nodered_dock(app: tauri::AppHandle, rect: Option<serde_json::Value>, force: O
                     );
                 }
                 let _ = ed.set_skip_taskbar(false);
+                /* 脱离：把"停靠态关掉的"缩放覆盖层与样式都还回去（`set_resizable(true)` 会重新
+                   attach 那条边框覆盖层，独立态的窗口才拖得动）。 */
+                let _ = ed.set_resizable(true);
                 /* 脱离：把"停靠态摘掉的"两个样式位**加回去**（不是整份样式覆盖！）。
                    整份覆盖会把 tao 给无边框窗口设的其它位写脏 —— 实测后果是系统标题栏冒出来
                    + WebView 变黑（用户 2026-11 截图报的"拖动脱离出现这个 bug"）。 */
@@ -1625,6 +1648,91 @@ fn nodered_dock(app: tauri::AppHandle, rect: Option<serde_json::Value>, force: O
                 Ok(false)
             }
         }
+    }
+}
+
+/// 停靠态：**拖上边沿**改编辑器高度（用户 2026-11："停靠时，支持上边沿上下拖动"）。
+///
+/// `height` 是前端量的 CSS px。落位口径：**底边固定**（往上拖 = 变高，露出下面的分栏数据）、
+/// **宽度不变**（永远等于正文区宽 —— 用户要的"左右不可拖"）。
+///
+/// 为什么不在页面里直接改窗口、也不走原生 NC 缩放：
+///   ① 嵌入态是 `SetParent` 之后的**子窗口**，原生缩放手柄在子窗口上抓不稳
+///      （2026-11 两版实测都撤回）；后来又发现更直接的一层：wry 给无边框窗口盖了
+///      `TAURI_DRAG_RESIZE_BORDERS` 子窗口来模拟缩放边框，它压在客户区顶部，页面热区收不到事件
+///      —— 所以停靠时用 `set_resizable(false)` 把它拆掉（见 `nodered_dock`）；
+///   ② 只要保留 `WS_THICKFRAME`，窗口顶部就是 **NC 边框**，鼠标在那一带的按下不会进页面；
+///      所以"样式锁死 + 页面量位移"只能二选一，这里选后者：停靠态摘掉 `WS_THICKFRAME`
+///      （左右/下边本来就不许拖），高度只由这条命令改；
+///   ③ 脱离/停靠都只动"父子关系 + 样式 + 覆盖层"，热区与 `user_h` 状态在页面/命令这一层，
+///      所以**拖出去再停靠回来仍然能拖**（2026-11-25 用户报的正是"再停靠回来就失效"）。
+///
+/// 和 `nodered_dock` 的分工：那条命令算 x/宽度/满高并负责 SetParent，这条只覆盖高度 ——
+/// 写入 `NODERED_USER_H` 之后，250ms 的 `nodered_dock_sync` 会一直按这个高度落位
+/// （截断在 120 与正文区满高之间），主窗口再缩放也不会把它拉回铺满。
+#[tauri::command]
+fn nodered_resize_height(app: tauri::AppHandle, height: f64) -> Result<bool, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = (app, height);
+        return Err("停靠态缩放只在 Windows 上支持".to_string());
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::UI::WindowsAndMessaging::MoveWindow;
+
+        if !NODERED_DOCKED.load(Ordering::SeqCst) {
+            return Ok(false);       // 浮动态有自己的系统边框，别抢
+        }
+        let raw = NODERED_HWND.load(Ordering::SeqCst);
+        if raw == 0 {
+            return Ok(false);
+        }
+        let hwnd = raw as HWND;
+        /* 正文区矩形（x / 宽度 / 满高）必须是上一次贴窗时算好的：拿不到就说明还没真正嵌入 */
+        let (x, y, w, full_h) = {
+            let guard = NODERED_RECT.lock().unwrap_or_else(|e| e.into_inner());
+            match *guard {
+                Some(r) => r,
+                None => return Ok(false),
+            }
+        };
+        let sc = (NODERED_SCALE100.load(Ordering::SeqCst) as f64) / 100.0;
+        let s = if sc > 0.0 { sc } else { 1.0 };
+        let min_h = (120.0 * s).round() as i32;         // 与前端 NR_EDGE_MIN 一致
+        let max_h = {
+            let mx = NODERED_MAX_H.load(Ordering::SeqCst);
+            if mx > 120 { mx.min(full_h) } else { full_h }
+        };
+        let mut phys = (height * s).round() as i32;
+        phys = if max_h <= min_h {
+            max_h.max(1)
+        } else {
+            phys.clamp(min_h, max_h)
+        };
+        let ny = y + full_h - phys;                     // 底边固定
+        NODERED_USER_H.store(phys, Ordering::SeqCst);
+        /* 250ms 的同步看到这个时刻就这一拍不动 —— 否则拖动被"贴回原位"抢掉，手感是抖的 */
+        NODERED_EDGE_AT.store(now_ms(), Ordering::SeqCst);
+        unsafe {
+            MoveWindow(hwnd, x, ny, w, phys, 1);
+        }
+        /* 把"我们刚设成的样子"记成基准：Resized 事件是异步回来的，不更新就会被当成"用户又改了" */
+        {
+            let mut guard = NODERED_RECT.lock().unwrap_or_else(|e| e.into_inner());
+            *guard = Some((x, ny, w, phys));
+        }
+        if let Some(ed) = {
+            use tauri::Manager;
+            app.get_webview_window(NODERED_WINDOW_LABEL)
+        } {
+            if let Ok(sz) = ed.inner_size() {
+                NODERED_INNER_H.store(sz.height as i32, Ordering::SeqCst);
+                NODERED_FRAME_H.store(phys - sz.height as i32, Ordering::SeqCst);
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -11233,6 +11341,7 @@ async fn ble_poll_notifications(state: tauri::State<'_, BleState>) -> Result<ser
             nodered_url,
             nodered_window_state,
             nodered_dock,
+            nodered_resize_height,
             nodered_dock_sync,
             nodered_docked,
             nodered_stop,

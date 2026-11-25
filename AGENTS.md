@@ -623,6 +623,15 @@ npm --prefix website install                      # 首次装依赖（等价 cd 
    **绝不能换成"内嵌 iframe + 独立窗口"两套**（那要重建 WebView，编辑器重载、未部署的流程全丢）。
    双向都支持：拖出去 = 脱离，**拖回主窗口上方 = 归位**（中心进入主窗口 **且** 这次浮动期间到过窗口外才吸，
    否则刚拖出来会被立刻吸回去；**松手才算**，按着鼠标时只亮蒙版）；拖动中主窗口亮出停靠蒙版（`#nfDockHint`）；嵌入区 = 所有可见分栏正文区的**并集**（只贴第一个分栏会让编辑器被分栏边界切开 —— 用户 2026-11："编辑器被分栏了，不应该分栏的"）；独立态标题栏还有「停靠」按钮，嵌入态细拖条右端有「✕」（嵌入态窗口按钮整组隐藏，没有它就没法关编辑器）。
+   ⚠️ **停靠态高度只由 `nodered_resize_height` 改**（2026-11-25 用户复测："脱离之后再停靠回来，上下拖动就失效"）：
+   顶部 6px 热区（`#nrTopEdge`，只在 `body.docked` 时显示）量 `screenY` 的**绝对位移** → 宿主 `MoveWindow`
+   落位（**底边固定**、宽度不变）→ 写进 `NODERED_USER_H`，之后 250ms 同步一直按它落位。
+   ⚠️ **停靠时必须先 `set_resizable(false)`**：wry 给无边框窗口盖了一层 `TAURI_DRAG_RESIZE_BORDERS` 子窗口，
+   它压在客户区顶部，会把那条 6px 热区整个吞掉 —— 第一次停靠还留着 `WS_THICKFRAME` 时原生缩放碰巧接住，
+   一旦脱离再停靠就变成死区（用户报的就是这个）。`SetResizable(false)` 是唯一能拆掉它的入口，脱离再
+   `set_resizable(true)` 还回去。另外摘掉 `WS_THICKFRAME` 后必须 `SetWindowPos(SWP_FRAMECHANGED)` 重算非客户区，
+   否则顶部还留 1px 死区。**别改成原生 NC 缩放**（保留 `WS_THICKFRAME`）：子窗口手柄抓不稳。
+   热区与状态只跟 `body.docked` 走，所以**脱离 → 停靠回来仍然能拖**；显式停靠清零手动高度、恢复铺满。
    **顶栏按钮是开关**：点开高亮（`.add-btn.icon-btn.active` 主题色），**再点一次是 hide 不是关**（草稿留着），
    宿主的 `nodered-state`（open/hidden/closed）事件让按钮自己校正高亮。
    ⚠️ **点图标的行为分三种**（`nodered_open_window` 返回"要不要停靠"）：没开 → 新建并停靠；已开且嵌着 → 只重贴；

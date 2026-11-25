@@ -139,16 +139,10 @@ function nrApplyDocked(docked) {
     if (on) nrStatus('');
 }
 
-/* 嵌入态把自己**当前尺寸**报给主窗口：用户拖窗口边缘改大小后，主窗口据此记住"占正文区的比例"，
-   这样主窗口再缩放时编辑器会按比例跟着缩，而不是留着旧像素尺寸被父窗口裁掉（2026-11 用户报的）。
-   ⚠️ 走 `invoke` 让宿主转发（不是页面之间直接 emit）：跨窗口 emit 受 ACL 影响且**静默失败**
-   —— 2026-11 实测宽度被拖小之后一直回不来，日志里一条都没有。 */
-function nrReportSize() {
-    if (!document.body.classList.contains('docked')) return;
-    try {
-        nrInvoke('nodered_report_size', { width: window.innerWidth, height: window.innerHeight });
-    } catch (e) { /* 纯体验优化，失败不影响编辑 */ }
-}
+/* 这里原来有个 `nrReportSize()`：嵌入态把 `innerWidth/Height` 报给宿主，让宿主记"占正文区的比例"。
+   2026-11-25 清掉 —— 它调的 `nodered_report_size` 在宿主侧**根本不存在**（每次 resize 都只产生一条
+   未捕获的 promise 拒绝），而"用户高度"现在由 `nodered_resize_height` / `Resized` 事件一条路记，
+   宽度与 x 永远按正文区重算，没有再按比例缩的必要。别再挂回来。 */
 
 function nrUndock() {
     nrInvoke('nodered_dock', { rect: null }).then(function () {
@@ -229,6 +223,74 @@ function nrBindDragOut() {
     window.addEventListener('pointercancel', function () { armed = false; dragging = false; });
 }
 
+/* ===== 嵌入态：拖上边沿改高度（用户 2026-11；2026-11-25 报过"脱离再停靠回来就失效"）=====
+ *
+ * 这里只做两件事：把指针的**绝对位移**换算成目标高度、交给宿主 `nodered_resize_height` 落位。
+ * 位置/宽度/底边一律由宿主算（宽度永远是正文区宽 —— 左右不可拖），页面不碰窗口几何。
+ *
+ * 为什么不用原生缩放（保留 WS_THICKFRAME 走 NC 边框）：嵌入态是 `SetParent` 之后的**子窗口**，
+ * 原生缩放手柄抓不稳；而且留着 `WS_THICKFRAME` 时顶部就是 NC 边框，鼠标在那一带按下**不进页面**，
+ * 热区永远等不到事件（2026-11 两版都栽在这上面）。另有一条更隐蔽的：wry 的
+ * `TAURI_DRAG_RESIZE_BORDERS` 覆盖层也压在客户区顶部，宿主侧用 `set_resizable(false)` 拆掉它
+ * （见 main.rs 的 nodered_dock），页面这一侧只要保证"位移 → 命令"这一条路。
+ *
+ * 三条别改回去：
+ *   ① 用 `e.screenY` 的**累计位移**（startY - e.screenY），不要用 clientY：窗口自己在变高，
+ *      元素坐标跟着动，用 client 坐标会抖成自激（第一版就是这么抖的）；
+ *   ② 每次 pointermove 都发 IPC 会被 120Hz 鼠标打满，用 rAF 合并，松手再补最后一帧；
+ *   ③ 指针捕获必须挂在这个元素上：窗口变矮时鼠标会跑到窗口外，没有捕获就收不到 pointerup，
+ *      热区会卡在"一直拖着"的状态。
+ */
+var NR_EDGE_MIN = 120;      // 与宿主 nodered_resize_height 里的下限一致（CSS px）
+
+function nrBindTopEdge() {
+    var el = document.getElementById('nrTopEdge');
+    if (!el) return;
+    var dragging = false, startY = 0, startH = 0, want = 0, raf = 0;
+
+    function send() {
+        raf = 0;
+        if (!dragging) return;
+        nrInvoke('nodered_resize_height', { height: Math.round(want) }).catch(function () {});
+    }
+
+    function start(e) {
+        if (e.button !== 0) return;
+        if (!document.body.classList.contains('docked')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        dragging = true;
+        startY = e.screenY;
+        startH = window.innerHeight;
+        want = startH;
+        document.body.classList.add('nr-topedge-drag');
+        try { el.setPointerCapture(e.pointerId); } catch (err) { /* 老内核不支持就算了 */ }
+    }
+
+    function move(e) {
+        if (!dragging) return;
+        /* 往上拖 = 变高：位移取反；下限页面先夹一次，宿主再夹一次（两处同值） */
+        want = Math.max(NR_EDGE_MIN, startH + (startY - e.screenY));
+        if (!raf) raf = requestAnimationFrame(send);
+    }
+
+    function stop() {
+        if (!dragging) return;
+        dragging = false;
+        document.body.classList.remove('nr-topedge-drag');
+        if (raf) { cancelAnimationFrame(raf); raf = 0; }
+        /* 松手补最后一帧：拖一下就放时 rAF 可能还没跑 */
+        nrInvoke('nodered_resize_height', { height: Math.round(want) }).catch(function () {});
+    }
+
+    el.addEventListener('pointerdown', start);
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', stop);
+    el.addEventListener('pointercancel', stop);
+    /* 兜底：极端情况下（窗口失焦/被切走）收不到 pointerup，别让它卡在"永久拖动" */
+    window.addEventListener('blur', stop);
+}
+
 function nrWatchDockState() {
     try {
         var t = window.__TAURI__;
@@ -255,9 +317,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     var win = nrWindow();
     if (win && typeof win.onResized === 'function') {
-        try { win.onResized(function () { nrSyncMaxIcon(); nrReportSize(); }); } catch (e) { /* 旧版 API 没有就算了 */ }
+        /* 只用来刷新"最大化/还原"的图标文案：尺寸/高度由宿主记（见 nodered_resize_height） */
+        try { win.onResized(nrSyncMaxIcon); } catch (e) { /* 旧版 API 没有就算了 */ }
     }
-    window.addEventListener('resize', nrReportSize);
     if (byId('nrUndock')) byId('nrUndock').addEventListener('click', function (e) {
         e.stopPropagation();
         nrUndock();
@@ -273,6 +335,7 @@ document.addEventListener('DOMContentLoaded', function () {
         nrClose();
     });
     nrBindDragOut();
+    nrBindTopEdge();
     nrWatchDockState();
     nrSyncMaxIcon();
     nrLoadFrame();

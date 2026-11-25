@@ -134,5 +134,30 @@ body:not(.docked) .nr-dockact { display: inline-flex; }
 body.docked #nrCloseInline { display: inline-flex; align-items: center; justify-content: center; }
 body.docked #nrCloseInline:hover { color: #fff; background: #e81123; border-color: #e81123; }
 
-/* 上边沿拖拽条：只有嵌入态出现（独立态有系统窗口边框）。
-   5px 高、贴在窗口最顶端，光标是 ns-resize —— 提示"只能上下拉"。 */
+/* 上边沿热区：只有嵌入态出现（独立态有系统窗口边框）。
+   6px 高、贴在窗口最顶端，光标 ns-resize —— 提示"只能上下拉"。
+   ⚠️ 平时**完全透明**（用户 2026-11："拖动条太宽了"）：只在悬停/拖动时显一条 2px 主题色细线，
+      否则一条常驻亮带会横在编辑器顶上。 */
+.nr-topedge {
+    display: none;
+    position: fixed;
+    left: 0; right: 0; top: 0;
+    height: 6px;
+    z-index: 20;
+    cursor: ns-resize;
+    /* 别挡标题栏的双击最大化：只有这 6px，事件也由下面那套 pointer 处理接管 */
+    touch-action: none;
+}
+body.docked .nr-topedge { display: block; }
+.nr-topedge::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; top: 0;
+    height: 2px;
+    background: transparent;
+    transition: background .12s;
+}
+.nr-topedge:hover::after,
+body.nr-topedge-drag .nr-topedge::after { background: var(--split-line); }
+/* 拖动期间整页都保持 ns-resize：光标移出 6px 带也不会闪回箭头 */
+body.nr-topedge-drag, body.nr-topedge-drag * { cursor: ns-resize !important; }

@@ -8829,11 +8829,40 @@ try {
     '开 / 隐藏 / 被关掉都会发 nodered-state，按钮状态不会漂');
   check(/fn nodered_ensure_on_screen/.test(mainRsForNf) && /rect_on_screen/.test(mainRsForNf),
     '浮动窗口被缩到很小/挪出屏幕时，点图标要先把它拉回可见区域（否则 set_focus 等于没反应）');
-  /* 停靠态**只能拖上边沿改高度**（用户 2026-11："停靠时，支持上边沿上下拖动"）：
-     用**原生**缩放（不摘 WS_THICKFRAME），拖完由同步按"用户改出来的高度 + 正文区宽度"重新落位 ——
-     左右拖出来的宽度会被收回去。页面里自己算高度那套实测点不到（5px 窄带收不到 mousedown），已删除。 */
+  /* 停靠态**只能拖上边沿改高度**（用户 2026-11："停靠时，支持上边沿上下拖动"）。
+     2026-11-25 用户复测又报了"脱离之后再停靠回来，上下拖动就失效" —— 所以热区与状态必须
+     与窗口样式无关，只跟着 `body.docked` 与宿主命令走。
+     落地方式（第三版，前两版的教训都写在 main.rs 的注释里）：
+       页面顶部 6px 热区量 `screenY` 的绝对位移 → `nodered_resize_height` → 宿主 MoveWindow；
+       **不走原生 NC 缩放**：嵌入态是 SetParent 子窗口，手柄抓不稳；而且留着 WS_THICKFRAME 时
+       顶部 6px 就是 NC 边框，页面里的热区永远收不到 mousedown（两版都栽在这）。 */
   check(/static NODERED_USER_H/.test(mainRsForNf) && /static NODERED_EDGE_AT/.test(mainRsForNf),
     '★ 宿主记"用户拖出来的高度"与"正在拖的边缘时刻"');
+  check(/id="nrTopEdge"/.test(shellHtml) && /body\.docked \.nr-topedge \{ display: block; \}/.test(shellCss) &&
+        /cursor: ns-resize/.test(shellCss),
+    '★ 嵌入态顶部 6px 热区（ns-resize）；独立态不渲染（系统边框本来就能拖）');
+  check(/function nrBindTopEdge/.test(shellJs) && /setPointerCapture/.test(shellJs) &&
+        /startH \+ \(startY - e\.screenY\)/.test(shellJs) && /nrInvoke\('nodered_resize_height'/.test(shellJs),
+    '★ 热区按 screenY 的**绝对位移**算高度（窗口自己在变高，用 clientY 会抖成自激），再让宿主落位');
+  check(/body\.nr-topedge-drag/.test(shellCss) && /classList\.add\('nr-topedge-drag'\)/.test(shellJs),
+    '拖动期间整页保持 ns-resize（光标移出 6px 带也不闪回箭头）');
+  check(/fn nodered_resize_height/.test(mainRsForNf) && /\n\s+nodered_resize_height,/.test(mainRsForNf),
+    '★ 宿主有 nodered_resize_height 并已注册（页面热区才调得到）');
+  /* 2026-11-25 实机定位到的真根因：wry 给"无边框窗口"盖了一层 `TAURI_DRAG_RESIZE_BORDERS`
+     子窗口来模拟缩放边框，它**盖在客户区顶部**，把页面里那条 6px 热区整个吞掉 ——
+     所以只有"停靠时还留着 WS_THICKFRAME 的那一次"能被系统原生缩放接住，一旦脱离再停靠
+     （样式被正确摘掉）就变成死区。修法：停靠时 `set_resizable(false)` 关掉覆盖层，脱离再还回去。 */
+  check(/let _ = ed\.set_resizable\(false\);/.test(mainRsForNf) &&
+        /TAURI_DRAG_RESIZE/.test(mainRsForNf) &&
+        /let _ = ed\.set_resizable\(true\);/.test(mainRsForNf),
+    '★ 停靠时关掉 wry 的缩放边框覆盖层、脱离时还回去（否则它吃掉上边沿热区，拖动"失效"）');
+  check(/SetWindowLongW\(ed_hwnd, GWL_STYLE, st & !\(WS_THICKFRAME as i32\)[\s\S]{0,800}SWP_FRAMECHANGED/.test(mainRsForNf),
+    '摘掉 WS_THICKFRAME 后必须 SWP_FRAMECHANGED 重算非客户区（否则顶部留 1px 死区，热区够不到窗口顶）');
+  check(/fn nodered_resize_height[\s\S]{0,3000}let ny = y \+ full_h - phys;[\s\S]{0,400}MoveWindow\(hwnd, x, ny, w, phys/.test(mainRsForNf),
+    '★ 按用户高度落位：底边固定（ny = y + full_h - phys）、宽度不变 —— 左右仍然拖不动');
+  check(/NODERED_USER_H\.store\(phys/.test(mainRsForNf) && /phys\.clamp\(min_h, max_h\)/.test(mainRsForNf) &&
+        /120\.0 \* s/.test(mainRsForNf),
+    '高度有上下限（≥120 CSS px、≤正文区满高），并写进 NODERED_USER_H 让 250ms 同步一直按它落位');
   check(/tauri::WindowEvent::Resized\(_\) => \{[\s\S]{0,900}NODERED_USER_H\.store\(sz\.height/.test(mainRsForNf),
     '★ 嵌入窗口的 Resized 里记下用户改出来的高度（和自己贴的矩形差 ≤8px 视为自己改的）');
   check(/let user_h = NODERED_USER_H\.load\(Ordering::SeqCst\);[\s\S]{0,400}y = y \+ h - hh;/.test(mainRsForNf),

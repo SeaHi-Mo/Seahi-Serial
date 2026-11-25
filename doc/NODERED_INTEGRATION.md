@@ -60,7 +60,7 @@ iframe 在这里是安全用法 —— 它从生到死都在同一个位置，�
 | 开关（顶栏按钮） | 点开 → 窗口显示且**按钮背景用主题色**（`.add-btn.icon-btn.active`）；**再点一次是 `hide`**（不是关闭，编辑器与未部署的修改都留着），再点又原样回来（同一个 WebView，实测 HWND 不变）。宿主用 `nodered-state`（open/hidden/closed）事件 + `nodered_window_state` 让按钮自己校正 |
 | 关闭 | 嵌入态用细拖条右端的「✕」，独立态用标题栏的关闭按钮 —— 都只关编辑器窗口，**侧车继续跑**；嵌入态关窗不写几何（见坑 #12） |
 | 点图标 | 浮动窗口被缩得很小或挪出屏幕时，先 `nodered_ensure_on_screen` 拉回可见区域再 `set_focus`（否则"点了没反应"） |
-| 尺寸 | **停靠态不可缩放**（用户 2026-11："编辑区左右不可拖动，始终和主程序窗口保持一致"）：贴进主窗口时用 `SetWindowLongW` 摘掉 `WS_THICKFRAME`/`WS_MAXIMIZEBOX`，宽度/高度都恒等于正文区；脱离时按记住的原样式加回去。⚠️ `set_resizable(false)` 对 `SetParent` 之后的子窗口**不生效**（实测样式没变），只能改窗口样式。<br>⚠️ **上边沿拖动试过两轮、已撤回**：① 页面里自算高度（`#nrTopGrip` + pointer capture）——那条 5px 窄带实测收不到 mousedown（日志零调用）；② 恢复 `WS_THICKFRAME` 走原生缩放 —— 子窗口上抓不稳，且会让 Node-RED 在边缘状态下布局错乱。要再做请先解决"子窗口缩放手柄"（`WM_NCHITTEST` 子类化返回 `HTTOP`）。 |
+| 尺寸 | **停靠态左右不可拖、只能拖上边沿改高度**（用户 2026-11）：贴进主窗口时用 `SetWindowLongW` 摘掉 `WS_THICKFRAME`/`WS_MAXIMIZEBOX`（改完必须 `SetWindowPos(SWP_FRAMECHANGED)` 重算非客户区，否则窗口顶部留 1px 死区，热区够不到真正的顶边），宽度恒等于正文区；高度由顶部 6px 热区控制 —— 页面量 `screenY` 的绝对位移，调 `nodered_resize_height`，宿主 `MoveWindow` **底边固定**落位（往上拖 = 变高，露出下面的分栏数据），并记进 `NODERED_USER_H`，之后 250ms 同步一直按它落位（主窗口缩放也不会拉回铺满）。<br>⚠️ **停靠时必须 `set_resizable(false)`**：wry 给无边框窗口盖了一层 `TAURI_DRAG_RESIZE_BORDERS` 子窗口来模拟缩放边框，它**盖在客户区顶部**，会把页面里那条 6px 热区整个吞掉 —— 2026-11-25 用户报的"脱离之后再停靠回来，上下拖动就失效"就是它：第一次停靠还留着 `WS_THICKFRAME`，系统原生缩放碰巧接住了那一条；脱离再停靠后样式被正确摘掉，顶上那条就变成死区。`set_resizable(false)` 是关掉覆盖层的唯一入口（`tauri-runtime-wry` 里 `SetResizable(false) → detach_resize_handler`），脱离时 `set_resizable(true)` 还回去。<br>⚠️ **别改用原生 NC 缩放**（保留 `WS_THICKFRAME` 走系统手柄）：嵌入态是 `SetParent` 之后的子窗口，手柄抓不稳，而且有覆盖层时页面热区收不到事件。<br>⚠️ **热区与状态只跟 `body.docked` / `NODERED_USER_H` 走**，不依赖窗口样式变化，所以**拖出去再停靠回来仍然能拖**；显式停靠（拖回 / 点停靠 / 点图标）会把手动高度清零，恢复铺满。 |
 | 蒙版 | 拖动中中心一旦进入主窗口，分栏正文区亮出**蓝色虚线框 + 「松开鼠标：把编辑器停靠到这里」**（`nodered-drag-hover` 事件 → `#nfDockHint`；`pointer-events:none`，文字贴顶部否则会被浮动的编辑器挡住） |
 | 退出 | 主窗口关闭时先 `SetParent(null)` 再关编辑器窗口（否则子窗口跟着父窗口销毁，几何存不下来） |
 
@@ -275,6 +275,16 @@ WSL 分栏与串口分栏在编辑器里是同一套节点、同一个「端口�
     于是 Windows 把标题栏画了出来、WebView 的绘制也跟着坏掉。**正确做法是只加回被摘掉的那两个位**：
     `cur | WS_THICKFRAME | WS_MAXIMIZEBOX`，再 `SetWindowPos(… SWP_FRAMECHANGED)` 让非客户区重算。
     实测（截图核对）：脱离后是自绘标题栏 + Node-RED 完整渲染；拖回主窗口上方松手能正常吸附回停靠。
+20. ⚠️ **`TAURI_DRAG_RESIZE_BORDERS` 会把"上边沿热区"整个吃掉**（2026-11-25 用户："node red 编辑器在脱离之后，
+    再停靠回去，上下拖动就失效了"）：wry 给无边框窗口盖了一个 `TAURI_DRAG_RESIZE_WINDOW` /
+    `TAURI_DRAG_RESIZE_BORDERS` 子窗口，按 `SM_CXFRAME/SM_CYFRAME` 把四边几 px 判成缩放边框 —— 它盖在**客户区顶部**，
+    页面里那条 6px 热区在那一带根本收不到 mousedown。第一次停靠时窗口还碰巧留着 `WS_THICKFRAME`，系统原生缩放
+    把那一带接住了，所以只有"脱离再停靠"（样式被正确摘掉）之后才暴露成死区。
+    三条一起才是修法：① 停靠时 `set_resizable(false)`（`tauri-runtime-wry` 的 `SetResizable(false)` 会
+    `detach_resize_handler`，覆盖层才拆得掉），脱离时 `set_resizable(true)` 还回去；
+    ② 摘掉 `WS_THICKFRAME` 之后补 `SetWindowPos(SWP_FRAMECHANGED)`，让客户区从窗口顶开始（否则顶部还留 1px 死区）；
+    ③ 页面热区与"用户高度"状态只跟 `body.docked` / `NODERED_USER_H` 走，与窗口样式无关。
+    实测（2026-11-25，真鼠标拖动）：首次停靠 744 → 625（底边不动）、左右拖不动；脱离 → 停靠 → 再拖 744 → 625 正常。
 
 
 
@@ -306,6 +316,8 @@ WSL 分栏与串口分栏在编辑器里是同一套节点、同一个「端口�
 - **未部署的修改在关窗时丢弃**：窗口一关 WebView 就销毁，与浏览器里关掉编辑器标签页一致（`flows.json` 里
   只有「已部署」的内容）。想保住草稿就别关窗口，或先「部署」
 - 编辑器窗口是**独立顶层窗口**，不跟随主窗口最小化；主窗口关闭时它会一起关掉
+- 停靠态只能调**高度**（顶部 6px 热区，下限 120、上限正文区满高）；手动高度不跨会话保存，
+  显式停靠（拖回 / 点停靠 / 点图标）会清掉它恢复铺满
 - 卸载不清理 `%APPDATA%\com.seahi.seahi-serial\node-red`（有意：升级不丢流程）
 - **WSL 分栏的数据产出点仍是前端轮询**（见 4.2）：隐藏时降到 500ms，所以后台流程拿到的数据
   最多晚半秒；`serial request` 这类"发一条等一段"的时序在隐藏档下会偏保守（靠一次轮询带回整段）。

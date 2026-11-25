@@ -15,6 +15,12 @@
      所以不会出现"搬 iframe 导致编辑器整页重载"那个老坑（见 js/86-node-red-window.js 顶部注释）。 -->
 <body>
 
+<!-- 上边沿热区（2026-11）：只在嵌入态出现，按住上下拖 = 改编辑器高度（底边固定）。
+     6px 是"够薄不抢画面、又不用瞄准"的折中；光标由 CSS 给 ns-resize。
+     为什么放在页面里：嵌入态窗口是 SetParent 之后的子窗口，原生缩放手柄抓不稳；
+     页面量出 screenY 位移，交给宿主 `nodered_resize_height` 去 MoveWindow（见 86-node-red-window.js）。 -->
+<div class="nr-topedge" id="nrTopEdge" aria-label="上下拖动调整编辑器高度"></div>
+
 <div class="nr-titlebar">
     <span class="nr-brand" aria-label="Node-RED 流程编辑器">
         <!-- 拖动把手：嵌入态的抓取点（细拖条其余部分也能拖，但这个更显眼）。
