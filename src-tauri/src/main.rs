@@ -6787,6 +6787,8 @@ struct UpdateInfo {
     has_update: bool,
     latest_version: String,
     current_version: String,
+    /// 当前程序架构（x64 / x86 / arm64），前端据此解释"为什么没有可用更新包"
+    arch: String,
     download_url: String,
     /// 安装包 SHA-256（hex 小写），用于下载后校验；GitHub 未提供 digest 时为 null
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -7201,6 +7203,82 @@ mod util_tests {
         assert!(!super::is_newer_version("0.2.11", "0.2.10"));
     }
 
+    /// 架构判定：x86_64 必须算 x64，不能被其中的 "x86" 子串骗成 32 位
+    #[test]
+    fn asset_arch_distinguishes_x64_from_x86() {
+        // 真实 Release 资产（v0.6.1）
+        assert_eq!(super::asset_arch("Seahi.Serial_0.6.1_x64_en-US.msi"), Some("x64"));
+        // 32 位 Inno 安装器没有架构标记 —— 不许当成"通用包"给 x64 用户兜底
+        assert_eq!(super::asset_arch("Seahi-Serial-Setup-0.6.1.exe"), None);
+        // 其他常见写法
+        assert_eq!(super::asset_arch("app_1.0.0_x86_64_en-US.msi"), Some("x64"));
+        assert_eq!(super::asset_arch("app-1.0.0-amd64.msi"), Some("x64"));
+        assert_eq!(super::asset_arch("app-1.0.0-x64.exe"), Some("x64"));
+        assert_eq!(super::asset_arch("app-1.0.0-x86.msi"), Some("x86"));
+        assert_eq!(super::asset_arch("app_1.0.0_i686_setup.exe"), Some("x86"));
+        assert_eq!(super::asset_arch("app_1.0.0_arm64.msi"), Some("arm64"));
+    }
+
+    /// 选包：x64 拿 x64 MSI，绝不碰无标记的 32 位 Inno exe；x86 包出现后也能正确选中
+    #[test]
+    fn pick_installer_asset_matches_current_arch() {
+        let asset = |name: &str| super::GitHubAsset {
+            name: name.to_string(),
+            browser_download_url: format!("https://example.com/{}", name),
+            digest: None,
+            size: Some(1),
+        };
+
+        // 当前 Release 的真实组合
+        let assets = vec![
+            asset("Seahi-Serial-Setup-0.6.1.exe"),
+            asset("Seahi.Serial_0.6.1_x64_en-US.msi"),
+        ];
+        assert_eq!(
+            super::pick_installer_asset(&assets, "x64").map(|a| a.name.as_str()),
+            Some("Seahi.Serial_0.6.1_x64_en-US.msi")
+        );
+        assert!(super::pick_installer_asset(&assets, "x86").is_none());
+
+        // 同架构多个包：优先 NSIS exe，保持原有习惯
+        let assets = vec![
+            asset("Seahi-Serial-Setup-0.6.1-x64.exe"),
+            asset("Seahi.Serial_0.6.1_x64_en-US.msi"),
+        ];
+        assert_eq!(
+            super::pick_installer_asset(&assets, "x64").map(|a| a.name.as_str()),
+            Some("Seahi-Serial-Setup-0.6.1-x64.exe")
+        );
+
+        // 将来真出了 32 位应用包：只给 x86 用，x64 不被串过去
+        let assets = vec![
+            asset("Seahi-Serial-Setup-0.6.1.exe"),
+            asset("Seahi.Serial_0.6.1_x86_en-US.msi"),
+        ];
+        assert_eq!(
+            super::pick_installer_asset(&assets, "x86").map(|a| a.name.as_str()),
+            Some("Seahi.Serial_0.6.1_x86_en-US.msi")
+        );
+        assert!(super::pick_installer_asset(&assets, "x64").is_none());
+
+        // 双架构发布后的完整资产组合（CI 产出四个包）：各自选到自己的 Inno 安装包，
+        // 且与 MSI 并存时优先 NSIS —— 这样能沿用旧 AppId 原位升级，不残留两份程序。
+        let assets = vec![
+            asset("Seahi-Serial-Setup-0.6.1-x64.exe"),
+            asset("Seahi.Serial_0.6.1_x64_en-US.msi"),
+            asset("Seahi-Serial-Setup-0.6.1-x86.exe"),
+            asset("Seahi.Serial_0.6.1_x86_en-US.msi"),
+        ];
+        assert_eq!(
+            super::pick_installer_asset(&assets, "x64").map(|a| a.name.as_str()),
+            Some("Seahi-Serial-Setup-0.6.1-x64.exe")
+        );
+        assert_eq!(
+            super::pick_installer_asset(&assets, "x86").map(|a| a.name.as_str()),
+            Some("Seahi-Serial-Setup-0.6.1-x86.exe")
+        );
+    }
+
     #[test]
     fn strip_windows_com_suffix_works() {
         assert_eq!(super::strip_windows_com_suffix("USB 串行设备 (COM28)"), "USB 串行设备");
@@ -7487,6 +7565,92 @@ fn get_app_info() -> AppInfo {
     }
 }
 
+/// 当前程序的目标架构（编译期确定，与安装包架构一一对应）。
+///
+/// 事故背景（v0.6.1）：64 位用户点更新后总是运行 32 位的 Inno 安装包（被装进
+/// Program Files (x86)），因为旧逻辑只按 "-setup.exe" 找包，完全没看架构。
+fn current_arch() -> &'static str {
+    #[cfg(target_arch = "x86_64")]
+    {
+        "x64"
+    }
+    #[cfg(target_arch = "x86")]
+    {
+        "x86"
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        "arm64"
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86", target_arch = "aarch64")))]
+    {
+        "unknown"
+    }
+}
+
+/// 从安装包文件名推断其目标架构；没有明确标注时返回 None（不当成"通用包"）。
+///
+/// 注意："x86_64" / "x86-64" 必须判为 x64 —— 它们含有 "x86" 子串，
+/// 先判 x86 会把 64 位 MSI 错误地归到 32 位那边。
+fn asset_arch(name: &str) -> Option<&'static str> {
+    let n = name.to_ascii_lowercase();
+    // x64：Tauri MSI 的 _x64_、常见的 -x64- / x64. / amd64 / x86_64
+    if n.contains("x86_64")
+        || n.contains("x86-64")
+        || n.contains("amd64")
+        || n.contains("_x64")
+        || n.contains("-x64")
+        || n.contains("x64.")
+        || n.starts_with("x64")
+    {
+        return Some("x64");
+    }
+    if n.contains("aarch64") || n.contains("arm64") {
+        return Some("arm64");
+    }
+    // x86：纯 32 位标记；x86_64 已在上面先拦掉
+    if n.contains("i686")
+        || n.contains("ia32")
+        || n.contains("win32")
+        || n.contains("_x86")
+        || n.contains("-x86")
+        || n.contains("x86.")
+        || n.starts_with("x86")
+    {
+        return Some("x86");
+    }
+    None
+}
+
+/// 安装包类型优先级：NSIS exe > 其他 exe > MSI。
+/// 同架构下多个包并存时，保持"优先 NSIS"的原有习惯（有 -setup.exe 就用它）。
+fn installer_priority(name: &str) -> u8 {
+    let n = name.to_ascii_lowercase();
+    if n.contains("-setup") && n.ends_with(".exe") {
+        0
+    } else if n.ends_with(".exe") {
+        1
+    } else if n.ends_with(".msi") {
+        2
+    } else {
+        u8::MAX
+    }
+}
+
+/// 按当前程序架构挑选安装包：只认**明确标注了同架构**的资产。
+///
+/// 未标注架构的 `Seahi-Serial-Setup-x.y.z.exe`（32 位 Inno 安装器）不再作为兜底 ——
+/// 那正是 64 位用户被"更新成 x86"的根因。宁可提示"暂不可用"，也不装错架构。
+fn pick_installer_asset<'a>(assets: &'a [GitHubAsset], arch: &str) -> Option<&'a GitHubAsset> {
+    let mut candidates: Vec<&'a GitHubAsset> = assets
+        .iter()
+        .filter(|a| asset_arch(&a.name) == Some(arch))
+        .filter(|a| installer_priority(&a.name) != u8::MAX)
+        .collect();
+    candidates.sort_by_key(|a| installer_priority(&a.name));
+    candidates.first().copied()
+}
+
 /// 检查 GitHub Releases 是否有新版本
 #[tauri::command]
 async fn check_update() -> Result<UpdateInfo, String> {
@@ -7536,22 +7700,25 @@ async fn check_update() -> Result<UpdateInfo, String> {
 
     let has_update = is_newer_version(&current, &release.tag_name);
 
-    // 查找 Windows 安装包（优先 NSIS .exe，其次 .msi）
+    // 按当前程序架构挑安装包：x64 只装 x64 包，x86 只装 x86 包。
+    // 旧逻辑无脑优先 "-setup.exe"，导致 64 位用户每次更新都跑 32 位 Inno 安装器。
+    let arch = current_arch();
     let (download_url, sha256, size) = if has_update {
-        let asset = release
-            .assets
-            .iter()
-            .find(|a| a.name.to_lowercase().contains("-setup") && a.name.ends_with(".exe"))
-            .or_else(|| release.assets.iter().find(|a| a.name.ends_with(".exe")))
-            .or_else(|| release.assets.iter().find(|a| a.name.ends_with(".msi")));
-
-        match asset {
+        match pick_installer_asset(&release.assets, arch) {
             Some(a) => (
                 a.browser_download_url.clone(),
                 a.digest.as_deref().and_then(digest_to_hex),
                 a.size,
             ),
-            None => (String::new(), None, None),
+            None => {
+                dbg_log(&format!(
+                    "check_update: 发现 {} 但没有 {} 架构的安装包（资产: {:?}）",
+                    release.tag_name,
+                    arch,
+                    release.assets.iter().map(|a| a.name.as_str()).collect::<Vec<_>>()
+                ));
+                (String::new(), None, None)
+            }
         }
     } else {
         (String::new(), None, None)
@@ -7569,6 +7736,7 @@ async fn check_update() -> Result<UpdateInfo, String> {
         has_update,
         latest_version: release.tag_name,
         current_version: current,
+        arch: arch.to_string(),
         download_url,
         sha256,
         size,

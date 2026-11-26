@@ -15,14 +15,17 @@ SeaHi Serial 由个人独立开发维护，**目前没有购买代码签名证�
 
 ## 2. 安全安装（三步）
 
-1. **只从官方 Release 下载**
+1. **只从官方 Release 下载，并选对架构**
    <https://github.com/SeaHi-Mo/Seahi-Serial/releases>
+   发布页同时提供 x64 / x86 两种架构的安装包，文件名以 `-x64` / `-x86`（Inno）或
+   `_x64_` / `_x86_`（MSI）结尾 —— 64 位系统选 x64，32 位系统选 x86。程序内「检查更新」
+   也按当前程序架构自动匹配，不会把 64 位用户更新成 32 位安装器。
    不要安装网盘、聊天记录里转发的安装包 —— 未签名文件没法靠证书判断有没有被改过。
 2. **核对文件 SHA-256 与签名**
    下载 Release 里的 `SHA256SUMS.txt` 与 `SHA256SUMS.txt.sigstore.json`；
    先用 cosign 验签（步骤见 §4.1），再核对安装包哈希：
    ```powershell
-   Get-FileHash .\Seahi-Serial_x.y.z_x64-setup.exe -Algorithm SHA256
+   Get-FileHash .\Seahi-Serial-Setup-x.y.z-x64.exe -Algorithm SHA256
    ```
    与 `SHA256SUMS.txt` 里对应行比对；不一致就不要运行。
 3. **确认后放行**
@@ -73,7 +76,7 @@ SeaHi Serial 由个人独立开发维护，**目前没有购买代码签名证�
 4. 再按 `SHA256SUMS.txt` 核对安装包：
    ```powershell
    Get-Content SHA256SUMS.txt
-   Get-FileHash .\Seahi-Serial-Setup-x.y.z.exe -Algorithm SHA256
+   Get-FileHash .\Seahi-Serial-Setup-x.y.z-x64.exe -Algorithm SHA256
    ```
 
 ### 4.2 买之前确认这四件事（Certum 这一类）
@@ -85,7 +88,7 @@ SeaHi Serial 由个人独立开发维护，**目前没有购买代码签名证�
 
 ### 4.3 买到之后：落地顺序别搞反
 
-- **签名必须在算 SHA-256 之前**。签名会改文件字节，先算哈希再签名，`SHA256SUMS.txt` 必然对不上。CI 里插在「Build Tauri app / Build Inno Setup installer」之后、「Generate SHA256SUMS」之前。
+- **签名必须在算 SHA-256 之前**。签名会改文件字节，先算哈希再签名，`SHA256SUMS.txt` 必然对不上。CI 里插在「Build Tauri app / Build 32-bit MSI / Build Inno Setup installers」之后、「Generate SHA256SUMS」之前。
 - 要签的是三处：`seahi-serial.exe` 与 MSI（走 Tauri 的 `bundle.windows.signCommand`）、Inno Setup 安装包（`installer.iss` 的 `SignTool`）。
 - **时间戳必加**（`signtool /tr <RFC 3161 地址> /td sha256`），否则证书过期后签名一起失效。
 - **SimplySign 默认要手机 TOTP**，headless CI 直接跑不通。两条路：用现成 action（如 `windows-app-signing-setup-action` / `super-simply-sign` / `ssign`，把 TOTP secret 存进 GitHub Secrets），或者本地签好再上传安装包。
